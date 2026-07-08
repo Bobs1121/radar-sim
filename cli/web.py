@@ -307,7 +307,15 @@ def _make_handler(default_project: str):
                 return self._json({"items": [item.__dict__ for item in check_cluster_environment(cfg, profile=query.get("profile", [""])[0])]})
             if parsed.path == "/api/cluster/profiles":
                 cfg = load_config(project)
-                return self._json({"profiles": list_cluster_profiles(cfg)})
+                profiles = list_cluster_profiles(cfg)
+                # Also return configured datasets so the frontend can populate the
+                # dataset dropdown in one call (avoids a separate /api/config/load
+                # which needs a path, not a project).
+                from core.simulation import get_simulation_config
+                sim = get_simulation_config(cfg)
+                datasets = [{"name": d.get("name", ""), "input_dir": d.get("input_dir", "") or d.get("input_mf4", "")}
+                            for d in (sim.get("datasets", []) or []) if d.get("name")]
+                return self._json({"profiles": profiles, "datasets": datasets})
             if parsed.path == "/api/cluster/python":
                 cfg = load_config(project)
                 configured = str((cfg.get("cluster") or {}).get("python_path") or "")

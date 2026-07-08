@@ -122,9 +122,69 @@ def execute_cluster_run(
     }
     if not should_execute:
         log(task_id, ["[executor] DRY-RUN: prepared only. Set payload.execute=true to submit."])
+    elif rc != 0:
+        # Submit itself failed — don't poll, keep status=failed.
+        log(task_id, [f"[executor] submit failed (returncode={rc})"])
     else:
         log(task_id, [f"[executor] submitted via {mode}, returncode={rc}"])
+        # Submit succeeded → the cluster worker now runs selena asynchronously.
+        # Poll the official cluster web status until the job finishes, so the
+        # task's terminal status reflects the real simulation outcome (not just
+        # the submit returncode). Returns running→succeeded/failed.
+        manager_value = stdout.strip().splitlines()[-1] if stdout.strip() else ""
+        poll_status, poll_detail = _poll_cluster_completion(config, job_dir, manager_value, log, task_id)
+        if poll_status:
+            status = "succeeded" if poll_status == "finished" else "failed"
+            result_dict["cluster_state"] = poll_status
+            result_dict["cluster_detail"] = poll_detail
+            log(task_id, [f"[executor] cluster job {poll_status}: {poll_detail}"])
+        else:
+            result_dict["cluster_state"] = "unknown"
+            log(task_id, ["[executor] cluster status unknown (submit OK); check OUT_ dir manually"])
     return status, rc, result_dict
+
+
+def _poll_cluster_completion(config: dict, job_dir: str, manager_value: str, log, task_id: str):
+    """Poll the official cluster web status until the job finishes or times out.
+
+    Returns ``(state, detail)`` where state is "finished"/"failed"/"running".
+    Times out after ~30 minutes of polling (worker runs minutes to tens of minutes).
+    """
+    from core.cluster import get_cluster_web_status
+
+    # Try job_dir path first (most reliable — _find_web_job_id_by_path matches it
+    # on the official jobs page); fall back to the manager-returned value.
+    queries = [job_dir]
+    if manager_value and manager_value.lower().startswith("value="):
+        queries.append(manager_value.split("=", 1)[1].strip())
+    max_minutes = 30
+    deadline = time.time() + max_minutes * 60
+    last_state = ""
+    while time.time() < deadline:
+        for q in queries:
+            try:
+                info = get_cluster_web_status(config, q)
+            except Exception as exc:
+                log(task_id, [f"[executor] status poll error: {exc}"])
+                continue
+            if not info.get("found"):
+                continue
+            state = str(info.get("state") or "")
+            tasks = info.get("tasks") or []
+            if tasks:
+                states = [str(t.get("simulation_state") or "") for t in tasks]
+                n_ok = sum(1 for s in states if s == "finished")
+                n_fail = sum(1 for s in states if s in ("failed", "error", "aborted"))
+                detail = f"{n_ok}/{len(tasks)} finished, {n_fail} failed"
+                if state != last_state:
+                    log(task_id, [f"[executor] cluster progress: {detail} ({state})"])
+                    last_state = state
+                if all(s == "finished" for s in states):
+                    return "finished", detail
+                if n_fail > 0 and n_ok + n_fail == len(tasks):
+                    return "failed", detail
+        time.sleep(15)
+    return "running", f"timed out after {max_minutes} min (still running on cluster)"
 
 
 class ClusterExecutor:

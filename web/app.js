@@ -63,7 +63,6 @@ async function loadAllTabs(path) {
   setLog("configOutput", data.effective_config);
   // Cluster tab depends on project config too.
   loadClusterProfiles();
-  loadClusterDatasets();
 }
 
 function applyUserConfig(uc) {
@@ -343,6 +342,7 @@ async function loadServerInfo() {
 
 async function loadClusterProfiles() {
   const sel = qs("clusterProfileSelect");
+  const dsel = qs("clusterDatasetSelect");
   try {
     const project = activeProject();
     const data = await api(`/api/cluster/profiles?project=${encodeURIComponent(project)}`);
@@ -351,27 +351,21 @@ async function loadClusterProfiles() {
       ? profiles.map((p) => `<option value="${p.name}">${p.name} — ${p.description || p.backend || ""}</option>`).join("")
       : "<option value=''>（无 cluster profile）</option>";
     updateClusterProfileDetail();
-  } catch (e) { sel.innerHTML = `<option value=''>加载失败: ${e.message}</option>`; }
+    // Populate datasets from the same response (added in /api/cluster/profiles).
+    const datasets = data.datasets || [];
+    dsel.innerHTML = datasets.length
+      ? datasets.map((d) => `<option value="${d.name}">${d.name}</option>`).join("")
+      : "<option value=''>（无数据集，改用路径）</option>";
+  } catch (e) {
+    sel.innerHTML = `<option value=''>加载失败: ${e.message}</option>`;
+    dsel.innerHTML = `<option value=''>加载失败: ${e.message}</option>`;
+  }
 }
 
 function updateClusterProfileDetail() {
   const sel = qs("clusterProfileSelect");
   const opt = sel.options[sel.selectedIndex];
   qs("clusterProfileDetail").textContent = opt ? opt.textContent : "";
-}
-
-async function loadClusterDatasets() {
-  const sel = qs("clusterDatasetSelect");
-  try {
-    const project = activeProject();
-    const data = await api(`/api/profiles?project=${encodeURIComponent(project)}`);
-    // Datasets live in the merged config; fetch via /api/config/load to get them.
-    const cfg = await api(`/api/config/load?project=${encodeURIComponent(project)}`);
-    const datasets = (cfg.config && cfg.config.simulation && cfg.config.simulation.datasets) || [];
-    sel.innerHTML = datasets.length
-      ? datasets.map((d) => `<option value="${d.name}">${d.name}</option>`).join("")
-      : "<option value=''>（无数据集，改用路径）</option>";
-  } catch (e) { sel.innerHTML = `<option value=''>加载失败: ${e.message}</option>`; }
 }
 
 function selectedClusterSelenaSource() {

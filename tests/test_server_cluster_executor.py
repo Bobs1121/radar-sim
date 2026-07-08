@@ -69,6 +69,10 @@ def test_execute_cluster_run_executes_when_payload_execute_true(monkeypatch, cap
         submit_calls.append(dry_run)
         return _fake_submit_result(rc=0, dry_run=dry_run)
     monkeypatch.setattr("core.cluster.submit_cluster_job", fake_submit)
+    # Avoid real HTTP polling: stub the cluster web status to immediate finished.
+    monkeypatch.setattr("core.cluster.get_cluster_web_status",
+                        lambda *a, **kw: {"found": True, "state": "finished",
+                                          "tasks": [{"simulation_state": "finished"}]})
 
     _, log = captured_logs
     task = {"task_id": "t2", "task_type": "cluster.run",
@@ -101,6 +105,8 @@ def test_execute_cluster_run_submit_failure(monkeypatch, captured_logs):
     monkeypatch.setattr("core.cluster.prepare_cluster_job", lambda *a, **kw: _fake_prepared())
     monkeypatch.setattr("core.cluster.submit_cluster_job",
                         lambda *a, **kw: _fake_submit_result(rc=1, stderr="manager offline"))
+    monkeypatch.setattr("core.cluster.get_cluster_web_status",
+                        lambda *a, **kw: {"found": False})
 
     _, log = captured_logs
     task = {"task_id": "t4", "task_type": "cluster.run",
