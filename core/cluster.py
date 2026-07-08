@@ -695,7 +695,14 @@ def prepare_cluster_job(
         # On Linux the datafile is a UNC string workers read; resolve to the
         # local mount point to stat/read it for orientation detection.
         local_datafile = _to_local_path(datafile_path)
-        if Path(local_datafile).is_file():
+        try:
+            is_regular_file = Path(local_datafile).is_file()
+        except OSError as exc:
+            # SMB/DFS hiccups (connection refused, stale handle) shouldn't crash
+            # prepare — orientation detection is best-effort.
+            is_regular_file = False
+            warnings.append(f"Could not stat datafile for orientation detection: {exc}")
+        if is_regular_file:
             try:
                 from core.simulation import detect_radar_orientation
                 detection = detect_radar_orientation(local_datafile)
