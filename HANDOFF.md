@@ -1067,7 +1067,15 @@ Linux server (10.190.171.44) --cluster-executor
 
 ### 后续待办
 
-10. **T2 Selena 上传**：`rsim build selena --upload-to-cluster`，编译后上传 selena.exe+DLL 到集群共享，自动生成 source=path profile。
-11. **T3 Selena 选择 UI**：web 前端列出可用共享 Selena 包（扫描集群共享 + config 预置）。
-12. **Linux 持久挂载**：当前挂载重启会丢失，写 `/etc/fstab`（带 credentials 文件）持久化。
-13. **Linux 代码同步**：Linux 无外网，github.com 不可达。当前靠 SFTP 从本机传单文件。可建 Bosch 内网 Git 镜像或用 rsync over ssh 同步。
+10. ~~**T2 Selena 上传**~~ ✅ 已实现：`rsim cluster upload-selena`（commit c72da7d）。复制本机 selena.exe+DLL 到 `<workspace_root>/selena-packages/<name>/`，打印 source=path profile 条目供 local.yaml 使用。支持 linux_mount_map。
+11. **T3 Selena 选择 UI**：web 前端列出可用共享 Selena 包（扫描 `selena-packages/` + config 预置），供浏览器用户选择。当前 T3 用户靠 curl/脚本提交（已验证可行）。
+12. ~~**Linux 持久挂载**~~ ✅ 已完成：`/etc/fstab` 加 cifs 挂载（credentials 文件 `/etc/rsim/smb-creds`，`_netdev,nofail`）；systemd service `rsim-server.service` 开机自启 server（`--cluster-executor`）。重启后自动恢复。
+13. **Linux 代码同步**：Linux 无外网，github.com 不可达。当前靠 SFTP 从本机传单文件（paramiko）。可建 Bosch 内网 Git 镜像或用 rsync over ssh 同步整个仓库。
+
+### systemd 持久化回归验证（2026-07-08）
+
+systemd 管理的 server（`rsim-server.service`）+ fstab 持久挂载后，T3 端到端再次跑通：
+- job_9a4338a89118（verified-shared profile，单文件 MF4，execute=true）
+- worker 执行 selena，selena.log 末尾 `Thank you for using Selena and have a nice day!`
+- result.ini: `successfull=0, job_id=10339, filesize=393`
+- 证明重启后自动恢复全链路（挂载 + server + 执行器 + 提交 + worker 执行）。
