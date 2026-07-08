@@ -13,6 +13,7 @@ from core.cluster import (
     check_cluster_environment,
     detect_python2_candidates,
     fetch_cluster_job,
+    get_cluster_config,
     get_cluster_web_status,
     inspect_cluster_job,
     list_cluster_jobs,
@@ -22,6 +23,7 @@ from core.cluster import (
     scan_cluster_data,
     submit_cluster_job,
 )
+from core.cluster import _copy_selena_runtime
 
 
 def register(subparsers):
@@ -103,6 +105,15 @@ def register(subparsers):
     run_cmd.add_argument("--max-minutes", type=int, default=0, help="Wait timeout in minutes; 0 uses Cluster timeout")
     run_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON")
 
+    upload = cluster_sub.add_parser(
+        "upload-selena",
+        help="Upload local Selena runtime to the cluster share and print a source=path profile",
+    )
+    upload.add_argument("--name", default="", help="Profile/selena name tag (default: <branch>-<timestamp>)")
+    upload.add_argument("--selena-exe", default="", help="Override selena.exe path (default: resolve from build output)")
+    upload.add_argument("--runtime-xml", default="", help="Runtime XML to bundle alongside (optional)")
+    upload.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+
 
 def run(args, config):
     command = getattr(args, "cluster_command", "") or ""
@@ -130,7 +141,9 @@ def run(args, config):
         return _run_fetch(args, config)
     if command == "run":
         return _run_one_shot(args, config)
-    print("Missing cluster command. Use: rsim cluster check|python|profiles|data|prepare|submit|list|status|web-status|wait|fetch|run")
+    if command == "upload-selena":
+        return _run_upload_selena(args, config)
+    print("Missing cluster command. Use: rsim cluster check|python|profiles|data|prepare|submit|list|status|web-status|wait|fetch|run|upload-selena")
     return 1
 
 
@@ -640,3 +653,106 @@ def _select_cluster_input(config, input_path, dataset, args):
         print("[INFO] No valid selection.")
         return ""
     return str(candidates[int(raw) - 1])
+
+
+def _run_upload_selena(args, config):
+    """T2: upload local Selena runtime to the cluster share, print a profile snippet.
+
+    Copies the local compiled selena.exe + DLLs into
+    ``<workspace_root>/selena-packages/<name>/`` and prints the
+    ``source: path`` profile entry to add to local.yaml so subsequent
+    ``cluster.run --profile <name>`` jobs use the uploaded Selena.
+    """
+    from core.config import resolve_selena_executable
+
+    cluster = get_cluster_config(config)
+    workspace = str(cluster.get("workspace_root") or "")
+    if not workspace:
+        print("Error: cluster.workspace_root not configured")
+        return 1
+
+    # Resolve local selena.exe (build output) unless overridden.
+    selena_exe = str(getattr(args, "selena_exe", "") or "")
+    if not selena_exe:
+        selena_exe = resolve_selena_executable(config) or ""
+    if not selena_exe or not Path(selena_exe).exists():
+        print(f"Error: local selena.exe not found: {selena_exe or '(not configured)'}")
+        print("Run 'rsim build selena' first, or pass --selena-exe <path>")
+        return 1
+
+    # Name tag: branch-timestamp or explicit.
+    name = str(getattr(args, "name", "") or "")
+    if not name:
+        branch = str(config.get("build", {}).get("selena_branch") or "")
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        name = f"{branch or 'selena'}-{ts}" if branch else f"selena-{ts}"
+
+    # On non-Windows, workspace is a UNC string; resolve via linux_mount_map.
+    import sys as _sys
+    mount_map = dict(cluster.get("linux_mount_map") or {})
+    is_windows = _sys.platform.startswith("win")
+    workspace_local = workspace
+    workspace_unc = workspace
+    if not is_windows and mount_map:
+        for unc_prefix, mount in mount_map.items():
+            if workspace.lower().startswith(unc_prefix.lower()):
+                workspace_local = mount + workspace[len(unc_prefix):].replace("\\", "/")
+                break
+        # workspace_unc stays as the original UNC for the printed profile.
+
+    target_dir = Path(workspace_local) / "selena-packages" / name
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Error: cannot create {target_dir}: {exc}")
+        print("Mount the cluster share and configure cluster.workspace_root / linux_mount_map.")
+        return 1
+
+    print(f"Uploading Selena runtime from {Path(selena_exe).parent} -> {target_dir}")
+    try:
+        copied_exe = _copy_selena_runtime(Path(selena_exe).parent, target_dir)
+    except Exception as exc:
+        print(f"Error: copy failed: {exc}")
+        return 1
+
+    # Optionally bundle a runtime_xml alongside.
+    runtime_xml_arg = str(getattr(args, "runtime_xml", "") or "")
+    runtime_xml_unc = ""
+    if runtime_xml_arg and Path(runtime_xml_arg).exists():
+        import shutil
+        shutil.copy2(runtime_xml_arg, target_dir / Path(runtime_xml_arg).name)
+        # UNC path for the printed profile.
+        runtime_xml_unc = workspace_unc.rstrip("\\/") + "\\selena-packages\\" + name + "\\" + Path(runtime_xml_arg).name
+
+    # Build the UNC path to the uploaded selena.exe for the profile.
+    selena_unc = workspace_unc.rstrip("\\/") + "\\selena-packages\\" + name + "\\selena.exe"
+
+    profile_entry = {
+        "name": name,
+        "selena_exe": selena_unc,
+        "runtime_xml": runtime_xml_unc,
+        "source": "RadarFL",
+        "mounting_position": "CFL",
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps({"name": name, "selena_exe": selena_unc, "runtime_xml": runtime_xml_unc,
+                          "target_dir": str(target_dir), "profile": profile_entry}, indent=2))
+    else:
+        print(f"\nUpload complete: {selena_unc}")
+        print(f"\nAdd this profile to config/projects/<project>/local.yaml cluster.profiles:")
+        print(yaml_dump_profile(profile_entry))
+        print(f"\nThen submit: rsim cluster run --profile {name} --dataset <name> --execute")
+
+    return 0
+
+
+def yaml_dump_profile(entry: dict) -> str:
+    """Render a profile dict as a YAML block for local.yaml."""
+    lines = [f"    - name: \"{entry['name']}\""]
+    lines.append(f"      selena_exe: \"{entry['selena_exe']}\"")
+    if entry.get("runtime_xml"):
+        lines.append(f"      runtime_xml: \"{entry['runtime_xml']}\"")
+    lines.append(f"      source: \"{entry.get('source', 'RadarFL')}\"")
+    lines.append(f"      mounting_position: \"{entry.get('mounting_position', 'CFL')}\"")
+    return "\n".join(lines)
