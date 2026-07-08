@@ -1,0 +1,20 @@
+machine:
+  platform: gen5_selena
+
+build:
+  build_mode: RelWithDebInfo
+  build_config: ROS_PER_SIT_RPM_FCT_RECR
+  vs_solution: dc_tools/selena/selena.sln
+
+assets:
+  runtime_xml: selena/runtime.xml
+  config_template: selena/selena_config_tmpl.txt
+  fixed_config_path: byd_CR_Selena_Config_ovrs.txt
+  matfilefilter: selena/matfilefilter.txt
+
+vs_debug:
+  solution: dc_tools/selena/selena.sln
+  target_project: selena
+
+environment:
+  path_prefix: []

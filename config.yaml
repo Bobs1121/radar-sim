@@ -1,0 +1,43 @@
+# radar-sim 主配置
+# 只需要填 project_root，其他自动推导
+
+project_root: "C:/BYD_OVS_CB"
+
+# ========== 以下为可选覆盖（不填则自动推导） ==========
+
+# binding: ovrs25             # 自动从 apl/byd/bindings/ 发现
+# r2d2_script: ...            # 自动: {root}/ip_dc/dc_tools/R2D2.py
+# selena_build_script: ...    # 自动: {binding}/selena/jenkins_selena_build.bat
+# hex_build_script: ...       # 自动: {binding}/buildscripts/testbuild_BaseC0S_SINGLE.bat
+
+# 构建配置
+# build_config: "ROS_PER_SIT_RPM_FCT_RECR"
+# build_mode: "RelWithDebInfo"
+
+# 运行时
+# runtime_xml: "C:/tools/Runtime_BYD_OVRS25_CR5CB_BL16_RC36.xml"
+# config_template: "C:/tools/byd_CR_Selena_Config_ovrs.txt"
+
+# 环境路径（自动检测 VS2019/Qt/Boost/MATLAB，可手动覆盖）
+# boost_root: "C:/TCC/Tools/boost/1.63.0_WIN64"
+# qt_path: "C:/TCC/Tools/qt/5.8.0_WIN64/5.8/msvc2015_64"
+# matlab_path: "C:/Program Files/MATLAB/R2023b"
+
+# 结果输出
+results_dir: "results"
+
+# AI 分析（可选）
+analysis:
+  ai:
+    enabled: true
+    base_url: "http://bcsc-openai.apac.bosch.com:30001/llm/model/v1"
+    # 可选模型示例: pi / opencode / hermes
+    model: "hermes"
+    # api_key 从环境变量 LLM_API_KEY 或 MODEL_FARM_API_KEY 读取
+    timeout: 120
+    max_tokens: 4096
+    temperature: 0.1
+
+# 日志级别
+logging:
+  level: INFO

@@ -1,0 +1,104 @@
+# Project: ovrs25 (BYD_OVS_CB)
+# Based on actual build scripts and environment
+
+project:
+  name: "BYD_OVS_CB"
+  platform: "gen5_selena"
+
+# Unified simulation profiles. Each bundles a (Selena source, data policy,
+# backend) combination so users switch a whole runtime assumption with
+# --profile <name>. The implicit "default" profile is synthesized from the
+# simulation/cluster/assets fields below; these explicit entries add named
+# alternatives. Legacy cluster.profiles are still honored as backend=cluster.
+profiles:
+  - name: "local-build"
+    description: "Local compiled Selena + local/shared data referenced in place"
+    backend: "local"
+    selena:
+      source: "build"          # derive selena.exe from build.build_output
+      exe: ""
+    data:
+      copy: false              # read UNC/local data in place; do not stage
+      required_signals: []
+  - name: "cloud-build"
+    description: "Cluster: package local compiled Selena runtime + reference shared BYD_SR data in place"
+    backend: "cluster"
+    selena:
+      source: "build"          # package the local compiled selena.exe + DLLs into the job folder
+      exe: ""
+    data:
+      copy: false              # BYD_SR is already on a worker-visible UNC share
+      required_signals: []
+    cluster:
+      group: "Radar"
+      subgroup: "PSS1"
+      simulation_prio: 4
+      timeout_min: 120
+
+build:
+  # Project entrypoint: other build paths are derived from this script when possible.
+  selena_build_script: "C:/BYD_OVS_CB/apl/byd/bindings/ovrs25/selena/jenkins_selena_build.bat"
+  # Optional: when set, build will switch the inner repo to this branch before compile.
+  # selena_branch: "your_selena_branch"
+
+simulation:
+  # Prefer project-owned assets/runtime.xml and assets/matfilefilter.txt by default.
+  # Optional override when runtime depends on the selected Selena branch / dataset:
+  # runtime_xml: "C:/runtime/Runtime_xxx.xml"
+  source: "auto"
+  mounting_position: "auto"
+  auto_detect_radar: true
+  tolerant: true
+  enable_multibuffer_border: true
+  enable_doorkeeper: true
+  datasets:
+    - name: "BYD_SR"
+      input_dir: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon2\\OverseaData\\Driving\\AU_data\\BYD_SR"
+    - name: "CBNA_23-4-26-local"
+      input_dir: "D:/data/byd/FRGVBYDP-21536/23-4-26_CBNA/CBNA_23-4-26"
+      # Local-only baseline; do not submit this dataset to Cluster unless copied.
+
+cluster:
+  # Server-deployed Cluster V2.0. The web page is for status/progress viewing;
+  # task submission is done through client.py from the mapped software share.
+  software_path: "\\\\szhradar01\\cluster_software"
+  workspace_root: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster"
+  project_folder: "radar-sim"
+  python_path: "C:/Python27/python.exe"
+  kill_password: "1234"
+  group: "Radar"
+  subgroup: "PSS2"
+  python_version: "*"
+  simulation_prio: 4
+  timeout_min: 120
+  copy_data: false
+  copy_selena: false
+  required_input_signals:
+    - "g_Golf_Fct_Hmi_RunnableHmi_internalstates"
+  profiles:
+    - name: "byd-ovrs-bl01v7-er-shared"
+      description: "Historical shared BYD_OVRS BL01V7_ER runtime/Selena package"
+      selena_exe: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster\\BYD_OVRS\\BL01V7_ER\\BYD_OVRS_Selena_Master\\selena.exe"
+      runtime_xml: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster\\BYD_OVRS\\BL01V7_ER\\runtime_1r1v.xml"
+      matfilefilter: ""
+      adapter_file: ""
+      source: "RadarFC"
+      mounting_position: ""
+      required_input_signals: []
+      simulation_prio: 1
+      subgroup: "PSS1"
+      finalstep: 0
+    - name: "byd-ovrs-bl01v7-er-shared-fl-pss2"
+      description: "Historical BYD_OVRS BL01V7_ER FL/Slave profile on PSS2"
+      selena_exe: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster\\BYD_OVRS\\BL01V7_ER\\BYD_OVRS_Selena_Slave\\selena.exe"
+      runtime_xml: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster\\BYD_OVRS\\BL01V7_ER\\runtime_1r1v.xml"
+      matfilefilter: ""
+      adapter_file: ""
+      source: "RadarFL"
+      mounting_position: ""
+      required_input_signals: []
+      simulation_prio: 1
+      subgroup: "PSS2"
+      finalstep: 0
+
+# Signal selection belongs in signals.yaml; keep simulation-only fields here.

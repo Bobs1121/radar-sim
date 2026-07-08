@@ -1,0 +1,50 @@
+{
+  "goal": "radar-sim v4 清理：废弃模块清除 + 测试对齐 + 文档更新",
+  "created": "2026-06-16",
+  "completed": "2026-06-16",
+  "tasks": [
+    {
+      "id": "1",
+      "name": "删除废弃测试文件: test_phase2.py, test_scanner.py, test_phase4.py",
+      "status": "done",
+      "acceptance": "3 个废弃测试文件已删除"
+    },
+    {
+      "id": "2",
+      "name": "重写 test_gen5.py: 只保留有效测试类",
+      "status": "done",
+      "acceptance": "保留 LogParser/BuilderEnv/Mf4ReaderFuzzy/PlatformRegistry，移除 ConfigGen/Engine/RuleEngine"
+    },
+    {
+      "id": "3",
+      "name": "修复 test_gen5: 移除 run_simulation 断言 (v4 无自动仿真)",
+      "status": "done",
+      "acceptance": "49/49 测试全部通过"
+    },
+    {
+      "id": "4",
+      "name": "清理废弃目录: corner_cases/, results/scan/, config/rules/signals/suites/",
+      "status": "done",
+      "acceptance": "废弃目录全部删除"
+    },
+    {
+      "id": "5",
+      "name": "提交 working tree 未改动 + 删除 DESIGN_PHASE5.md",
+      "status": "done",
+      "acceptance": "git commit 2e07220: 17 files changed, +68 -1945"
+    },
+    {
+      "id": "6",
+      "name": "更新 HANDOFF.md",
+      "status": "done",
+      "acceptance": "状态/模块表/评估/下一步行动全部更新为 2026-06-16 最新"
+    },
+    {
+      "id": "7",
+      "name": "更新 DEVELOPMENT_PLAN.md",
+      "status": "done",
+      "acceptance": "当前状态 + 废弃模块清单更新"
+    }
+  ],
+  "progress": {"total": 7, "done": 7, "failed": 0, "current_task": null}
+}

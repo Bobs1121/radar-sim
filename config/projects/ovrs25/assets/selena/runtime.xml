@@ -1,0 +1,1621 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<selena>
+  <runnable name="DataPlayer">
+    <color value="#3333FF" />
+  </runnable>
+  <runnable name="DataRecorder">
+    <color value="#3333FF" />
+  </runnable>
+  <runnable name="g_Golf_Fct_Hmi_RunnableHmi" />
+  <runnable name="g_Golf_Fct_Spp_RunnableSpp">
+    <color value="#FF00FF" />
+  </runnable>
+  <runnable name="g_Golf_Per_SppHvm_RunnableSppHvm">
+    <color value="#FF00FF" />
+  </runnable>
+  <runnable name="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable">
+    <color value="#FF00FF" />
+  </runnable>
+  <runnable name="g_PlReCoApl_Fdm_RunnableFdm" />
+  <runnable name="g_PlReCoApl_MountingPositionProvider_MountingPositionProvider">
+    <color value="#FF00FF" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" />
+  <runnable name="g_PlReCoFunctions_Genesis_Genesis">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" />
+  <runnable name="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFw_Dsm_SscRunnable_SscRunnable">
+    <color value="#FF00FF" />
+  </runnable>
+  <runnable name="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable" />
+  <runnable name="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable">
+    <color value="#00FF00" />
+  </runnable>
+  <runnable name="g_PlReCoFw_SppScp_SppScpRunnable" />
+  <connection>
+    <outport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_frontHmiOutputPort_out" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_Golf_Fct_Hmi_RunnableHmi_m_frontHmiOutputPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_netTx_BYD_PRI_RFL_50msPDU_Tx_Port_Out" task="mA09EC048" />
+    <inport runnable="DataRecorder" port="g_Golf_Fct_Hmi_RunnableHmi_m_netTx_BYD_PRI_RFL_50msPDU_Tx_Port_Out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_netTx_BYD_PRI_RRL_50msPDU_Tx_Port_Out" task="m60F7AB7D" />
+    <inport runnable="DataRecorder" port="g_Golf_Fct_Hmi_RunnableHmi_m_netTx_BYD_PRI_RRL_50msPDU_Tx_Port_Out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_netTx_BYD_PUB_FCR_R_0x2CA_Port_Out" task="mDC241840" />
+    <inport runnable="DataRecorder" port="g_Golf_Fct_Hmi_RunnableHmi_m_netTx_BYD_PUB_FCR_R_0x2CA_Port_Out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_netTx_BYD_PUB_RCR_R_0x418_Port_Out" task="mFE155F8E" />
+    <inport runnable="DataRecorder" port="g_Golf_Fct_Hmi_RunnableHmi_m_netTx_BYD_PUB_RCR_R_0x418_Port_Out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_netTx_BYD_PUB_RCR_R_0x453_Port_Out" task="m9B8F9C9D" />
+    <inport runnable="DataRecorder" port="g_Golf_Fct_Hmi_RunnableHmi_m_netTx_BYD_PUB_RCR_R_0x453_Port_Out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_rearHmiOutputPort_out" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_Golf_Fct_Hmi_RunnableHmi_m_rearHmiOutputPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_egoVehicleInputPort_out" task="mA7A578A4" />
+    <inport runnable="DataRecorder" port="g_Golf_Fct_Spp_RunnableSpp_m_egoVehicleInputPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_statesInputPort_out" task="mEBD8F31E" />
+    <inport runnable="DataRecorder" port="g_Golf_Fct_Spp_RunnableSpp_m_statesInputPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_hostVehicleEscStatePort_out" task="mD656D311" />
+    <inport runnable="DataRecorder" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_hostVehicleEscStatePort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_hostVehicleParametersPort_out" task="m7DDF19E6" />
+    <inport runnable="DataRecorder" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_hostVehicleParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_hostVehicleSensorSignalsPort_out" task="m650E30C0" />
+    <inport runnable="DataRecorder" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_hostVehicleSensorSignalsPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_sensorMountingPort_out" task="m1504D846" />
+    <inport runnable="DataRecorder" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_sensorMountingPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable" port="m_hmiInputPort_out" task="m68B1F925" />
+    <inport runnable="DataRecorder" port="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable_m_hmiInputPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable" port="m_mdmLateralMotionDriverMonitoring_out" task="m9D9130A9" />
+    <inport runnable="DataRecorder" port="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable_m_mdmLateralMotionDriverMonitoring_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable" port="m_mdmLongitudinalMotionDriverMonitoring_out" task="mD83B3204" />
+    <inport runnable="DataRecorder" port="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable_m_mdmLongitudinalMotionDriverMonitoring_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_activeWarningsPort_out" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_PlReCoApl_Fdm_RunnableFdm_m_activeWarningsPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_hmiSpecificationPort_out" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_PlReCoApl_Fdm_RunnableFdm_m_hmiSpecificationPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_selectedReactionPatternsPort_out" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_PlReCoApl_Fdm_RunnableFdm_m_selectedReactionPatternsPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_MountingPositionProvider_MountingPositionProvider" port="m_mountingPositionPort_out" task="m0C03FF5E" />
+    <inport runnable="DataRecorder" port="g_PlReCoApl_MountingPositionProvider_MountingPositionProvider_m_mountingPositionPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead" port="m_serviceStatus_out" task="m9A5B2459" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead_m_serviceStatus_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portDriverBehavior" task="m03C352EB" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_portDriverBehavior" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portDriverSystemInteraction" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_portDriverSystemInteraction" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_reportOos_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_reportOos_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" port="m_portParallelLanes" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl_m_portParallelLanes" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ObjectLaneRelations" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_port_ObjectLaneRelations" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ParallelLanes" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_port_ParallelLanes" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_reportOos_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_reportOos_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_portBehaviorConsistentObjects" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe_m_portBehaviorConsistentObjects" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_reportOos_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe_m_reportOos_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_environmentDataCfm_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM_m_environmentDataCfm_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_selfAssessmentCfm_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM_m_selfAssessmentCfm_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_environmentDataTipl_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL_m_environmentDataTipl_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_selfAssessmentTipl_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL_m_selfAssessmentTipl_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_txPortIntrospectionTIPL" task="m784BD868" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL_m_txPortIntrospectionTIPL" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_degradationStatesPort_out" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Fct_Fsm_RunnableFsm_m_degradationStatesPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_functionStatesPort_out" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Fct_Fsm_RunnableFsm_m_functionStatesPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_requestedBehaviorsFMPort_out" task="m85738819" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Fct_Fsm_RunnableFsm_m_requestedBehaviorsFMPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_requestedBehaviorsTIPLPort_out" task="mD837166F" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Fct_Fsm_RunnableFsm_m_requestedBehaviorsTIPLPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portActuationRequest" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution_m_portActuationRequest" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portIntrospection" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution_m_portIntrospection" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceState" task="m790D3990" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution_m_portServiceState" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceStatus" task="m2ABD273E" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution_m_portServiceStatus" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portSystemServiceReportOos" task="core0_t20" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution_m_portSystemServiceReportOos" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" port="m_evaluatedWarningBehaviors_out" task="m1FEBEFEB" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening_m_evaluatedWarningBehaviors_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_evaluatedBrakingBehaviors_out" task="m378D4DAF" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_evaluatedBrakingBehaviors_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_evaluatedWarningBehaviors_out" task="m419D160B" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_evaluatedWarningBehaviors_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear" port="m_evaluatedWarningBehaviors_out" task="m8EF52C5F" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear_m_evaluatedWarningBehaviors_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_evaluatedBrakingBehaviors_out" task="mF734843A" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic_m_evaluatedBrakingBehaviors_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_evaluatedWarningBehaviors_out" task="mA9BC9169" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic_m_evaluatedWarningBehaviors_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_evaluatedWarningBehaviors_out" task="m518FDCD7" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl_m_evaluatedWarningBehaviors_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_introspection_out" task="mDA2C4EB3" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl_m_introspection_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_portTargetObjectsLcw_out" task="m472CD163" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl_m_portTargetObjectsLcw_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" port="m_bsCfmParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable_m_bsCfmParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" port="m_bsTiplParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable_m_bsTiplParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" port="m_lmfAndOlrParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable_m_lmfAndOlrParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" port="m_obeParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable_m_obeParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_doorOpeningParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable_m_doorOpeningParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_frontCrossTrafficParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable_m_frontCrossTrafficParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_laneChangeWarningParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable_m_laneChangeWarningParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_preCrashRearParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable_m_preCrashRearParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_rearCrossTrafficParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable_m_rearCrossTrafficParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_tguHighwayAssistParametersPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable_m_tguHighwayAssistParametersPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_daCoreStateNotification_out" task="core0_t10" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_daCoreStateNotification_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_perEnvModel_serviceTargetLcState_out" task="mF4A6B352" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_perEnvModel_serviceTargetLcState_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_perHv_serviceTargetLcState_out" task="mA9B93C39" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_perHv_serviceTargetLcState_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_rpmExecution_serviceTargetLcState_out" task="m34427138" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_rpmExecution_serviceTargetLcState_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBc_serviceTargetLcState_out" task="mBCCD3E1F" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_sitBc_serviceTargetLcState_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBs_serviceTargetLcState_out" task="m5EA8D950" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_sitBs_serviceTargetLcState_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_eimTprIntrospectionPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_eimTprIntrospectionPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" task="m164B1F3F" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_fusObjPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_hvmSepPort_out" task="m6CDCA8EC" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_hvmSepPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_hvmTrajectoryPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_hvmTrajectoryPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_ripIntrospectionPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_ripIntrospectionPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_roadSideBoundarySegmentsPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_roadSideBoundarySegmentsPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_roadTopology_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_roadTopology_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_serviceStatus_out" task="m74E3924E" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_serviceStatus_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_statFusObjPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_statFusObjPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" port="m_bdmPort_out" task="m9FE0939F" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable_m_bdmPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_dspSensorMisalignmentPort_out" task="m981A6E69" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_dspSensorMisalignmentPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_dynCalibResponsePort_out" task="m5B6C637E" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_dynCalibResponsePort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_malPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_malPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_bdmParameters_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_bdmParameters_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_compSwitch_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_compSwitch_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_depParameters_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_depParameters_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_eimTprParameters_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_eimTprParameters_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_malParameters_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_malParameters_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_sepParameters_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_sepParameters_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_sppRLocParameters_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_sppRLocParameters_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_stalinParameters_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_stalinParameters_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable" port="m_perBlindnessEventPort_out" task="mFCFC6D76" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable_m_perBlindnessEventPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_radarSensorPropertiesPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_radarSensorPropertiesPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_sensorBlindnessPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_sensorBlindnessPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_timeStampPairPairPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_timeStampPairPairPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_calibrationAnglePort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_calibrationAnglePort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_evmEventStalin_out" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_evmEventStalin_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_sppStalinPDMPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_sppStalinPDMPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_sppStalinResultPort_out" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_sppStalinResultPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_sppStalinStartPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_sppStalinStartPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable" port="m_dspStalinModePort_out" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable_m_dspStalinModePort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable" port="m_stalinResultPort_out" task="core0_bg" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable_m_stalinResultPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_SppScp_SppScpRunnable" port="m_dspDetectionMeasurementProgramPort_out" task="m855CCA98" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_SppScp_SppScpRunnable_m_dspDetectionMeasurementProgramPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_SppScp_SppScpRunnable" port="m_dspSensorMountingPort_out" task="mB9560014" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_SppScp_SppScpRunnable_m_dspSensorMountingPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_SppScp_SppScpRunnable" port="m_sensorMountingPort_out" task="mB29A7DE5" />
+    <inport runnable="DataRecorder" port="g_PlReCoFw_SppScp_SppScpRunnable_m_sensorMountingPort_out" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Hmi_RunnableHmi_m_SDA_HMIPort_in" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_SDA_HMIPort_in" task="m4C91E219" />
+    <multibuffer sequencenumbersignal="_g_Golf_Fct_Hmi_RunnableHmi_m_SDA_HMIPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_activeWarningsPort_out" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_activeWarningsPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portActuationRequest" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_actuationRequestPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Hmi_RunnableHmi_m_codingValuePort_in" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_codingValuePort_in" task="m8C834D81" />
+    <multibuffer sequencenumbersignal="_g_Golf_Fct_Hmi_RunnableHmi_m_codingValuePort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_evaluatedBrakingBehaviors_out" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_evaluatedBehaviorListCfmFctaPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_Golf_Fct_Hmi_RunnableHmi_m_evaluatedBehaviorListCfmFctaPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_evaluatedBrakingBehaviors_out" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_evaluatedBehaviorListCfmRearCrossTrafficPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_Golf_Fct_Hmi_RunnableHmi_m_evaluatedBehaviorListCfmRearCrossTrafficPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Hmi_RunnableHmi_m_failureReactionsPort_in" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_failureReactionsPort_in" task="m2454E09E" />
+    <multibuffer sequencenumbersignal="_g_Golf_Fct_Hmi_RunnableHmi_m_failureReactionsPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_functionStatesPort_out" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_functionStatesPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_hmiSpecificationPort_out" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_hmiSpecificationPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Hmi_RunnableHmi_m_hostVehicleMovementStatesPort_in" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_hostVehicleMovementStatesPort_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_Golf_Fct_Hmi_RunnableHmi_m_hostVehicleMovementStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portIntrospection" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_introspectionPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_perFusedObjectsDynamicPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_Golf_Fct_Hmi_RunnableHmi_m_perFusedObjectsDynamicPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_statesInputPort_out" />
+    <inport runnable="g_Golf_Fct_Hmi_RunnableHmi" port="m_statesInputPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_Golf_Fct_Hmi_RunnableHmi_m_statesInputPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_codingValuePort_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_codingValuePort_in" task="m8C834D81" />
+    <multibuffer sequencenumbersignal="_g_Golf_Fct_Spp_RunnableSpp_m_codingValuePort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PRI_RFL_50msPDU_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PRI_RFL_50msPDU_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PRI_RRL_50msPDU_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PRI_RRL_50msPDU_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_APA_0x134_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_APA_0x134_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_CS_0x133_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_CS_0x133_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_DiSus_0x109_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_DiSus_0x109_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_DiSus_0x258_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_DiSus_0x258_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_EPS_0x11F_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_EPS_0x11F_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_IPB_0x0D5_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_IPB_0x0D5_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_IPB_0x121_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_IPB_0x121_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_IPB_0x123_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_IPB_0x123_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_IPB_0x220_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_IPB_0x220_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_IPB_0x222_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_IPB_0x222_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_IPB_0x223_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_IPB_0x223_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_IPB_0x322_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_IPB_0x322_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_LTE4G_0x49A_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_LTE4G_0x49A_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Left_BCM_0x12D_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Left_BCM_0x12D_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Left_BCM_0x294_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Left_BCM_0x294_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Left_BCM_0x3D9_MUX5_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Left_BCM_0x3D9_MUX5_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Left_BCM_0x407_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Left_BCM_0x407_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Left_BCM_0x475_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Left_BCM_0x475_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Left_BCM_0x490_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Left_BCM_0x490_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_MPC_0x432_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_MPC_0x432_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Media_0x2B6_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Media_0x2B6_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Media_0x32B_MUX33_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Media_0x32B_MUX33_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Media_0x32B_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Media_0x32B_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Media_0x385_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Media_0x385_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Media_0x3E3_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Media_0x3E3_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Media_0x4B4_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Media_0x4B4_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_Media_0x4EF_MUX51_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_Media_0x4EF_MUX51_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_SCPA_0x4A9_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_SCPA_0x4A9_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_VCU_0x240_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_VCU_0x240_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_VCU_0x28A_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_VCU_0x28A_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_VCU_0x342_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_VCU_0x342_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Fct_Spp_RunnableSpp_m_netRx_BYD_PUB_VCU_0x4BE_Port_in" />
+    <inport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_netRx_BYD_PUB_VCU_0x4BE_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_CodingValue_Port_in" />
+    <inport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_CodingValue_Port_in" task="m8C834D81" />
+    <multibuffer sequencenumbersignal="_g_Golf_Per_SppHvm_RunnableSppHvm_m_CodingValue_Port_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_DataSetDownload_Port_in" />
+    <inport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_DataSetDownload_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_NetRx_BYD_PUB_EPS_0x11F_Port_in" />
+    <inport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_NetRx_BYD_PUB_EPS_0x11F_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_NetRx_BYD_PUB_IPB_0x123_Port_in" />
+    <inport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_NetRx_BYD_PUB_IPB_0x123_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_NetRx_BYD_PUB_IPB_0x1F0_Port_in" />
+    <inport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_NetRx_BYD_PUB_IPB_0x1F0_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_NetRx_BYD_PUB_IPB_0x220_Port_in" />
+    <inport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_NetRx_BYD_PUB_IPB_0x220_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_NetRx_BYD_PUB_IPB_0x222_Port_in" />
+    <inport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_NetRx_BYD_PUB_IPB_0x222_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_NetRx_BYD_PUB_IPB_0x223_Port_in" />
+    <inport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_NetRx_BYD_PUB_IPB_0x223_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Per_SppHvm_RunnableSppHvm_m_NetRx_BYD_PUB_Left_BCM_0x12D_Port_in" />
+    <inport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_NetRx_BYD_PUB_Left_BCM_0x12D_Port_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable_m_NetRx_BYD_PUB_CS_0x133_in" />
+    <inport runnable="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable" port="m_NetRx_BYD_PUB_CS_0x133_in" task="core0_t10" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_evaluatedBrakingBehaviors_out" />
+    <inport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_evaluatedBrakingBehaviorListCfmFctaPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoApl_Fdm_RunnableFdm_m_evaluatedBrakingBehaviorListCfmFctaPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_evaluatedBrakingBehaviors_out" />
+    <inport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_evaluatedBrakingBehaviorListCfmRearCrossTrafficPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoApl_Fdm_RunnableFdm_m_evaluatedBrakingBehaviorListCfmRearCrossTrafficPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" port="m_evaluatedWarningBehaviors_out" />
+    <inport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_evaluatedWarningBehaviorListCfmDoorOpeningPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoApl_Fdm_RunnableFdm_m_evaluatedWarningBehaviorListCfmDoorOpeningPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_evaluatedWarningBehaviors_out" />
+    <inport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_evaluatedWarningBehaviorListCfmFctaPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoApl_Fdm_RunnableFdm_m_evaluatedWarningBehaviorListCfmFctaPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear" port="m_evaluatedWarningBehaviors_out" />
+    <inport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_evaluatedWarningBehaviorListCfmPreCrashRearPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoApl_Fdm_RunnableFdm_m_evaluatedWarningBehaviorListCfmPreCrashRearPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_evaluatedWarningBehaviors_out" />
+    <inport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_evaluatedWarningBehaviorListCfmRearCrossTrafficPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoApl_Fdm_RunnableFdm_m_evaluatedWarningBehaviorListCfmRearCrossTrafficPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_evaluatedWarningBehaviors_out" />
+    <inport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_evaluatedWarningBehaviorListTiplLaneChangeWarningPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoApl_Fdm_RunnableFdm_m_evaluatedWarningBehaviorListTiplLaneChangeWarningPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_functionStatesPort_out" />
+    <inport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_functionStatesPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_reportOos_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead" port="m_reportOosDmi_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_reportOos_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead" port="m_reportOosLmfAndOlr_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_reportOos_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead" port="m_reportOosObe_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBc_serviceTargetLcState_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead" port="m_serviceTargetLcState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead_m_serviceTargetLcState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable" port="m_hmiInputPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portHMIInput" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_portHMIInputImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_portHostVehicleMovementState" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portHostVehicleMovementState" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_portHostVehicleMovementStateImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_hostVehicleParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portHostVehicleParameters" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_portHostVehicleParametersImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable" port="m_mdmLateralMotionDriverMonitoring_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portMDMLateralMotionDriverMonitoring" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_portMDMLateralMotionDriverMonitoringImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable" port="m_mdmLongitudinalMotionDriverMonitoring_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portMDMLongitudinalMotionDriverMonitoring" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_portMDMLongitudinalMotionDriverMonitoringImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ObjectLaneRelations" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portObjectLaneRelatios" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceState" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portRpmServiceState" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_portRpmServiceStateImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ParallelLanes" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portTIAParallelLanes" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBc_serviceTargetLcState_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_serviceTargetLcState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi_m_serviceTargetLcState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portDriverBehavior" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" port="m_portDriverBehaviour" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl_m_portHostVehicleMovementStates" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" port="m_portHostVehicleMovementStates" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl_m_portHostVehicleMovementStatesImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_hostVehicleParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" port="m_portHostVehicleParameters" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl_m_portHostVehicleParametersImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_hvmTrajectoryPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" port="m_portHostVehicleTrajectory" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_roadTopology_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" port="m_portRoadGeometryAndLanes" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceState" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" port="m_portRpmServiceState" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl_m_portRpmServiceStateImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBc_serviceTargetLcState_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" port="m_serviceTargetLcState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl_m_serviceTargetLcState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" port="m_lmfAndOlrParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_parameters_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_FusedObjectsDynamic" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_statFusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_FusedObjectsStationary" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_port_HostVehicleHistory" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_HostVehicleHistory" task="m89797748" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_port_HostVehicleHistoryImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_port_HostVehicleMovementStates" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_HostVehicleMovementStates" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_port_HostVehicleMovementStatesImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_hostVehicleParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_HostVehicleParameters" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_port_HostVehicleParametersImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" port="m_portParallelLanes" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ParallelLanesEtl" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_roadTopology_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_RoadGeometryAndLanes" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceState" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_RpmServiceState" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_port_RpmServiceStateImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_roadSideBoundarySegmentsPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_roadBoundaryRepresentation_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBc_serviceTargetLcState_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_serviceTargetLcState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr_m_serviceTargetLcState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" port="m_obeParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_parameters_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_portFusedObjectsDynamic" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe_m_portHostVehicleMovementStates" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_portHostVehicleMovementStates" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableObe_RunnableObe_m_portHostVehicleMovementStatesImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_hostVehicleParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_portHostVehicleParameters" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableObe_RunnableObe_m_portHostVehicleParametersImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_roadSideBoundarySegmentsPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_roadBoundaryRepresentation_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBc_serviceTargetLcState_out" />
+    <inport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_serviceTargetLcState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bc_RunnableObe_RunnableObe_m_serviceTargetLcState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM_m_hostVehicleHistory_in" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_hostVehicleHistory_in" task="m89797748" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM_m_hostVehicleHistory_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" port="m_bsCfmParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_parameters_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_portBehaviorConsistentObjects" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_rxPortBehaviorConsistentObjects" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_rxPortFusedObjectsDynamic" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM_m_rxPortHostVehicleMovementStates" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_rxPortHostVehicleMovementStates" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM_m_rxPortHostVehicleMovementStatesImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_hostVehicleParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_rxPortHostVehicleParameters" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM_m_rxPortHostVehicleParametersImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBs_serviceTargetLcState_out" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_serviceTargetLcState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM_m_serviceTargetLcState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL_m_hostVehicleHistory_in" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_hostVehicleHistory_in" task="m89797748" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL_m_hostVehicleHistory_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" port="m_bsTiplParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_parameters_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" port="m_portBehaviorConsistentObjects" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_rxPortBehaviorConsistentObjects" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portDriverBehavior" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_rxPortDriverBehavior" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_rxPortFusedObjectsDynamic" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL_m_rxPortHostVehicleMovementStates" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_rxPortHostVehicleMovementStates" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL_m_rxPortHostVehicleMovementStatesImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_hostVehicleParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_rxPortHostVehicleParameters" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL_m_rxPortHostVehicleParametersImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ObjectLaneRelations" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_rxPortObjectLaneRelations" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ParallelLanes" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_rxPortParallelLanesModel" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBs_serviceTargetLcState_out" />
+    <inport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_serviceTargetLcState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL_m_serviceTargetLcState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Fct_Spp_RunnableSpp" port="m_egoVehicleInputPort_out" />
+    <inport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_egoVehicleInputPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Fct_Fsm_RunnableFsm_m_egoVehicleInputPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Fct_Fsm_RunnableFsm_m_failureReactionStatesPort_in" />
+    <inport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_failureReactionStatesPort_in" task="m1B5BADD4" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Fct_Fsm_RunnableFsm_m_failureReactionStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Fct_Fsm_RunnableFsm_m_hostVehicleMovementStatesPort_in" />
+    <inport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_hostVehicleMovementStatesPort_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Fct_Fsm_RunnableFsm_m_hostVehicleMovementStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_MountingPositionProvider_MountingPositionProvider" port="m_mountingPositionPort_out" />
+    <inport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_mountingPositionPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution_m_portHostVehicleMovementStates" />
+    <inport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portHostVehicleMovementStates" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution_m_portHostVehicleMovementStatesImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_Fdm_RunnableFdm" port="m_selectedReactionPatternsPort_out" />
+    <inport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portSelectedReactionPatterns" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_rpmExecution_serviceTargetLcState_out" />
+    <inport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceTargetLcState" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution_m_portServiceTargetLcStateImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_environmentDataCfm_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" port="m_environmentData_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" port="m_fusedObjectsDynamic_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_doorOpeningParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" port="m_parameters_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_roadSideBoundarySegmentsPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" port="m_portRoadBoundaryRepresentation_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceState" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" port="m_portRpmServiceState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening_m_portRpmServiceState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_requestedBehaviorsFMPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" port="m_requestedBehaviors_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening_m_requestedBehaviors_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_environmentDataCfm_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_environmentData_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_fusedObjectsDynamic_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_frontCrossTrafficParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_parameters_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_roadSideBoundarySegmentsPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_portRoadBoundaryRepresentation_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceState" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_portRpmServiceState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_portRpmServiceState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ParallelLanes" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_port_ParallelLanes_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_requestedBehaviorsFMPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" port="m_requestedBehaviors_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_requestedBehaviors_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_environmentDataCfm_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear" port="m_environmentData_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear" port="m_fusedObjectsDynamic_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_preCrashRearParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear" port="m_parameters_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceState" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear" port="m_portRpmServiceState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear_m_portRpmServiceState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_requestedBehaviorsFMPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear" port="m_requestedBehaviors_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear_m_requestedBehaviors_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" port="m_environmentDataCfm_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_environmentData_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_fusedObjectsDynamic_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_rearCrossTrafficParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_parameters_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceState" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_portRpmServiceState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic_m_portRpmServiceState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_requestedBehaviorsFMPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" port="m_requestedBehaviors_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic_m_requestedBehaviors_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" port="m_portDriverBehavior" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_driverBehavior_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" port="m_environmentDataTipl_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_environmentData_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_fusObjPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_fusedObjectsDynamic_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ParallelLanes" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_parallelLanes_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_laneChangeWarningParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_parametersLCW_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" port="m_tguHighwayAssistParametersPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_parametersTGUHWA_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" port="m_port_ObjectLaneRelations" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_portObjectLaneRelations_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_roadSideBoundarySegmentsPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_portRoadBoundaryRepresentation_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceState" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_portRpmServiceState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl_m_portRpmServiceState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" port="m_requestedBehaviorsTIPLPort_out" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_requestedBehaviorsFct_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl_m_requestedBehaviorsFct_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl_m_requestedBehaviorsTgu_in" />
+    <inport runnable="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" port="m_requestedBehaviorsTgu_in" task="mC364D778" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl_m_requestedBehaviorsTgu_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_serviceStatus_out" />
+    <inport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_perEnvModel_serviceStatus_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_perEnvModel_serviceStatus_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_perHv_serviceStatus_in" />
+    <inport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_perHv_serviceStatus_in" task="m1EF9BA4A" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_perHv_serviceStatus_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" port="m_portServiceStatus" />
+    <inport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_rpmExecution_serviceStatus_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_rpmExecution_serviceStatus_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead" port="m_serviceStatus_out" />
+    <inport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_sitBc_serviceStatus_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFw_Dsm_SscRunnable_SscRunnable_m_sitBc_serviceStatus_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_depParameters_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_depParams_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_eimTprParameters_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_eimTprParams_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_hostVehicleHistoryPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_hostVehicleHistoryPort_in" task="m89797748" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_hostVehicleHistoryPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_hvmStatesPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_hvmStatesPort_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_hvmStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_radarSensorPropertiesPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_obstacleSensorPort1_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_obstacleSensorPort3_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_obstacleSensorPort3_in" task="core0_bg" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_sepParameters_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_sepParams_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" port="m_perEnvModel_serviceTargetLcState_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_serviceTargetLcState_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_serviceTargetLcState_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_timeStampPairPairPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_timeStampSensorPort1_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable_m_timeStampSensorPort3_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_timeStampSensorPort3_in" task="core0_bg" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable_m_failureReactions_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" port="m_failureReactions_in" task="m1B5BADD4" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable_m_failureReactions_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable_m_hostVehicleMovementStates_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" port="m_hostVehicleMovementStates_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable_m_hostVehicleMovementStates_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_bdmParameters_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" port="m_params_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_radarSensorPropertiesPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" port="m_radarLocGen5SensorProperties_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" port="m_ripIntrospectionPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" port="m_ripIntrospectionPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_sensorBlindnessPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" port="m_sbiPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_calibrationAnglePort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_calibrationAnglePort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_compSwitch_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_compSwitchPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_dynCalibTriggerPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_dynCalibTriggerPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_ensRLocationsPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_ensRLocationsPort_in" task="mCB77E5D0" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_ensRLocationsPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_failureReactions_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_failureReactions_in" task="m1B5BADD4" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_failureReactions_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_hvmStatesPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_hvmStatesPort_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable_m_hvmStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_malParameters_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_params_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_hvmStatesPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_hvmStatesPort_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_hvmStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_MountingPositionProvider_MountingPositionProvider" port="m_mountingPositionPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_mountingPositionPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_mountingPositionPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_SppScp_SppScpRunnable" port="m_sensorMountingPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_sensorMountingPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable_m_sensorMountingPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" port="m_bdmPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable" port="m_bdmPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable_m_bdmPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable_m_hostVehicleMovementStates_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable" port="m_hostVehicleMovementStates_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable_m_hostVehicleMovementStates_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_ensRLocationsPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_ensRLocationsPort_in" task="mCB77E5D0" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_ensRLocationsPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_failureReactions_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_failureReactions_in" task="m1B5BADD4" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_failureReactions_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_hilActivePort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_hilActivePort_in" task="core0_bg" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_hvmStatesPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_hvmStatesPort_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable_m_hvmStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" port="m_malPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_malDataPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_sppRLocParameters_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_params_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" port="m_bdmPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" port="m_perBlindnessPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_failureReactionStatesPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_failureReactionStatesPort_in" task="m1B5BADD4" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_failureReactionStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_hvmStatesPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_hvmStatesPort_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_hvmStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_sppRLocParameters_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_sppRLocParameters_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable_m_sppStalinStartPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_sppStalinStartPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable" port="m_stalinResultPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_stalinResultPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable_m_locationPort_in" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable" port="m_locationPort_in" task="mCB77E5D0" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable_m_locationPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" port="m_stalinParameters_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable" port="m_params_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" port="m_sppStalinStartPort_out" />
+    <inport runnable="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable" port="m_stalinStartPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="DataPlayer" port="g_PlReCoFw_SppScp_SppScpRunnable_m_hvmStatesPort_in" />
+    <inport runnable="g_PlReCoFw_SppScp_SppScpRunnable" port="m_hvmStatesPort_in" task="m399DE383" />
+    <multibuffer sequencenumbersignal="_g_PlReCoFw_SppScp_SppScpRunnable_m_hvmStatesPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+  </connection>
+  <connection>
+    <outport runnable="g_PlReCoApl_MountingPositionProvider_MountingPositionProvider" port="m_mountingPositionPort_out" />
+    <inport runnable="g_PlReCoFw_SppScp_SppScpRunnable" port="m_mountingPositionPort_in" />
+  </connection>
+  <connection>
+    <outport runnable="g_Golf_Per_SppHvm_RunnableSppHvm" port="m_sensorMountingPort_out" />
+    <inport runnable="g_PlReCoFw_SppScp_SppScpRunnable" port="m_sensorMountingPort_in" />
+    <doorkeeper modus="sequence_number">
+      <inport_key sequencenumbersignal="_g_PlReCoFw_SppScp_SppScpRunnable_m_sensorMountingPort_inImpl.TExtensionMeasurementBase._._m_lastSequenceNumber" />
+    </doorkeeper>
+  </connection>
+  <job task="core0_bg">
+    <runnable name="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable" />
+    <runnable name="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" />
+    <runnable name="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead" />
+    <runnable name="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" />
+    <runnable name="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" />
+    <runnable name="g_PlReCoFunctions_Genesis_Genesis" />
+  </job>
+  <job task="core0_t10">
+    <runnable name="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" />
+    <runnable name="g_Golf_Per_SppHvm_RunnableSppHvm" />
+    <runnable name="g_Golf_Fct_Spp_RunnableSpp" />
+    <runnable name="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable" />
+  </job>
+  <job task="core0_t20">
+    <runnable name="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" />
+    <runnable name="g_PlReCoApl_Fdm_RunnableFdm" />
+    <runnable name="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" />
+    <runnable name="g_Golf_Fct_Hmi_RunnableHmi" />
+    <runnable name="g_PlReCoFw_SppScp_SppScpRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable" />
+    <runnable name="g_PlReCoApl_MountingPositionProvider_MountingPositionProvider" />
+  </job>
+  <init>
+    <runnable name="g_PlReCoFunctions_Genesis_Genesis" />  
+    <runnable name="g_PlReCoApl_MountingPositionProvider_MountingPositionProvider" />
+    <runnable name="g_PlReCoFw_SppScp_SppScpRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerParameterRunnable_PerParameterRunnable" />
+    <runnable name="g_PlReCoFw_Dsm_SscRunnable_SscRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerMalRunnable_PerMalRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerSppRLocRunnable_PerSppRLocRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerBdmRunnable_PerBdmRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerStalinRunnable_PerStalinRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerSppBdm_PerSppBdmRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_PerSppStalinRunnable_PerSppStalinRunnable" />
+    <runnable name="g_PlReCoFw_PlReCoPer_EnvModel_PerUnitedRunnable_PerUnitedRunnable" />
+    <runnable name="g_PlReCoFunctions_Sit_SitDcParameterInput_SitDcParameterInputRunnable" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableTipl_PlReCo_Sit_RunnableTipl" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableCfmDoorOpening_RunnableCfmDoorOpening" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableCfmPreCrashRear_RunnableCfmPreCrashRear" />
+    <runnable name="g_PlReCoFunctions_Sit_RunnableCfmRearCrossTraffic_RunnableCfmRearCrossTraffic" />
+    <runnable name="g_PlReCoFunctions_Sit_SitParameterDeliverRunnable_SitParameterDeliverRunnable" />
+    <runnable name="g_PlReCoFunctions_Fct_Fsm_RunnableFsm" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableDmi_RunnableDmi" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableObe_RunnableObe" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableEtl_RunnableEtl" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableLmfAndOlr_RunnableLmfAndOlr" />
+    <runnable name="g_PlReCoFunctions_Bc_RunnableBehaviorConsistencyLead_RunnableBehaviorConsistencyLead" />
+    <runnable name="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyFM_RunnableBehaviorStrategyFM" />
+    <runnable name="g_PlReCoFunctions_Bs_RunnableBehaviorStrategyTIPL_RunnableBehaviorStrategyTIPL" />
+    <runnable name="g_PlReCoFunctions_RpmExecution_RpmExecution_RpmExecution" />
+    <runnable name="g_PlReCoApl_Fdm_RunnableFdm" />
+    <runnable name="g_Golf_Fct_Hmi_RunnableHmi" />
+    <runnable name="g_Golf_Fct_Spp_RunnableSpp" />
+    <runnable name="g_Golf_Per_SppHvm_RunnableSppHvm" />
+    <runnable name="g_Golf_Sit_SppHmiInput_SppHmiInputRunnable" />
+  </init>
+  <plugins>
+    <player id="mdfplayer" plugin="DataPlayerPluginMDF" default="1" />
+    <recorder id="mdfrecorder" plugin="DataRecorderPluginMDF" />
+    <scheduler id="mdfscheduler" plugin="SelenaSchedulerPluginMDF" />
+  </plugins>
+</selena>

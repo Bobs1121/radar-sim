@@ -1,0 +1,73 @@
+# Project: bydod25 (BYD OD25 FR Selena flow)
+
+project:
+  name: "BYD_OD25"
+  platform: "gen5_selena"
+  recipe: "g3n_fvg3_od25"
+
+repos:
+  outer_repo_root: "D:/bydod25fr/byd"
+  inner_repo_root: "D:/bydod25fr/byd"
+
+build:
+  selena_build_script: "D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat"
+  # Optional: switch inner repo to the expected Selena branch before compile.
+  # selena_branch: "develop_evo"
+  build_config: "full_dsp"
+  build_output: "D:/bydod25fr/byd/build/full_dsp"
+  # This project does not follow the binding-style script argument convention.
+  script_args_template: []
+
+assets:
+  runtime_xml: "D:/data/bydod25/Runtime_For_bydod25_bl01rc09.7.xml"
+  adapter_file: "D:/data/bydod25/adapter_byd.txt"
+  matfilefilter: "D:/data/bydod25/matlabPerSit_OD_gac.filter"
+
+simulation:
+  source: "RadarFC"
+  datasets:
+    - name: "9-5-26_CCCscp"
+      input_dir: "D:/data/bydod25/FRGVBYDP-21653/9-5-26_CCCscp/9-5-26_CCCscp"
+    - name: "BYD_SR_12-5-26_CBNA"
+      input_dir: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon2\\OverseaData\\Driving\\AU_data\\BYD_SR\\12-5-26_CBNA\\12-5-26_CBNA"
+
+cluster:
+  software_path: "\\\\szhradar01\\cluster_software"
+  workspace_root: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster"
+  project_folder: "radar-sim"
+  kill_password: "1234"
+  group: "Radar"
+  subgroup: "PSS2"
+  timeout_min: 120
+  copy_data: false
+  copy_selena: false
+  required_input_signals:
+    - "g_cnms_fw_Fct_fct_mainproc_cnms_fw_fct_RunnableMainProc"
+
+profiles:
+  - name: "local-build"
+    description: "Local compiled Selena + local/shared data referenced in place"
+    backend: "local"
+    selena:
+      source: "build"
+      exe: ""
+    data:
+      copy: false
+      required_signals: []
+  - name: "cloud-build"
+    description: "Cluster: package local bydod25 Selena runtime + reference shared BYD_SR data in place"
+    backend: "cluster"
+    selena:
+      source: "build"          # package the local compiled selena.exe into the job folder
+      exe: ""
+    data:
+      copy: false              # BYD_SR is already on a worker-visible UNC share
+      required_signals:
+        - "g_cnms_fw_Fct_fct_mainproc_cnms_fw_fct_RunnableMainProc"
+    cluster:
+      group: "Radar"
+      subgroup: "PSS2"
+      simulation_prio: 4
+      timeout_min: 120
+
+# Signal selection belongs in signals.yaml; keep simulation-only fields here.

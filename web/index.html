@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Radar Sim Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">RS</span>
+          <div>
+            <strong>Radar Sim</strong>
+            <span>Simulation Console</span>
+          </div>
+        </div>
+        <button class="nav-button active" data-view="sim">仿真</button>
+        <button class="nav-button" data-view="check">环境校验</button>
+        <button class="nav-button" data-view="config">配置</button>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1 id="viewTitle">仿真</h1>
+            <p id="viewSub">选 Selena 来源 + 数据 + 执行方式，一键仿真</p>
+          </div>
+          <div class="topbar-right">
+            <label class="project-picker">
+              <span>配置文件</span>
+              <select id="configFileSelect"></select>
+            </label>
+            <button id="newConfigBtn" class="btn-small">新建</button>
+            <button id="importConfigBtn" class="btn-small">导入</button>
+            <button id="exportConfigBtn" class="btn-small">导出</button>
+            <input type="file" id="importFileInput" accept=".yaml,.yml" style="display:none" />
+          </div>
+        </header>
+
+        <!-- 仿真 tab: 分步表单 -->
+        <section class="view active" id="view-sim">
+          <section class="panel">
+            <h2>① Selena 来源</h2>
+            <div class="radio-row">
+              <label class="checkline"><input type="radio" name="selenaSource" value="build" checked /> 本地编译（自动切分支 + 跑编译脚本）</label>
+              <label class="checkline"><input type="radio" name="selenaSource" value="path" /> 已有 Selena（填写 selena.exe 路径）</label>
+            </div>
+
+            <div id="sourceBuild" class="source-block">
+              <label>本地代码路径 <input id="codePath" placeholder="D:\bydod25fr\byd" /></label>
+              <label>Selena 编译脚本 <input id="selenaBuildScript" placeholder="...\jenkins_selena_build.bat" /></label>
+              <label>Selena 分支 <input id="selenaBranch" placeholder="develop_evo（留空则不切换）" /></label>
+              <label>软件包编译脚本（环境修复用）<input id="envBuildScript" placeholder="...\cmake_build.bat" /></label>
+              <button id="buildBtn">编译 Selena</button>
+              <span id="buildStatus" class="hint"></span>
+            </div>
+
+            <div id="sourcePath" class="source-block" style="display:none">
+              <label>selena.exe 路径 <input id="selenaExe" placeholder="\\share\...\selena.exe 或 C:\...\selena.exe" /></label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>② 数据</h2>
+            <label>数据路径 <input id="dataPath" placeholder="单 MF4 文件 / 数据目录 / UNC 共享路径" /></label>
+            <div id="dataHint" class="hint"></div>
+          </section>
+
+          <section class="panel">
+            <h2>③ 执行方式</h2>
+            <div class="radio-row">
+              <label class="checkline"><input type="radio" name="backend" value="local" checked /> 本地仿真</label>
+              <label class="checkline"><input type="radio" name="backend" value="cluster" /> 服务器仿真（Cluster）</label>
+            </div>
+            <label class="checkline" id="dryRunLine"><input id="dryRun" type="checkbox" checked /> 先 dry-run（只准备不真跑）</label>
+            <div class="toolbar">
+              <button id="simBtn">开始仿真</button>
+              <button id="simStatusBtn" style="display:none">刷新状态</button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>状态 / 日志</h2>
+            <div id="simSummary" class="hint"></div>
+            <pre id="simLog" class="log"></pre>
+          </section>
+        </section>
+
+        <!-- 环境校验 tab -->
+        <section class="view" id="view-check">
+          <div class="toolbar">
+            <button id="envCheckBtn">运行环境校验</button>
+            <button id="autoRepairBtn" class="repair-all-btn">一键修复全部</button>
+            <label class="project-picker">
+              <span>Backend</span>
+              <select id="envCheckBackend">
+                <option value="local">local</option>
+                <option value="cluster">cluster</option>
+              </select>
+            </label>
+          </div>
+          <section class="panel">
+            <h2>校验结果 <span id="envCheckSummary" class="hint"></span></h2>
+            <div id="envCheckList" class="check-list"></div>
+          </section>
+        </section>
+
+        <!-- 配置 tab -->
+        <section class="view" id="view-config">
+          <div class="toolbar">
+            <button id="saveConfigBtn">保存配置到 local.yaml</button>
+            <span id="saveStatus" class="hint"></span>
+          </div>
+          <section class="panel">
+            <h2>用户配置</h2>
+            <div class="radio-row">
+              <label class="checkline"><input type="radio" name="cfgSource" value="build" checked /> 本地编译</label>
+              <label class="checkline"><input type="radio" name="cfgSource" value="path" /> 已有 Selena</label>
+            </div>
+            <label>本地代码路径 <input id="cfgCodePath" /></label>
+            <label>Selena 编译脚本 <input id="cfgSelenaBuildScript" /></label>
+            <label>Selena 分支 <input id="cfgSelenaBranch" /></label>
+            <label>软件包编译脚本（环境修复用）<input id="cfgEnvBuildScript" /></label>
+            <label>runtime 路径 <input id="cfgRuntimePath" /></label>
+            <label>adapter 路径 <input id="cfgAdapterPath" /></label>
+            <label>数据路径 <input id="cfgDataPath" /></label>
+            <label id="cfgExeLabel" style="display:none">selena.exe 路径 <input id="cfgSelenaExe" /></label>
+            <div class="hint">执行方式（本地/集群）在"仿真"tab 选择，这里只配置 Selena 来源与路径。</div>
+          </section>
+          <section class="panel">
+            <h2>有效配置（只读）</h2>
+            <pre id="configOutput" class="log"></pre>
+          </section>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

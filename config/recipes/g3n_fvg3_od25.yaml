@@ -1,0 +1,14 @@
+build:
+  # This project uses its own Selena build script style; do not assume binding-style args.
+  script_args_template: []
+
+simulation:
+  source: "RadarFC"
+  auto_detect_radar: false
+  nogui: true
+  disable_sequence_check: false
+  enable_multibuffer_border: true
+  enable_doorkeeper: true
+  max_duration_per_file_sec: 600
+  paramconfig_options:
+    distilled-mat: true

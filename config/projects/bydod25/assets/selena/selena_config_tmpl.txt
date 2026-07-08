@@ -1,0 +1,16 @@
+# Selena paramconfig template (bydod25 / g3n_fvg3_od25)
+
+config={{RUNTIME_XML}}
+input={{INPUT_MF4}}
+output={{OUTPUT_MF4}}
+log={{LOG_FILE}}
+source={{SOURCE}}
+adapterfile={{ADAPTER_FILE}}
+matfilefilter={{MATFILEFILTER}}
+nogui={{NOGUI}}
+write-mat={{WRITE_MAT}}
+tolerant={{TOLERANT}}
+disable-sequence-check={{DISABLE_SEQUENCE_CHECK}}
+enable-multibuffer-border={{ENABLE_MULTIBUFFER_BORDER}}
+enable-doorkeeper={{ENABLE_DOORKEEPER}}
+{{EXTRA_PARAMCONFIG_LINES}}

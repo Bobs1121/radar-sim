@@ -1,0 +1,33 @@
+# Signal monitoring configuration for ovrs25
+
+signals:
+  - name: "FCTA_State"
+    group: "fcta"
+    description: "FCTA 状态机"
+
+  - name: "FCTA_Obj_Distance"
+    group: "fcta"
+    description: "FCTA 目标距离"
+
+  - name: "TGU_OUT_ObjectList"
+    group: "tgu"
+    description: "TGU 输出目标列表"
+
+  - name: "BSD_Alarm"
+    group: "bsd"
+    description: "BSD 告警状态"
+
+  - name: "DOW_State"
+    group: "dow"
+    description: "DOW 状态机"
+
+groups:
+  fcta:
+    - FCTA_State
+    - FCTA_Obj_Distance
+  tgu:
+    - TGU_OUT_ObjectList
+  bsd:
+    - BSD_Alarm
+  dow:
+    - DOW_State

@@ -1,0 +1,124 @@
+# Renaming Operations
+## Unifies and shortens signal names
+replace .*_Per g_Per
+replace .*_Runnable g_Runnable
+# work with fewer patches for DACore
+replace PerSppRLocRunnable PerSppRLocGen5Runnable
+#
+replace m_evaluatedWarningBehaviors_out m_evaluatedWBehaviors_out
+replace m_evaluatedBrakingBehaviors_out m_evaluatedBBehaviors_out
+
+exclude .*m_corrVector.*
+
+# DSP
+include .*dspRunnable.*m_dspLocationList_out.*
+
+# PER
+include .*PerUnitedRunnable.*
+include .*PerUnitedRunnable.*m_sepPort_out.*
+include .*PerUnitedRunnable.*m_fusObjPort_out.*
+include .*PerUnitedRunnable.*m_assoContainer.*
+include .*PerUnitedRunnable.*m_multipathMeasurementIndex.*
+include .*PerUnitedRunnable.*m_assoFeedbackPort.*
+include .*PerUnitedRunnable.*m_otcStates.*
+include .*PerUnitedRunnable.*m_hvmTrajectoryPort_out.*
+include .*PerUnitedRunnable.*m_roadTopology_out.*
+include .*PerUnitedRunnable.*m_statFusObjPort_out.*
+include .*PerUnitedRunnable.*m_fusConverter.*
+include .*PerUnitedRunnable.*m_fusTrajPort_out.*
+include .*PerUnitedRunnable.*m_roadSideBoundarySegmentsPort_out.*
+include .*PerUnitedRunnable.*m_SepObjInternal.*
+include .*PerUnitedRunnable.*m_DepObjInternal.*
+include .*PerPmeRunnable.*m_pmePort_out.*
+include .*PerPmeRunnable.*m_hostVehHistPort_out.*
+include .*PerUnitedRunnable.*m_ransacDebug.*
+include .*PerUnitedRunnable.*m_repPort.*
+include .*PerUnitedRunnable.*m_depPort.*
+include .*PerUnitedRunnable.*m_sepPort.*
+# include .*PerUnitedRunnable.*m_triggerPort.* # completely missing in CB
+include .*PerUnitedRunnable.*m_dbScanDebugger.*
+include .*PerUnitedRunnable.*m_hvmSepPort_out.*
+include .*PerUnitedRunnable.*m_measurementSyncInfos.*
+include .*PerUnitedRunnable.*m_syncInfoPort.*
+include .*PerUnitedRunnable.*debugvariables.*
+include .*PerUnitedRunnable.*internalstates.*
+
+include .*PerSppHvmRunnable.*m_hvmSensorSignalsPort_out.*
+include .*RunnableSppHvm.*
+include .*PerSppRLocGen5Runnable.*m_timeStampPairPairPort_out.*
+include .*PerSppRLocGen5Runnable.*m_validMeasurements.*
+include .*PerSppRLocGen5Runnable.*m_sppRLocMal.*
+include .*PerSppRLocGen5Runnable.*debugvariables.*
+include .*PerSppRLocGen5Runnable.*internalstates.*
+include .*PerSppRLocGen5Runnable.*m_persPacketPort_out.*
+replace g_PerSppRLocGen5Runnable_debugvariables\.m_controller\.m_locInterface g_PerSppRLocGen5Runnable_m_ensRLocationsPort_in
+include .*PerSppRLocGen5Runnable.*m_radarSensorPropertiesPort_out.*
+include .*PerSppRLocGen5Runnable.*m_ensRLocationsPort_in.*
+
+
+# SIT
+include .*RunnableSsl.*m_port_ParallelLanes.*
+include .*RunnableEtl.*m_portParallelLanes.*
+include .*RunnableLmfAndOlr.*m_port_ParallelLanes.*
+include .*RunnableLmfAndOlr.*m_port_ObjectLaneRelations.*
+include .*RunnableLmfAndOlr.*debugvariables.*
+include .*RunnableLmfAndOlr.*internalstates.*
+include .*RunnableEcl.*m_port_ParallelLanes.*
+include .*RunnableOtl.*m_port_ParallelLanes.*
+include .*RunnableBehaviorStrategyTIPL.*m_txPortIntrospection.*
+include .*RunnableBehaviorStrategyTIPL.*internalstates.*
+include .*RunnableBehaviorStrategyTIPL.*debugvariables.*
+include .*RunnableBehaviorStrategyTIPL.*m_environmentDataTipl_out.*
+include .*RunnableBehaviorStrategyTIPL.*m_selfAssessmentTipl_out.*
+include .*RunnableBehaviorStrategyFM.*m_txPortEvalBehaviorList.*
+include .*RunnableBehaviorStrategyFM.*internalstates.*
+include .*RunnableBehaviorStrategyFM.*debugvariables.*
+include .*RunnableBehaviorStrategyFM.*m_environmentDataCfm_out.*
+include .*RunnableTipl.*m_introspection_out.*
+include .*RunnableTipl.*debugvariables.*
+include .*RunnableTipl.*m_evaluatedBehaviors_out.*
+include .*RunnableTipl.*m_evaluatedWBehaviors_out.*
+include .*RunnableTipl.*debugvariables.*
+include .*RunnableCfmDoorOpening.*m_evaluatedBehaviors_out.*
+include .*RunnableCfmDoorOpening.*m_evaluatedWBehaviors_out.*
+include .*RunnableCfmDoorOpening.*m_introspection_out.*
+include .*RunnableCfmDoorOpening.*m_reportOos_out.*
+include .*RunnableCfmDoorOpening.*internalstates.*
+include .*RunnableCfmDoorOpening.*debugvariables.*
+include .*RunnableCfmFcta.*m_evaluatedBehaviors_out.*
+include .*RunnableCfmFcta.*m_evaluatedWBehaviors_out.*
+include .*RunnableCfmFcta.*m_evaluatedBBehaviors_out.*
+include .*RunnableCfmFcta.*m_introspection_out.*
+include .*RunnableCfmFcta.*m_reportOos_out.*
+include .*RunnableCfmFcta.*internalstates.*
+include .*RunnableCfmFcta.*debugvariables.*
+include .*RunnableCfmPreCrashRear.*m_evaluatedBehaviors_out.*
+include .*RunnableCfmPreCrashRear.*m_evaluatedWBehaviors_out.*
+include .*RunnableCfmPreCrashRear.*m_introspection_out.*
+include .*RunnableCfmPreCrashRear.*m_reportOos_out.*
+include .*RunnableCfmPreCrashRear.*internalstates.*
+include .*RunnableCfmPreCrashRear.*debugvariables.*
+include .*RunnableCfmRearCrossTraffic.*m_evaluatedBehaviors_out.*
+include .*RunnableCfmRearCrossTraffic.*m_evaluatedWBehaviors_out.*
+include .*RunnableCfmRearCrossTraffic.*m_evaluatedBBehaviors_out.*
+include .*RunnableCfmRearCrossTraffic.*m_introspection_out.*
+include .*RunnableCfmRearCrossTraffic.*m_reportOos_out.*
+include .*RunnableCfmRearCrossTraffic.*internalstates.*
+include .*RunnableCfmRearCrossTraffic.*debugvariables.*
+#include .*SitParameterDeliverRunnable.*m_rearCrossTrafficParametersPort.*
+
+# TGU
+include .*RunnableTguOutput.*m_tgu.*
+include .*RunnableTguTargetFilter.*m_targetCollectionPort.*
+include .*RunnableTiplHwa.*m_introspection_out.*
+include .*RunnableTiplHwa.*debugvariables.*
+include .*RunnableTguTargetFilter.*internalstates.*
+include .*RunnableTguTargetFilter.*debugvariables.*
+
+#FCT
+include .*RunnableHmi.*m_rearHmiOutputPort.*
+include .*RunnableSpp.*m_egoVehicleInputPort.*
+
+#APL
+#include .*MountingPosition.*mountingPositionPort.*
+

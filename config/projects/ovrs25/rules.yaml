@@ -1,0 +1,20 @@
+# Rule check configuration for ovrs25
+
+rules:
+  - name: "fcta_activates"
+    signal: "FCTA_State"
+    condition: "reaches value 1"
+    severity: "P0"
+    description: "FCTA should enter ACTIVE state"
+
+  - name: "no_critical_error"
+    source: "log"
+    condition: "no [ERROR] entries"
+    severity: "P0"
+    description: "No critical errors in simulation log"
+
+  - name: "output_mf4_generated"
+    source: "file"
+    condition: "output_mf4 exists and size > 0"
+    severity: "P0"
+    description: "Output MF4 file should be generated"

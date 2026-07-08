@@ -1,0 +1,44 @@
+# bydod25 local.yaml — user-private overrides (gitignored).
+# Copy to local.yaml (`rsim config init`) and edit for your machine/scenario.
+
+repos:
+  outer_repo_root: "D:/bydod25fr/byd"
+  inner_repo_root: "D:/bydod25fr/byd"
+
+build:
+  selena_build_script: "D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat"
+  # selena_branch: "develop_evo"   # rsim build switches inner repo here before compile
+  build_output: "D:/bydod25fr/byd/build/full_dsp"
+
+environment:
+  matlab_root: "C:/Program Files/MATLAB/R2023b"
+  qt_path: "C:/TCC/Tools/qt/5.8.0_WIN64/5.8/msvc2015_64"
+  boost_root: "C:/TCC/Tools/boost/1.63.0_WIN64"
+  selena_env_path: "C:/TCC/Tools/selena_environment/0.1.7_WIN64"
+  python3_path: "C:/TCC/Tools/selena_environment/0.1.7_WIN64/MSYS/mingw64/bin/python3.exe"
+  vs_version: "2019"
+
+simulation:
+  # Optional fixed output paramconfig path if your Selena setup requires one.
+  # paramconfig_path: "C:/tools/bydod25_paramconfig.txt"
+  datasets:
+    - name: "9-5-26_CCCscp"
+      input_dir: "D:/data/bydod25/FRGVBYDP-21653/9-5-26_CCCscp/9-5-26_CCCscp"
+
+# Cloud scenario: package local Selena + reference shared BYD_SR data in place.
+# profiles:
+#   - name: "cloud-build"
+#     backend: "cluster"
+#     selena:
+#       source: "build"
+#       selena_branch: "develop_evo"
+#     data:
+#       copy: false
+#     cluster:
+#       group: "Radar"
+#       subgroup: "PSS2"
+
+# Tips:
+# - 'rsim config show'  prints the effective merged config.
+# - 'rsim config diff'  shows which keys this local.yaml overrides.
+# - 'rsim check --backend local --profile <name>' validates your setup before running.

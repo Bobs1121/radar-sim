@@ -1,0 +1,47 @@
+# ovrs25 local.yaml — user-private overrides (gitignored).
+# Copy to local.yaml (`rsim config init`) and edit for your machine/scenario.
+# This file documents the common override scenarios. Only uncomment what you need.
+
+# === Scenario A: ovrs25 develop branch + BYD_SR shared data (cloud-ready) ===
+# repos:
+#   inner_repo_root: "C:/BYD_OVS_CB/apl/byd"
+# build:
+#   selena_branch: "develop"        # rsim build switches inner repo here before compile
+# simulation:
+#   datasets:
+#     - name: "BYD_SR"
+#       input_dir: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon2\\OverseaData\\Driving\\AU_data\\BYD_SR"
+# profiles:
+#   - name: "local-build"
+#     selena:
+#       selena_branch: "develop"    # check warns if exe/branch mismatch
+
+# === Scenario B: ovrs25 feature branch + local CBNA data ===
+# repos:
+#   inner_repo_root: "C:/BYD_OVS_CB/apl/byd"
+# build:
+#   selena_branch: "feature/my-change"
+# simulation:
+#   datasets:
+#     - name: "CBNA_local"
+#       input_dir: "D:/data/byd/FRGVBYDP-21536/23-4-26_CBNA/CBNA_23-4-26"
+
+# === Scenario C: different machine toolchain paths ===
+environment:
+  # Override only when auto-derivation / auto-detection is not enough on this machine.
+  matlab_root: "C:/Program Files/MATLAB/R2023b"
+  qt_path: "C:/TCC/Tools/qt/5.8.0_WIN64/5.8/msvc2015_64"
+  boost_root: "C:/TCC/Tools/boost/1.63.0_WIN64"
+  selena_env_path: "C:/TCC/Tools/selena_environment/0.1.7_WIN64"
+  python3_path: "C:/TCC/Tools/selena_environment/0.1.7_WIN64/MSYS/mingw64/bin/python3.exe"
+  vs_version: "2019"
+
+simulation:
+  # Optional override if your Selena workflow still requires a fixed C:/tools path.
+  # paramconfig_path: "C:/tools/byd_CR_Selena_Config_ovrs.txt"
+  datasets: []
+
+# Tips:
+# - 'rsim config show'  prints the effective merged config.
+# - 'rsim config diff'  shows which keys this local.yaml overrides.
+# - 'rsim check --backend local --profile <name>' validates your setup before running.

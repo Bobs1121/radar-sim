@@ -1,0 +1,16 @@
+# radar-sim global defaults
+default_project: "ovrs25"
+
+analysis:
+  ai:
+    enabled: true
+    base_url: "http://bcsc-openai.apac.bosch.com:30001/llm/model/v1"
+    model: "hermes"
+    timeout: 120
+    max_tokens: 4096
+    temperature: 0.1
+    api_key_env: "MODEL_FARM_API_KEY"
+  default_plugins:
+    - signal_summary
+    - rule_check
+    - default_report

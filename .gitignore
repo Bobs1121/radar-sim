@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+results/
+*.mf4
+*.MF4
+*.blf
+*.hex
+.env
+*.log
+
+# User-private local config (Mode B fills machine-specific toolchain paths).
+config/projects/*/local.yaml
+
+# Virtualenvs.
+.venv/
+venv/
+
+# Control-plane SQLite DBs (per-user job/log state).
+*.db
+
+# Offline wheel staging (optional, not committed).
+third_party/python-wheels/*.whl
