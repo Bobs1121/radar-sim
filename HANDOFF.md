@@ -1045,8 +1045,25 @@ value=48
 
 ### 仍待验证
 
-- job 48 在集群 worker 上实际执行 selena 跑 BYD_SR 数据，产出 out.MF4（`rsim cluster status 48` 等待 running→finished，再 `rsim cluster fetch 48`）。
-- runtime_xml warning：`byd-ovrs-bl01v7-er-shared` profile 的 runtime_xml UNC 在 Linux 本地校验报 warning（worker 能读 UNC，不影响提交）；如要消除 warning 可在 local.yaml 用 mount_map 覆盖（当前不影响功能）。
+- ~~job 48 worker 执行~~ ✅ **已验证**：用 `verified-shared` profile（指向 `cloud_batch_0117` 已验证的 selena.exe）+ 单文件 MF4 + `radar=RadarFL`，worker 实际跑通 selena 仿真。selena.log 末尾 `Simulation finished` + `Thank you for using Selena`。result.ini `job_id=10338, successfull=0`。
+
+### T3 完整端到端验证证据（2026-07-08）
+
+```
+Linux server (10.190.171.44) --cluster-executor
+  → cluster.run job (单文件 MF4, verified-shared profile, radar=RadarFL)
+  → server-cluster-executor 认领
+  → prepare_cluster_job: 写盘到 /mnt/cluster (SMB 挂载), Config.cfg 用 UNC
+  → submit_cluster_job: XML-RPC 到 SZHRADAR01:8123, manager 返回 value=1
+  → 集群 worker picked up, 跑 selena.exe (共享路径 cloud_batch_0117/selena/)
+  → selena.log: "MDF-Scheduler finished: file duration: 45.0s" + "Simulation finished"
+  → 产出 OUT_/result.html, result.pickle, selena.log, result.ini
+```
+
+**关键配置点（Linux local.yaml）**：
+- `linux_mount_map`: UNC→挂载点映射（`\\abtvdfs2\ismdfs`→`/mnt/cluster`）。
+- profile `source: "RadarFL"` + `mounting_position: "CFL"` 显式指定（自动检测对部分 MF4 返回 None）。
+- 用已验证的共享 selena.exe（`cloud_batch_0117/selena/selena.exe`）而非 `BYD_OVRS/BL01V7_ER` 的（后者版本不匹配，selena 启动但无产出）。
 
 ### 后续待办
 
