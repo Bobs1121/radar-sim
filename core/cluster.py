@@ -606,22 +606,39 @@ def prepare_cluster_job(
     project_key = str(config.get("_meta", {}).get("project") or config.get("project", {}).get("name") or "default")
     run_id = run_id or time.strftime("%Y%m%d_%H%M%S")
 
-    job_dir = Path(cluster["workspace_root"]) / cluster["project_folder"] / project_key / run_id
-    assets_dir = job_dir / "assets"
-    data_dir = job_dir / "data"
-    output_dir = job_dir / "output"
-    selena_dir = job_dir / "selena"
-    # Cross-platform guard: a Windows UNC workspace_root (\\host\share) is not
-    # writable on Linux/macOS — Path() would silently create a garbled local
-    # directory like "./\host\share" instead of writing to the share. Fail loud
-    # so the operator mounts the share and points workspace_root at the mount.
+    # On Linux, config paths stay as Windows UNC (cluster workers are Windows
+    # and read Config.cfg paths as UNC). linux_mount_map (set in local.yaml)
+    # translates UNC -> local mount point so this server can actually write the
+    # job folder to disk. _to_local_path() is a no-op on Windows or when no map.
+    mount_map = dict(cluster.get("linux_mount_map") or {})
+    is_windows = sys.platform.startswith("win")
+
+    def _to_local_path(p: str) -> str:
+        """UNC -> mount point for local filesystem writes. No-op on Windows."""
+        if not p or is_windows or not mount_map:
+            return p
+        for unc_prefix, mount in mount_map.items():
+            if p.lower().startswith(unc_prefix.lower()):
+                return mount + p[len(unc_prefix):].replace("\\", "/")
+        return p
+
     workspace_root = str(cluster.get("workspace_root") or "")
-    if workspace_root.startswith("\\\\") and not sys.platform.startswith("win"):
+    # The job_dir URL path kept for Config.cfg / submit (UNC so Windows workers
+    # and the manager can read it); job_dir_local is where we actually write.
+    job_dir_unc = Path(workspace_root) / cluster["project_folder"] / project_key / run_id
+    job_dir_local = Path(_to_local_path(str(job_dir_unc)))
+    assets_dir = job_dir_local / "assets"
+    data_dir = job_dir_local / "data"
+    output_dir = job_dir_local / "output"
+    selena_dir = job_dir_local / "selena"
+    # Cross-platform guard: a Windows UNC workspace_root with no mount map on
+    # non-Windows would silently create a garbled local dir. Fail loud instead.
+    if workspace_root.startswith("\\\\") and not is_windows and not mount_map:
         raise RuntimeError(
             f"cluster.workspace_root is a Windows UNC path ({workspace_root!r}) "
-            f"but this machine is {sys.platform}. Mount the SMB share (e.g. "
-            f"sudo mount -t cifs //{workspace_root[2:].split(chr(92))[0]}/{workspace_root[2:].split(chr(92),1)[1].replace(chr(92),'/')} "
-            f"/mnt/cluster) and set workspace_root to the mount point (e.g. /mnt/cluster) "
+            f"but this machine is {sys.platform}. Mount the SMB share and add a "
+            f"cluster.linux_mount_map entry mapping the UNC prefix to a mount "
+            f"point (e.g. '\\\\\\\\abtvdfs2.de.bosch.com\\\\ismdfs': '/mnt/cluster') "
             f"in local.yaml."
         )
     for path in (assets_dir, data_dir, output_dir):
@@ -674,34 +691,38 @@ def prepare_cluster_job(
     source_value = str(sim.get("source", "") or "").strip().lower()
     mounting_value = str(sim.get("mounting_position", "") or "").strip().lower()
     needs_detection = source_value in ("", "auto") or mounting_value in ("", "auto")
-    if needs_detection and datafile_path and Path(datafile_path).is_file():
-        try:
-            from core.simulation import detect_radar_orientation
-            detection = detect_radar_orientation(datafile_path)
-            if detection:
-                sim = dict(sim)
-                sim["source"] = detection["source"]
-                sim["mounting_position"] = detection["mounting_position"]
-                sim["radar_detection"] = detection
-        except Exception as exc:
-            warnings.append(f"Radar orientation auto-detection failed: {exc}")
+    if needs_detection and datafile_path:
+        # On Linux the datafile is a UNC string workers read; resolve to the
+        # local mount point to stat/read it for orientation detection.
+        local_datafile = _to_local_path(datafile_path)
+        if Path(local_datafile).is_file():
+            try:
+                from core.simulation import detect_radar_orientation
+                detection = detect_radar_orientation(local_datafile)
+                if detection:
+                    sim = dict(sim)
+                    sim["source"] = detection["source"]
+                    sim["mounting_position"] = detection["mounting_position"]
+                    sim["radar_detection"] = detection
+            except Exception as exc:
+                warnings.append(f"Radar orientation auto-detection failed: {exc}")
 
-    script_path = job_dir / "SIMULATION_RADAR_SIM.py"
+    script_path = job_dir_local / "SIMULATION_RADAR_SIM.py"
     script_path.write_text(
         _render_worker_script(
             software_path=str(cluster["software_path"]),
-            job_dir=str(job_dir),
+            job_dir=str(job_dir_unc),
             dependency_paths=list(cluster.get("dependency_paths", []) or []),
         ),
         encoding="utf-8",
     )
 
-    config_path = job_dir / "Config.cfg"
+    config_path = job_dir_local / "Config.cfg"
     config_path.write_text(
         _render_config_cfg(
             cluster=cluster,
             sim=sim,
-            simulation_script=str(script_path),
+            simulation_script=str(job_dir_unc / "SIMULATION_RADAR_SIM.py"),
             datafile_path=datafile_path,
             selena_exe=selena_exe,
             runtime_xml=copied_assets.get("runtime_xml", sim.get("runtime_xml", "")),
@@ -712,34 +733,37 @@ def prepare_cluster_job(
         encoding="utf-8",
     )
 
-    submit_command = build_submit_command(config_path, cluster=cluster, username=str(cluster.get("username", "") or ""))
+    # submit_command passes config_path to the Windows manager — must be UNC.
+    config_path_unc = str(job_dir_unc / "Config.cfg")
+    submit_command = build_submit_command(Path(config_path_unc), cluster=cluster, username=str(cluster.get("username", "") or ""))
     manifest = {
         "run_id": run_id,
         "project": project_key,
         "profile": str(cluster.get("active_profile") or profile or "default"),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "job_dir": str(job_dir),
-        "config_path": str(config_path),
-        "simulation_script": str(script_path),
+        "job_dir": str(job_dir_unc),
+        "job_dir_local": str(job_dir_local),
+        "config_path": config_path_unc,
+        "simulation_script": str(job_dir_unc / "SIMULATION_RADAR_SIM.py"),
         "datafile_path": datafile_path,
-        "output_hint": str(output_dir),
+        "output_hint": str(job_dir_unc / "output"),
         "selena_exe": selena_exe,
         "assets": copied_assets,
         "submit_command": submit_command,
         "warnings": warnings,
     }
-    manifest_path = job_dir / "manifest.json"
+    manifest_path = job_dir_local / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     return ClusterJobPackage(
         run_id=run_id,
         profile=str(cluster.get("active_profile") or profile or "default"),
-        job_dir=str(job_dir),
-        config_path=str(config_path),
-        simulation_script=str(script_path),
+        job_dir=str(job_dir_unc),
+        config_path=config_path_unc,
+        simulation_script=str(job_dir_unc / "SIMULATION_RADAR_SIM.py"),
         manifest_path=str(manifest_path),
         datafile_path=datafile_path,
-        output_hint=str(output_dir),
+        output_hint=str(job_dir_unc / "output"),
         submit_command=submit_command,
         warnings=warnings,
     )
@@ -841,7 +865,17 @@ def _resolve_submit_mode(cluster: dict[str, Any]) -> str:
 
 def _submit_via_xmlrpc(config_path: str, config: dict[str, Any], cluster: dict[str, Any]) -> SubmitResult:
     config_file = Path(config_path)
-    validation_errors = _validate_submit_package(config_file)
+    # On Linux the config_path is a UNC string (the manager reads it on Windows).
+    # _validate_submit_package needs to stat the local file, so resolve via mount map.
+    mount_map = dict(cluster.get("linux_mount_map") or {})
+    is_windows = sys.platform.startswith("win")
+    local_config = config_path
+    if not is_windows and mount_map:
+        for unc_prefix, mount in mount_map.items():
+            if config_path.lower().startswith(unc_prefix.lower()):
+                local_config = mount + config_path[len(unc_prefix):].replace("\\", "/")
+                break
+    validation_errors = _validate_submit_package(Path(local_config))
     command = ["xmlrpc", _manager_url(cluster), "addSimulation", str(config_file)]
     if validation_errors:
         return SubmitResult(
