@@ -206,10 +206,26 @@ def check_cluster_environment(config: dict[str, Any], *, profile: str = "") -> l
     """Check local visibility of the server Cluster integration points."""
     config = apply_cluster_profile(config, profile)
     cluster = get_cluster_config(config)
-    software_path = Path(cluster["software_path"])
-    workspace_root = Path(cluster["workspace_root"])
-    python_path = Path(cluster["python_path"])
-    client_path = _client_path(cluster)
+    # On Linux, UNC paths in config aren't writable/readable directly — resolve
+    # them via linux_mount_map so existence checks hit the local mount.
+    mount_map = dict(cluster.get("linux_mount_map") or {})
+    is_windows = sys.platform.startswith("win")
+
+    def _local(p: str) -> str:
+        if not p or is_windows or not mount_map:
+            return p
+        for unc_prefix, mount in mount_map.items():
+            if p.lower().startswith(unc_prefix.lower()):
+                return mount + p[len(unc_prefix):].replace("\\", "/")
+        return p
+
+    software_path = Path(_local(str(cluster["software_path"])))
+    workspace_root = Path(_local(str(cluster["workspace_root"])))
+    python_path = Path(_local(str(cluster["python_path"])))
+    # client.py under software_path — use the mount-resolved path (not _client_path
+    # which would re-read the UNC software_path from cluster).
+    client_py_name = str(cluster.get("client_py") or "client.py")
+    client_path = Path(client_py_name) if Path(client_py_name).is_absolute() else software_path / client_py_name
     manager = _manager_item(cluster)
     submit_mode = _resolve_submit_mode(cluster)
     python_ok = _python_config_looks_usable(str(cluster.get("python_path") or ""))
@@ -247,16 +263,16 @@ def check_cluster_environment(config: dict[str, Any], *, profile: str = "") -> l
                            severity="info" if writable_ok else "error"))
 
     for dep in cluster.get("dependency_paths", []) or []:
-        items.append(_path_item(f"Worker dependency path: {dep}", Path(dep), must_be_dir=True))
+        items.append(_path_item(f"Worker dependency path: {dep}", Path(_local(str(dep))), must_be_dir=True))
     active_profile = str(cluster.get("active_profile") or profile or "default")
     items.append(CheckItem("Cluster profile", True, active_profile, severity="info"))
     selena_exe = str(cluster.get("selena_exe") or resolve_selena_executable(config) or "")
     if selena_exe:
-        items.append(_path_item("Profile Selena executable", Path(selena_exe)))
+        items.append(_path_item("Profile Selena executable", Path(_local(selena_exe))))
     sim = get_simulation_config(config)
     runtime_xml = str(sim.get("runtime_xml") or "")
     if runtime_xml:
-        items.append(_path_item("Profile runtime XML", Path(runtime_xml)))
+        items.append(_path_item("Profile runtime XML", Path(_local(runtime_xml))))
 
     return items
 
