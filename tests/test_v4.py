@@ -60,7 +60,7 @@ class TestConfigSystem:
         expected_template = assets_root / "selena" / "selena_config_tmpl.txt"
         expected_runtime = assets_root / "selena" / "runtime.xml"
         expected_matfilter = assets_root / "selena" / "matfilefilter.txt"
-        expected_fixed = os.path.normpath(str(project_root / "results" / "ovrs25" / "_runtime" / str(os.getpid()) / "byd_CR_Selena_Config_ovrs.txt"))
+        expected_fixed = os.path.normpath(str(project_root / "results" / "ovrs25" / "_runtime" / cfg["_meta"]["_run_id"] / "byd_CR_Selena_Config_ovrs.txt"))
 
         assert isinstance(cfg["machine"], dict)
         assert isinstance(cfg["build"], dict)

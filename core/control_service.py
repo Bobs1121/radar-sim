@@ -244,6 +244,7 @@ class ControlService:
         payload: Optional[dict[str, Any]] = None,
         tasks: Optional[list[dict[str, Any]]] = None,
         metadata: Optional[dict[str, Any]] = None,
+        assigned_agent_id: str = "",
     ) -> dict[str, Any]:
         if not job_type:
             raise ValueError("job_type is required")
@@ -252,6 +253,10 @@ class ControlService:
         task_specs = [dict(item) for item in (tasks or [])]
         if not task_specs:
             task_specs = [{"task_type": job_type, "payload": payload}]
+        # Pre-bind tasks to a specific agent so same-user multi-agent setups
+        # can't steal each other's jobs: only the named agent (or any agent if
+        # empty) may claim. Per-task spec override allowed.
+        bind_agent = str(assigned_agent_id or "").strip()
         now = self._now()
         job_id = f"job_{uuid.uuid4().hex[:12]}"
         with self._lock:
@@ -280,6 +285,7 @@ class ControlService:
                 for index, spec in enumerate(task_specs):
                     task_type = str(spec.get("task_type") or job_type)
                     task_payload = dict(spec.get("payload") or payload)
+                    task_bind = str(spec.get("assigned_agent_id") or bind_agent or "").strip()
                     conn.execute(
                         """
                         INSERT INTO tasks (
@@ -296,7 +302,7 @@ class ControlService:
                             "queued",
                             self._dumps(task_payload),
                             self._dumps({}),
-                            "",
+                            task_bind,
                             now,
                             now,
                         ),
@@ -319,13 +325,19 @@ class ControlService:
                         return current_task
 
                 capabilities = list(agent.get("capabilities") or [])
+                # Filter by assigned_agent_id: a task pre-bound to a specific
+                # agent is only claimable by that agent. Empty binding means any
+                # agent (backward compatible). Prevents same-user multi-agent
+                # task stealing.
                 rows = conn.execute(
                     """
                     SELECT task_id, job_id, task_type, order_index
                     FROM tasks
                     WHERE status='queued'
+                      AND (assigned_agent_id = '' OR assigned_agent_id = ?)
                     ORDER BY created_at ASC, order_index ASC, task_id ASC
-                    """
+                    """,
+                    (agent_id,),
                 ).fetchall()
                 for row in rows:
                     if not self._capability_matches(row["task_type"], capabilities):

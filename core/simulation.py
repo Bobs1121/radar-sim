@@ -32,10 +32,12 @@ def _results_runtime_dir(config: dict[str, Any]) -> Path:
         or config.get("project", {}).get("name")
         or "default"
     )
-    # Per-process subdir so concurrent runs of the same project don't overwrite
-    # each other's CRlog.log / paramconfig files.
+    # Task-safe subdir: use _meta._run_id (unique per load_config() call) so
+    # concurrent requests in the same process (ThreadingHTTPServer threads share
+    # os.getpid()) get isolated runtime dirs. Fallback to pid for configs built
+    # without going through _finalize_layered_config (backward compat).
     import os
-    run_id = str(os.getpid())
+    run_id = str(config.get("_meta", {}).get("_run_id") or os.getpid())
     return _data_root() / "results" / project / "_runtime" / run_id
 
 

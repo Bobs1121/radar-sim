@@ -321,7 +321,8 @@ def detect_python2_path(configured: str = "") -> str:
 def list_cluster_jobs(config: dict[str, Any], *, limit: int = 20) -> list[dict[str, Any]]:
     cluster = get_cluster_config(config)
     project_key = str(config.get("_meta", {}).get("project") or config.get("project", {}).get("name") or "default")
-    root = Path(cluster["workspace_root"]) / cluster["project_folder"] / project_key
+    # Resolve UNC workspace_root to local mount on Linux so Path.exists()/glob work.
+    root = Path(_unc_to_local(cluster, str(cluster["workspace_root"]))) / cluster["project_folder"] / project_key
     if not root.exists():
         return []
     jobs = []
@@ -335,6 +336,26 @@ def list_cluster_jobs(config: dict[str, Any], *, limit: int = 20) -> list[dict[s
         jobs.append(data)
     jobs.sort(key=lambda item: str(item.get("created_at") or item.get("run_id") or ""), reverse=True)
     return jobs[:limit]
+
+
+def _unc_to_local(cluster: dict[str, Any], p: str) -> str:
+    """Translate a Windows UNC path to the local SMB mount on non-Windows.
+
+    Uses cluster.linux_mount_map. No-op on Windows or when no map is configured.
+    Selects the longest matching prefix to avoid the share-name ambiguity
+    (e.g. \\host\share vs \\host).
+    """
+    if not p or sys.platform.startswith("win"):
+        return p
+    mount_map = dict(cluster.get("linux_mount_map") or {})
+    if not mount_map:
+        return p
+    # Longest-prefix match first.
+    for unc_prefix in sorted(mount_map.keys(), key=len, reverse=True):
+        if p.lower().startswith(unc_prefix.lower()):
+            mount = mount_map[unc_prefix]
+            return mount + p[len(unc_prefix):].replace("\\", "/")
+    return p
 
 
 def get_cluster_web_status(config: dict[str, Any], job: str) -> dict[str, Any]:
@@ -684,15 +705,17 @@ def prepare_cluster_job(
         # Local drive data is invisible to cluster workers.
         if do_copy_data:
             copied = copy_input_data(Path(datafile_path), data_dir)
-            datafile_path = str(copied)
+            # copied is under data_dir (local mount); translate back to UNC for Config.cfg.
+            datafile_path = _to_unc_path(str(copied))
         else:
             warnings.append(
                 f"Input data path is local to this PC and invisible to workers: {datafile_path}. "
                 "Set profile data.copy=true (or --copy-data) to stage it under the shared workspace."
             )
     elif do_copy_data:
-        copied = copy_input_data(Path(datafile_path), data_dir)
-        datafile_path = str(copied)
+        # UNC source: resolve to local mount to read, then translate result back to UNC.
+        copied = copy_input_data(Path(_to_local_path(datafile_path)), data_dir)
+        datafile_path = _to_unc_path(str(copied))
 
     copied_assets_local = _copy_assets(config, assets_dir, warnings, mount_map=mount_map or None)
     # Config.cfg needs UNC paths (workers are Windows); copied_assets_local has
@@ -710,8 +733,10 @@ def prepare_cluster_job(
     if build_source and copy_selena is None:
         do_copy_selena = True
     if do_copy_selena:
-        if local_selena and Path(local_selena).exists():
-            selena_exe = str(_copy_selena_runtime(Path(local_selena).parent, selena_dir))
+        if local_selena and Path(_to_local_path(local_selena)).exists():
+            # Copy from the mount-resolved source; result is under selena_dir (local mount).
+            copied_selena = _copy_selena_runtime(Path(_to_local_path(local_selena)).parent, selena_dir)
+            selena_exe = _to_unc_path(str(copied_selena))
         else:
             warnings.append(f"Local Selena executable not found, cannot copy runtime: {local_selena}")
     if not selena_exe:

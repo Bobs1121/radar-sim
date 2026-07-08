@@ -291,7 +291,16 @@ def _finalize_layered_config(project: str, config: dict[str, Any]) -> dict[str, 
 
     assets_root = _resolve_project_assets(project, result)
     assets_root_str = os.path.normpath(str(assets_root))
-    runtime_root = os.path.normpath(str(get_results_base_dir() / project / "_runtime" / str(os.getpid())))
+    # Task-safe runtime dir: unique per load_config() call so concurrent threads
+    # in the same process (ThreadingHTTPServer) don't collide on CRlog.log /
+    # paramconfig. time+pid+uuid suffix is stable within one config object and
+    # unique across calls.
+    import time as _time, uuid as _uuid
+    run_id = result.setdefault("_meta", {}).get("_run_id") or (
+        f"{_time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{_uuid.uuid4().hex[:6]}"
+    )
+    result["_meta"]["_run_id"] = run_id
+    runtime_root = os.path.normpath(str(get_results_base_dir() / project / "_runtime" / run_id))
     assets["root"] = assets_root_str
     paths["assets_dir"] = assets_root_str
     assets.setdefault("config_template", os.path.join("selena", "selena_config_tmpl.txt"))

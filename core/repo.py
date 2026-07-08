@@ -9,11 +9,23 @@ the build command's existing contract.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from core.cluster import CheckItem
+
+
+def _git(repo: str, args: list[str], *, timeout: int = 10) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", repo, *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
 
 
 def check_repo_context(config: dict[str, Any], *, allow_switch: bool = False) -> list[CheckItem]:
@@ -126,6 +138,11 @@ def prepare_repo_context(config: dict[str, Any]) -> str:
     Returns "" on success or an error message string (preserves the original
     build-command contract). Moved verbatim from cli/build.py::
     _prepare_repo_context.
+
+    Concurrency: holds a cross-process file lock on ``<inner_repo>/.git/.rsim_lock``
+    so two builds on the same repo (same machine, shared inner_repo_root) serialize
+    their checkouts instead of racing on HEAD. For true parallel builds on different
+    branches, use ``prepare_repo_worktree`` instead.
     """
     repos = config.get("repos", {})
     inner_repo = repos.get("inner_repo_root", "")
@@ -141,6 +158,16 @@ def prepare_repo_context(config: dict[str, Any]) -> str:
     if not repo_path.exists():
         return f"Configured inner repo not found: {inner_repo}"
 
+    lock_path = repo_path / ".git" / ".rsim_lock"
+    lock = _acquire_repo_lock(lock_path)
+    try:
+        return _prepare_repo_context_locked(inner_repo, target_branch)
+    finally:
+        _release_repo_lock(lock)
+
+
+def _prepare_repo_context_locked(inner_repo: str, target_branch: str) -> str:
+    """In-place checkout — caller holds the repo lock."""
     try:
         current_branch = _git(inner_repo, ["branch", "--show-current"])
         if current_branch.returncode != 0:
@@ -170,12 +197,6 @@ def prepare_repo_context(config: dict[str, Any]) -> str:
         )
         if checkout.returncode != 0:
             stderr = checkout.stderr.strip() or checkout.stdout.strip()
-            # git refuses checkout when untracked files would be overwritten.
-            # This happens when switching between branches where the target
-            # branch tracks files the current branch doesn't (e.g. residue
-            # from a prior branch switch). Since these files belong to the
-            # target branch, force-overwrite is safe — it replaces local
-            # residue with the target branch's tracked version.
             if "untracked working tree files would be overwritten" in stderr:
                 checkout = subprocess.run(
                     ["git", "-C", inner_repo, "checkout", "-f", target_branch],
@@ -191,13 +212,122 @@ def prepare_repo_context(config: dict[str, Any]) -> str:
         return f"Failed to prepare inner repo context: {exc}"
 
 
-def _git(repo: str, args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", repo, *args],
-        capture_output=True,
-        text=True,
-        timeout=10,
+def _acquire_repo_lock(lock_path: Path):
+    """Cross-process file lock. Uses fcntl on POSIX, msvcrt on Windows."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    if os.name == "nt":
+        import msvcrt
+        # Lock 1 byte at offset 0; blocks until acquired.
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                break
+            except OSError:
+                import time as _t
+                _t.sleep(0.1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def _release_repo_lock(fd) -> None:
+    if fd is None:
+        return
+    try:
+        if os.name == "nt":
+            import msvcrt
+            try:
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def prepare_repo_worktree(config: dict[str, Any]) -> tuple[str, str]:
+    """Create an isolated git worktree for the target Selena branch.
+
+    Returns ``(error_msg, worktree_path)``. On success error_msg is "" and
+    worktree_path is a temp dir holding the target branch checkout. The caller
+    MUST call ``cleanup_repo_worktree(worktree_path)`` when done (e.g. in a
+    finally block) so worktrees don't accumulate.
+
+    Why: ``prepare_repo_context`` checks out the branch in-place on
+    ``inner_repo_root``, which races when two builds target different branches
+    on the same repo (same-user multi-build, or a shared CI box). A worktree
+    gives each build its own working tree on the same shared object store.
+    """
+    repos = config.get("repos", {})
+    inner_repo = repos.get("inner_repo_root", "")
+    target_branch = (
+        config.get("_profile_selena_branch")
+        or config.get("build", {}).get("selena_branch", "")
+        or repos.get("inner_repo_branch", "")
     )
+    if not inner_repo or not target_branch:
+        return "", ""
+    repo_path = Path(inner_repo)
+    if not repo_path.exists():
+        return f"Configured inner repo not found: {inner_repo}", ""
+    try:
+        # Verify it's a git repo.
+        current = _git(inner_repo, ["branch", "--show-current"])
+        if current.returncode != 0:
+            return f"Inner repo is not a valid git repo: {inner_repo}", ""
+        branch_exists = _git(inner_repo, ["rev-parse", "--verify", target_branch])
+        if branch_exists.returncode != 0:
+            return f"Configured Selena branch not found locally in inner repo: {target_branch}", ""
+
+        # Create an isolated worktree on the target branch. The worktree shares
+        # the main repo's .git objects/refs but has its own working tree + HEAD,
+        # so concurrent builds on different branches don't collide.
+        worktree_path = tempfile.mkdtemp(prefix="rsim_wt_")
+        # Remove the empty dir — git worktree add wants to create it itself.
+        os.rmdir(worktree_path)
+        add = _git(inner_repo, ["worktree", "add", "--detach", worktree_path, target_branch], timeout=120)
+        if add.returncode != 0:
+            stderr = add.stderr.strip() or add.stdout.strip()
+            # Clean up the temp path on failure.
+            shutil.rmtree(worktree_path, ignore_errors=True)
+            _git(inner_repo, ["worktree", "prune"])
+            return f"Failed to create worktree for branch '{target_branch}': {stderr}", ""
+        return "", worktree_path
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        return f"Failed to prepare worktree: {exc}", ""
+
+
+def cleanup_repo_worktree(worktree_path: str) -> None:
+    """Remove a worktree created by prepare_repo_worktree and prune."""
+    if not worktree_path:
+        return
+    try:
+        # `git worktree remove` is cleaner than rmtree (updates admin files).
+        wt_dir = Path(worktree_path)
+        # The worktree's .git is a file pointing back to the main repo; find the
+        # main repo via the worktree's .git file to prune correctly.
+        git_file = wt_dir / ".git"
+        main_repo = ""
+        if git_file.is_file():
+            line = git_file.read_text(encoding="utf-8", errors="replace").strip()
+            if line.startswith("gitdir:"):
+                # gitdir: /path/to/main/.git/worktrees/<name>
+                main_git = Path(line.split(":", 1)[1].strip())
+                # Resolve the main repo root (parents: <wt>/.git -> main/.git/worktrees/<name> -> main/.git -> main)
+                main_repo = str(main_git.parents[1])
+        shutil.rmtree(worktree_path, ignore_errors=True)
+        if main_repo and Path(main_repo).exists():
+            _git(main_repo, ["worktree", "prune"])
+        elif wt_dir.exists():
+            # Fallback: try rmtree on the worktree path directly.
+            shutil.rmtree(worktree_path, ignore_errors=True)
+    except Exception:
+        # Best-effort cleanup — never let it mask the real result.
+        pass
 
 
 def _has_tracked_changes(porcelain_output: str) -> bool:

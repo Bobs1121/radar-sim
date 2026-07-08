@@ -238,6 +238,7 @@ def make_control_handler(service, allowed_task_types=None):
                         payload=require_object(payload, "payload"),
                         tasks=tasks,
                         metadata=require_object(payload, "metadata"),
+                        assigned_agent_id=require_string(payload, "assigned_agent_id"),
                     ),
                     201,
                 )
