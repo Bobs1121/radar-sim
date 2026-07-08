@@ -11,6 +11,7 @@ import html
 import os
 import re
 import shutil
+import sys
 import socket
 import subprocess
 import time
@@ -610,6 +611,19 @@ def prepare_cluster_job(
     data_dir = job_dir / "data"
     output_dir = job_dir / "output"
     selena_dir = job_dir / "selena"
+    # Cross-platform guard: a Windows UNC workspace_root (\\host\share) is not
+    # writable on Linux/macOS — Path() would silently create a garbled local
+    # directory like "./\host\share" instead of writing to the share. Fail loud
+    # so the operator mounts the share and points workspace_root at the mount.
+    workspace_root = str(cluster.get("workspace_root") or "")
+    if workspace_root.startswith("\\\\") and not sys.platform.startswith("win"):
+        raise RuntimeError(
+            f"cluster.workspace_root is a Windows UNC path ({workspace_root!r}) "
+            f"but this machine is {sys.platform}. Mount the SMB share (e.g. "
+            f"sudo mount -t cifs //{workspace_root[2:].split(chr(92))[0]}/{workspace_root[2:].split(chr(92),1)[1].replace(chr(92),'/')} "
+            f"/mnt/cluster) and set workspace_root to the mount point (e.g. /mnt/cluster) "
+            f"in local.yaml."
+        )
     for path in (assets_dir, data_dir, output_dir):
         path.mkdir(parents=True, exist_ok=True)
 
