@@ -34,22 +34,22 @@ function selectedBackend() {
 // ---------- Project / config loading ----------
 
 async function loadConfigFiles() {
-  const data = await api("/api/config/list-files");
-  const select = qs("configFileSelect");
-  const previous = select.value;
-  select.innerHTML = "";
-  (data.files || []).forEach((f) => {
-    const option = document.createElement("option");
-    option.value = f.path; option.textContent = f.project;
-    select.appendChild(option);
-  });
-  if (data.files && data.files.length) {
-    // Keep the current selection if it's still in the list; otherwise pick the first.
-    const stillThere = previous && data.files.some((f) => f.path === previous);
-    const pick = stillThere ? previous : data.files[0].path;
-    state.localYamlPath = pick;
-    state.project = (data.files.find((f) => f.path === pick) || data.files[0]).project;
-    select.value = pick;
+  // Single-config mode: fetch the active config pinned by RSIM_CONFIG (or the
+  // default project). The project picker is hidden — users don't see
+  // ovrs25/bydod25; they operate on one local.yaml.
+  try {
+    const info = await api("/api/active-config");
+    state.project = info.project || "";
+    state.localYamlPath = info.config_path || "";
+    const label = qs("activeConfigLabel");
+    if (label) label.textContent = info.config_path ? `配置: ${info.config_path}` : "";
+  } catch (e) {
+    // Fallback: list-files first entry.
+    const data = await api("/api/config/list-files");
+    if (data.files && data.files.length) {
+      state.localYamlPath = data.files[0].path;
+      state.project = data.files[0].project;
+    }
   }
 }
 
@@ -386,10 +386,6 @@ function updateClusterProfileDetail() {
   qs("clusterProfileDetail").textContent = opt ? opt.textContent : "";
 }
 
-function selectedClusterSelenaSource() {
-  const el = document.querySelector('input[name="clusterSelenaSource"]:checked');
-  return el ? el.value : "profile";
-}
 function selectedClusterDataSource() {
   const el = document.querySelector('input[name="clusterDataSource"]:checked');
   return el ? el.value : "dataset";
@@ -397,16 +393,9 @@ function selectedClusterDataSource() {
 
 async function startClusterRun() {
   const project = activeProject();
-  const selenaSource = selectedClusterSelenaSource();
+  const profile = qs("clusterProfileSelect").value;
+  if (!profile) { alert("请选择一个 cluster profile"); return; }
   const dataSource = selectedClusterDataSource();
-  let profile = "";
-  if (selenaSource === "profile") {
-    profile = qs("clusterProfileSelect").value;
-    if (!profile) { alert("请选择一个 cluster profile"); return; }
-  } else {
-    profile = qs("clusterUploadProfile").value.trim();
-    if (!profile) { alert("请填入已上传的 profile 名（或先在本机跑 rsim cluster upload-selena）"); return; }
-  }
   let input_mf4 = "", dataset = "";
   if (dataSource === "dataset") {
     dataset = qs("clusterDatasetSelect").value;
@@ -454,9 +443,13 @@ async function pollCluster() {
 
 async function runEnvCheck() {
   const backend = qs("envCheckBackend").value;
+  // Pass the currently-selected cluster profile so the check inspects the
+  // actual selena.exe/runtime_xml the user will submit with.
+  const profile = qs("clusterProfileSelect") ? qs("clusterProfileSelect").value : "";
   qs("envCheckSummary").textContent = "校验中...";
   qs("envCheckList").innerHTML = "";
-  const data = await api(`/api/check?project=${encodeURIComponent(activeProject())}&backend=${backend}`);
+  const url = `/api/check?project=${encodeURIComponent(activeProject())}&backend=${backend}` + (profile ? `&profile=${encodeURIComponent(profile)}` : "");
+  const data = await api(url);
   renderCheckItems(data);
   qs("envCheckSummary").textContent = data.ok
     ? `通过 (${data.items.length} 项, ${data.warnings.length} warning)`
@@ -520,9 +513,6 @@ function switchView(name) {
 
 function bindEvents() {
   document.querySelectorAll(".nav-button").forEach((btn) => btn.addEventListener("click", () => switchView(btn.dataset.view)));
-  qs("configFileSelect").addEventListener("change", () => {
-    loadAllTabs(qs("configFileSelect").value);
-  });
   // Source radio toggles (sim tab)
   document.querySelectorAll('input[name="selenaSource"]').forEach((r) => r.addEventListener("change", () => toggleSourceBlocks(selectedSource())));
   document.querySelectorAll('input[name="cfgSource"]').forEach((r) => r.addEventListener("change", () => toggleCfgExe(r.value)));
@@ -530,18 +520,10 @@ function bindEvents() {
   document.querySelectorAll('input[name="backend"]').forEach((r) => r.addEventListener("change", updateDataHint));
   qs("buildBtn").addEventListener("click", startBuild);
   qs("simBtn").addEventListener("click", startSim);
-  qs("newConfigBtn").addEventListener("click", newProject);
-  qs("importConfigBtn").addEventListener("click", () => qs("importFileInput").click());
-  qs("importFileInput").addEventListener("change", importConfig);
-  qs("exportConfigBtn").addEventListener("click", exportConfig);
   qs("envCheckBtn").addEventListener("click", runEnvCheck);
   qs("autoRepairBtn").addEventListener("click", () => runRepair("auto_repair_all"));
   qs("saveConfigBtn").addEventListener("click", saveConfig);
   // Cluster tab bindings
-  document.querySelectorAll('input[name="clusterSelenaSource"]').forEach((r) => r.addEventListener("change", () => {
-    qs("clusterSelenaProfile").style.display = selectedClusterSelenaSource() === "profile" ? "" : "none";
-    qs("clusterSelenaUpload").style.display = selectedClusterSelenaSource() === "upload" ? "" : "none";
-  }));
   document.querySelectorAll('input[name="clusterDataSource"]').forEach((r) => r.addEventListener("change", () => {
     qs("clusterDataDataset").style.display = selectedClusterDataSource() === "dataset" ? "" : "none";
     qs("clusterDataPath").style.display = selectedClusterDataSource() === "path" ? "" : "none";
@@ -560,13 +542,6 @@ const LS = {
 async function init() {
   bindEvents();
   await loadConfigFiles();
-  // Restore last-selected config file if still in the list.
-  const savedPath = LS.get("currentConfigPath");
-  if (savedPath) {
-    const sel = qs("configFileSelect");
-    const stillThere = Array.from(sel.options).some((o) => o.value === savedPath);
-    if (stillThere) { sel.value = savedPath; }
-  }
   if (state.localYamlPath) {
     await loadAllTabs(state.localYamlPath);
   }

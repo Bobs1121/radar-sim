@@ -225,9 +225,11 @@ def check_cluster_environment(config: dict[str, Any], *, profile: str = "") -> l
         _path_item("database.py", software_path / "database.py"),
         _path_item("simulation_runtime.py", software_path / "simulation_runtime.py"),
         _path_item("Cluster workspace root", workspace_root, must_be_dir=True),
-        CheckItem("Python for client.py", python_ok or (submit_mode == "xmlrpc" and manager.ok), python_detail),
+        CheckItem("Python for client.py", python_ok or (submit_mode == "xmlrpc" and manager.ok), python_detail,
+                  severity="info" if (python_ok or (submit_mode == "xmlrpc" and manager.ok)) else "warning"),
         manager,
-        CheckItem("Submit path", (python_ok and submit_mode == "client") or (submit_mode == "xmlrpc" and manager.ok), submit_mode),
+        CheckItem("Submit path", (python_ok and submit_mode == "client") or (submit_mode == "xmlrpc" and manager.ok), submit_mode,
+                  severity="info" if ((python_ok and submit_mode == "client") or (submit_mode == "xmlrpc" and manager.ok)) else "error"),
     ]
 
     writable_detail = "not checked"
@@ -241,12 +243,13 @@ def check_cluster_environment(config: dict[str, Any], *, profile: str = "") -> l
         writable_detail = str(probe_file)
     except Exception as exc:  # pragma: no cover - depends on network state
         writable_detail = str(exc)
-    items.append(CheckItem("Workspace write probe", writable_ok, writable_detail))
+    items.append(CheckItem("Workspace write probe", writable_ok, writable_detail,
+                           severity="info" if writable_ok else "error"))
 
     for dep in cluster.get("dependency_paths", []) or []:
         items.append(_path_item(f"Worker dependency path: {dep}", Path(dep), must_be_dir=True))
     active_profile = str(cluster.get("active_profile") or profile or "default")
-    items.append(CheckItem("Cluster profile", True, active_profile))
+    items.append(CheckItem("Cluster profile", True, active_profile, severity="info"))
     selena_exe = str(cluster.get("selena_exe") or resolve_selena_executable(config) or "")
     if selena_exe:
         items.append(_path_item("Profile Selena executable", Path(selena_exe)))
@@ -872,9 +875,9 @@ def _manager_item(cluster: dict[str, Any]) -> CheckItem:
     port = int(cluster.get("manager_port") or 8123)
     try:
         with socket.create_connection((host, port), timeout=3):
-            return CheckItem("Manager XML-RPC port", True, f"{host}:{port}")
+            return CheckItem("Manager XML-RPC port", True, f"{host}:{port}", severity="info")
     except Exception as exc:
-        return CheckItem("Manager XML-RPC port", False, f"{host}:{port} ({exc})")
+        return CheckItem("Manager XML-RPC port", False, f"{host}:{port} ({exc})", severity="error")
 
 
 def _resolve_submit_mode(cluster: dict[str, Any]) -> str:
@@ -1053,7 +1056,9 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 def _path_item(name: str, path: Path, *, must_be_dir: bool = False) -> CheckItem:
     exists = path.is_dir() if must_be_dir else path.exists()
-    return CheckItem(name, exists, str(path))
+    # severity must agree with ok so the display layer (which keys off severity)
+    # shows OK for passing checks, not "!!". info = passed, error = blocking.
+    return CheckItem(name, exists, str(path), severity="info" if exists else "error")
 
 
 def _client_path(cluster: dict[str, Any]) -> Path:

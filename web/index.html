@@ -30,13 +30,7 @@
             <p id="viewSub">选 Selena 来源 + 数据 + 执行方式，一键仿真</p>
           </div>
           <div class="topbar-right">
-            <label class="project-picker">
-              <span>配置文件</span>
-              <select id="configFileSelect"></select>
-            </label>
-            <button id="newConfigBtn" class="btn-small">新建</button>
-            <button id="importConfigBtn" class="btn-small">导入</button>
-            <button id="exportConfigBtn" class="btn-small">导出</button>
+            <span id="activeConfigLabel" class="hint"></span>
             <input type="file" id="importFileInput" accept=".yaml,.yml" style="display:none" />
           </div>
         </header>
@@ -94,21 +88,11 @@
         <section class="view" id="view-cluster">
           <div id="clusterModeBanner" class="hint" style="margin-bottom:8px"></div>
           <section class="panel">
-            <h2>① Selena 来源</h2>
-            <div class="radio-row">
-              <label class="checkline"><input type="radio" name="clusterSelenaSource" value="profile" checked /> 从 Profile 选择（共享 Selena）</label>
-              <label class="checkline"><input type="radio" name="clusterSelenaSource" value="upload" /> 上传本机编译的 Selena（T2）</label>
-            </div>
-            <div id="clusterSelenaProfile" class="source-block">
-              <label>Cluster Profile
-                <select id="clusterProfileSelect"><option value="">加载中...</option></select>
-              </label>
-              <div id="clusterProfileDetail" class="hint"></div>
-            </div>
-            <div id="clusterSelenaUpload" class="source-block" style="display:none">
-              <p class="hint">先在本机执行 <code>rsim cluster upload-selena</code> 上传 Selena 到集群共享，上传后会生成 profile 名。在此填入该 profile 名：</p>
-              <label>已上传的 profile 名 <input id="clusterUploadProfile" placeholder="selena-20260708_153000" /></label>
-            </div>
+            <h2>① Profile</h2>
+            <label>Cluster Profile（Selena 来源由 profile 决定，无需手选）
+              <select id="clusterProfileSelect"><option value="">加载中...</option></select>
+            </label>
+            <div id="clusterProfileDetail" class="hint"></div>
           </section>
 
           <section class="panel">

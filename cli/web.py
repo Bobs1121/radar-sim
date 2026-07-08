@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -51,13 +52,29 @@ def register(subparsers):
 _WEB_MODE = "embedded"  # "embedded" | "remote" | "legacy"
 _REMOTE_SERVER_URL = ""
 _REMOTE_USER = ""
+_ACTIVE_CONFIG_PATH = ""  # set by RSIM_CONFIG env var — pins the single local.yaml
+_ACTIVE_PROJECT = ""
 
 
 def run(args, config):
-    global _WEB_MODE, _REMOTE_SERVER_URL, _REMOTE_USER
+    global _WEB_MODE, _REMOTE_SERVER_URL, _REMOTE_USER, _ACTIVE_CONFIG_PATH, _ACTIVE_PROJECT
     host = getattr(args, "host", "127.0.0.1")
     port = int(getattr(args, "port", 8765))
     default_project = getattr(args, "project", None) or config.get("_meta", {}).get("project") or ""
+
+    # "Only one local.yaml" mode: RSIM_CONFIG pins a single config file so the
+    # web UI never exposes the project dimension (ovrs25/bydod25). If set, web
+    # loads this path and hides the project picker.
+    rsim_config_env = os.environ.get("RSIM_CONFIG", "").strip()
+    if rsim_config_env:
+        _ACTIVE_CONFIG_PATH = rsim_config_env
+        try:
+            from pathlib import Path as _P
+            import core.config as _cfgmod
+            _ACTIVE_PROJECT = _P(rsim_config_env).relative_to(_cfgmod.get_projects_dir()).parts[0]
+            default_project = _ACTIVE_PROJECT
+        except Exception:
+            _ACTIVE_PROJECT = default_project
 
     server_url = (getattr(args, "server_url", "") or "").strip()
     if server_url:
@@ -212,6 +229,8 @@ def _make_handler(default_project: str):
             project = query.get("project", [default_project or _default_project()])[0]
             if parsed.path == "/api/server-info":
                 return self._json(_server_info())
+            if parsed.path == "/api/active-config":
+                return self._json({"config_path": _ACTIVE_CONFIG_PATH, "project": _ACTIVE_PROJECT or default_project or _default_project()})
             if parsed.path == "/api/projects":
                 return self._json({"projects": list_projects(), "default": project})
             if parsed.path == "/api/profiles":

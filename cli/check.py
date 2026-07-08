@@ -82,7 +82,9 @@ def _run_backend_check(args, config, backend, profile):
     report = check_for_backend(config, target, profile=profile)
     print(f"Environment check (backend={report.backend}, profile={report.profile}):")
     for item in report.items:
-        if item.ok and item.severity == "info":
+        # ok=True → OK regardless of severity (severity may lag on legacy items);
+        # ok=False → !! for error, W for warning.
+        if item.ok:
             mark = "OK"
         elif item.severity == "warning":
             mark = "W "
