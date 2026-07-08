@@ -625,8 +625,11 @@ def prepare_cluster_job(
     workspace_root = str(cluster.get("workspace_root") or "")
     # The job_dir URL path kept for Config.cfg / submit (UNC so Windows workers
     # and the manager can read it); job_dir_local is where we actually write.
-    job_dir_unc = Path(workspace_root) / cluster["project_folder"] / project_key / run_id
-    job_dir_local = Path(_to_local_path(str(job_dir_unc)))
+    # On non-Windows, Path() joins with '/' which produces mixed separators in
+    # UNC paths (\\host\share/dir/file) that Windows managers can't resolve —
+    # force backslashes in the UNC string.
+    job_dir_unc_str = workspace_root.rstrip("\\/") + "\\" + str(cluster.get("project_folder") or "").strip("/\\") + "\\" + project_key + "\\" + run_id
+    job_dir_local = Path(_to_local_path(job_dir_unc_str))
     assets_dir = job_dir_local / "assets"
     data_dir = job_dir_local / "data"
     output_dir = job_dir_local / "output"
@@ -715,21 +718,23 @@ def prepare_cluster_job(
                 warnings.append(f"Radar orientation auto-detection failed: {exc}")
 
     script_path = job_dir_local / "SIMULATION_RADAR_SIM.py"
+    script_unc = job_dir_unc_str + "\\SIMULATION_RADAR_SIM.py"
     script_path.write_text(
         _render_worker_script(
             software_path=str(cluster["software_path"]),
-            job_dir=str(job_dir_unc),
+            job_dir=job_dir_unc_str,
             dependency_paths=list(cluster.get("dependency_paths", []) or []),
         ),
         encoding="utf-8",
     )
 
     config_path = job_dir_local / "Config.cfg"
+    config_unc = job_dir_unc_str + "\\Config.cfg"
     config_path.write_text(
         _render_config_cfg(
             cluster=cluster,
             sim=sim,
-            simulation_script=str(job_dir_unc / "SIMULATION_RADAR_SIM.py"),
+            simulation_script=script_unc,
             datafile_path=datafile_path,
             selena_exe=selena_exe,
             runtime_xml=copied_assets.get("runtime_xml", sim.get("runtime_xml", "")),
@@ -741,19 +746,18 @@ def prepare_cluster_job(
     )
 
     # submit_command passes config_path to the Windows manager — must be UNC.
-    config_path_unc = str(job_dir_unc / "Config.cfg")
-    submit_command = build_submit_command(Path(config_path_unc), cluster=cluster, username=str(cluster.get("username", "") or ""))
+    submit_command = build_submit_command(Path(config_unc), cluster=cluster, username=str(cluster.get("username", "") or ""))
     manifest = {
         "run_id": run_id,
         "project": project_key,
         "profile": str(cluster.get("active_profile") or profile or "default"),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "job_dir": str(job_dir_unc),
+        "job_dir": job_dir_unc_str,
         "job_dir_local": str(job_dir_local),
-        "config_path": config_path_unc,
-        "simulation_script": str(job_dir_unc / "SIMULATION_RADAR_SIM.py"),
+        "config_path": config_unc,
+        "simulation_script": script_unc,
         "datafile_path": datafile_path,
-        "output_hint": str(job_dir_unc / "output"),
+        "output_hint": job_dir_unc_str + "\\output",
         "selena_exe": selena_exe,
         "assets": copied_assets,
         "submit_command": submit_command,
@@ -765,12 +769,12 @@ def prepare_cluster_job(
     return ClusterJobPackage(
         run_id=run_id,
         profile=str(cluster.get("active_profile") or profile or "default"),
-        job_dir=str(job_dir_unc),
-        config_path=config_path_unc,
-        simulation_script=str(job_dir_unc / "SIMULATION_RADAR_SIM.py"),
+        job_dir=job_dir_unc_str,
+        config_path=config_unc,
+        simulation_script=script_unc,
         manifest_path=str(manifest_path),
         datafile_path=datafile_path,
-        output_hint=str(job_dir_unc / "output"),
+        output_hint=job_dir_unc_str + "\\output",
         submit_command=submit_command,
         warnings=warnings,
     )
@@ -882,7 +886,7 @@ def _submit_via_xmlrpc(config_path: str, config: dict[str, Any], cluster: dict[s
             if config_path.lower().startswith(unc_prefix.lower()):
                 local_config = mount + config_path[len(unc_prefix):].replace("\\", "/")
                 break
-    validation_errors = _validate_submit_package(Path(local_config))
+    validation_errors = _validate_submit_package(Path(local_config), mount_map=mount_map or None)
     command = ["xmlrpc", _manager_url(cluster), "addSimulation", str(config_file)]
     if validation_errors:
         return SubmitResult(
@@ -924,7 +928,7 @@ def _manager_url(cluster: dict[str, Any]) -> str:
     return f"http://{host}:{port}"
 
 
-def _validate_submit_package(config_path: Path) -> list[str]:
+def _validate_submit_package(config_path: Path, mount_map: dict[str, str] | None = None) -> list[str]:
     if not config_path.exists():
         return [f"Config.cfg not found: {config_path}"]
     cfg = _parse_simple_cfg(config_path.read_text(encoding="utf-8", errors="replace"))
@@ -946,16 +950,29 @@ def _validate_submit_package(config_path: Path) -> list[str]:
     for key in required:
         if key not in cfg:
             errors.append(f"Missing Config.cfg key: {key}")
+
+    def _local(p: str) -> str:
+        """Resolve a UNC path to local mount for existence checks (Linux)."""
+        if not p or not mount_map or sys.platform.startswith("win"):
+            return p
+        for unc_prefix, mount in mount_map.items():
+            if p.lower().startswith(unc_prefix.lower()):
+                return mount + p[len(unc_prefix):].replace("\\", "/")
+        return p
+
     script = cfg.get("simulation", "")
     if script:
-        script_path = Path(script)
+        script_path = Path(_local(script))
         if not script_path.exists():
             errors.append(f"Simulation script not found: {script}")
         elif "sys.path.append" not in script_path.read_text(encoding="utf-8", errors="replace"):
             errors.append("Simulation script does not contain sys.path.append for Cluster software path")
     datafile_path = cfg.get("datafile_path", "")
-    if datafile_path and not Path(datafile_path).exists():
-        errors.append(f"Datafile path not found: {datafile_path}")
+    if datafile_path:
+        local_df = _local(datafile_path)
+        # A dataset directory is valid as datafile_path; accept dir or file.
+        if not Path(local_df).exists():
+            errors.append(f"Datafile path not found: {datafile_path}")
     return errors
 
 
