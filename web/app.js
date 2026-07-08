@@ -2,6 +2,7 @@ const state = { project: "", buildTaskId: null, simTaskId: null, pollTimer: null
 
 const titles = {
   sim: ["仿真", "选 Selena 来源 + 数据 + 执行方式，一键仿真"],
+  cluster: ["Cluster 仿真", "提交到 SZHRADAR 集群执行（无需本机工具链）"],
   check: ["环境校验", "多分支/多仓/多数据统一校验 + 修复"],
   config: ["配置", "用户私有配置（存 local.yaml，切项目自动带出）"],
 };
@@ -60,6 +61,9 @@ async function loadAllTabs(path) {
   LS.set("currentConfigPath", path);
   applyUserConfig(data.user_config);
   setLog("configOutput", data.effective_config);
+  // Cluster tab depends on project config too.
+  loadClusterProfiles();
+  loadClusterDatasets();
 }
 
 function applyUserConfig(uc) {
@@ -311,7 +315,130 @@ async function pollSim() {
   }
 }
 
-// ---------- Environment check + repair ----------
+// ---------- Cluster tab (T3: no Windows needed) ----------
+
+let clusterSince = 0;
+let serverInfo = null;
+
+async function loadServerInfo() {
+  try {
+    serverInfo = await api("/api/server-info");
+  } catch { serverInfo = { mode: "embedded", local_sim_available: true, cluster_executor: false }; }
+  const banner = qs("clusterModeBanner");
+  if (!serverInfo) return;
+  if (serverInfo.mode === "remote") {
+    if (serverInfo.cluster_executor) {
+      banner.textContent = "✓ 连接到集群服务，server 端直接执行 cluster 仿真（无需 Windows agent）";
+    } else if (serverInfo.local_sim_available) {
+      banner.textContent = "✓ 连接到控制服务，有 Windows agent 可执行";
+    } else {
+      banner.textContent = "⚠ 连接到控制服务，但无 agent 在线 —— cluster 任务将排队等待";
+    }
+  } else if (serverInfo.mode === "embedded") {
+    banner.textContent = serverInfo.local_sim_available
+      ? "本机模式（内置 server+agent）"
+      : "本机模式（Linux，无本地仿真能力，仅可提交 cluster）";
+  }
+}
+
+async function loadClusterProfiles() {
+  const sel = qs("clusterProfileSelect");
+  try {
+    const project = activeProject();
+    const data = await api(`/api/cluster/profiles?project=${encodeURIComponent(project)}`);
+    const profiles = data.profiles || [];
+    sel.innerHTML = profiles.length
+      ? profiles.map((p) => `<option value="${p.name}">${p.name} — ${p.description || p.backend || ""}</option>`).join("")
+      : "<option value=''>（无 cluster profile）</option>";
+    updateClusterProfileDetail();
+  } catch (e) { sel.innerHTML = `<option value=''>加载失败: ${e.message}</option>`; }
+}
+
+function updateClusterProfileDetail() {
+  const sel = qs("clusterProfileSelect");
+  const opt = sel.options[sel.selectedIndex];
+  qs("clusterProfileDetail").textContent = opt ? opt.textContent : "";
+}
+
+async function loadClusterDatasets() {
+  const sel = qs("clusterDatasetSelect");
+  try {
+    const project = activeProject();
+    const data = await api(`/api/profiles?project=${encodeURIComponent(project)}`);
+    // Datasets live in the merged config; fetch via /api/config/load to get them.
+    const cfg = await api(`/api/config/load?project=${encodeURIComponent(project)}`);
+    const datasets = (cfg.config && cfg.config.simulation && cfg.config.simulation.datasets) || [];
+    sel.innerHTML = datasets.length
+      ? datasets.map((d) => `<option value="${d.name}">${d.name}</option>`).join("")
+      : "<option value=''>（无数据集，改用路径）</option>";
+  } catch (e) { sel.innerHTML = `<option value=''>加载失败: ${e.message}</option>`; }
+}
+
+function selectedClusterSelenaSource() {
+  const el = document.querySelector('input[name="clusterSelenaSource"]:checked');
+  return el ? el.value : "profile";
+}
+function selectedClusterDataSource() {
+  const el = document.querySelector('input[name="clusterDataSource"]:checked');
+  return el ? el.value : "dataset";
+}
+
+async function startClusterRun() {
+  const project = activeProject();
+  const selenaSource = selectedClusterSelenaSource();
+  const dataSource = selectedClusterDataSource();
+  let profile = "";
+  if (selenaSource === "profile") {
+    profile = qs("clusterProfileSelect").value;
+    if (!profile) { alert("请选择一个 cluster profile"); return; }
+  } else {
+    profile = qs("clusterUploadProfile").value.trim();
+    if (!profile) { alert("请填入已上传的 profile 名（或先在本机跑 rsim cluster upload-selena）"); return; }
+  }
+  let input_mf4 = "", dataset = "";
+  if (dataSource === "dataset") {
+    dataset = qs("clusterDatasetSelect").value;
+    if (!dataset) { alert("请选择数据集"); return; }
+  } else {
+    input_mf4 = qs("clusterInputMf4").value.trim();
+    if (!input_mf4) { alert("请填写输入 MF4 路径"); return; }
+  }
+  const dryRun = qs("clusterDryRun").checked;
+  const body = { project, profile, dataset, input_mf4, execute: !dryRun };
+  qs("clusterStatus").textContent = "提交中...";
+  qs("clusterLog").textContent = "";
+  clusterSince = 0;
+  try {
+    const res = await api("/api/cluster/submit-job", {
+      method: "POST", body: JSON.stringify(body),
+    });
+    state.clusterJobId = res.job_id;
+    LS.set("lastClusterJobId", res.job_id);
+    qs("clusterStatus").textContent = `已提交 job ${res.job_id}（${dryRun ? "dry-run" : "执行中"}）`;
+    pollCluster();
+  } catch (e) {
+    qs("clusterStatus").textContent = `提交失败: ${e.message}`;
+  }
+}
+
+async function pollCluster() {
+  if (!state.clusterJobId) return;
+  const data = await api(`/api/sim/status?task_id=${state.clusterJobId}&since=${clusterSince}`);
+  if (!data.found) { qs("clusterSummary").textContent = "任务未找到"; return; }
+  if (data.lines && data.lines.length) {
+    const log = qs("clusterLog");
+    log.textContent += data.lines.join("\n") + "\n";
+    log.scrollTop = log.scrollHeight;
+  }
+  clusterSince = data.total_lines;
+  qs("clusterSummary").textContent = `${data.status} (${data.duration_sec}s)`;
+  if (data.status === "running" || data.status === "queued") {
+    setTimeout(pollCluster, 2000);
+  } else {
+    state.clusterJobId = null;
+    LS.del("lastClusterJobId");
+  }
+}
 
 async function runEnvCheck() {
   const backend = qs("envCheckBackend").value;
@@ -398,6 +525,17 @@ function bindEvents() {
   qs("envCheckBtn").addEventListener("click", runEnvCheck);
   qs("autoRepairBtn").addEventListener("click", () => runRepair("auto_repair_all"));
   qs("saveConfigBtn").addEventListener("click", saveConfig);
+  // Cluster tab bindings
+  document.querySelectorAll('input[name="clusterSelenaSource"]').forEach((r) => r.addEventListener("change", () => {
+    qs("clusterSelenaProfile").style.display = selectedClusterSelenaSource() === "profile" ? "" : "none";
+    qs("clusterSelenaUpload").style.display = selectedClusterSelenaSource() === "upload" ? "" : "none";
+  }));
+  document.querySelectorAll('input[name="clusterDataSource"]').forEach((r) => r.addEventListener("change", () => {
+    qs("clusterDataDataset").style.display = selectedClusterDataSource() === "dataset" ? "" : "none";
+    qs("clusterDataPath").style.display = selectedClusterDataSource() === "path" ? "" : "none";
+  }));
+  qs("clusterProfileSelect").addEventListener("change", updateClusterProfileDetail);
+  qs("clusterRunBtn").addEventListener("click", startClusterRun);
 }
 
 // ---------- localStorage persistence (refresh recovery) ----------
@@ -436,6 +574,18 @@ async function init() {
       // Task already finished — clear so we don't keep resuming.
       LS.del("lastTaskId"); LS.del("lastTaskKind");
     }
+  }
+  // Load server info + resume cluster job polling if refreshed mid-run.
+  loadServerInfo();
+  const lastCluster = LS.get("lastClusterJobId");
+  if (lastCluster) {
+    const snap = await api(`/api/sim/status?task_id=${lastCluster}&since=0`).catch(() => null);
+    if (snap && snap.found && (snap.status === "running" || snap.status === "queued")) {
+      state.clusterJobId = lastCluster;
+      clusterSince = snap.total_lines || 0;
+      setLog("clusterLog", (snap.lines || []).join("\n"));
+      pollCluster();
+    } else { LS.del("lastClusterJobId"); }
   }
 }
 

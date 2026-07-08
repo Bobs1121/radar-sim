@@ -18,6 +18,7 @@
           </div>
         </div>
         <button class="nav-button active" data-view="sim">仿真</button>
+        <button class="nav-button" data-view="cluster">Cluster 仿真</button>
         <button class="nav-button" data-view="check">环境校验</button>
         <button class="nav-button" data-view="config">配置</button>
       </aside>
@@ -86,6 +87,59 @@
             <h2>状态 / 日志</h2>
             <div id="simSummary" class="hint"></div>
             <pre id="simLog" class="log"></pre>
+          </section>
+        </section>
+
+        <!-- Cluster 仿真 tab: 无 Windows 也能用，提交到集群 -->
+        <section class="view" id="view-cluster">
+          <div id="clusterModeBanner" class="hint" style="margin-bottom:8px"></div>
+          <section class="panel">
+            <h2>① Selena 来源</h2>
+            <div class="radio-row">
+              <label class="checkline"><input type="radio" name="clusterSelenaSource" value="profile" checked /> 从 Profile 选择（共享 Selena）</label>
+              <label class="checkline"><input type="radio" name="clusterSelenaSource" value="upload" /> 上传本机编译的 Selena（T2）</label>
+            </div>
+            <div id="clusterSelenaProfile" class="source-block">
+              <label>Cluster Profile
+                <select id="clusterProfileSelect"><option value="">加载中...</option></select>
+              </label>
+              <div id="clusterProfileDetail" class="hint"></div>
+            </div>
+            <div id="clusterSelenaUpload" class="source-block" style="display:none">
+              <p class="hint">先在本机执行 <code>rsim cluster upload-selena</code> 上传 Selena 到集群共享，上传后会生成 profile 名。在此填入该 profile 名：</p>
+              <label>已上传的 profile 名 <input id="clusterUploadProfile" placeholder="selena-20260708_153000" /></label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>② 数据</h2>
+            <div class="radio-row">
+              <label class="checkline"><input type="radio" name="clusterDataSource" value="dataset" checked /> 选择数据集</label>
+              <label class="checkline"><input type="radio" name="clusterDataSource" value="path" /> 指定 MF4 路径</label>
+            </div>
+            <div id="clusterDataDataset" class="source-block">
+              <label>数据集
+                <select id="clusterDatasetSelect"><option value="">加载中...</option></select>
+              </label>
+            </div>
+            <div id="clusterDataPath" class="source-block" style="display:none">
+              <label>输入 MF4 / 目录 (UNC 或本地路径) <input id="clusterInputMf4" placeholder="\\share\...\case.MF4" /></label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>③ 执行</h2>
+            <div class="toolbar">
+              <button id="clusterRunBtn">提交 Cluster 仿真</button>
+              <label class="checkline"><input type="checkbox" id="clusterDryRun" /> 仅准备 (dry-run，不实际提交)</label>
+              <span id="clusterStatus" class="hint"></span>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>状态 / 日志</h2>
+            <div id="clusterSummary" class="hint"></div>
+            <pre id="clusterLog" class="log"></pre>
           </section>
         </section>
 

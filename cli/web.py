@@ -47,7 +47,14 @@ def register(subparsers):
                         "Jobs/logs are isolated per-user on the server.")
 
 
+# Module-level web mode state (set in run(), read by _server_info).
+_WEB_MODE = "embedded"  # "embedded" | "remote" | "legacy"
+_REMOTE_SERVER_URL = ""
+_REMOTE_USER = ""
+
+
 def run(args, config):
+    global _WEB_MODE, _REMOTE_SERVER_URL, _REMOTE_USER
     host = getattr(args, "host", "127.0.0.1")
     port = int(getattr(args, "port", 8765))
     default_project = getattr(args, "project", None) or config.get("_meta", {}).get("project") or ""
@@ -61,12 +68,17 @@ def run(args, config):
         user = (getattr(args, "user", "") or "").strip() or current_user()
         client = RemoteControlClient(server_url, user)
         web_control.set_remote_client(client)
+        _WEB_MODE = "remote"
+        _REMOTE_SERVER_URL = server_url
+        _REMOTE_USER = user
         print(f"Control plane: remote {server_url} (user={user})", flush=True)
         print("Tasks execute on the remote server's agent; this web instance only submits/polls.", flush=True)
     elif not getattr(args, "no_control", False):
         control_url = _start_embedded_control(getattr(args, "control_port", 8877))
+        _WEB_MODE = "embedded"
         print(f"Control plane: {control_url} (embedded server + agent)", flush=True)
     else:
+        _WEB_MODE = "legacy"
         print("Control plane: disabled (--no-control), using legacy BuildTaskRegistry", flush=True)
 
     handler = _make_handler(default_project)
@@ -198,6 +210,8 @@ def _make_handler(default_project: str):
         def _handle_api_get(self, parsed):
             query = parse_qs(parsed.query)
             project = query.get("project", [default_project or _default_project()])[0]
+            if parsed.path == "/api/server-info":
+                return self._json(_server_info())
             if parsed.path == "/api/projects":
                 return self._json({"projects": list_projects(), "default": project})
             if parsed.path == "/api/profiles":
@@ -460,6 +474,21 @@ def _make_handler(default_project: str):
                     "package": package_to_dict(package),
                     "submit": result.__dict__,
                 })
+            if parsed.path == "/api/cluster/submit-job":
+                # Submit a cluster.run job through the control plane (has job
+                # tracking, logs, status). Used by the Cluster tab in the UI.
+                import core.web_control as web_control
+                job_id = web_control.start_cluster_via_control(
+                    project,
+                    dataset=payload.get("dataset", ""),
+                    input_mf4=payload.get("input_mf4", "") or payload.get("input_path", ""),
+                    profile=payload.get("profile", ""),
+                    run_id=payload.get("run_id", ""),
+                    execute=bool(payload.get("execute", True)),
+                    copy_data=_optional_bool(payload, "copy_data"),
+                    copy_selena=_optional_bool(payload, "copy_selena"),
+                )
+                return self._json({"job_id": job_id, "job_type": "cluster.run"}, 201)
             if parsed.path == "/api/cluster/fetch":
                 result = fetch_cluster_job(
                     payload.get("job_dir", ""),
@@ -493,6 +522,48 @@ def _make_handler(default_project: str):
 def _default_project() -> str:
     projects = list_projects()
     return projects[0] if projects else "default"
+
+
+def _server_info() -> dict:
+    """Return web mode + server capabilities so the frontend can adapt its UI.
+
+    - ``mode``: "embedded" (web has local server+agent) | "remote" (forwarding to
+      a control server) | "legacy" (no control plane).
+    - ``local_sim_available``: True if a Windows agent with local.* capability is
+      reachable (so build/local-sim buttons should be enabled). In embedded mode
+      on Windows this is True; in remote mode we probe the server's agents.
+    - ``cluster_executor``: True if the server has the in-process cluster executor
+      (so cluster.run tasks run on the server itself, no Windows agent needed).
+    """
+    info = {
+        "mode": _WEB_MODE,
+        "local_sim_available": False,
+        "cluster_executor": False,
+        "server_url": _REMOTE_SERVER_URL,
+    }
+    if _WEB_MODE == "embedded":
+        # Embedded server+agent on this machine. Local sim available if this
+        # machine is Windows (has the selena toolchain) — Linux web host can't
+        # run local.build_selena / local.run_sim.
+        info["local_sim_available"] = sys.platform.startswith("win")
+        # Embedded mode doesn't start the cluster executor by default (that's a
+        # server-side flag); cluster runs go through the local agent.
+        info["cluster_executor"] = False
+    elif _WEB_MODE == "remote":
+        # Probe the remote server: list agents and infer capabilities.
+        try:
+            import core.web_control as web_control
+            agents = web_control.list_agents_via_control() or []
+            for a in agents:
+                caps = a.get("capabilities") or []
+                platform = str(a.get("platform") or "")
+                if any(c.startswith("local.") for c in caps) and "Windows" in platform:
+                    info["local_sim_available"] = True
+                if str(a.get("agent_id") or "") == "server-cluster-executor":
+                    info["cluster_executor"] = True
+        except Exception as exc:
+            info["probe_error"] = str(exc)
+    return info
 
 
 def _tail_task(task_id: str, since: int) -> dict:

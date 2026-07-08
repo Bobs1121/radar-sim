@@ -90,6 +90,32 @@ def start_sim_via_control(project: str, *, backend: str, data_path: str, dry_run
     return job["job_id"]
 
 
+def start_cluster_via_control(project: str, *, dataset: str = "", input_mf4: str = "",
+                              profile: str = "", run_id: str = "", execute: bool = True,
+                              copy_data: bool = False, copy_selena: bool = False) -> str:
+    """Create a cluster.run job on the control plane; return job_id.
+
+    Used by the web frontend's Cluster tab. The job is claimed by the server's
+    cluster executor (Mode A) or a Windows agent with cluster.run capability.
+    """
+    payload = {
+        "project": project,
+        "dataset": dataset,
+        "input_mf4": input_mf4,
+        "input_path": input_mf4,
+        "profile": profile,
+        "run_id": run_id,
+        "execute": bool(execute),
+        "copy_data": bool(copy_data),
+        "copy_selena": bool(copy_selena),
+    }
+    payload = {k: v for k, v in payload.items() if v not in ("", False)}
+    if _REMOTE:
+        return _REMOTE.create_job("cluster.run", payload=payload)["job_id"]
+    job = _service().create_job("cluster.run", payload=payload)
+    return job["job_id"]
+
+
 def start_tcc_via_control(project: str, action: str, toolcollection: str = "") -> str:
     """Create a TCC job; return job_id.
 
