@@ -89,13 +89,14 @@ start_server() {
         c_yellow "control server 已在运行 (PID $(cat "$SERVER_PID_FILE"))"
         return
     fi
-    c_cyan "==> 启动 control server (端口 $SERVER_PORT, cluster-only)"
+    c_cyan "==> 启动 control server (端口 $SERVER_PORT, cluster-only + 内置执行器)"
     mkdir -p "$DATA_DIR/results"
     (
         cd "$INSTALL_DIR"
         RSIM_HOME="$DATA_DIR" nohup python3 rsim.py server serve \
             --host 0.0.0.0 --port "$SERVER_PORT" \
             --allowed-task-types cluster.run \
+            --cluster-executor \
             > "$SERVER_LOG" 2>&1 &
         echo $! > "$SERVER_PID_FILE"
     )

@@ -29,6 +29,15 @@ def register(subparsers):
         "Set to 'cluster.run' for Mode A (Linux cluster-only service) so the server "
         "rejects local.check / local.build_selena / local.run_sim jobs with HTTP 400.",
     )
+    serve.add_argument(
+        "--cluster-executor",
+        action="store_true",
+        help="Start an in-process cluster.run executor (Mode A). The server itself "
+        "claims cluster.run tasks and runs prepare_cluster_job + submit_cluster_job "
+        "directly — no Windows agent needed. Requires PyYAML + write access to the "
+        "cluster workspace share + reachability to SZHRADAR01:8123. Use this so T2/T3 "
+        "users can submit cluster sims from the browser without a Windows machine.",
+    )
 
     create = server_sub.add_parser("create-job", help="Create a control job in the local control DB")
     create.add_argument("job_type", help="Job type, e.g. local.check or local.run_sim")
@@ -158,12 +167,38 @@ def _run_serve(args) -> int:
         print(f"Allowed task types: {', '.join(sorted(allowed))}")
     else:
         print("Allowed task types: all (Mode B — full local+cluster)")
+
+    executor = None
+    if getattr(args, "cluster_executor", False):
+        try:
+            executor = _start_cluster_executor(host, port)
+        except Exception as exc:
+            print(f"[warn] cluster executor not started: {exc}")
+            executor = None
+
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
     finally:
+        if executor is not None:
+            executor.stop()
         server.server_close()
     return 0
+
+
+def _start_cluster_executor(host: str, port: int):
+    """Start the in-process cluster.run executor (Mode A server-side execution)."""
+    from core.server_cluster_executor import ClusterExecutor
+
+    def config_loader(project: str) -> dict:
+        from core.config import load_config
+        return load_config(project or "ovrs25")
+
+    url = f"http://{host}:{port}"
+    executor = ClusterExecutor(url, config_loader, agent_id="server-cluster-executor")
+    executor.start()
+    print(f"[cluster-executor] in-process agent started (claims cluster.run, submits to SZHRADAR)")
+    return executor
 
 
 def _per_user_service_factory():
