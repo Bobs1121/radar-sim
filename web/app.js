@@ -338,6 +338,24 @@ async function loadServerInfo() {
       ? "本机模式（内置 server+agent）"
       : "本机模式（Linux，无本地仿真能力，仅可提交 cluster）";
   }
+  // Adapt UI to server capabilities: if no Windows agent (local sim unavailable),
+  // hide local-sim-only controls on the 仿真 tab and force cluster backend.
+  const localAvailable = !!serverInfo.local_sim_available;
+  document.querySelectorAll('input[name="backend"][value="local"]').forEach((r) => {
+    r.disabled = !localAvailable;
+    const label = r.closest("label");
+    if (label) label.style.display = localAvailable ? "" : "none";
+  });
+  const buildBtn = qs("buildBtn");
+  if (buildBtn) buildBtn.style.display = localAvailable ? "" : "none";
+  // If local unavailable, force cluster backend.
+  if (!localAvailable) {
+    const clusterRadio = document.querySelector('input[name="backend"][value="cluster"]');
+    if (clusterRadio) clusterRadio.checked = true;
+    const buildRadio = document.querySelector('input[name="selenaSource"][value="path"]');
+    if (buildRadio) buildRadio.checked = true;
+    if (typeof toggleSourceBlocks === "function") toggleSourceBlocks("path");
+  }
 }
 
 async function loadClusterProfiles() {
