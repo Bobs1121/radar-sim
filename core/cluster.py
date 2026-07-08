@@ -622,6 +622,15 @@ def prepare_cluster_job(
                 return mount + p[len(unc_prefix):].replace("\\", "/")
         return p
 
+    def _to_unc_path(p: str) -> str:
+        """Mount point -> UNC for Config.cfg content (workers are Windows). No-op on Windows."""
+        if not p or is_windows or not mount_map:
+            return p
+        for unc_prefix, mount in mount_map.items():
+            if p.lower().startswith(mount.lower()):
+                return unc_prefix + p[len(mount):].replace("/", "\\")
+        return p
+
     workspace_root = str(cluster.get("workspace_root") or "")
     # The job_dir URL path kept for Config.cfg / submit (UNC so Windows workers
     # and the manager can read it); job_dir_local is where we actually write.
@@ -666,7 +675,10 @@ def prepare_cluster_job(
         copied = copy_input_data(Path(datafile_path), data_dir)
         datafile_path = str(copied)
 
-    copied_assets = _copy_assets(config, assets_dir, warnings)
+    copied_assets_local = _copy_assets(config, assets_dir, warnings, mount_map=mount_map or None)
+    # Config.cfg needs UNC paths (workers are Windows); copied_assets_local has
+    # mount-point paths from the local write. Translate back to UNC.
+    copied_assets = {k: _to_unc_path(v) for k, v in copied_assets_local.items()}
     local_selena = resolve_selena_executable(config)
     selena_exe = str(cluster.get("selena_exe") or "").strip()
     # Selena source adaptivity:
@@ -1065,15 +1077,25 @@ def _resolve_datafile_path(sim: dict[str, Any], *, input_path: str, dataset: str
     return ""
 
 
-def _copy_assets(config: dict[str, Any], assets_dir: Path, warnings: list[str]) -> dict[str, str]:
+def _copy_assets(config: dict[str, Any], assets_dir: Path, warnings: list[str], mount_map: dict[str, str] | None = None) -> dict[str, str]:
     assets_dir.mkdir(parents=True, exist_ok=True)
     assets = config.get("assets", {}) or {}
     result: dict[str, str] = {}
+    is_windows = sys.platform.startswith("win")
+
+    def _local(p: str) -> str:
+        if not p or is_windows or not mount_map:
+            return p
+        for unc_prefix, mount in mount_map.items():
+            if p.lower().startswith(unc_prefix.lower()):
+                return mount + p[len(unc_prefix):].replace("\\", "/")
+        return p
+
     for key in ("runtime_xml", "matfilefilter", "adapter_file", "config_template"):
         value = str(assets.get(key) or "")
         if not value:
             continue
-        source = Path(value)
+        source = Path(_local(value))
         if not source.exists():
             warnings.append(f"Asset not found: {key} -> {value}")
             continue
