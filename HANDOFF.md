@@ -1079,3 +1079,27 @@ systemd 管理的 server（`rsim-server.service`）+ fstab 持久挂载后，T3 
 - worker 执行 selena，selena.log 末尾 `Thank you for using Selena and have a nice day!`
 - result.ini: `successfull=0, job_id=10339, filesize=393`
 - 证明重启后自动恢复全链路（挂载 + server + 执行器 + 提交 + worker 执行）。
+
+## Web 前端 Cluster tab + 双用户支持（2026-07-08）
+
+### 新增能力
+
+- **`/api/server-info`** 端点（`cli/web.py:_server_info`）：返回 web 模式（embedded/remote/legacy）+ `local_sim_available`（有无 Windows agent）+ `cluster_executor`（server 端执行器）。前端据此显示模式横幅。
+- **`/api/cluster/submit-job`** 端点：通过 control plane 投 `cluster.run` job（`web_control.start_cluster_via_control`），由 server 执行器认领，有完整 job/日志追踪。区别于 `/api/cluster/run`（本机直调，无追踪）。
+- **前端 Cluster 仿真 tab**（`web/index.html` + `web/app.js`）：① Selena 来源（选 profile / 填上传 profile 名）② 数据（选 dataset / 填 MF4 路径）③ 提交（dry-run 选项）④ 状态/日志轮询。支持 T3（无 Windows）和 T1（Windows 本地+cluster）。
+
+### Linux web 服务化
+
+- `rsim-web.service` systemd unit（8765 端口，`--server-url http://127.0.0.1:8877 --no-control`，纯前端转发）。
+- ufw 放行 8765/tcp。
+- 两个 systemd service 都 active：`rsim-server`（8877）+ `rsim-web`（8765），开机自启。
+
+### 端到端验证（web → cluster）
+
+通过 web `/api/cluster/submit-job` 提交 job（verified-shared profile + 单文件 MF4）→ server 执行器认领 → prepare + XML-RPC 提交 → manager 返回 value=1 → `status: success`。日志通过 `/api/sim/status` 轮询回传。前端 JS 从 input 框读路径，无转义问题（之前测试用的内联 python 转义是测试脚本问题，非前端 bug）。
+
+### 服务地址
+
+- **前端 web**：`http://10.190.171.44:8765/`
+- **后端 API**：`http://10.190.171.44:8877/`
+- Windows 用户浏览器访问 8765，Cluster tab 提交仿真；本地仿真走"仿真"tab（需本机 agent）。
