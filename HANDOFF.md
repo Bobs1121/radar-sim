@@ -47,7 +47,7 @@
 
 ### V1 纵向交付状态（2026-07-15）
 
-`YAML -> RadarSimClient.submit_cluster_yaml() -> Linux /api/v1 -> Selena/数据/配置资产准备 -> Stage DAG -> Cluster Config.cfg -> submit_cluster_job() -> Result/Manifest` 已通过真实进程内 HTTP/SDK 纵向测试。调用机可见路径由 SDK 上传；SDK 不可见但 Linux 已挂载可见的共享路径由服务端导入，UNC 会经管理员 `linux_mount_map` 转换。Runtime XML 不再写死为 `Runtime.xml`，Cluster executor 按 Bundle manifest 的 `runtime_config` role 定位。聚焦回归 `101 passed`、全量 `1197 passed, 8 skipped`，UNC 补丁后专项 `45 passed`。当前唯一 V1 发布阻塞是把最新代码同步至 `10.190.171.44` 后完成真实 Cluster 烟测；认证按用户决定延后到下一 Sprint，首版仅在受信内网显式无认证启动。
+`YAML -> RadarSimClient.submit_cluster_yaml() -> Linux /api/v1 -> Selena/数据/配置资产准备 -> Stage DAG -> Cluster Config.cfg -> submit_cluster_job() -> Result/Manifest` 已通过真实 Cluster 纵向测试。调用机可见路径由 SDK 上传；SDK 不可见但 Linux 已挂载可见的共享路径由服务端导入，UNC 会经管理员 `linux_mount_map` 转换。Runtime XML 不再写死为 `Runtime.xml`，Cluster executor 按 Bundle manifest 的 `runtime_config` role 定位。聚焦回归 `101 passed`、全量 `1197 passed, 8 skipped`，UNC 补丁后专项 `45 passed`。目标环境 `job_bad6f07479e5` 已成功完成 1 个任务并产出 537,269,680-byte MF4；Linux 正式用户服务监听 `0.0.0.0:8878`，健康检查 200，认证按用户决定延后到下一 Sprint。当前发布遗留仅为服务器 `8878` 入站网络放行/反向代理；本机可经 SSH 隧道立即验收。
 
 只有具备代码证据和测试证据的实现才能标记完成。已有原型只算“待审计输入”，不算 v5 完成度。
 
@@ -61,10 +61,10 @@
 | WP4 | Selena source resolver、dirty fingerprint、artifact catalog | V1 Done / Full In Progress | V1 existing 路径已接 SDK/Linux 自动导入、内容寻址目录、归档完整性校验和 Cluster 消费；完整产品 build 组合后续继续 |
 | WP5 | Data resolver 与 upload | Done | shared/local/browser/SDK/Agent 数据统一为 `DatasetRef`/`DataLease`，中央多文件 resumable upload 与 Cluster/本地消费闭环完成 |
 | WP6 | Windows full 与 light Agent 执行适配 | In Progress | build/data/full-local 既有路径保留；公开 existing Selena 文件夹仍需接入 full 本地与 full/light 上传 Stage，旧“先登记 Bundle”路径不再算产品完成 |
-| WP7 | Linux central Cluster executor 与平台 Gateway routing | V1 Code Done / Target Smoke Pending | existing + Cluster 从 SDK 到 `submit_cluster_job()` 的 mocked 纵向 E2E 已通过；Linux 可直接导入已挂载共享 Selena；待 10.190.171.44 真实 manager 烟测 |
+| WP7 | Linux central Cluster executor 与平台 Gateway routing | V1 Done | existing + Cluster 从 SDK 到真实 manager 已跑通；`job_bad6f07479e5` succeeded 并产出 537,269,680-byte MF4；Linux 可直接导入已挂载共享 Selena |
 | WP8 | Environment、Preflight、progress、Manifest 集成 | Done | Cluster 与 Windows-local environment/preflight/run/collect/finalize 已接统一 DAG；公共 Manifest/Result ZIP 只含逻辑 ref；外部 Cluster cancel 行为留目标环境验收 |
 | WP9 | Web v5 migration | Done | packaged v1 console 已覆盖最少配置、YAML import/export、上传、任务中心、Stage/event/action、结果下载和 session-only Bearer；认证真实浏览器 smoke 已通过 |
-| WP10 | SDK/package/docs/release gates | V1 In Progress | `submit_cluster_yaml()`、V1 示例、SDK/FastAPI/Cluster 纵向门禁已完成；全量 1197 passed/8 skipped，UNC 补丁专项 45 passed；仅剩 10.190.171.44 真实验收 |
+| WP10 | SDK/package/docs/release gates | V1 Function Done / Network Pending | `submit_cluster_yaml()`、V1 示例、SDK/FastAPI/Cluster 纵向门禁和 10.190.171.44 真实验收均完成；仅剩服务器 8878 入站放行/反向代理 |
 
 当前工作区包含既有未提交代码和测试变更（`cli/*`、`core/*`、`web/*`、`tests/*` 以及新增原型模块）。这些都视为待审计输入，不计入 v5 完成度，直到某个 WP 引用代码证据并通过测试。
 
