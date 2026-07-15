@@ -36,6 +36,8 @@ def test_branch_job_handoffs_environment_to_source_lease_then_build(tmp_path):
             "status": "resolved", "adapter_key": "recipe:demo", "internal_project": "internal-demo",
             "workspace_binding_id": binding_id, "confidence": 1.0, "evidence": ["exact"],
             "asset_bindings": {"runtime_xml": asset_id},
+            "selena_build_script_ref": "selena/build.bat",
+            "package_build_script_ref": "build/package.bat",
         }},
     )
     resolve_stage = next(stage for stage in resolved["stages"] if stage["stage_type"] == "resolve_spec")
@@ -78,6 +80,8 @@ def test_branch_job_handoffs_environment_to_source_lease_then_build(tmp_path):
     assert build["required_agent_id"] == "agent-1"
     assert build["payload"]["source_lease_ref"].startswith("source-lease:sha256:")
     assert build["payload"]["commit"] == "d" * 40
+    assert build["payload"]["selena_build_script_ref"] == "selena/build.bat"
+    assert build["payload"]["package_build_script_ref"] == "build/package.bat"
     public = api.get_job("alice", job["id"])
     assert public["resolved_spec"]["decisions"]["selena"]["action"] == "build_isolated_branch"
     assert "source-lease" not in str(public)

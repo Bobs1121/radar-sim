@@ -53,7 +53,13 @@ def _job(service: ControlService):
                 "stage_type": "environment_check",
                 "dependencies": ["resolve_spec"],
                 "assigned_agent_id": "agent-a",
-                "payload": {"project": "ovrs25", "workspace_binding_id": BINDING_ID, "build_mode": "Release"},
+                "payload": {
+                    "project": "ovrs25",
+                    "workspace_binding_id": BINDING_ID,
+                    "build_mode": "Release",
+                    "selena_build_script_ref": "selena/build.bat",
+                    "package_build_script_ref": "build/package.bat",
+                },
             },
             {
                 "task_type": "prepare_source",
@@ -107,6 +113,8 @@ def test_ready_environment_attempt_binds_build_to_same_required_agent(tmp_path):
     assert bound["required_agent_id"] == "agent-a"
     assert bound["payload"]["workspace_binding_id"] == BINDING_ID
     assert bound["payload"]["environment_snapshot_ref"] == f"{environment['stage_id']}:1"
+    assert bound["payload"]["selena_build_script_ref"] == "selena/build.bat"
+    assert bound["payload"]["package_build_script_ref"] == "build/package.bat"
     assert service.claim_next_task("agent-b") is None
     assert service.claim_next_task("agent-a")["stage_type"] == "build_selena"
 

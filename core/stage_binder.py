@@ -244,6 +244,7 @@ def bind_current_workspace_build(
         agent_id=assigned_agent,
         expected_assigned_agent_id=INTERNAL_V1_SCHEDULER_AGENT_ID,
         payload_patch={
+            "contract": str((job.get("metadata") or {}).get("contract") or ""),
             "project": snapshot.project,
             "workspace_binding_id": snapshot.workspace_binding_id,
             "build_mode": str(selena.get("build_mode") or ("RelWithDebInfo" if is_run_config else "Release")),
@@ -252,6 +253,12 @@ def bind_current_workspace_build(
             "environment_snapshot_ref": f"{environment_stage_id}:{int(environment.get('attempt_count') or 0)}",
             "asset_bindings": dict(environment.get("payload", {}).get("asset_bindings") or {}),
             "adapter_key": str(environment.get("payload", {}).get("adapter_key") or ""),
+            "selena_build_script_ref": str(
+                environment.get("payload", {}).get("selena_build_script_ref") or ""
+            ),
+            "package_build_script_ref": str(
+                environment.get("payload", {}).get("package_build_script_ref") or ""
+            ),
             "runtime_xml": str(selena.get("runtime_xml") or ""),
         },
     )
@@ -364,6 +371,8 @@ def bind_branch_worktree_build(control: ControlService, job_id: str, source_stag
             "source_evidence_ref": str(source_result.get("source_evidence_ref") or ""),
             "asset_bindings": dict(env_payload.get("asset_bindings") or {}),
             "adapter_key": str(env_payload.get("adapter_key") or ""),
+            "selena_build_script_ref": str(env_payload.get("selena_build_script_ref") or ""),
+            "package_build_script_ref": str(env_payload.get("package_build_script_ref") or ""),
             "runtime_xml": str(selena.get("runtime_xml") or ""),
             "adapter_file": str((spec.get("simulation") or {}).get("adapter_file") or ""),
             "mat_filter": str((spec.get("simulation") or {}).get("mat_filter") or ""),
