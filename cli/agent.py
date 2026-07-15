@@ -1213,8 +1213,10 @@ def _resolve_v2_run_config(payload: dict) -> dict:
     data_binding_id = ""
     data_path = str(payload.get("data_path") or "").strip()
     if data_path and payload.get("auto_configure") is True:
+        from core.datasets import classify_data_path
+
         local_data = Path(data_path).expanduser()
-        if local_data.exists():
+        if classify_data_path(data_path) not in {"shared", "central"} and local_data.exists():
             root = local_data if local_data.is_dir() else local_data.parent
             data_binding_id = AgentDataBindingStore().register(
                 project=binding.project, root_path=root

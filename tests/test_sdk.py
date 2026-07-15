@@ -75,6 +75,124 @@ def test_sdk_submit_run_transparently_uploads_linux_local_data_path(tmp_path, mo
     assert "project" not in job.spec
 
 
+def test_sdk_submit_run_keeps_shared_data_even_when_caller_can_read_it(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    readable_share = tmp_path / "mounted-share"
+    readable_share.mkdir()
+    (readable_share / "one.MF4").write_bytes(b"mf4")
+    config = run_config_dict()
+    config["data"] = {"path": str(readable_share)}
+    config["simulation"]["target"] = "cluster"
+    monkeypatch.setattr("radar_sim_sdk.client.classify_data_path", lambda _path: "shared")
+    monkeypatch.setattr(
+        sdk,
+        "upload_run_data",
+        lambda _source: pytest.fail("shared data must remain a direct path"),
+    )
+
+    job = sdk.submit_run(config)
+
+    assert job.spec["data"]["path"] == readable_share.as_posix()
+
+
+def test_sdk_submit_run_prepares_local_data_and_configuration_assets(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    data = tmp_path / "measurements"
+    data.mkdir()
+    (data / "one.MF4").write_bytes(b"mf4")
+    mat_filter = tmp_path / "signals.filter"
+    mat_filter.write_text("signal=*\n", encoding="utf-8")
+    adapter = tmp_path / "adapter.txt"
+    adapter.write_text("adapter=1\n", encoding="utf-8")
+    config = run_config_dict()
+    config["data"] = {"path": str(data)}
+    config["simulation"].update(
+        {
+            "target": "cluster",
+            "mat_filter": str(mat_filter),
+            "adapter_file": str(adapter),
+        }
+    )
+    uploaded = []
+    monkeypatch.setattr(
+        sdk,
+        "upload_run_data",
+        lambda source: SimpleNamespace(data_path="dataset://sha256/" + "a" * 64),
+    )
+    monkeypatch.setattr(
+        sdk,
+        "upload_config_asset",
+        lambda kind, source: uploaded.append((kind, str(source)))
+        or {"uri": "config-asset://sha256/" + ("b" if kind == "mat_filter" else "c") * 64},
+    )
+
+    job = sdk.submit_run(config)
+
+    assert uploaded == [("mat_filter", str(mat_filter)), ("adapter", str(adapter))]
+    assert job.spec["data"]["path"].startswith("dataset://")
+    assert job.spec["simulation"]["mat_filter"].startswith("config-asset://")
+    assert job.spec["simulation"]["adapter_file"].startswith("config-asset://")
+
+
+def test_sdk_submit_run_dry_run_never_uploads_local_inputs(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    data = tmp_path / "measurements"
+    data.mkdir()
+    (data / "one.MF4").write_bytes(b"mf4")
+    mat_filter = tmp_path / "signals.filter"
+    mat_filter.write_text("signal=*\n", encoding="utf-8")
+    config = run_config_dict()
+    config["data"] = {"path": str(data)}
+    config["simulation"]["target"] = "cluster"
+    config["simulation"]["mat_filter"] = str(mat_filter)
+    monkeypatch.setattr(
+        sdk, "upload_run_data", lambda _source: pytest.fail("dry-run uploaded data")
+    )
+    monkeypatch.setattr(
+        sdk,
+        "upload_config_asset",
+        lambda _kind, _source: pytest.fail("dry-run uploaded a config asset"),
+    )
+    monkeypatch.setattr(
+        sdk,
+        "_upload_existing_selena",
+        lambda _folder, _runtime: pytest.fail("dry-run uploaded Selena"),
+    )
+
+    job = sdk.submit_run(config, dry_run=True)
+
+    assert job.status == "succeeded"
+    assert job.spec["data"]["path"] == data.as_posix()
+    assert job.spec["simulation"]["mat_filter"] == mat_filter.as_posix()
+
+
+def test_sdk_submit_run_keeps_unreachable_paths_for_server_or_agent(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    config = run_config_dict()
+    config["data"] = {"path": "D:/remote-machine/data"}
+    config["simulation"].update(
+        {
+            "target": "cluster",
+            "mat_filter": "D:/remote-machine/signals.filter",
+            "adapter_file": "D:/remote-machine/adapter.txt",
+        }
+    )
+    monkeypatch.setattr(
+        sdk, "upload_run_data", lambda _source: pytest.fail("unreachable data uploaded")
+    )
+    monkeypatch.setattr(
+        sdk,
+        "upload_config_asset",
+        lambda _kind, _source: pytest.fail("unreachable config asset uploaded"),
+    )
+
+    job = sdk.submit_run(config)
+
+    assert job.spec["data"]["path"] == "D:/remote-machine/data"
+    assert job.spec["simulation"]["mat_filter"] == "D:/remote-machine/signals.filter"
+    assert job.spec["simulation"]["adapter_file"] == "D:/remote-machine/adapter.txt"
+
+
 def test_sdk_uploads_and_lists_reusable_configuration_assets(tmp_path):
     api = ApiV1Service(
         control_service_factory=lambda _owner: ControlService(tmp_path / "control.db"),

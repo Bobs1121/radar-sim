@@ -16,6 +16,7 @@ import httpx
 from core.spec import SimulationSpec
 from core.user_config import UserRunConfig
 from core.data import iter_mf4_inputs
+from core.datasets import classify_data_path
 from core.user import USER_HEADER
 from radar_sim_sdk.errors import RadarSimApiError, RadarSimTransportError
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
@@ -87,26 +88,18 @@ class RadarSimClient:
         dry_run: bool = False,
         idempotency_key: str | None = None,
     ) -> Job:
-        payload = self._run_config_payload(config)
-        # A backend integration commonly runs on the Linux control plane.  If
-        # its single data.path is a real local folder/file, transparently make
-        # it Cluster-accessible before submitting.  Windows-Agent-only paths
-        # do not exist in this process and are left for the prepare_data Stage.
-        if not dry_run:
-            data_path = str((payload.get("data") or {}).get("path") or "").strip()
-            target = str((payload.get("simulation") or {}).get("target") or "auto")
-            local_path = Path(data_path).expanduser()
-            if target in {"auto", "cluster"} and local_path.exists():
-                uploaded = self.upload_run_data(local_path)
-                payload = UserRunConfig.from_dict(
-                    {**payload, "data": {"path": uploaded.data_path}}
-                ).to_dict()
+        parsed = UserRunConfig.from_dict(self._run_config_payload(config))
+        payload, prepared_bundle_id = self._prepare_user_run(parsed, dry_run=bool(dry_run))
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return Job.from_dict(
             self._request(
                 "POST",
                 "/api/v1/run-jobs",
-                json={"config": payload, "dry_run": bool(dry_run)},
+                json={
+                    "config": payload,
+                    "dry_run": bool(dry_run),
+                    "prepared_runtime_bundle_id": prepared_bundle_id,
+                },
                 headers=headers,
             )
         )
@@ -123,46 +116,40 @@ class RadarSimClient:
             raise ValueError(
                 "V1 submit_cluster_yaml requires selena.source=existing and simulation.target=cluster"
             )
+        return self.submit_run(config, idempotency_key=idempotency_key)
+
+    def _prepare_user_run(
+        self,
+        config: UserRunConfig,
+        *,
+        dry_run: bool,
+    ) -> tuple[dict[str, Any], str]:
+        """Prepare caller-local inputs without adding fields to the YAML contract."""
         payload = config.to_dict()
+        if dry_run:
+            return payload, ""
+
+        prepared_bundle_id = ""
         existing = Path(config.selena.existing_path).expanduser()
         runtime = Path(config.selena.runtime_xml).expanduser()
-        prepared_bundle_id = ""
-        if existing.is_dir() and runtime.is_file():
-            from core.existing_selena import import_existing_selena
-
-            with tempfile.TemporaryDirectory(prefix="rsim-sdk-existing-") as temporary:
-                imported = import_existing_selena(
-                    existing,
-                    runtime,
-                    staging_root=Path(temporary) / "staging",
-                    # Existing runtime identity and archive must be stable
-                    # across retries; wall-clock time is not source evidence.
-                    created_at=0.0,
-                )
-                metadata = {
-                    "internal_project": imported.internal_project,
-                    "adapter_key": imported.adapter_key,
-                    "manifest": imported.bundle.manifest.to_dict(),
-                    "archive_checksum": imported.archive.checksum,
-                    "archive_size": imported.archive.size,
-                }
-                encoded = base64.urlsafe_b64encode(
-                    json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
-                ).decode("ascii").rstrip("=")
-                imported_record = self._request(
-                    "POST",
-                    "/api/v1/existing-selena-imports",
-                    content=imported.archive.path.read_bytes(),
-                    headers={"X-Rsim-Existing-Metadata": encoded},
-                )
-            prepared_bundle_id = str(
-                (imported_record.get("runtime_bundle") or {}).get("id") or ""
-            )
-            if not prepared_bundle_id.startswith("selena-bundle:sha256:"):
-                raise ValueError("server did not return a valid prepared Selena reference")
+        existing_is_shared = config.selena.existing_path.startswith("//")
+        runtime_is_shared = config.selena.runtime_xml.startswith("//")
+        if (
+            config.selena.source == "existing"
+            and not existing_is_shared
+            and not runtime_is_shared
+            and existing.is_dir()
+            and runtime.is_file()
+        ):
+            prepared_bundle_id = self._upload_existing_selena(existing, runtime)
 
         data_path = Path(config.data.path).expanduser()
-        if data_path.exists():
+        data_kind = classify_data_path(config.data.path)
+        if (
+            config.simulation.target in {"auto", "cluster"}
+            and data_kind not in {"shared", "central"}
+            and data_path.exists()
+        ):
             uploaded_data = self.upload_run_data(data_path)
             payload["data"] = {"path": uploaded_data.data_path}
 
@@ -180,19 +167,40 @@ class RadarSimClient:
                     "adapter", adapter
                 )["uri"]
         payload["simulation"] = simulation
-        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
-        return Job.from_dict(
-            self._request(
-                "POST",
-                "/api/v1/run-jobs",
-                json={
-                    "config": UserRunConfig.from_dict(payload).to_dict(),
-                    "dry_run": False,
-                    "prepared_runtime_bundle_id": prepared_bundle_id,
-                },
-                headers=headers,
+        return UserRunConfig.from_dict(payload).to_dict(), prepared_bundle_id
+
+    def _upload_existing_selena(self, existing: Path, runtime: Path) -> str:
+        from core.existing_selena import import_existing_selena
+
+        with tempfile.TemporaryDirectory(prefix="rsim-sdk-existing-") as temporary:
+            imported = import_existing_selena(
+                existing,
+                runtime,
+                staging_root=Path(temporary) / "staging",
+                # Existing runtime identity and archive must be stable across
+                # retries; wall-clock time is not source evidence.
+                created_at=0.0,
             )
-        )
+            metadata = {
+                "internal_project": imported.internal_project,
+                "adapter_key": imported.adapter_key,
+                "manifest": imported.bundle.manifest.to_dict(),
+                "archive_checksum": imported.archive.checksum,
+                "archive_size": imported.archive.size,
+            }
+            encoded = base64.urlsafe_b64encode(
+                json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).decode("ascii").rstrip("=")
+            imported_record = self._request(
+                "POST",
+                "/api/v1/existing-selena-imports",
+                content=imported.archive.path.read_bytes(),
+                headers={"X-Rsim-Existing-Metadata": encoded},
+            )
+        bundle_id = str((imported_record.get("runtime_bundle") or {}).get("id") or "")
+        if not bundle_id.startswith("selena-bundle:sha256:"):
+            raise ValueError("server did not return a valid prepared Selena reference")
+        return bundle_id
 
     def submit(
         self,

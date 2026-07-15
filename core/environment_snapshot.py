@@ -251,7 +251,11 @@ def inspect_selena_build_environment(
 
             dependency_config = {"build": {"env_build_script": str(package_script)}}
             dependencies = derive_dependencies_from_build_script(dependency_config)
-            managed = [item for item in dependencies if item.get("kind") == "toolcollection"]
+            managed = [
+                item
+                for item in dependencies
+                if item.get("kind") in {"toolcollection", "legacy_toolcollection"}
+            ]
             if managed:
                 report = auto_repair_environment(dependency_config)
                 checks_list.append(

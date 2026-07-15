@@ -221,6 +221,18 @@ def test_node_local_project_free_resolution_requires_authorized_binding(tmp_path
     assert set(secured["asset_bindings"]) == {"runtime_xml"}
     assert set(secured["asset_bindings"].values()) == {asset_binding.binding_id}
 
+    monkeypatch.setattr("core.datasets.classify_data_path", lambda _path: "shared")
+    shared = agent_module._resolve_v2_run_config(
+        {
+            "contract": "user-run-config/2.0",
+            "code_path": str(workspace),
+            "build_script": str(script),
+            "runtime_xml": str(runtime),
+            "data_path": str(tmp_path),
+        }
+    )
+    assert shared["data_binding_id"] == ""
+
     with pytest.raises(ValueError, match="not uniquely authorized"):
         agent_module._resolve_v2_run_config({"code_path": str(tmp_path / "other")})
 

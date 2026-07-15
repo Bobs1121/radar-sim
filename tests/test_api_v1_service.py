@@ -310,6 +310,23 @@ def test_auto_keeps_uploaded_data_on_cluster_even_when_full_windows_is_online(tm
     }
 
 
+def test_build_cluster_shared_data_is_owned_by_linux_before_bundle_exists(tmp_path):
+    from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID
+
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+
+    job = api.submit_user_run("alice", config_payload=run_config_dict())
+
+    prepare_data = next(
+        stage
+        for stage in control.get_job(job["id"])["stages"]
+        if stage["stage_type"] == "prepare_data"
+    )
+    assert prepare_data["required_agent_id"] == LINUX_STAGE_AGENT_ID
+    assert prepare_data["assigned_agent_id"] == LINUX_STAGE_AGENT_ID
+
+
 def test_existing_bundle_cluster_route_is_assigned_without_windows(tmp_path):
     control = ControlService(tmp_path / "control.db")
     bundle_id = "selena-bundle:sha256:" + "a" * 64

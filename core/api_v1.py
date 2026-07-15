@@ -418,7 +418,11 @@ class ApiV1Service:
                 elif stage_type == "prepare_data" and (
                     str(config.data.path).lower().startswith("dataset://")
                     or classify_data_path(config.data.path) in {"shared", "central"}
-                ) and selected_runtime_bundle is not None:
+                ):
+                    # Data preparation is independent of Selena packaging.
+                    # Shared/uploaded data belongs to the Linux control plane
+                    # from job creation even while a Windows Agent is still
+                    # compiling the Runtime Bundle.
                     task["assigned_agent_id"] = LINUX_STAGE_AGENT_ID
                     task["required_agent_id"] = LINUX_STAGE_AGENT_ID
                 elif stage_type in {"preflight", "collect_results", "finalize_manifest"}:

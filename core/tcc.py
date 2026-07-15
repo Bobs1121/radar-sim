@@ -17,6 +17,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -27,6 +28,7 @@ from typing import Any, Callable, Optional
 DEFAULT_TCC_ROOT = r"C:\TCC"
 DEFAULT_ITC2_EXE = r"C:\TCC\itc2\itc2.exe"
 DEFAULT_TCC_INIT_DIR = r"C:\TCC\Tools\tcc_init"
+DEFAULT_LEGACY_TCC_INSTALLER = r"C:\TCC\Base\InstallToolCollection\InstallToolCollection.ps1"
 
 # Active ITO mirrors (from ItoConfig.json availableItoLinks). Suzhou first
 # (APAC default), then by region. Override via config.tcc.ito_share.
@@ -319,6 +321,71 @@ def install_toolcollection(config: Optional[dict], toolcollection: str, log: Log
         return InstallResult(False, 1, "", str(exc), f"install failed: {exc}")
 
 
+def check_legacy_toolcollection(toolcollection: str) -> ToolCollectionStatus:
+    """Check the legacy InstallToolCollection layout used by package builds.
+
+    Older radar software package scripts use names such as
+    ``TCC_IF_Windows_BTC-0.27.1`` and install an ``init.bat`` directly below
+    ``C:\\TCC\\Tools\\tcc_init``.  Those names are not valid itc2 identifiers,
+    so sending them to ``itc2 get-toolpath`` produces a false failure.
+    """
+    name = str(toolcollection or "").strip()
+    init_path = get_init_bat_path(name)
+    installed = bool(init_path and Path(init_path).is_file())
+    return ToolCollectionStatus(
+        name=name,
+        installed=installed,
+        init_bat_present=installed,
+        init_bat_path=init_path,
+        detail=f"legacy init.bat={init_path or '(not found)'}",
+    )
+
+
+def install_legacy_toolcollection(
+    toolcollection: str,
+    *,
+    xml_ref: str = "",
+    installer: str = DEFAULT_LEGACY_TCC_INSTALLER,
+    log: LogFn = None,
+) -> InstallResult:
+    """Install one legacy package-build ToolCollection non-interactively."""
+    name = str(toolcollection or "").strip()
+    if not name or not re.fullmatch(r"TCC_[A-Za-z0-9_.-]+", name):
+        return InstallResult(False, 1, "", "", "legacy toolcollection name is invalid")
+    installer_path = Path(installer)
+    if not installer_path.is_file():
+        return InstallResult(False, 1, "", "", f"legacy installer not found: {installer}")
+    selected_xml = str(xml_ref or f"ITO\\TCC\\Base\\IF\\Windows\\{name}.xml").strip()
+    powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if log:
+        log(f"Installing legacy toolcollection {name} ...")
+    try:
+        proc = subprocess.run(
+            [
+                str(powershell),
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(installer_path),
+                selected_xml,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return InstallResult(False, 1, "", str(exc), f"legacy install failed: {exc}")
+    ok = proc.returncode == 0 and check_legacy_toolcollection(name).installed
+    return InstallResult(
+        ok,
+        int(proc.returncode),
+        proc.stdout,
+        proc.stderr,
+        f"legacy install {name} {'ok' if ok else 'failed'} (exit {proc.returncode})",
+    )
+
+
 def ensure_environment(config: dict, log: LogFn = None) -> tuple[Itc2Status, ToolCollectionStatus]:
     """One-stop: ensure itc2, then ensure the required toolcollection is installed."""
     itc2 = ensure_itc2(config, log=log)
@@ -347,6 +414,37 @@ def ensure_environment(config: dict, log: LogFn = None) -> tuple[Itc2Status, Too
 # Dependency derivation from build scripts (static analysis, no execution)
 # ------------------------------------------------------------------
 
+def _legacy_toolcollection_from_workspace(script_path: Path) -> dict | None:
+    """Find the package-build ToolCollection declared by the real workspace.
+
+    The user-selected package script may only delegate to a shared build
+    wrapper.  The stable contract in those repositories is the nearest
+    ancestor ``ip_if/tcc_toolversion_uC.txt`` file, so inspect that file rather
+    than pretending an empty top-level batch file has no dependencies.
+    """
+    for root in (script_path.parent, *script_path.parents):
+        version_file = root / "ip_if" / "tcc_toolversion_uC.txt"
+        if not version_file.is_file():
+            continue
+        try:
+            name = version_file.read_text(encoding="utf-8", errors="replace").strip().split()[0]
+        except (OSError, IndexError):
+            return None
+        if not re.fullmatch(r"TCC_[A-Za-z0-9_.-]+", name):
+            return None
+        patched_xml = root / "reco_fw" / "tools" / "builder" / "tcc" / f"{name}.xml"
+        return {
+            "kind": "legacy_toolcollection",
+            "name": name,
+            "source": str(version_file),
+            "xml_ref": (
+                str(patched_xml)
+                if patched_xml.is_file()
+                else f"ITO\\TCC\\Base\\IF\\Windows\\{name}.xml"
+            ),
+        }
+    return None
+
 def derive_dependencies_from_build_script(config: dict) -> list[dict]:
     """Statically parse the env build script (cmake_build.bat) for dependencies.
 
@@ -355,8 +453,6 @@ def derive_dependencies_from_build_script(config: dict) -> list[dict]:
     Never executes the script (it is interactive) — pure regex text analysis.
     Falls back to the selena build script if env_build_script is absent.
     """
-    import re
-
     build = config.get("build") or {}
     script_path = str(build.get("env_build_script") or build.get("selena_build_script") or "")
     if not script_path or not Path(script_path).exists():
@@ -400,6 +496,11 @@ def derive_dependencies_from_build_script(config: dict) -> list[dict]:
     if re.search(r"python3\s+.*R2D2\.py\b", text, flags=re.IGNORECASE):
         deps.append({"kind": "build_entry", "name": "R2D2.py", "source": source})
 
+    if not any(item["kind"] in {"toolcollection", "legacy_toolcollection"} for item in deps):
+        legacy = _legacy_toolcollection_from_workspace(Path(script_path).resolve(strict=False))
+        if legacy is not None:
+            deps.append(legacy)
+
     return deps
 
 
@@ -424,12 +525,35 @@ class RepairReport:
 
 
 def auto_repair_environment(config: dict, log: LogFn = None) -> RepairReport:
-    """One-stop environment repair: ensure itc2, derive toolcollection, install if missing.
+    """One-stop environment repair for modern itc2 and legacy package builds.
 
     Never runs cmake_build.bat (it is interactive) — only statically parses it via
-    derive_dependencies_from_build_script. itc2 install is non-interactive and safe.
+    derive_dependencies_from_build_script. Both supported installers are
+    non-interactive and operate before the actual build Stage.
     """
     steps: list[RepairStep] = []
+
+    deps = derive_dependencies_from_build_script(config)
+    legacy = next((item for item in deps if item.get("kind") == "legacy_toolcollection"), None)
+    if legacy is not None:
+        name = str(legacy.get("name") or "")
+        steps.append(RepairStep("derive_toolcollection", bool(name), f"derived legacy: {name or '(none)'}", name))
+        status = check_legacy_toolcollection(name)
+        if status.installed:
+            steps.append(RepairStep("install_toolcollection", True, status.detail, name))
+            return RepairReport(True, steps, name, summary=f"{name} ready")
+        result = install_legacy_toolcollection(
+            name,
+            xml_ref=str(legacy.get("xml_ref") or ""),
+            log=log,
+        )
+        steps.append(RepairStep("install_toolcollection", result.ok, result.detail, name))
+        return RepairReport(
+            result.ok,
+            steps,
+            name,
+            summary=f"{name} {'installed' if result.ok else 'install failed: ' + result.detail}",
+        )
 
     # 1. ensure itc2 (bootstrap from ITO if missing)
     itc2 = ensure_itc2(config, log=log)
@@ -439,7 +563,6 @@ def auto_repair_environment(config: dict, log: LogFn = None) -> RepairReport:
 
     # 2. derive toolcollection name: build script (itc2 install / set TOOLCOLLECTION) first,
     #    fall back to ip_if/tcc_toolversion_itc2.txt.
-    deps = derive_dependencies_from_build_script(config)
     tc_names = [d["name"] for d in deps if d["kind"] == "toolcollection"]
     tc_name = tc_names[0] if tc_names else read_required_toolcollection(config)
     steps.append(RepairStep("derive_toolcollection", bool(tc_name), f"derived: {tc_name or '(none)'}", tc_name))

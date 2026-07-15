@@ -220,6 +220,27 @@ def test_derive_dependencies_falls_back_to_selena_script(tmp_path):
     assert any(d["name"] == "IF:BTC-7.0.0" for d in deps if d["kind"] == "toolcollection")
 
 
+def test_derive_dependencies_finds_legacy_package_toolcollection_in_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    script = workspace / "apl" / "byd" / "bindings" / "ovrs25" / "buildscripts" / "package.bat"
+    script.parent.mkdir(parents=True)
+    script.write_text("call %~dp0\\patch.bat\n", encoding="utf-8")
+    version = workspace / "ip_if" / "tcc_toolversion_uC.txt"
+    version.parent.mkdir(parents=True)
+    version.write_text("TCC_IF_Windows_BTC-0.27.1\n", encoding="utf-8")
+
+    deps = tcc.derive_dependencies_from_build_script(
+        {"build": {"env_build_script": str(script)}}
+    )
+
+    dependency = next(item for item in deps if item["kind"] == "legacy_toolcollection")
+    assert dependency["name"] == "TCC_IF_Windows_BTC-0.27.1"
+    assert dependency["source"] == str(version)
+    assert dependency["xml_ref"].endswith(
+        r"ITO\TCC\Base\IF\Windows\TCC_IF_Windows_BTC-0.27.1.xml"
+    )
+
+
 def test_auto_repair_all_installed(tmp_path, monkeypatch):
     """itc2 + toolcollection both ready → ok, no install call."""
     exe = tmp_path / "itc2.exe"
@@ -235,6 +256,37 @@ def test_auto_repair_all_installed(tmp_path, monkeypatch):
     report = tcc.auto_repair_environment(config)
     assert report.ok is True
     assert report.toolcollection == "IF:BTC-7.0.0"
+
+
+def test_auto_repair_legacy_package_toolcollection_already_installed(monkeypatch):
+    dependency = {
+        "kind": "legacy_toolcollection",
+        "name": "TCC_IF_Windows_BTC-0.27.1",
+        "xml_ref": r"ITO\TCC\Base\IF\Windows\TCC_IF_Windows_BTC-0.27.1.xml",
+    }
+    monkeypatch.setattr(
+        "core.tcc.derive_dependencies_from_build_script", lambda _config: [dependency]
+    )
+    monkeypatch.setattr(
+        "core.tcc.check_legacy_toolcollection",
+        lambda name: tcc.ToolCollectionStatus(
+            name=name,
+            installed=True,
+            init_bat_present=True,
+            init_bat_path=r"C:\TCC\Tools\tcc_init\TCC_IF_Windows_BTC-0.27.1\init.bat",
+            detail="legacy init.bat=ready",
+        ),
+    )
+    monkeypatch.setattr(
+        "core.tcc.install_legacy_toolcollection",
+        lambda *_args, **_kwargs: pytest.fail("installed legacy collection must not reinstall"),
+    )
+
+    report = tcc.auto_repair_environment({"build": {}})
+
+    assert report.ok is True
+    assert report.toolcollection == "TCC_IF_Windows_BTC-0.27.1"
+    assert report.summary.endswith("ready")
 
 
 def test_auto_repair_install_missing(tmp_path, monkeypatch):
@@ -288,7 +340,7 @@ def test_auto_repair_derive_preferred_over_read(tmp_path, monkeypatch):
 
 
 def test_auto_repair_itc2_missing_ito_down(tmp_path, monkeypatch):
-    """itc2 missing + ITO unreachable → short-circuit, no derive/install attempt."""
+    """Modern dependency still reports the unavailable itc2 bootstrap."""
     config = {"tcc": {"itc2_exe": str(tmp_path / "nope.exe")}, "build": {}}
     monkeypatch.setattr("core.tcc.detect_itc2", lambda c: tcc.Itc2Status(False, str(tmp_path / "nope.exe")))
     monkeypatch.setattr("core.tcc.detect_ito_share", lambda c: (False, ""))
@@ -297,4 +349,5 @@ def test_auto_repair_itc2_missing_ito_down(tmp_path, monkeypatch):
                         lambda c: derive_called.__setitem__("v", True) or [])
     report = tcc.auto_repair_environment(config)
     assert report.ok is False
-    assert derive_called["v"] is False  # short-circuited, derive not called
+    assert derive_called["v"] is True  # first checks whether this is a legacy package dependency
+    assert "itc2 unavailable" in report.summary
