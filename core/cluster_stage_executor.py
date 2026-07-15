@@ -164,7 +164,6 @@ class ClusterStageExecutor:
 def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> dict[str, Any]:
     """Resolve a dataset URI/shared path centrally; local drives require upload."""
     owner = _owner(job)
-    project = _project(context, job)
     spec = dict(job.get("spec") or {})
     data_path = str((spec.get("data") or {}).get("path") or "")
     if data_path.lower().startswith("dataset://"):
@@ -174,6 +173,7 @@ def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> d
             "dataset_id": dataset.id,
             "evidence_ref": "central-dataset-resolution",
         }
+    project = _data_project(context, job)
     config = context.config_loader(project)
     outcome = resolve_data_reference(
         context.dataset_catalog,
@@ -489,6 +489,18 @@ def _bundle(context: ClusterStageContext, job: dict[str, Any]) -> RuntimeBundleR
 
 def _project(context: ClusterStageContext, job: dict[str, Any]) -> str:
     return _bundle(context, job).internal_project
+
+
+def _data_project(context: ClusterStageContext, job: dict[str, Any]) -> str:
+    """Resolve the hidden project before a concurrent Selena build finishes."""
+    decision = dict(((job.get("resolved_spec") or {}).get("decisions") or {}).get("selena") or {})
+    if str((decision.get("runtime_bundle") or {}).get("id") or ""):
+        return _project(context, job)
+    recognition = dict(_stage_result(job, "resolve_spec").get("recognition") or {})
+    project = str(recognition.get("internal_project") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", project):
+        raise ClusterStageExecutionError("Dataset project is not resolved")
+    return project
 
 
 def _dataset(context: ClusterStageContext, job: dict[str, Any], *, owner: str) -> DatasetRef:

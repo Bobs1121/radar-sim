@@ -5,7 +5,7 @@ import time
 import pytest
 
 from core.cluster_runs import ClusterRunStore, ClusterRunStoreError
-from core.cluster_stage_executor import build_public_run_manifest, execute_cluster_collect
+from core.cluster_stage_executor import build_public_run_manifest, execute_cluster_collect, resolve_cluster_data
 from core.cluster_stage_executor import ClusterStageContext, ClusterStageExecutor
 from core.control_service import ControlService
 from core.api_v1 import ApiV1Service
@@ -124,6 +124,37 @@ def test_public_manifest_contains_refs_but_no_physical_locations(tmp_path: Path)
     assert manifest["result_ref"].startswith("result:sha256:")
     assert "D:/secret" not in str(manifest)
     assert "private_path" not in str(manifest)
+
+
+def test_shared_data_uses_trusted_recognition_while_runtime_is_still_building(monkeypatch):
+    dataset = SimpleNamespace(
+        id="dataset:sha256:" + "3" * 64,
+        to_dict=lambda: {"id": "dataset:sha256:" + "3" * 64},
+    )
+    loaded = []
+    context = SimpleNamespace(
+        config_loader=lambda project: loaded.append(project) or {"shared_namespaces": []},
+        dataset_catalog=object(),
+    )
+    monkeypatch.setattr(
+        "core.cluster_stage_executor.resolve_data_reference",
+        lambda *_args, **_kwargs: SimpleNamespace(status="resolved", dataset=dataset, action=""),
+    )
+    job = {
+        "owner": "alice",
+        "spec": {"data": {"path": "//shared/data/input.MF4"}},
+        "resolved_spec": {"decisions": {}},
+        "stages": [{
+            "stage_type": "resolve_spec",
+            "status": "succeeded",
+            "result": {"recognition": {"internal_project": "ovrs25"}},
+        }],
+    }
+
+    result = resolve_cluster_data(context, job)
+
+    assert result["dataset_id"] == dataset.id
+    assert loaded == ["ovrs25"]
 
 
 def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tmp_path: Path, monkeypatch):
