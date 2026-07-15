@@ -360,8 +360,28 @@ def execute_cluster_collect(
             return {"cluster_run_ref": run_ref, "result": result.to_dict(), "result_ref": result.ref}
         info = get_cluster_web_status(config, query)
         state = _terminal_state(info)
+        # Some Cluster V2.0 deployments return a submission success flag
+        # (commonly ``1``) instead of the durable job id, and the official
+        # page may already have removed the task row by the next poll.  The
+        # controlled job directory is still authoritative: result.ini is
+        # written only after the worker finishes its task.
+        if state == "running" and not list(info.get("tasks") or []):
+            inspected_probe = inspect_cluster_job(lease.job_dir)
+            inspected_state = str(inspected_probe.get("state") or "")
+            if inspected_state == "finished-success":
+                state = "succeeded"
+            elif inspected_state == "finished-failed":
+                state = "failed"
+            if state in {"succeeded", "failed"}:
+                summary = {
+                    "task_count": int(inspected_probe.get("success_count") or 0)
+                    + int(inspected_probe.get("fail_count") or 0),
+                    "finished_count": int(inspected_probe.get("success_count") or 0),
+                    "failed_count": int(inspected_probe.get("fail_count") or 0),
+                }
         if state in {"succeeded", "failed"}:
-            summary = _public_cluster_summary(info)
+            if not summary:
+                summary = _public_cluster_summary(info)
             break
         sleep_fn(15.0)
     else:

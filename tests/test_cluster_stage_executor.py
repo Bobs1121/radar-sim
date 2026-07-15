@@ -56,6 +56,47 @@ def test_collect_cancellation_creates_path_free_terminal_result(tmp_path: Path):
     assert str(tmp_path) not in str(output)
 
 
+def test_collect_uses_result_ini_when_official_page_has_no_tasks(tmp_path: Path, monkeypatch):
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="ovrs25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/ovrs25/runtime-bundle.zip",
+        profile="default", job_dir=str(tmp_path / "private-job"),
+        config_path="//cluster/job/Config.cfg", output_location=str(tmp_path / "private-output"),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="1", submit_mode="xmlrpc")
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
+        now_fn=lambda: 10.0,
+    )
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: {"found": True, "job_id": "1", "tasks": []},
+    )
+    monkeypatch.setattr(
+        "core.cluster.inspect_cluster_job",
+        lambda *_args, **_kwargs: {
+            "state": "finished-failed", "file_count": 2,
+            "success_count": 0, "fail_count": 1,
+            "error_summary": ["missing signal"],
+            "result_files": [{"relative_path": "OUT/result.ini"}],
+        },
+    )
+
+    output = execute_cluster_collect(
+        context, _job(), run.ref,
+        cancelled=lambda: False,
+        sleep_fn=lambda _seconds: (_ for _ in ()).throw(AssertionError("must not wait")),
+    )
+
+    result = store.get_result(output["result_ref"], owner="alice")
+    assert result.state == "failed"
+    assert result.summary["failed_count"] == 1
+
+
 def test_public_manifest_contains_refs_but_no_physical_locations(tmp_path: Path):
     store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
     run = store.create_run(
