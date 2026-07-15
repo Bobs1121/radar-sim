@@ -89,7 +89,7 @@ def test_server_import_verifies_and_catalogues_existing_selena_archive(tmp_path)
 
 
 def test_linux_service_imports_a_server_visible_shared_selena_path(tmp_path):
-    _selena, _runtime, _data, _mat_filter, yaml_path = _inputs(tmp_path)
+    selena, runtime, _data, _mat_filter, yaml_path = _inputs(tmp_path)
     store = ArtifactStore(
         tmp_path / "store",
         object_filename="runtime-bundle.zip",
@@ -192,7 +192,7 @@ def test_submit_cluster_yaml_is_one_call_and_prepares_all_local_inputs(tmp_path,
 
 def test_one_sdk_call_reaches_cluster_submission_with_existing_selena(tmp_path, monkeypatch):
     """V1 release gate: YAML -> SDK -> Linux API -> Cluster submit."""
-    _selena, _runtime, _data, _mat_filter, yaml_path = _inputs(tmp_path)
+    selena, runtime, _data, _mat_filter, yaml_path = _inputs(tmp_path)
     control = ControlService(tmp_path / "control.db")
 
     runtime_store = ArtifactStore(
@@ -224,6 +224,7 @@ def test_one_sdk_call_reaches_cluster_submission_with_existing_selena(tmp_path, 
     (private_job / "output").mkdir(parents=True)
     (private_job / "output" / "result.ini").write_text("successfull=1", encoding="utf-8")
     submitted_configs = []
+    prepared_configs = []
     monkeypatch.setattr(
         "core.cluster.check_cluster_environment",
         lambda _cfg: [SimpleNamespace(name="manager", ok=True)],
@@ -232,14 +233,15 @@ def test_one_sdk_call_reaches_cluster_submission_with_existing_selena(tmp_path, 
         "core.preflight.run_preflight",
         lambda _cfg: SimpleNamespace(ok=True, checks=[]),
     )
-    monkeypatch.setattr(
-        "core.cluster.prepare_cluster_job",
-        lambda *_args, **_kwargs: SimpleNamespace(
+    def prepare(config, *_args, **_kwargs):
+        prepared_configs.append(config)
+        return SimpleNamespace(
             manifest_path=str(private_job / "manifest.json"),
             config_path=str(private_job / "Config.cfg"),
             profile="default",
-        ),
-    )
+        )
+
+    monkeypatch.setattr("core.cluster.prepare_cluster_job", prepare)
 
     def submit(config_path, _config, *, dry_run):
         submitted_configs.append((config_path, dry_run))
@@ -274,6 +276,13 @@ def test_one_sdk_call_reaches_cluster_submission_with_existing_selena(tmp_path, 
             "timeout_min": 1,
             "workspace_root": "//cluster/work",
             "project_folder": "radar-sim",
+            "profiles": [{
+                "name": "hidden-existing",
+                "selena_exe": str(selena / "selena.exe"),
+                "runtime_xml": str(runtime),
+                "source": "RadarFL",
+                "mounting_position": "CFL",
+            }],
         },
     }
     executor = ClusterStageExecutor(
@@ -304,6 +313,8 @@ def test_one_sdk_call_reaches_cluster_submission_with_existing_selena(tmp_path, 
             (stage.type, stage.status, stage.error) for stage in current.stages
         ]
         assert submitted_configs == [(str(private_job / "Config.cfg"), False)]
+        assert prepared_configs[0]["simulation"]["source"] == "RadarFL"
+        assert prepared_configs[0]["simulation"]["mounting_position"] == "CFL"
         manifest = sdk.manifest(submitted.id)
         assert manifest.available is True
         assert manifest.manifest["runtime_bundle_id"].startswith("selena-bundle:sha256:")

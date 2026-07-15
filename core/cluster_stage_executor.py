@@ -272,6 +272,7 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     sim["adapter_file"] = str(adapter) if adapter is not None else ""
     sim["matfilefilter"] = str(mat_filter)
     sim["input_mf4"] = str(data_location)
+    _apply_existing_cluster_profile_defaults(config, job)
 
     from core.preflight import run_preflight
     preflight = run_preflight(config)
@@ -407,6 +408,48 @@ def execute_cluster_collect(
         physical_root=lease.output_location,
     )
     return {"cluster_run_ref": run_ref, "result": result.to_dict(), "result_ref": result.ref}
+
+
+def _apply_existing_cluster_profile_defaults(
+    config: dict[str, Any], job: dict[str, Any]
+) -> None:
+    """Apply hidden radar/mounting defaults for one exact existing runtime.
+
+    These are administrator-owned project adaptation details. They must not
+    become user YAML fields, but an existing Selena folder and Runtime pair
+    can deterministically select the matching legacy Cluster profile.
+    """
+    selena = dict((job.get("spec") or {}).get("selena") or {})
+    if str(selena.get("source") or "") != "existing":
+        return
+    existing = _normalized_path(str(selena.get("existing_path") or ""))
+    runtime = _normalized_path(str(selena.get("runtime_xml") or ""))
+    if not existing or not runtime:
+        return
+    matches: list[dict[str, Any]] = []
+    for raw_profile in (config.get("cluster") or {}).get("profiles") or []:
+        profile = dict(raw_profile or {})
+        profile_exe = _normalized_path(str(profile.get("selena_exe") or ""))
+        profile_runtime = _normalized_path(str(profile.get("runtime_xml") or ""))
+        profile_folder = profile_exe.rsplit("/", 1)[0] if "/" in profile_exe else ""
+        if profile_folder == existing and profile_runtime == runtime:
+            matches.append(profile)
+    if len(matches) > 1:
+        raise ClusterStageExecutionError(
+            "Existing Selena matches multiple internal Cluster profiles"
+        )
+    if not matches:
+        return
+    profile = matches[0]
+    simulation = config.setdefault("simulation", {})
+    if str(profile.get("source") or "").strip():
+        simulation["source"] = str(profile["source"])
+    if str(profile.get("mounting_position") or "").strip():
+        simulation["mounting_position"] = str(profile["mounting_position"])
+
+
+def _normalized_path(value: str) -> str:
+    return str(value or "").strip().replace("\\", "/").rstrip("/").casefold()
 
 
 def build_public_run_manifest(job: dict[str, Any], result: ClusterResultRef) -> dict[str, Any]:
