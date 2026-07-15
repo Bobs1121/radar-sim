@@ -1,3 +1,478 @@
+# radar-sim v5 Active Handoff
+
+> 最近更新：2026-07-15
+> 状态来源：本顶部区域是 v5 唯一实时实施状态。
+> 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
+
+## 0. 文档职责
+
+| 文档 | 职责 | 防漂移规则 |
+|---|---|---|
+| `PRD.md` | 产品合同、用户入口、部署边界、P0/P1 范围 | 用户可见合同或产品边界变化时必须先改这里 |
+| `docs/PRODUCT_CONTRACT.md` | 用户最终确认的唯一配置、四种组合、执行边界和发布门禁 | 与其他文档或旧实现冲突时以此文件为准；未经用户确认不得新增对外字段 |
+| `docs/DETAILED_DESIGN.md` | 目标架构、现有代码迁移映射、复用/选型决策 | 技术边界、依赖、协议、拓扑变化时必须先改这里 |
+| `DEVELOPMENT_PLAN.md` | WP0-WP10 可执行 backlog、依赖顺序、测试、退出标准、停止项 | 实施顺序或验收门禁变化时更新 |
+| `HANDOFF.md` | 唯一实时状态、conformance log、偏离检查记录 | 每次 CLI/code agent 任务完成前必须更新 |
+
+`CHECKPOINT.md`、`docs/handoff.md`、`docs/REFACTORING_PLAN.md`、`docs/WIZARD_IMPLEMENTATION_PLAN.md` 和旧 phase 章节只作为历史证据，不覆盖上述四份文档。
+
+## 1. 产品不变量
+
+每个实施任务必须引用其触碰的 INV。
+
+| ID | 不变量 |
+|---|---|
+| INV-01 | 用户入口只有 Web 和 Python SDK / versioned REST API；CLI 仅用于管理员、调试和兼容。 |
+| INV-02 | 部署形态只有 Windows full deployment 与 Linux central service + optional Windows light Agent。 |
+| INV-03 | 新用户业务合同只有项目无关 `UserRunConfig 2.0` YAML；Web 与 SDK 共用同一后端 schema；`SimulationSpec` 仅保留兼容/内部适配用途。 |
+| INV-04 | 调度核心只有一个；Web、SDK、兼容 CLI 不得各自实现调度规则。 |
+| INV-05 | Linux 永不编译 Selena；`build.selena` capability 只属于 Windows full/Agent 节点。 |
+| INV-06 | 无 Windows 用户只能使用 existing Selena + Cluster，不得隐藏依赖本机环境。 |
+| INV-07 | Selena 和数据就绪后，Cluster 执行不依赖用户 PC；旧 Windows/Python2 接入走平台 Gateway/Worker。 |
+| INV-08 | 用户只填写数据路径；shared/local/upload/browser 输入统一解析为内部 `DatasetRef`。 |
+| INV-09 | Git 自动化不得 checkout/stash/reset/force 用户主工作区；分支构建必须用隔离 worktree。 |
+| INV-10 | 复用优先：先改造现有代码或采用成熟独立模块/标准协议，不从零造基础设施。 |
+| INV-11 | 全过程可视化是 P0：环境检查、preflight、阶段进度、日志、失败动作和 Manifest。 |
+| INV-12 | 当前 dirty workspace 可构建，但必须记录 branch、commit、dirty fingerprint 和构建指纹证据。 |
+| INV-13 | Windows 轻量 Agent 首版只做授权工作区编译、产物/数据登记校验上传和中央回传；不支持本地仿真，不承担 Cluster 运行期。 |
+| INV-14 | 用户复用 Selena 时只填写已有 Selena 文件夹和 Runtime XML；系统必须校验/使用目录中的 Selena.exe 与依赖 DLL。Runtime Bundle 仅允许作为不可见的内部传输/缓存对象。 |
+| INV-15 | 用户配置不得出现 Runtime Bundle、project/profile/recipe/output_root/共享盘类型/Agent/Cluster manager 等内部概念。 |
+| INV-16 | Linux 是可迁移的统一控制面（当前目标 10.190.171.44），只调度和传输；不编译 Selena、不执行本地仿真。 |
+| INV-17 | 必须支持 build/existing × local/cluster 四种组合；auto 只负责在四种组合中自动选择并展示原因。 |
+| INV-18 | 已有 Selena 路径与 data.path 均由系统解析可达性；本地不可达时自动上传/传输，Cluster 就绪后不依赖用户电脑。 |
+
+## 2. WP0-WP10 实时状态
+
+> 2026-07-15 V1 收敛决定：完整 PRD 不变，但当前交付只实现 `existing Selena + Cluster`。权威首版范围和门禁见 `docs/V1_MVP_SCOPE.md`；编译和本地仿真组合暂停实施，待 V1 交付后继续。
+
+### V1 纵向交付状态（2026-07-15）
+
+`YAML -> RadarSimClient.submit_cluster_yaml() -> Linux /api/v1 -> Selena/数据/配置资产准备 -> Stage DAG -> Cluster Config.cfg -> submit_cluster_job() -> Result/Manifest` 已通过真实进程内 HTTP/SDK 纵向测试。调用机可见路径由 SDK 上传；SDK 不可见但 Linux 已挂载可见的共享路径由服务端导入，UNC 会经管理员 `linux_mount_map` 转换。Runtime XML 不再写死为 `Runtime.xml`，Cluster executor 按 Bundle manifest 的 `runtime_config` role 定位。聚焦回归 `101 passed`、全量 `1197 passed, 8 skipped`，UNC 补丁后专项 `45 passed`。当前唯一 V1 发布阻塞是把最新代码同步至 `10.190.171.44` 后完成真实 Cluster 烟测；认证按用户决定延后到下一 Sprint，首版仅在受信内网显式无认证启动。
+
+只有具备代码证据和测试证据的实现才能标记完成。已有原型只算“待审计输入”，不算 v5 完成度。
+
+| WP | 范围 | 状态 | 证据 / 下一门禁 |
+|---|---|---|---|
+| DOC | v5 文档基线与证据审计 | Done | `README.md`、`PRD.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md` 和本 Active Handoff 已更新；文档修改后必须跑 `git diff --check` |
+| WP0 | 安全冻结与 legacy Git 路径隔离 | Done | `core/repo.py` 仅验证当前分支、不再 checkout；`cli/web.py` 拒绝 legacy `switch_branch` repair；focused tests 49 passed；Copilot 与主 agent 独立全量回归均为 466 passed |
+| WP1 | `SimulationSpec v1` 与 legacy config adapter | Done | `SimulationSpec`/JSON Schema/YAML/hash 与只读 legacy adapter 已完成；A7a 进一步将最小导入收敛为 `project + data.path`，项目 recipe/platform 由 `ProjectCatalog.adapter` 承担 |
+| WP2 | `/api/v1` application layer 与 Python SDK skeleton | Done | thin application/FastAPI、durable idempotency、JSON/SSE、SDK、`serve-v1` 已完成；A7a 新增 owner-isolated `/api/v1/jobs` 任务中心查询、进度/当前 Stage/可执行动作及 SDK 方法 |
+| WP3 | Job/Stage/Event DAG | Done | 标准 10-stage planner、兼容 Stage/Attempt/Event persistence、结构化事件、cancel/retry/reclaim 与 v1/SDK 读取已完成；Copilot full 565 passed，主 agent focused/full 复验通过 |
+| WP4 | Selena source resolver、dirty fingerprint、artifact catalog | V1 Done / Full In Progress | V1 existing 路径已接 SDK/Linux 自动导入、内容寻址目录、归档完整性校验和 Cluster 消费；完整产品 build 组合后续继续 |
+| WP5 | Data resolver 与 upload | Done | shared/local/browser/SDK/Agent 数据统一为 `DatasetRef`/`DataLease`，中央多文件 resumable upload 与 Cluster/本地消费闭环完成 |
+| WP6 | Windows full 与 light Agent 执行适配 | In Progress | build/data/full-local 既有路径保留；公开 existing Selena 文件夹仍需接入 full 本地与 full/light 上传 Stage，旧“先登记 Bundle”路径不再算产品完成 |
+| WP7 | Linux central Cluster executor 与平台 Gateway routing | V1 Code Done / Target Smoke Pending | existing + Cluster 从 SDK 到 `submit_cluster_job()` 的 mocked 纵向 E2E 已通过；Linux 可直接导入已挂载共享 Selena；待 10.190.171.44 真实 manager 烟测 |
+| WP8 | Environment、Preflight、progress、Manifest 集成 | Done | Cluster 与 Windows-local environment/preflight/run/collect/finalize 已接统一 DAG；公共 Manifest/Result ZIP 只含逻辑 ref；外部 Cluster cancel 行为留目标环境验收 |
+| WP9 | Web v5 migration | Done | packaged v1 console 已覆盖最少配置、YAML import/export、上传、任务中心、Stage/event/action、结果下载和 session-only Bearer；认证真实浏览器 smoke 已通过 |
+| WP10 | SDK/package/docs/release gates | V1 In Progress | `submit_cluster_yaml()`、V1 示例、SDK/FastAPI/Cluster 纵向门禁已完成；全量 1197 passed/8 skipped，UNC 补丁专项 45 passed；仅剩 10.190.171.44 真实验收 |
+
+当前工作区包含既有未提交代码和测试变更（`cli/*`、`core/*`、`web/*`、`tests/*` 以及新增原型模块）。这些都视为待审计输入，不计入 v5 完成度，直到某个 WP 引用代码证据并通过测试。
+
+## 3. 当前文档工作证据
+
+| 日期 | 范围 | 证据 |
+|---|---|---|
+| 2026-07-10 | v5 baseline docs | README 权威顺序、PRD current/target 边界、详细设计现有代码映射、WP0-WP10 可执行计划 |
+| 2026-07-10 | 复用/选型防漂移 | 增加 INV-10、详细设计复用决策、第三方 spike 和回退门禁 |
+| 2026-07-10 | 状态与偏离防护 | Active Handoff 状态表、任务模板、Architecture Conformance Gate |
+| 2026-07-10 | 轻量 Agent P0 边界 | PRD/design/plan/HANDOFF 仅文档同步：light Agent 不做本地仿真、不承担 Cluster 运行期；不得误报为运行时代码已交付 |
+| 2026-07-10 | Reviewer gap closure | PRD/design/plan/HANDOFF 仅文档同步：补 light build-to-cluster Stage/capability/node-kind 矩阵、artifact capability 词汇、WP6/WP7 负向门禁和 light Agent 数据 E2E 验收；WP6/WP7 runtime 仍 Pending |
+| 2026-07-14 | Runtime/配置边界与 Cluster 纵切 | Runtime Bundle 仅含 exe/DLL/绑定 Runtime XML；Adapter/MatFilter 独立必填并可上传为 owner-scoped config-asset；Linux/Gateway 四阶段接入、无 Windows mocked E2E 和 Web 真实上传烟测通过 |
+| 2026-07-14 | 最少配置与动态调度收敛 | Web/YAML/SDK 统一为单一 data.path；新增 Selena/软件包脚本双入口、首次 Agent 自动配置、auto 本地/Cluster 选择、浏览器文件夹透明上传及 Adapter 条件校验；全量 1173 passed/8 skipped，真实页面复验通过 |
+| 2026-07-15 | 用户合同最终复验 | OpenCode 独立审计配置/Web/SDK 子合同无缺口且专项 36 passed；主 Agent 调度/数据/Agent 专项 102 passed、合同组合 137 passed、全量 1173 passed/8 skipped；真实页面确认单数据路径、双构建脚本、无 project、Adapter 可选、MatFilter 必填、auto/local/Cluster 与结构化 Stage 任务中心 |
+| 2026-07-15 | V1 existing + Cluster 收敛 | 单 YAML + 单 SDK 方法；SDK/服务端双侧已有 Selena 导入、数据/配置资产准备、manifest role 解包、Cluster 提交/结果回收纵向门禁通过；聚焦 101 passed，目标服务器烟测 Pending |
+
+## 4. 真实任务记录
+
+### 2026-07-15 - 用户最终合同固化与 existing Selena 底座纠偏
+
+- Goal: 固化“一个 YAML、Web/SDK 同合同、Linux 只调度、Windows/Cluster 分开执行、build/existing × local/cluster 四组合”的最终用户边界，并修复把 `existing_path` 错当内部 Bundle ID 的设计偏移。
+- Product baseline: 新增 `docs/PRODUCT_CONTRACT.md`；更新 INV-14~18。Runtime Bundle 降为不可见内部传输/缓存，用户复用 Selena 只填写文件夹和 Runtime XML。
+- Root cause evidence: 真实失败 `output_root must be narrower than workspace_root` 来自空 build output 被 `Path("")` 解析为 workspace；已改为由用户 Selena 编译脚本推导输出且空值先校验。真实用户路径识别为 `ovrs25`，输出为 `C:/BYD_OVS_CB/ip_dc/build/ROS_PER_SIT_RPM_FCT_RECR`。
+- Claude CLI evidence: 按用户要求使用 Claude CLI；10 分钟超时后产生的初稿专项测试为 `12 failed, 11 passed`，主 Agent 未将其误报完成，审查并重写了错误的目录遍历、项目识别、lease 副作用和测试夹具。
+- Implemented foundation: `core/existing_selena.py` 只接收目录 + Runtime XML；唯一 Selena.exe 检索有界且确定；要求至少一个同目录 DLL；从实际项目 adapter/别名推导内部项目；生成确定性 exe+全部 DLL+Runtime 内部归档；公开摘要无路径和内部项目。
+- Verification: 新模块 + Runtime Bundle 专项 `21 passed`。真实目录 `.../RelWithDebInfo` 验证得到 `ovrs25`、1 个 `selena.exe`、7 个 DLL、绑定 Runtime XML、9 个归档文件、17,788,849-byte archive，公开摘要 `path_leaked=False`。
+- Honest remaining gap: 该底座尚未接入 Agent resolve/register、Web/SDK 文件夹透明上传和 Linux shared-folder resolver；四种组合尚未重新完成纵向验证，状态保持 In Progress。
+
+### 2026-07-15 - 单一用户配置与动态调度合同最终复验
+
+- Goal: 将用户确认的单一配置合同作为收敛目标，确认 Web/YAML/SDK 只暴露数据路径和必要 Selena/仿真文件，并能按 auto/local/Cluster 动态调度 Full、Light 和无 Windows 三种部署形态。
+- OpenCode review: 按用户要求停止 Claude 后改用 OpenCode。配置/Web/SDK 小范围独立审计确认无真实缺口、未制造代码改动，`test_user_config.py` 15 passed、`test_wizard_web.py` 5 passed、`test_sdk.py` 16 passed；调度大文件审计因模型响应超时未作为验收依据。
+- Main verification: 合同组合测试 `137 passed`；调度、数据、Agent 与 Full Windows 纵向专项 `102 passed`；`node --check radar_sim_web/static/app.js` 通过；最终全量 `1173 passed, 8 skipped, 1 upstream Starlette/httpx deprecation warning`（429.90s）。
+- Browser evidence: 本机 `http://127.0.0.1:8878/` 显示服务已连接且无需令牌；新建任务只有 `data.path`，代码路径/分支/Selena 编译脚本/软件包编译脚本/Runtime XML，Adapter 明确可选、MatFilter 必填；执行入口为自动/本地/Cluster；任务中心明确使用结构化 Stage 事件展示状态和进度。交付前已恢复 full Agent，capability 为 `windows_full.available=true`。
+- Drift check: 用户配置仍无 project/profile/toolchain/Agent/共享存储类型/Cluster manager 参数；Linux 不编译 Selena；Light 不做本地仿真；无 Windows 只允许 existing Runtime Bundle + Cluster；未扩展本 Sprint 产品范围。
+- External validation: 当前本机服务未配置 Cluster executor，因此只验证了 capability=false 和 mocked/contract 链路；企业共享盘、manager 提交/取消及上游 Selena 源码编译错误仍需在目标环境验收，不得误报为本机已完成真实仿真。
+
+### 2026-07-14 - 最少配置、自动配置与动态任务路由
+
+- Goal: 用户只维护一份项目无关 YAML；只填写数据路径、代码仓/分支、Selena 编译脚本、软件包编译脚本、Runtime、Adapter/MatFilter 和执行目标。
+- Actual changes: 移除 `build_mode`/旧 `build_script` 对外字段；软件包脚本进入内部项目识别和依赖扫描/自动修复；一键 Agent 首次任务自动登记代码仓、Runtime 与本地数据根，心跳刷新后永久复用；`auto` 在 full 在线时选本地，否则选 Cluster；本地数据按路径自动生成 Agent 上传，浏览器无 Agent 时由同一数据字段旁的文件夹选择器透明上传；Adapter 可为空并由 recipe 预检决定，MatFilter 仍必填。
+- Verification: YAML 示例可解析，`node --check` 通过；真实页面确认无令牌连接、单数据路径/文件夹选择、双脚本、Adapter 可选与配置校验；最终全量 `1173 passed, 8 skipped, 1 upstream deprecation warning`。目标企业 Cluster 仍需环境验收。
+- Drift check: Linux 仍不编译 Selena；light 仍不做本地仿真；YAML 无 project/profile/toolchain/Agent/共享存储参数；Web 与 SDK 仍调用同一 `/api/v1`。
+
+### 2026-07-14 - 发布收敛：鉴权、Windows full 本地闭环与一键部署
+
+- Goal: 在不扩展业务范围的前提下，把 Web/SDK 统一配置实际调度到 no-Windows Cluster、Windows light build/upload、Windows full local 三种发布形态。
+- Actual changes: `serve-v1` 统一 Web/API/Agent 数据库；User/Agent Bearer token 派生 owner/agent_id 并阻止 header/body 冒充；Runtime Bundle/ConfigAsset/Result 提供校验下载；Windows full 新增受控输出、进程树取消、结果目录与四阶段执行；已有共享 Bundle 可安全缓存到同一 full Agent 后配合本地数据仿真；Web 令牌仅存 session，选择 Bundle 后禁止覆盖 Runtime XML；Linux/Docker 默认认证 `serve-v1`；Windows 安装区分 light/full 以及 local/linux control plane。
+- Product boundary: Runtime XML 与 branch/build artifact 强绑定进入 Bundle；Adapter/MatFilter 独立必填；light 不运行本地仿真；full+linux 同一入口可选 local/Cluster；full+local 是离线本地模式；裸 Selena.exe 自动导入不在当前发布版。
+- Verification: HTTP/SDK/Agent/本地/部署 focused 229 passed；Playwright 真实浏览器验证未认证阻断、令牌连接、配置校验和 Bundle 锁定 Runtime；已有 Bundle + full local 纵向测试通过；无 Windows mocked Cluster E2E 通过；最终全量 `1159 passed, 8 skipped, 1 dependency deprecation warning`（404.26s）。
+- External blocker: 真实 Selena 编译已执行约 23 分钟并进入 MSVC，失败于 `runtime.cpp(20) error C2382` 析构函数异常规格重定义；真实 Cluster 共享盘/manager 当前环境不可用，不能伪报外部提交验收。
+- Drift check: Linux 无 build capability；light 无 local simulation/Cluster runtime capability；所有公开结果无物理路径/凭据；新 YAML 无 project/profile/manager/mount/Agent 字段；Runtime XML 不可脱离 Bundle 复用。
+
+### 2026-07-14 - Runtime Bundle、独立配置资产与无 Windows Cluster 纵切
+
+- Goal: 落实用户确认的强绑定关系：Runtime XML 随 Selena 分支/产物进入 Runtime Bundle；Adapter/MatFilter 独立必填；无 Windows 用户可只用中央入口完成 Cluster 调度。
+- Scope: `core/runtime_bundle_archive.py`、`core/config_assets.py`、`core/cluster_stage_executor.py`、`core/cluster_runs.py`、`core/api_v1*.py`、`core/control_service.py`、`core/agent_build_stage.py`、`cli/server.py`、SDK/Web/配置示例及对应测试；未 commit/push。
+- Referenced invariants / WP: INV-01、INV-03、INV-05、INV-06、INV-07、INV-08、INV-11、INV-13、INV-14；WP4/WP5/WP6/WP7/WP8/WP9=In Progress。
+- Actual changes: Runtime Bundle 中央归档增加安全原子解包；构建阶段不再错误依赖 Adapter/MatFilter，只授权绑定 Runtime XML；新增 owner-scoped `ConfigAssetStore` 与 `/api/v1/config-assets`/SDK/Web 上传入口；新 YAML 可保存 `config-asset://`；`serve-v1` 使用 central owner-scoped control DB 并默认启动 Linux/Gateway 双角色执行器；Cluster `environment_check/prepare_data/preflight/run_simulation/collect_results/finalize_manifest` 接入逻辑 ref 与私有 lease；公共 Manifest 不含物理路径/命令/凭据；Runtime Bundle catalog 继续 shared visibility。
+- Test evidence: 既有全量基线为 1082 passed/7 skipped，兼容修复针对性通过；Runtime/asset/API/SDK/Stage focused 178 passed；无 Windows existing Bundle + uploaded Dataset + uploaded Adapter/MatFilter mocked Cluster E2E 跑到公共 Manifest；Playwright 真实页面分别上传实际 Adapter 和 MatFilter，两个输入均写入 `config-asset://sha256/...`，截图 `output/playwright/config-assets-upload.png`。
+- Independent review: Claude CLI Opus 只读审查确认复用 `cluster.py`/`cluster_runs.py` 的最小路径，并指出旧 Manifest 绝对路径泄漏、固定 30 分钟轮询误判和取消不可中断风险；当前实现已采用逻辑 Manifest 和用户/部署超时窗口，真实外部 Cluster cancel adapter 仍 Pending。
+- Drift check: Linux 没有任何 Selena build capability；light Agent 仍不能领取 local simulation/Cluster runtime；Adapter/MatFilter 未进入 Runtime Bundle；新中央执行结果不返回 job_dir/config_path/command/stdout/stderr/password；用户 YAML 仍无 project/profile/manager/mount/Agent 字段。
+- Remaining P0: Windows full 的 `preflight/run/collect/finalize` 本地执行适配；Windows light 使用真实 Agent 完成 build->Bundle upload->Cluster；共享盘/manager 真实 dry-run/submit；可信用户/Agent 身份；一键安装器；全量回归和发布文档验收。
+
+### 2026-07-14 - A8 DataRef、上传、Agent 数据交接与 v1 Web 纵切
+
+- Goal: 收口 `project + data.path` 的数据解析/上传路径，并提供只调用 `/api/v1` 的真实 Web 用户入口。
+- Scope: 新增 DatasetRef/catalog/shared namespace/central store/Agent DataLease 与 bindings；扩展 `/api/v1`、SDK、Agent prepare_data；新增 packaged `radar_sim_web` 静态控制台；保留 legacy `web/*` 与 `/api/*`，未 commit/push。
+- Referenced invariants / WP: INV-01、INV-03、INV-04、INV-05、INV-07、INV-08、INV-10、INV-11、INV-13；WP5/WP6/WP9=In Progress。
+- Actual changes: shared/upload/local drive 统一解析为 path-free `DatasetRef`；中央多文件分块上传具备 owner isolation、offset retry、quota/expiry、server-side final SHA256；SDK 仍预哈希，浏览器无需把大 MF4 整块读入内存；Windows Agent 使用授权 data-root binding 和 immutable `DataLease` 发现、上传并回写 Stage evidence；v1 Web 与 FastAPI 同源打包，支持项目发现、最少配置、Selena/target、YAML import/export、目录选择/上传、提交、任务列表、Stage、事件、cancel/retry/upload action；blocked Stage 会派生 `needs_input` 状态，状态筛选按 v1 派生状态执行。
+- Test evidence: dataset focused 28 passed；Web/API/dataset focused 42 passed；API/service/data focused 75 passed；`node --check radar_sim_web/static/app.js` passed；Playwright 真实浏览器完成 validate -> submit -> task center -> blocked action/event smoke，console 0 errors，并检查 390px/1440px 页面；Claude CLI 独立只读审查确认复用路由和静态/YAML薄接口方向。
+- Drift check: Linux 仍不编译 Selena；Web 不复制调度规则、不调用 legacy build/sim/cluster handler；light Agent 仍无 local simulation/Cluster runtime capability；用户 YAML 未新增 Agent/toolchain/storage/scheduler 参数；legacy Web 未被新静态 mount 覆盖。
+- Risks: `X-Rsim-User` 与 `X-Rsim-Agent-ID` 尚未可信认证；v1 capability/server-info 未实现；branch isolated-worktree build、Cluster v1 Stage executor、preflight/run/manifest executor、installer、完整 Agent HTTP E2E、全量 tests 和真实环境 smoke 仍是 P0 门禁；本轮不构成最终交付。
+- Next step: 实现可信 execution capability snapshot 和 v1 Stage executor handoff，先让 existing Selena + uploaded/shared DatasetRef 的 Cluster 任务不依赖用户 PC 完整跑到 Manifest；随后收口 branch build/full local、installer/auth 和 release gates。
+
+### 2026-07-10 13:30 - v5 产品与架构基线
+
+- Goal: 建立进入 WP0 前的 v5 文档基线、实时状态机制、复用优先门禁和 current/target 边界。
+- Scope: 仅修改 `HANDOFF.md`、`README.md`、`PRD.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md`；不修改代码、配置、测试，不 commit/push。
+- Referenced invariants / WP: INV-01 至 INV-12；DOC=Done；WP0-WP10=Pending。
+- Actual changes: 明确 Web/SDK 两入口、两部署、统一 `SimulationSpec`/调度、Linux 不编译、无 Windows=existing Selena+Cluster、Cluster 不依赖用户 PC、数据只填路径、Git worktree 隔离、复用优先、全过程可视化；补充 Build vs Reuse、第三方 spike/回退、WP0 首个编码任务和 HANDOFF 更新机制。
+- Test evidence: 文档修改执行 `git diff --check`；Markdown 引用和尾随空格自检；未执行代码测试，因为本任务禁止代码/测试修改。
+- Drift check: PRD 只放产品原则，不写具体库；详细设计承载技术选型；开发计划承载 WP 顺序；HANDOFF 顶部为唯一实时状态；Legacy History 保留但不作为当前状态。
+- Risks: 工作区已有未提交代码/测试和未跟踪原型模块，尚未审计，不能计入 v5 完成度；第三方依赖仍需 WP spike 证明版本、许可证、安全、离线打包和代理/证书兼容。
+- Next step: 进入 WP0 安全冻结，审计并隔离 `prepare_repo_context()` 自动分支路径，确保 Web/API 分支自动编译只走 worktree。
+
+### 2026-07-10 13:35 - WP0 legacy Git 分支路径安全冻结
+
+- Goal: 阻止自动化流程修改用户主工作区，同时保留当前 dirty workspace 构建能力。
+- Scope: 修改 `core/repo.py`、`cli/build.py`、`cli/web.py` 和 focused tests；未修改 PRD、详细设计、开发计划、配置或无关代码。
+- Referenced invariants / WP: INV-09、INV-12、INV-10；WP0=Done。
+- Actual changes: `prepare_repo_context()` 改为只验证当前分支；目标分支等于当前分支时允许继续，即使存在 dirty/staged/untracked 修改；目标分支不同时返回安全错误，不执行 checkout、checkout -f、stash 或 reset；`check_repo_context()` 不再暴露 `switch_branch` auto repair；legacy Web `switch_branch` repair 直接拒绝并提示使用当前工作区或 isolated worktree；CLI build 成功日志改为 verified current branch。
+- Test evidence: `python -m pytest tests\test_cli_build.py tests\test_environment.py tests\test_web.py -q` -> 49 passed；Copilot 全量回归 `python -m pytest -q` -> 466 passed in 128.33s；主 agent 独立复跑 -> 466 passed in 122.13s；`git diff --check` 通过；静态搜索确认 Selena 用户工作区路径没有自动 checkout/stash/reset 调用。
+- Drift check: WP0 只做安全冻结，没有提前实现 WP4 worktree build 的路径重定向；`prepare_repo_worktree()`/`cleanup_repo_worktree()` 原型保留；当前 dirty workspace 编译仍可用。
+- Risks: 指定不同分支的自动编译会被安全阻止，直到 WP4 接入完整 isolated worktree build；既有其他未提交 progress/manifest/harvest/wizard 改动仍未审计，不计入 WP0。
+- Next step: WP0 已由主 agent 验收；进入 WP1 的 Pydantic/`SimulationSpec v1` spike 与最小纵切。后续 WP4 负责完整分支 worktree build、构建脚本/config/output 路径重定向和 artifact 登记。
+
+### 2026-07-10 14:04 - WP1-A Pydantic spike 与 SimulationSpec v1 模型
+
+- Goal: 验证 Pydantic 2.13.4 作为 `SimulationSpec v1` 唯一模型/JSON Schema 来源，并实现不依赖 legacy `core/config.py` 的业务合同模型。
+- Scope: 修改 `setup.py`；新增 `core/spec/*`、`tests/test_simulation_spec.py`、`docs/dependency-decisions/pydantic-2.13.4.md`；不修改 `core/config.py`，不做 WP2/API/Web/调度，不 commit/push。
+- Referenced invariants / WP: INV-03、INV-08、INV-10；WP1=In Progress（WP1-A done，WP1-B legacy adapter pending）。
+- Actual changes: 新增 Pydantic frozen/extra-forbid `SimulationSpec`、`SelenaSpec`、`DataSpec`、`SimulationRunSpec`、`ResultSpec`；实现 YAML text/file import、stable YAML export、canonical JSON、fingerprint、JSON Schema、path normalization、required_signals 去空去重、auto_build mode rules；`auto_build` 公开类型为非 nullable bool，schema 为 `{'default': True, 'type': 'boolean'}` 且不列为 required，字段缺失时按 mode 注入默认，显式 null 会被拒绝；路径归一化折叠重复 `/`，保留 UNC `//` 和 URI `://`；`setup.py` 新增 `v5-spec` extra 并 pin `pydantic==2.13.4`，legacy `install_requires` 仍仅 PyYAML。
+- Test evidence: TEMP-only Pydantic smoke rerun passed；offline wheels downloaded and cleaned for Windows CPython 3.12 x64, Linux CPython 3.12 x86_64, Linux CPython 3.10 x86_64; TEMP venv `pip-audit --progress-spinner off` -> `No known vulnerabilities found`, exit 0; `python -m pytest tests\test_simulation_spec.py -q` -> 26 passed; `python -m pytest -q` -> 492 passed in 106.79s; `git diff --check` passed.
+- Drift check: 模型字段只来自 PRD §6 / detailed design §4.1；不包含 Agent、VS/TCC、Cluster manager、repo path、upload chunk 等环境/调度字段；`data.path` 只做业务级字符串归一化，不访问文件系统，并保持 UNC/逻辑 URI 语义；未实现 ResolvedSimulationSpec、ProjectCatalog、UserBindings、API 或上传。
+- Risks: 第三方门禁对 WP1-A 可用，但产品发布前仍需内部第三方 notice/镜像流程确认；Pydantic 未加入默认安装，未安装 `v5-spec` extra 的环境不能导入 `core.spec`；legacy config adapter 尚未完成，WP1 不能标 Done；`auto_build` schema 已去除 null，依赖方若传 null 会得到 ValidationError。
+- Next step: WP1-B 实现 legacy config adapter，将现有 profile/local.yaml 映射到 `SimulationSpec`/ProjectCatalog/UserBindings 边界，同时继续禁止环境路径进入用户 YAML。
+
+### 2026-07-10 14:31 - WP1-B legacy config adapter
+
+- Goal: 将已 merge 的 legacy effective config/profile/local.yaml 只读映射为可导出的 `SimulationSpec`、不含环境绝对路径的 `ProjectCatalog`、不可导出的 `UserBindings`。
+- Scope: 新增 `core/spec/legacy_adapter.py`、`tests/test_spec_legacy_adapter.py`；更新 `core/spec/__init__.py` 导出；在 `core/config.py` 只新增 `load_simulation_spec_bundle()` lazy facade；未修改现有 load/merge/save 行为，未进入 WP2/API/Web/调度，未 stage/commit/push。
+- Referenced invariants / WP: INV-03、INV-08、INV-10、INV-12；WP1=In Review（等待主 agent 独立验收，不标 Done）。
+- Actual changes: `adapt_legacy_config()` 接收 effective legacy config dict 和可选显式 project/profile/data_path，返回 frozen typed bundle；project 逻辑 ID 采用 explicit > `_meta.project` > `project.name`；profile 采用 explicit > `active_profile` > `default` 并复用 `core.profiles.list_profiles/get_profile`；Selena build+branch 映射 `branch/auto_build=true`，build 无 branch 映射 `current_workspace`，path/existing 映射 `existing/auto_build=false` 且只把 `legacy:<project>:<profile>` 逻辑 artifact 写入 spec；真实 exe、workspace、build scripts 仅进入 `UserBindings`；ProjectCatalog 仅暴露逻辑 project/display/platform/profile/source/required_signals/timeout/default_build_mode。
+- Test evidence: `python -m py_compile core\spec\legacy_adapter.py core\config.py core\spec\__init__.py tests\test_spec_legacy_adapter.py` 通过；`python -m pytest tests\test_spec_legacy_adapter.py -q` -> 12 passed；`python -m pytest tests\test_simulation_spec.py tests\test_spec_legacy_adapter.py -q` -> 38 passed；`python -m pytest -q` -> 504 passed in 125.50s；`git diff --check` 通过（仅既有 LF/CRLF warning）；静态 `rg "^from core\.spec|^import core\.spec|pydantic" core\config.py` 无匹配。
+- Drift check: `SimulationSpec` 仍只含业务字段，除用户数据路径外不包含 workspace、build scripts、Cluster 密码/manager/queue、runtime/tool 路径或 existing exe；`ProjectCatalog` 不包含 repo/tool/runtime/Cluster workspace/python/password/exe 绝对路径；`UserBindings` 不混入 Cluster secrets/policy；adapter 不访问真实 Bosch 路径或网络，不修改输入 dict，不复制 profile overlay/normalize 规则；未实现 ResolvedSpec、Artifact catalog、Data resolver、API、Web 或调度。
+- Risks: existing Selena 的逻辑 artifact ID 只是 legacy binding 占位，真实 artifact 推荐/登记仍属 WP4；data path 仍是用户输入字符串，`DatasetRef` 解析/上传仍属 WP5；Pydantic 仍在 optional `v5-spec` 路径下，legacy `core.config` 仅 facade 调用时 lazy import；需要主 agent 独立验收后才可把 WP1 标 Done。
+- Next step: 主 agent 独立验收 WP1-A/WP1-B 代码和测试证据；验收通过后才进入 WP2 `/api/v1` skeleton。
+
+### 2026-07-10 14:42 - WP1 主 agent 独立验收
+
+- Goal: 独立验证 WP1 的公开 schema、legacy 边界、真实项目迁移和 legacy 安装兼容性，决定是否允许进入 WP2。
+- Scope: 只读审查 `core/spec/*`、`core/config.py` facade 和 tests；执行测试/smoke；仅更新本 HANDOFF 状态，不修改业务代码，不 stage/commit/push。
+- Referenced invariants / WP: INV-03、INV-08、INV-10、INV-12；WP1=Done。
+- Actual changes: 确认 `auto_build` JSON Schema 为非 nullable boolean 且非 required，缺省按 Selena mode 注入；确认 UNC/逻辑 URI 归一化稳定；确认 legacy profile 映射复用 `core.profiles`，existing exe 只存在 `UserBindings`，`SimulationSpec` 使用逻辑 artifact ID；确认 `core.config` facade 为 lazy import。
+- Test evidence: 主 agent `python -m pytest tests\test_simulation_spec.py tests\test_spec_legacy_adapter.py -q` -> 38 passed；主 agent `python -m pytest -q` -> 504 passed in 118.25s；真实 `ovrs25`/`bydod25` `load_simulation_spec_bundle()` + YAML/hash round-trip smoke 通过；阻断 `pydantic` import 后 `import core.config` smoke 通过；`git diff --check` 通过（仅既有 LF/CRLF warning）。
+- Drift check: WP1 没有实现 API、调度、ResolvedSpec、Artifact catalog 或 DatasetRef；环境/Cluster policy/secrets 未进入用户 YAML；未修改用户工作区、未触发编译或仿真。
+- Risks: `legacy:<project>:<profile>` 仍是 WP4 接入 artifact catalog 前的逻辑占位；Pydantic 内部 notice/mirror 仍是发布门禁，但不阻塞 WP2 开发。
+- Next step: 进入 WP2 FastAPI/Uvicorn + HTTPX/SSE spike 和 `/api/v1` application/SDK skeleton；继续保留 stdlib legacy server。
+
+### 2026-07-10 14:48 - WP2 `/api/v1` application layer 与 SDK skeleton
+
+- Goal: 完成 FastAPI/Uvicorn + HTTPX/SSE 依赖门禁、thin `/api/v1` application/API 纵切、Python SDK skeleton，并保持 legacy stdlib control server 不变。
+- Scope: 新增 `core/api_v1.py`、`core/api_v1_fastapi.py`、`radar_sim_sdk/*`、`tests/test_api_v1_service.py`、`tests/test_api_v1_fastapi.py`、`tests/test_sdk.py`、`docs/dependency-decisions/fastapi-uvicorn-httpx-wp2.md`；修改 `core/control_service.py`、`cli/server.py`、`setup.py` 和本 HANDOFF；未修改 PRD/design 产品合同，未进入 WP3 Stage DAG、WP4 resolver、WP5 upload、WP9 Web，未 stage/commit/push。
+- Referenced invariants / WP: INV-01、INV-03、INV-04、INV-05、INV-06、INV-07、INV-10、INV-11；WP2=In Review。
+- Actual changes: TEMP 独立 venv 门禁通过后才实现；`setup.py` 仅新增 optional extras `v5-server`、`sdk`、`v5` 精确 pin，默认 `install_requires` 仍仅 PyYAML；`ControlService` 以兼容 migration 为 `jobs` 增加 `owner/idempotency_key/request_hash` 与 partial unique index，旧 `create_job()` 调用保持不传 key 可用；`ApiV1Service` 只依赖 `SimulationSpec` 与 `ControlService`，实现 `health/schema/validate/submit/get/events/cancel/manifest`，submit 创建逻辑 `simulation.v1` / `simulation.v1.dry_run` queued job，payload 保存 canonical spec/spec_hash，metadata 保存 api_version/owner/dry_run/idempotency；FastAPI app factory 只做 HTTP/model/error/request_id/SSE 适配，统一错误 `code/message/detail/actions/request_id` 并带 `X-Request-ID`；`serve-v1` 默认 `127.0.0.1:8878`、Uvicorn `workers=1`，帮助明确 legacy Agent endpoints 仍由 `serve` 提供直到 WP6；SDK 导出 `RadarSimClient`、同一个 `SimulationSpec`、typed validation/job/event/manifest/error models，HTTPX timeout/trust_env/verify/client injection、JSON events、SSE parser、watch/reconnect、wait/cancel/manifest/context manager 已接入。
+- Test evidence: dependency gate isolated TEMP venv install/import/TestClient/StreamingResponse/HTTPX stream OK；`pip-audit -r resolved-product.txt --progress-spinner off` -> `No known vulnerabilities found`；offline wheel `pip download --only-binary=:all:` Windows CPython 3.12 x64、Linux CPython 3.12 x86_64、Linux CPython 3.10 x86_64 均 `count=17` 并清理；baseline `python -m pytest tests\test_simulation_spec.py tests\test_spec_legacy_adapter.py tests\test_control_service.py tests\test_control_http.py tests\test_user.py tests\test_remote_control.py tests\test_server_pyz.py -q` -> 84 passed；baseline full `python -m pytest -q` -> 504 passed；new WP2 focused `python -m pytest tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_sdk.py -q` -> 21 passed, 1 StarletteDeprecationWarning；WP1+WP2 focused `python -m pytest tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_sdk.py tests\test_simulation_spec.py tests\test_spec_legacy_adapter.py tests\test_control_service.py tests\test_control_http.py tests\test_user.py tests\test_remote_control.py tests\test_server_pyz.py -q` -> 105 passed, 1 StarletteDeprecationWarning；final full `python -m pytest -q` -> 525 passed, 1 StarletteDeprecationWarning；`git diff --check` -> exit 0（仅既有 LF/CRLF warning）；static `rg` confirmed no FastAPI/HTTPX/Uvicorn import in `core/api_v1.py` and no scheduler/profile/control-service dependency in `radar_sim_sdk`.
+- Drift check: `core/api_v1.py` 无 FastAPI/HTTPX/Uvicorn import；FastAPI route source 无 `cluster.run`、`local.run_sim`、`prepare_cluster_job`、subprocess/Git/worktree 调度规则；SDK source 无 `core.profiles`、`core.control_service`、Cluster/local scheduling strings；legacy import blocker smoke 证明 `import core.config/core.control_service` 不要求 WP2 deps；Linux no-build 仅排队逻辑 job，不解析/路由/执行、不产生 build capability；SSE 仍是 WP2 transport spike，事件 JSON/SSE 临时映射 legacy `task_logs`，未声称完成 WP3 Event DAG。
+- Risks: FastAPI TestClient 触发上游 StarletteDeprecationWarning（提示未来可能从 `httpx` 切换 `httpx2`，当前门禁与测试通过）；第三方内部 notice/legal/mirror 仍是 WP10 release gate；manifest 在 WP8 接入前按合同稳定返回 `available=false`，仅当 job result/metadata 已有 manifest 才透出；idempotency 只覆盖 v1 submit，不改变 legacy `/api/*` 行为。
+- Next step: 主 agent 独立验收 WP2 依赖门禁、API/SDK 合同、静态漂移与测试证据；验收通过后才允许进入 WP3 Job/Stage/Event DAG。
+
+### 2026-07-10 15:14 - WP2 主验收修复
+
+- Goal: 修复主 agent 实测的 WP2 验收缺陷，保持 `/api/v1` 和 SDK skeleton 范围，不进入 WP3/WP4/WP5/WP9。
+- Scope: 仅修改允许范围内的 `core/api_v1.py`、`core/api_v1_fastapi.py`、`core/control_service.py`、`core/user.py`、`radar_sim_sdk/client.py`、相关 WP2/user/control tests 和本 HANDOFF；未修改 PRD/design，未 stage/commit/push。
+- Referenced invariants / WP: INV-01、INV-03、INV-04、INV-05、INV-06、INV-07、INV-10、INV-11；WP2=In Review。
+- Actual changes: FastAPI validate/submit request models 改为直接使用同一个 `core.spec.SimulationSpec`，OpenAPI validate body 与 `SubmitJobRequest.spec` 均 `$ref` 到 `#/components/schemas/SimulationSpec`；Pydantic/FastAPI validation errors 通过 JSON-safe encoding，`project=''` 返回 422 `invalid_spec` 且 loc 清晰，不泄漏 traceback；v1 submit 创建的逻辑 task 绑定稳定 sentinel `__v1_scheduler__`，普通 legacy agent 即使 capabilities 为 empty、`*`、或 exact `simulation.v1` 也不能领取；新增 public `normalize_user()`，`current_user()`、`control_db_path_for_user()`、FastAPI owner、ApiV1Service owner/metadata/factory key 全部复用，unsafe header 不进入 raw metadata，DB path parent 固定在 `$RSIM_HOME/results`；idempotency concurrent `sqlite3.IntegrityError` 对不同 request hash 映射同一 409 `idempotency_conflict`，不再冒泡 500；old DB migration 以 `BEGIN IMMEDIATE` 序列化 ALTER/index，WAL pragma 锁冲突不阻断初始化；SDK `watch()` 对 SSE 与 JSON polling transport failure 都按 cursor/deadline 重试，API errors 仍立即抛出。
+- Test evidence: 主验收复现先确认旧行为：`project=''` -> 500、OpenAPI schema 为 arbitrary object、empty-capability agent 可领取 `simulation.v1`、unsafe user 可越出/生成子目录；修复后新增 regression focused `python -m pytest tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_sdk.py tests\test_user.py tests\test_control_service.py -q` -> 54 passed, 1 StarletteDeprecationWarning；final WP1+WP2/control/user focused `python -m pytest tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_sdk.py tests\test_simulation_spec.py tests\test_spec_legacy_adapter.py tests\test_control_service.py tests\test_control_http.py tests\test_user.py tests\test_remote_control.py tests\test_server_pyz.py -q` -> 121 passed, 1 StarletteDeprecationWarning；final full `python -m pytest -q` -> 541 passed, 1 StarletteDeprecationWarning；`git diff --check` -> exit 0（仅既有 LF/CRLF warning）；static `rg` confirmed `core/api_v1.py` has no FastAPI/HTTPX/Uvicorn import and SDK has no scheduler/profile/control-service dependency.
+- Drift check: `core/api_v1.py` 仍 framework-agnostic；FastAPI routes 仍只做 HTTP/model/error/SSE 适配；v1 jobs 仍只是 logical queued `simulation.v1`/`simulation.v1.dry_run`，没有 Stage DAG、resolver、upload、Web migration、subprocess/Git/Cluster routing；legacy capability matching semantics 未改，仅通过 assigned-agent sentinel 隔离 v1 logical tasks；用户规范化不引入认证系统。
+- Smoke evidence: `/openapi.json` validate request schema `{'$ref': '#/components/schemas/SimulationSpec'}`；SubmitJobRequest.spec `{'$ref': '#/components/schemas/SimulationSpec'}`；`project=''` -> status 422, code `invalid_spec`, loc `['body','project']`；empty/`*`/exact `simulation.v1` agent claim 均 `None`；`../../../escape`、`..\..\escape`、`a/b` normalized 后 DB parent 均为 `$RSIM_HOME/results` 且 filename 不含 `..`。
+- Risks: Starlette TestClient deprecation warning 仍来自上游；`normalize_user()` 是文件/metadata 安全规范化，不是认证；v1 sentinel 隔离是 WP2 临时防领取机制，WP3 进入真实 scheduler/Stage 后需由 Stage claim 模型替代。
+- Next step: 主 agent 重新独立验收 WP2 修复；验收通过后才允许进入 WP3 Job/Stage/Event DAG。
+
+### 2026-07-10 15:28 - WP2 主 agent 独立验收
+
+- Goal: 独立复核 WP2 修复后的公开 schema、错误合同、任务隔离、用户路径安全、并发持久化和 SDK reconnect，决定是否进入 WP3。
+- Scope: 只读审查 WP2 代码与依赖证据，执行 smoke/focused/full tests；仅更新本 HANDOFF 状态，不修改业务代码，不 stage/commit/push。
+- Referenced invariants / WP: INV-01、INV-03、INV-04、INV-05、INV-06、INV-07、INV-10、INV-11；WP2=Done。
+- Actual changes: 确认 OpenAPI validate/submit 直接引用同一个 `SimulationSpec`；确认自定义 validator 错误稳定返回 JSON-safe 422；确认 sentinel 阻止 empty/`*`/exact capability Agent 误领逻辑 v1 task；确认 unsafe user header 经统一 normalization 后 DB 始终位于 `RSIM_HOME/results`；确认 concurrent idempotency/migration 和 SDK SSE/poll reconnect regression 已纳入测试。
+- Test evidence: 主 agent 手工 smoke：两个 OpenAPI schema 均 `#/components/schemas/SimulationSpec`，`project=''` -> 422 `invalid_spec` / loc `['body','project']`，unsafe owner 被规范化，三类 Agent claim 均为 None，unsafe DB filename 不含 `..` 且 parent 固定；主 agent `python -m pytest tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_sdk.py tests\test_user.py tests\test_control_service.py -q` -> 54 passed, 1 upstream warning；主 agent `python -m pytest -q` -> 541 passed, 1 upstream warning in 121.23s；`git diff --check` 通过（仅既有 LF/CRLF warning）。
+- Drift check: WP2 仍只创建不可被普通 Agent 领取的逻辑 queued job；没有提前实现 Stage DAG、capability routing、Selena resolver、DatasetRef/upload、Web migration 或执行逻辑；stdlib legacy server 仍保留。
+- Risks: Starlette TestClient 的 `httpx` deprecation warning 需在 WP10 依赖复核时重新评估；`X-Rsim-User` normalization 只解决路径/metadata 安全，不构成认证；sentinel 将由 WP3 scheduler/Stage claim 取代。
+- Next step: 进入 WP3，基于现有 ControlService 扩展 Job/Stage/Event DAG；不引入 Celery/Temporal，先做兼容 migration 和 application planner。
+
+### 2026-07-10 15:58 - WP3 Job/Stage/Event DAG
+
+- Goal: 在现有 `ControlService`/SQLite 上实现 v5 Job/Stage/Attempt/Event DAG，同时保持 legacy `/api/*`、Agent claim/pinning、task logs 和 SDK/API skeleton 兼容。
+- Scope: 新增 `core/stages.py`、`tests/test_stages.py`、`tests/test_control_stages.py`；修改 `core/control_service.py`、`core/api_v1.py`、`core/api_v1_fastapi.py`、`radar_sim_sdk/client.py`、`radar_sim_sdk/models.py` 以及 WP3/API/SDK focused tests 和本 HANDOFF/CHECKPOINT；未修改 PRD/design，未 stage/commit/push，未进入 WP4 Selena resolver/Git/build、WP5 data/upload、WP6 Agent v1、WP7 routing、WP8 real preflight/manifest、WP9 Web。
+- Referenced invariants / WP: INV-03、INV-04、INV-05、INV-06、INV-07、INV-10、INV-11；WP3=In Review。
+- Actual changes: `core/stages.py` 生成固定 10-stage DAG（`resolve_spec -> environment_check -> prepare_source/prepare_data -> build_selena -> register_artifact -> preflight -> run_simulation -> collect_results -> finalize_manifest`），existing Selena 的 `prepare_source`/`build_selena` 以 `skipped + skip_reason` 可见持久化；v1 submit 使用 planner 创建 stages，保存 canonical spec 与 pending `resolved_spec` placeholder，并继续用 `__v1_scheduler__` sentinel 隔离普通 Agent；`jobs` 兼容新增 spec/resolved/start/finish 字段，`tasks` 兼容新增 stage/dependency/progress/input/output/error/skip metadata；新增 `stage_attempts` 和 job-local monotonic `job_events`，日志双写 `task_logs + log event`；claim 创建新 attempt，完成/失败/取消更新对应 attempt 并写 terminal/job events；explicit dependencies 支持 stage_type 名解析，skipped 作为 terminal-success dependency；legacy 无 dependencies 仍按 order_index；cancel 保留 skipped、running 进入 cancel_requested/cancelling 后由 aggregate 得到 cancelled；`retry_stage()` 只允许 failed/cancelled，保留 attempts/events，失败导致的未执行下游按 initial_status 恢复；v1 events 改读 `job_events`，新增 FastAPI/SDK retry route/method，SDK Job/Event typed model 暴露 stages/resolved_spec/status/progress/code/action。
+- Test evidence: baseline focused `python -m pytest tests\test_control_service.py tests\test_control_http.py tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_sdk.py -q` -> 53 passed, 1 StarletteDeprecationWarning；new WP3 `python -m pytest tests\test_stages.py tests\test_control_stages.py -q` -> 11 passed；WP3+WP1/WP2/control/http/user/sdk focused `python -m pytest tests\test_stages.py tests\test_control_stages.py tests\test_control_service.py tests\test_control_http.py tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_sdk.py tests\test_user.py tests\test_remote_control.py tests\test_server_pyz.py tests\test_simulation_spec.py tests\test_spec_legacy_adapter.py -q` -> 137 passed, 1 StarletteDeprecationWarning；full `python -m pytest -q` -> 557 passed, 1 StarletteDeprecationWarning；`git diff --check` -> exit 0（仅既有 LF/CRLF warnings）；manual smoke 打印 existing spec 10 stages/skipped、job-local event sequence `[1,2,3,4,5]`、fail/retry/success attempts `[(1,'failed','E_SMOKE'), (2,'succeeded','')]`。
+- Drift check: `core/stages.py` 静态搜索无 subprocess/Git/worktree/filesystem/network；FastAPI route 静态搜索无 planner/DAG/business rules；SDK 静态搜索无 `core.stages`/`core.control_service`/planner/control-service import 或 stage planner strings；未改 legacy capability wildcard 语义；未伪造 v1 stage 成功，真实 Stage executor/capability routing 仍留 WP4+；stdlib legacy `/api/*` focused 回归通过。
+- Risks: WP3 只实现持久化 DAG/状态机/结构化事件，不实现真实 scheduler 逐 stage bind、Selena resolver、artifact/data resolver、real preflight/manifest 或 Web v5；v1 stages 在 WP4+ 前仍由 sentinel pin 阻止普通 Agent 领取；Starlette TestClient deprecation warning 仍来自上游。
+- Next step: 主 agent 独立验收 WP3 代码、状态机、迁移、静态漂移和测试证据；验收通过后再进入 WP4/WP5 等后续包。
+
+### 2026-07-10 16:18 - WP3 主验收状态机修复
+
+- Goal: 修复主验收发现的真实状态机缺口，保持 WP3 In Review，不进入 WP4/WP5/WP6/WP7/WP8/WP9。
+- Scope: 仅修改 `core/control_service.py`、`tests/test_control_stages.py`、`tests/test_api_v1_service.py`、`tests/test_api_v1_fastapi.py`、`tests/test_sdk.py` 和本 HANDOFF；未修改 PRD/design/DEVELOPMENT_PLAN/CHECKPOINT，未 stage/commit/push。
+- Referenced invariants / WP: INV-03、INV-04、INV-05、INV-06、INV-07、INV-10、INV-11；WP3=In Review。
+- Actual changes: `create_job()` 现在验证 explicit dependencies 必须指向同 job stage_type/task_id，拒绝 unknown/self/duplicate dependency，并在创建时写 `job.created` 与每个 `stage.queued/stage.skipped` 初始事件；`claim_next_task()`、`append_logs()`、`submit_task_result()`、`cancel_job()`、`reclaim_stale_tasks()` 增加 write transaction，保证多 ControlService 实例并发 event sequence 连续；`reclaim_stale_tasks()` 对普通失联将当前 attempt 以 `AGENT_STALE` 终结并 requeue stage、写 `stage.requeued`，max attempts 时 attempt/stage failed 并取消下游，cancel_requested 时 attempt/stage cancelled 且不 requeue；direct queued `submit_task_result()` 原子创建 synthetic attempt 1 并保持 legacy task started_at 语义；upstream failure cancel 写入 `UPSTREAM_FAILED/upstream_stage_id/action` 到 downstream error/event，retry 只恢复由目标 stage 导致取消的 stages（含已 attempt 的并行分支），不恢复用户取消或其他错误。
+- Test evidence: 新回归复现先得到 7 failures（creation events、dependency invalid、stale reclaim 三类、direct synthetic attempt、branch retry）；修复后 `python -m pytest tests\test_control_stages.py -q` -> 17 passed；targeted legacy regression `python -m pytest tests\test_web_control.py::test_tail_status_succeeded_maps_to_success tests\test_control_stages.py::test_direct_submit_queued_task_creates_synthetic_attempt -q` -> 2 passed；WP3+WP1/WP2/control/http/user/sdk/web focused `python -m pytest tests\test_stages.py tests\test_control_stages.py tests\test_control_service.py tests\test_control_http.py tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_sdk.py tests\test_user.py tests\test_remote_control.py tests\test_server_pyz.py tests\test_simulation_spec.py tests\test_spec_legacy_adapter.py tests\test_web_control.py -q` -> 156 passed, 1 StarletteDeprecationWarning；full `python -m pytest -q` -> 565 passed, 1 StarletteDeprecationWarning；`git diff --check` -> exit 0（仅既有 LF/CRLF warnings）。
+- Drift check: 未改 PRD/design，不引入 Celery/Temporal/SQLAlchemy/Alembic/new DB/second scheduler；未改 legacy capability wildcard；未进入 WP4 resolver/Git/build、WP5 data/upload、WP6 Agent v1、WP7 routing、WP8 real preflight/manifest、WP9 Web；所有修复仍复用 jobs/tasks/task_logs + SQLite。
+- Smoke evidence: 手工 smoke 打印 `creation_event_types ['job.created','stage.queued','stage.queued']`；`stale_requeue_attempts [(1,'failed','AGENT_STALE'), (2,'running','')] next 2`；branch retry statuses 恢复 `prepare_source/prepare_data/build_selena/preflight=queued` 且 source/data next attempts 都为 2；并发 append logs sequence `[1..8]` 连续，`task_logs=6`、`log_events=6`。
+- Risks: `AGENT_STALE` 当前以 failed terminal attempt 表示 abandoned/requeued 证据，stage 本身可 requeue；真实 executor/scheduler 逐 stage bind、Selena/data resolver、real preflight/manifest 仍属后续 WP，不在本修复范围；Starlette TestClient deprecation warning 仍来自上游。
+- Next step: 主 agent 复验 WP3 状态机、并发事件、retry/cancel/reclaim 与 focused/full 测试证据；复验通过后再决定是否进入后续 WP。
+
+### 2026-07-10 16:20 - WP3 主 agent 独立验收
+
+- Goal: 独立验证 WP3 的 DAG、事务事件序列、attempt/reclaim、取消原因、分支 retry、legacy 兼容和全量回归。
+- Scope: 只读审查 `core/stages.py`、`core/control_service.py`、v1/SDK 适配与 tests；执行 focused/full tests；仅更新本 HANDOFF 状态，不修改业务代码，不 stage/commit/push。
+- Referenced invariants / WP: INV-03、INV-04、INV-05、INV-06、INV-07、INV-10、INV-11；WP3=Done。
+- Actual changes: 确认 fixed 10-stage DAG 与 existing Selena skipped 可见；确认 creation events、job-local sequence 写事务、日志双写和 dependency validation；确认 stale requeue/max-attempt/cancel 都关闭 attempt 并写 `AGENT_STALE`；确认 upstream failure 以 `UPSTREAM_FAILED/upstream_stage_id` 关联，retry 只恢复对应取消 stage并保留历史 attempts；确认 direct legacy completion 有 synthetic attempt，legacy task/order/capability/HTTP/Web 兼容回归全绿。
+- Test evidence: 主 agent `python -m pytest tests\test_control_stages.py tests\test_stages.py -q` -> 19 passed；主 agent `python -m pytest -q` -> 565 passed, 1 upstream warning in 123.05s；`git diff --check` 通过（仅既有 LF/CRLF warning）。
+- Drift check: 所有 v1 stage 仍由 `__v1_scheduler__` sentinel 阻止普通 Agent 领取；没有执行真实 Git、构建、数据上传、preflight、仿真或 Cluster 路由；`HANDOFF.md` 仍是唯一实时状态。
+- Risks: `AGENT_STALE` 的旧 attempt 以 failed terminal 表示 abandoned 证据；Starlette TestClient warning 留 WP10；真实逐 Stage bind、capability routing 和 resolved snapshot 完成度属于 WP4-WP8。
+- Next step: WP4 先审计并接入现有 `core/repo.py` worktree、dirty fingerprint、build runner 与 artifact/manifest 原型；在证明不修改用户主工作区前，不解除 build stage sentinel。
+
+### 2026-07-10 16:19 - Product decision / Conformance Entry: light Agent P0 boundary
+
+- Goal: 固化不可逆 P0 产品决策：Windows 轻量 Agent 首版只负责授权工作区 Selena 本地编译、产物登记/校验/上传或同步、必要数据路径检索/校验/上传，并把任务交还中央调度；本地仿真只属于 Windows full deployment，Cluster 仿真运行期只由 Linux central executor 或平台 Gateway/Worker 执行。
+- Scope: 仅修改 `PRD.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md` 和本 `HANDOFF.md`；不修改代码、测试、配置，不 stage/commit/push；保留 Legacy History 作为历史证据。
+- Referenced invariants / WP: INV-02、INV-05、INV-06、INV-07、INV-13；WP6=Pending，WP7=Pending。
+- Actual changes: 当前合同、架构强制边界、ExecutionNode/capability 归属、目标路由矩阵、WP6 范围/测试/退出标准、P0 验收标准均改为 light Agent 不声明/领取 `simulation.local`，不执行或维持 Cluster 运行期；无部署用户只能 existing Selena + shared/uploaded data + Cluster。
+- Test evidence: 文档一致性扫描使用 `rg`；未运行代码测试，因为本次任务禁止修改代码/测试且只更新文档。
+- Drift check: 本条是产品决策和文档 conformance，不是运行时代码实现；不得把 light Agent 边界误报为已交付功能。真实 Agent capability 上报、claim 拒绝、artifact/data upload 和 cluster handoff 仍需 WP6/WP7 代码与 smoke 证据。
+- Risks: Legacy History 中仍保留 2026-07-03 至 2026-07-08 的旧 Mode A/B、T1/T2/T3、Agent/local sim 表述，均只作为历史记录，不能重新定义当前 P0 合同。
+
+### 2026-07-10 16:28 - Docs-only Conformance Entry: reviewer gap closure for light Agent boundary
+
+- Goal: 关闭独立 Reviewer 指出的 docs-only 产品/架构一致性缺口，不改变代码、测试、配置或已交付状态。
+- Scope: 仅修改 `PRD.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md` 和本 `HANDOFF.md`；不修改代码、测试、配置，不 add/commit/push。
+- Referenced invariants / WP: INV-02、INV-05、INV-07、INV-08、INV-13；WP6=Pending，WP7=Pending。
+- Actual changes: 增加 light build-to-cluster 的 Stage -> capability -> node-kind 明确矩阵；正式固化 `artifact.register`、`artifact.validate`、`artifact.upload`，要求绑定授权目录和同一构建节点，并在平台形成 `SelenaArtifact` 后解除对 Agent 在线依赖；补充 WP6/WP7 测试与停止项的负向门禁，禁止 `windows_agent` 上报/领取 `simulation.local`、`simulation.cluster`、`cluster.gateway` 或 Cluster run/collect/finalize stage，要求服务端按 node kind 过滤自报能力且 legacy wildcard/`cluster.run` 不能绕过 v1 policy，并区分 `windows_full` 与 `platform_gateway` 的 node kind/policy；补齐 light Agent 数据 E2E 验收：授权本地路径 -> Agent 检索/校验/上传 -> `DatasetRef` -> 中央 Cluster 使用 -> Agent 离线仍完成。
+- Test evidence: docs-only 验证使用 `rg` 和 `git diff --check`；未运行代码测试，因为本次任务明确限制不改代码/测试。
+- Drift check: 本条只关闭产品/架构文档缺口，不代表 WP6/WP7 runtime 已交付；真实 capability 上报过滤、claim 拒绝、artifact/data upload、DatasetRef handoff、Cluster executor/Gateway 运行期仍需后续代码实现和 smoke 证据。
+- Risks: Legacy History 仍保留旧 Mode A/B、T1/T2/T3 和 Agent/local sim 表述，均只作为历史记录；任何后续任务不得用旧表述绕过当前 P0 policy。
+
+### 2026-07-10 16:42 - WP4-A1 workspace fingerprint and safe detached worktree
+
+- Goal: 完成 Selena source resolver 的第一段：只读 workspace fingerprint、受限 Git ref 解析和安全 detached worktree，不触碰用户主工作区。
+- Scope: 修改 `core/repo.py`，新增 `tests/test_repo_source.py`，更新本 Active Handoff；未修改产品文档、harvest 行为、scheduler、sentinel、配置或现有用户改动，未 add/commit/push。
+- Referenced invariants / WP: INV-09、INV-12、INV-10；WP4=In Progress。
+- Actual changes: 新增 immutable `WorkspaceFingerprint`/`DetachedWorktreeHandle`；`inspect_workspace()` 只读 Git 并用 HEAD、staged/unstaged `--binary` diff、untracked relative path 和 streamed file SHA256 生成稳定 fingerprint，ignored 不计且对外 dict 不暴露绝对路径；未跟踪 symlink 只散列 link target 文本而不跟随读取仓库外内容；`resolve_git_ref()` 仅接受 exact 40-hex commit、local branch 和 `origin/*` tracking branch；`prepare_detached_worktree()` 在受控 root 下按 job/stage 安全分段加 UUID 创建 detached worktree；cleanup 先验证受控 root，再 `git worktree remove --force` + `prune`，越界抛稳定异常；默认 worktree 在进程 registry 丢失后仍可按严格布局安全恢复清理；兼容 `prepare_repo_worktree()`/`cleanup_repo_worktree()` 委托新 helper 且不删除任意路径。
+- Test evidence: Copilot 初验 `python -m pytest tests\test_repo_source.py -q` -> 5 passed；主 agent 补强后 `python -m pytest tests\test_repo_source.py -q` -> 5 passed, 1 skipped（Windows 当前用户无 symlink 权限时 skip）；registry-loss 单测 -> 1 passed；主 agent `python -m pytest tests\test_repo_source.py tests\test_repo_harvest.py tests\test_concurrency.py tests\test_cli_build.py tests\test_environment.py -q` -> 43 passed, 1 skipped；`git diff --check` 通过（仅既有 LF/CRLF warning）。
+- Drift check: 没有 checkout/stash/reset 用户主工作区；指定分支构建只通过 detached worktree helper；dirty workspace fingerprint 记录 branch、commit、dirty 和证据摘要；`core/api_v1.py` 的 `__v1_scheduler__` sentinel 保持不变；WP4 仍为 In Progress，因为尚未接入 scheduler / artifact catalog。
+- Risks: 兼容 build 路径仍未重定向到 scheduler stage；artifact catalog、Selena resolver、build 前后 fingerprint 对比、构建脚本路径改写和 manifest/preflight/progress 统一接入仍属后续 WP4/WP8；真实大 Selena 仓库 fingerprint 性能与 Git ref 同步策略待 Windows smoke。
+- Next step: WP4-A2 实现 SQLite `SelenaArtifact` catalog 与纯 resolver，再把 resolution outcome 接入 `ResolvedSimulationSpec`；在 scheduler/node policy 完成前继续保留 sentinel。
+
+### 2026-07-10 17:05 - WP4-A2 SelenaArtifact catalog and pure resolver
+
+- Goal: 完成 WP4-A2 的 SQLite `SelenaArtifact` catalog 与纯 Selena source resolver，为后续 ResolvedSpec/API/scheduler 接入提供可测试内核。
+- Scope: 新增 `core/artifacts.py`、`core/selena_resolver.py`、`tests/test_artifacts.py`、`tests/test_selena_resolver.py`；为 ProjectCatalog revision 修改 `core/spec/legacy_adapter.py`；仅更新本 Active Handoff，不把 `CHECKPOINT.md` 作为实时状态源；未修改 `core/repo.py`、PRD、详细设计、开发计划、API、scheduler、ControlService 或 sentinel，未 add/commit/push。
+- Referenced invariants / WP: INV-03、INV-04、INV-05、INV-06、INV-09、INV-10、INV-12、INV-13；WP4=In Progress（A2 done，接入仍 pending）。
+- Actual changes: `SelenaArtifact` 为 frozen dataclass，manifest 深冻结且 `to_dict()` 返回新对象；`ArtifactCatalog` 使用 stdlib SQLite、每操作独立连接、busy timeout、事务安全、可与 ControlService 共用 DB；登记按 checksum + accessibility 幂等，clean shared 按 project 隔离，private/dirty 再按 owner 隔离，dirty 或 source-changed 强制 private 且不进入推荐；owner-less list/snapshot/get 不再暴露 private artifact，显式 ID 同 checksum 也不能跨 owner/project identity 返回；`storage_ref` 只允许 `artifact://`、`cluster://`、`shared://`、`legacy://` 逻辑引用，拒绝 Windows/UNC/file path；推荐与 access 校验覆盖 visibility、ready、retain、build_mode 和 target accessibility。`resolve_selena()` 仅消费 immutable `SourceResolutionContext`，支持 current_workspace/branch/existing/auto，并防御校验 owner/visibility、retain、health、source-changed、build mode、target、exact commit、workspace project 与 ProjectCatalog revision；private dirty artifact 可由 owner 显式复用但不能推荐。新增 atomic `apply_selena_resolution()` 同时返回 partial ResolvedSpec 与 Stage mutation，避免“跳过构建但未记录 artifact”；I/O 仍只在显式 context builder 边界。
+- Test evidence: Copilot 新增测试 -> 16 passed；主 agent 修复 reviewer P0 后 `python -m pytest tests\test_artifacts.py tests\test_selena_resolver.py tests\test_spec_legacy_adapter.py tests\test_stages.py -q` -> 48 passed；API/control/spec/artifact/resolver focused -> 101 passed, 1 StarletteDeprecationWarning；主 agent full `python -m pytest -q` -> 605 passed, 1 skipped（Windows symlink 权限）, 1 upstream Starlette warning in 222.26s；`git diff --check` 通过。
+- Drift check: pure resolver 不访问文件、DB、网络、时间或 Git；snapshot/outcome/resolved spec 不包含 workspace_path、executable_path、build scripts 或绝对路径；单独 Selena resolved 只把整体 ResolvedSpec 标为 `partial`，不会误报完整解析；artifact resolution 仍只产生纯 Stage mutation，不改 DB/任务状态；`core/api_v1.py` 的 `__v1_scheduler__` sentinel 保持不变，未接 scheduler。
+- Risks: Artifact location/health 目前仍以不可变记录表达，尚未拆分独立 location/health history；SQLite 首版表尚无跨版本 column migration 与多进程迁移 smoke；仍未接 API/v1 submit、ControlService 原子 persistence update、真实 scheduler stage bind、构建前后 fingerprint 对比、artifact upload/register stage adapter、preflight/manifest/progress/data resolver；WP4 因这些集成仍保持 In Progress。
+- Next step: 后续 WP4-A3 将 resolver outcome 接入 ResolvedSpec 和 scheduler/stage adapter；在 node policy 完成前继续保留 sentinel。
+
+### 2026-07-10 17:28 - WP4-A3 API submit source resolver boundary
+
+- Goal: 把 WP4-A2 已实现的纯 Selena resolver 原子接入 `/api/v1` submit，同时继续不实现真实 scheduler/worker，不解除 `__v1_scheduler__` sentinel。
+- Scope: 新增 `core/source_resolution_runtime.py` 和 `tests/test_source_resolution_runtime.py`；修改 `core/api_v1.py`、`core/control_service.py`、`cli/server.py`、`tests/test_api_v1_service.py`、`tests/test_api_v1_fastapi.py` 与本 Active Handoff；未修改 `PRD.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md` 或 `CHECKPOINT.md`，未 add/commit/push。
+- Referenced invariants / WP: INV-03、INV-04、INV-05、INV-06、INV-09、INV-10、INV-12、INV-13；WP4=In Progress（A3 done，真实 scheduler、Agent snapshot、artifact register/upload 仍 pending）。
+- Actual changes: `ApiV1Service` 新增 immutable `SourceResolutionInputs` 与 optional `source_resolution_provider(owner, spec)`；submit 保持 parse/canonical/hash/control/idempotency existing check 在前，仅新 job 调 provider；provider=None 仍持久化 pending ResolvedSpec；provider 返回 inputs 后调用 `resolve_selena()` + atomic `apply_selena_resolution()`，在同一次 `create_job()` 事务中持久化 resolved_spec 与 stage plan；metadata 的 source_resolution 只保存 status/code，不保存路径或完整 evidence；artifact resolution 动态跳过 `prepare_source`/`build_selena`；needs_input/impossible outcome 创建 `needs_input` Job 与 `blocked` Stages，全部保留 sentinel 且不可 claim，避免误标 succeeded 或执行 stage。`core/source_resolution_runtime.py` 作为显式 I/O boundary：legacy config loader 只取 ProjectCatalog/UserBindings，ArtifactCatalog snapshot 只含 shared + owner private，Linux/central 默认 no-inspect，不读 Windows workspace；logical workspace_binding_id 由稳定 hash 生成，不暴露绝对路径；`inspect_local_workspace=True` 才显式调用 context I/O builder；不把 legacy executable path 自动 seed 为 SelenaArtifact。`serve-v1` explicit DB 与 per-user DB 均把 resolver runtime 的 ArtifactCatalog 指向同一 control DB，FastAPI adapter 保持 thin。
+- Test evidence: `python -m py_compile core\api_v1.py core\control_service.py core\source_resolution_runtime.py cli\server.py tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_source_resolution_runtime.py` 通过；`python -m pytest tests\test_api_v1_service.py tests\test_api_v1_fastapi.py tests\test_control_service.py tests\test_control_stages.py tests\test_spec_legacy_adapter.py tests\test_simulation_spec.py tests\test_artifacts.py tests\test_selena_resolver.py tests\test_source_resolution_runtime.py tests\test_server_pyz.py -q` -> 145 passed, 1 upstream Starlette warning；`git diff --check` 通过。
+- Drift check: 未实现真实 scheduler/worker、未解除 `__v1_scheduler__`、未让 Linux 读取或探测 Windows workspace、未自动登记 legacy exe path、未新增第三方依赖、未改产品/设计/开发计划合同；unresolved source outcome 不会产生可执行 queued stage。
+- Risks: `blocked` job/stage 是提交期可观察状态，后续真实 scheduler 需把 needs_input 的用户补充/重试 UX 接入；Agent snapshot、artifact register/upload、build 前后 fingerprint 对比、data resolver、preflight/manifest/progress 仍属于后续 WP4/WP5/WP8；WP4 继续 In Progress。
+- Next step: 后续 WP4/WP6 接入 Windows full/light Agent source snapshot 与 artifact register/upload stage；在 scheduler/node policy 完成前继续保留 sentinel。
+
+### 2026-07-13 - WP4-A3 Reviewer 独立验证与 stale test 修复
+
+- Goal: 独立验证主 agent 对 A3 的 7 项安全修复（reserved sentinel、provider owner、provider error 脱敏、needs_input 结构化事件与 cancel 终结、central no Windows I/O、clock NaN/Inf、workspace binding ID 稳定），并直接修复任何 P0/P1。
+- Scope: 审查 `core/api_v1.py`、`core/source_resolution_runtime.py`、`core/control_service.py`、`core/stages.py`、`cli/server.py`、`core/control_http.py`、`core/api_v1_fastapi.py`、`core/selena_resolver.py`、`core/config.py` 与对应 tests；修改 `tests/test_control_stages.py` 一处 stale assertion，新增 legacy HTTP reserved-sentinel 负向测试，并更新本 HANDOFF A3 entry；未修改业务代码、PRD/design/DEVELOPMENT_PLAN/CHECKPOINT，未 add/commit/push，未引入新 scheduler，未解除 sentinel。
+- Referenced invariants / WP: INV-03、INV-04、INV-05、INV-06、INV-09、INV-10、INV-12、INV-13；WP4=In Progress（A3 done）。
+- 主验收证据（独立确认）：
+  1. HTTP `/api/agents/register`（legacy `core/control_http.py`）调 `register_agent`，`__v1_scheduler__` 在 `RESERVED_INTERNAL_AGENT_IDS` 被拒并冒 `ValueError`→HTTP 400；`register_internal_agent` 仅在 tests 内直连 `ControlService` 调用，FastAPI `/api/v1` 与 legacy HTTP 均无 route 暴露 internal registration。
+  2. resolved/queued stage 仍不可被普通/wildcard/spoof agent 领取：`claim_next_task` SQL `WHERE status='queued' AND (assigned_agent_id='' OR assigned_agent_id=?)` 先按 agent_id 过滤 v1 sentinel-bound task，`_capability_matches` 仅在 SQL 过滤后生效；blocked stage 因 `status='blocked'` 被 `WHERE status='queued'` 直接排除，连已注册的 `__v1_scheduler__` internal agent（`*` capability）也 claim 不到（`test_v1_submit_unresolved_outcomes_are_observable_but_not_executable` 断言 `claim_next_task(V1_SCHEDULER_AGENT_ID) is None`）。
+  3. needs_input cancel 终结：`cancel_job` 不把 `needs_input` 视为 terminal（`needs_input` 不在 `TERMINAL_JOB_STATUSES`），blocked stage 直接置 `cancelled` 写 `stage.cancelled` event，`_refresh_job_status_locked` 聚合后 job 落到 `cancelled`；API `cancel_job` 对 needs_input job 可调用且返回 `cancelled`，所有 stage 落在 `{cancelled, skipped}`。
+  4. job/stage structured events 完整且不破坏 WP3 event sequence：`create_job` 在同一 `BEGIN IMMEDIATE` 事务写 `job.created` + 每 stage `stage.queued/skipped/blocked`，并在 refresh 后 status≠queued 时补一条 `job.status`；`cancel_job`/`retry_stage`/`submit_task_result`/`reclaim_stale_tasks` 均 write-tx；WP3 `test_create_job_writes_initial_job_and_stage_events`（mixed queued+skipped→3 events 无 job.status）仍通过。
+  5. provider owner/path 脱敏：`SourceResolutionContext` frozen 且 `evaluated_at` 拒 NaN/Inf/负；`api_v1.py` 校验 `inputs.context.owner == owner` 否则 `source_resolution_owner_mismatch`；`SourceResolutionProviderError` 经 `_provider_api_error` 固定 public 文本映射，`detail` 仅含 `provider_error=<code>`，不回显 provider message/action path；未捕获异常统一 `source_resolution_unavailable` 且 `detail` 仅 `type(exc).__name__`；resolved_spec decisions 仅白名单键（无 workspace_path/executable_path，`workspace_binding_id` 为 sha256 hash）。
+  6. central no Windows I/O：`serve-v1` `inspect_local_workspace=False`，`build_legacy_source_resolution_inputs` 走非 inspect 分支只构造纯 context，不调 `build_source_resolution_context_from_io`（Git/filesystem I/O）；`config_loader` 接 `spec.data.path`，`load_simulation_spec_bundle` lazy `adapt_legacy_config` 纯映射，workspace_path 仅留在 `UserBindings` 不被探测。
+  7. idempotency existing 不重调 provider：`submit_job` idempotency existing check（`get_job_by_idempotency`）在 `source_resolution_provider` 调用之前，existing job 直接 return，provider 调用计数为 1（`test_v1_idempotency_replay_does_not_call_source_provider_again`）；concurrent IntegrityError fallback 同样返回 existing job。
+  8. create_job 原子持久化 resolved_spec+stages：`resolved_spec` 与 `tasks` 在同一 `create_job` 事务的 `BEGIN IMMEDIATE`/commit 内写入，异常 rollback 不留半状态。
+- 直接修复（P1 stale test，非业务逻辑缺陷）：`tests/test_control_stages.py::test_event_sequence_is_job_local_and_concurrent_append_is_monotonic` 旧 assertion 假设 single skipped-task job 创建时只有 2 个初始 event，但 WP3 状态机修复后 single skipped task 会使 job 在创建期翻到 `succeeded` terminal 并补写 `job.status` event（共 3 个初始 event）；旧 assertion `range(3,11)` 与 job_b `[1,2,3]` 与现行 `create_job`/`_refresh_job_status_locked` 行为不符而失败。修复为 `range(4,12)` 与 job_b `[1,2,3,4]` 并加注释说明 single-skipped-task→terminal→job.status 事件。这是 stale test 对齐正确状态机行为，不改变任何业务语义。
+- Test evidence: focused `python -m pytest tests/test_api_v1_service.py tests/test_api_v1_fastapi.py tests/test_source_resolution_runtime.py tests/test_control_service.py tests/test_control_stages.py tests/test_control_http.py tests/test_sdk.py tests/test_artifacts.py tests/test_selena_resolver.py tests/test_spec_legacy_adapter.py tests/test_server_pyz.py -q` -> 149 passed, 1 upstream Starlette warning；新增 `test_control_http_rejects_reserved_internal_scheduler_identity` 证明 public HTTP register 返回 400 且不产生伪造 Agent；full `python -m pytest -q` -> 625 passed, 1 skipped（Windows symlink 权限）, 1 upstream warning in 314.62s；`git diff --check` 通过（仅既有 LF/CRLF warning）；静态确认 `core/api_v1.py`/`source_resolution_runtime.py`/`stages.py`/`selena_resolver.py` 无 Celery/Temporal/SQLAlchemy/Alembic/RQ/dramatiq，sentinel `__v1_scheduler__` 保留。
+- Drift check: 未改业务代码、未新增 scheduler、未解除 sentinel、未让 Linux 探测 Windows workspace、未扩展产品范围（needs_input 恢复 endpoint、source preflight、provider concurrent single-flight 仅记为后续风险未实现）；HANDOFF 仍为唯一实时状态，未新增第二实时状态，未改 CHECKPOINT/PRD/design/DEVELOPMENT_PLAN。
+- Risks（后续，不在本任务扩展）：(a) needs_input job 暂无恢复/resume endpoint，用户只能 cancel 后重新 submit；(b) source resolution 无独立 preflight/validate endpoint，provider 失败只能在 submit 时观察到；(c) provider 无 concurrent single-flight，同 idempotency-key 并发 submit 会被两个 worker 各调一次 provider（winner 写 job、loser 拿 existing），属可接受但非最优；(d) `AGENT_STALE` attempt 仍以 failed terminal 表 abandoned 证据；(e) Starlette TestClient `httpx` deprecation warning 留 WP10；(f) blocked stage 当前不可 retry（retry_stage 只接 failed/cancelled），needs_input 恢复路径待后续 WP 接入真实 scheduler 时一并设计。
+- Next step: 后续 WP4/WP6 接入 Windows full/light Agent source snapshot 与 artifact register/upload stage；needs_input 恢复、source preflight、provider single-flight 作为后续 WP 设计项评估；在 scheduler/node policy 完成前继续保留 sentinel。
+
+### 2026-07-13 - WP6-A1 Windows Agent light/full capability runtime gate
+
+- Goal: 修复历史 Mode A Agent 默认 `cluster.run + tcc.*` 与 v5 产品合同的冲突，建立 light/full 明确模式，并在 CLI、公开注册和 claim 三层阻止 light Agent 执行本地仿真或 Cluster 运行期。
+- Scope: 新增 `core/agent_policy.py`、`tests/test_agent_policy.py`、`tests/test_agent_cli_policy.py`；修改 `cli/agent.py`、`cli/web.py`、`core/control_service.py`、`tests/test_control_service.py`、`tests/test_control_http.py` 与本 Active Handoff；未实现 artifact/data upload、source snapshot、scheduler replacement、installer、UI 或 needs_input recovery，未解除 `__v1_scheduler__`，未 add/commit/push。
+- Referenced invariants / WP: INV-02、INV-04、INV-05、INV-07、INV-10、INV-13；WP6=In Progress（A1 done）。
+- Actual changes: Agent CLI 新增 `--windows-mode light|full` 且默认 light；light 默认只上报 source/workspace、Selena build、artifact register/validate/upload、data local read/upload 和 legacy local check/build aliases，禁止 wildcard、local simulation、Cluster simulation/gateway/run/collect/finalize 与未知 capability；full 默认增加 local simulation，但不自动获得 Cluster runtime/Gateway。CLI 在创建 HTTP client 前校验显式 capability，并在 `Popen` 前用 node policy 二次拒绝非法 task/stage；注册 metadata 明确 `node_kind/windows_mode`。ControlService 公开注册按 node kind 规范化并过滤自报 capability，只记录过滤标记/数量而不持久化被拒 token；未知显式 node kind 返回稳定 400；claim 对已存在/手工污染的 wildcard/exact capability 记录再次应用严格 task/stage allowlist。内嵌 Web Agent 明确注册为 `windows_full` 并同样走执行前 gate。Claude CLI 产出初始 policy/CLI 草案；主 agent 独立审查后修复显式 legacy、大小写归一化、unknown allowlist、full 默认 `cluster.run` 越权和 rejected-token 持久化，并合并删除重复 `core/node_policy.py`，保持单一策略源。
+- Test evidence: policy/CLI/Web/control focused -> 206 passed, 1 upstream Starlette warning；full `python -m pytest -q` -> 705 passed, 1 skipped（Windows symlink 权限）, 1 upstream Starlette/httpx warning in 255.37s；`python -m py_compile core\agent_policy.py cli\agent.py core\control_service.py` 通过；`git diff --check` 通过（仅 LF/CRLF warning）；静态搜索无 `core.node_policy` import 或重复策略模块。
+- Drift check: light Agent 仍不具备 `simulation.local`、`simulation.cluster`、`cluster.gateway`、legacy `cluster.run` 或 run/collect/finalize stage；Windows full 与 platform Gateway 未合并；legacy 未声明 node kind 的调用仍保留兼容 capability 行为；本切片只交付 node/capability policy，未把 WP6 或 WP4 误报完成。
+- Risks: node kind 目前仍由注册 metadata 声明而非安装凭证绑定，身份认证/attestation 属后续安全工作；WP7 尚未为 `linux_executor/platform_gateway` 建立独立 allowlist；v5 scheduler 仍使用 sentinel，尚未把 Stage 基于 required capabilities 绑定到真实 node；light Agent 授权目录、source snapshot、artifact/data upload 和 Agent offline Cluster E2E 仍待实现。
+- Next step: WP4/WP6-A2 实现授权 workspace/output 边界、构建前后 `WorkspaceFingerprint` source snapshot 与 artifact validate/register/upload staging；完成后再让真实 scheduler 绑定 build/artifact stage，sentinel 暂时保留。
+
+### 2026-07-13 - WP4/WP6-A2 authorized source snapshot and artifact staging kernel
+
+- Goal: 为 Windows full/light Agent 建立不访问网络的本地 staging 安全边界，确保只有授权 workspace/output 下的本次 Selena 产物可被校验并形成不含绝对路径的 `SelenaArtifact`/Stage result。
+- Scope: 新增 `core/agent_artifact_staging.py`、`tests/test_agent_artifact_staging.py`；仅更新本 Active Handoff；未接 CLI Agent task、binding store、HTTP/upload/catalog endpoint、scheduler、Web/SDK 或 installer，未 add/commit/push。
+- Referenced invariants / WP: INV-07、INV-09、INV-10、INV-12、INV-13；WP4=In Progress，WP6=In Progress（A2 kernel done）。
+- Actual changes: immutable `AuthorizedRoots` 只接受非空、存在且非 drive root 的 workspace，并要求 output root 是 workspace 内更窄的授权目录；resolve/realpath 双重 containment 阻止 traversal 和 symlink/reparse escape。`capture_source_snapshot()` 授权后复用 WP4-A1 `inspect_workspace()`，错误对外不回显路径。`validate_and_hash_artifact()` 只接受授权 output 中非空、regular、非 symlink、非 hardlink 的 `selena.exe`，流式 SHA-256，并在 hash 前后比较 file identity/size/mtime 防止替换；只返回校验过的 relative POSIX logical path/checksum/size。`stage_selena_artifact()` 校验 snapshot commit/hash、业务 metadata 与 timestamps，用 before snapshot 固化 branch/commit/dirty fingerprint，before/after hash 或 commit 变化时标记 `source_changed_during_build`，dirty/changed 由 `SelenaArtifact` 强制 private；manifest key/value 和 Stage result 递归拒绝绝对路径。Claude CLI 生成初始模块/真实 Git tests；主 agent 修复 symlink resolve 后漏检、路径错误泄漏、evidence 可伪造绝对路径、Inf、hardlink/hash race、空/root authorization，并把慢测试拆成少量真实 Git + 快速合成 fingerprint。
+- Test evidence: staging-only `python -m pytest -q tests\test_agent_artifact_staging.py` -> 39 passed, 3 skipped；staging/repo/artifact/Agent policy focused -> 139 passed, 4 skipped；full `python -m pytest -q` -> 746 passed, 4 skipped, 1 upstream Starlette/httpx warning in 277.63s；`python -m py_compile core\agent_artifact_staging.py` 和 `git diff --check` 通过。skips 为当前 Windows symlink 权限及既有 repo symlink case，不隐藏其他失败。
+- Drift check: 模块只做 local filesystem staging，不上传、不访问 catalog/网络、不运行 simulation/Cluster、不接受中央绝对路径；Stage result 只含 logical relative path、checksum/size、before/after public fingerprint 和 artifact logical record；light Agent 边界不变，scheduler sentinel 不变。
+- Risks: `ArtifactEvidence` 仍是同进程 typed evidence，不是跨进程签名/attestation；binding ID 到本机路径的持久化授权尚未实现；构建 executor 尚未在 build 前后调用 snapshot；artifact upload 后的 logical `storage_ref`、中央 catalog register 与 Agent offline handoff 尚未实现；Windows junction/企业文件系统需真实机 smoke。
+- Next step: WP6-A3 复用 `RSIM_HOME` 实现 Agent-local workspace binding store（逻辑 ID -> workspace/output roots），再接 `prepare_source/build_selena/register_artifact` Stage adapter；中央任务只携带 binding ID/relative output，不携带 Windows 绝对路径。
+
+### 2026-07-13 - WP6-A3 Agent-local workspace binding store
+
+- Goal: 实现“一次配置、永久生效”的本机 workspace/output 授权持久化，使中央 resolver 和 Windows Agent 通过同一逻辑 binding ID 协作，而不跨机器传递绝对路径。
+- Scope: 新增 `core/agent_bindings.py`、`tests/test_agent_bindings.py`；最小修改 `core/source_resolution_runtime.py` 复用共享 ID 算法；更新本 Active Handoff；未接 Agent CLI bind 命令/文件夹选择器、真实 Stage、upload/catalog/scheduler/Web/installer，未 add/commit/push。
+- Referenced invariants / WP: INV-03、INV-07、INV-08、INV-09、INV-10、INV-13；WP6=In Progress（A3 store done）。
+- Actual changes: `make_workspace_binding_id(project, path)` 成为唯一 ID 算法，保持既有 `workspace:sha256:<24hex>`、slash/casefold 兼容；中央 `logical_workspace_binding_id(UserBindings)` 仅作 facade。immutable `WorkspaceBinding` 本地保存 project、resolved workspace/output roots 与时间，`public_dict` 只暴露 ID/project/output count/health/timestamps。`AgentBindingStore` 使用 local-only SQLite + WAL/busy timeout/线程锁/`BEGIN IMMEDIATE`，默认路径为 `RSIM_HOME/agent/bindings.db`，未配置时为用户 home `~/.rsim/agent/bindings.db`，不落 repo cwd；register 先复用 `AuthorizedRoots`，稳定 upsert 且保留 created_at，get/list/resolve 每次重新检查目录健康，delete/project isolation/collision/malformed JSON/nonfinite clock 均有 path-free 错误。Claude CLI 生成 store/facade/tests；主 agent 修复 delete 双 rollback、clock 校验、malformed JSON 被 list 吞掉、JSON object shape、严格 project token、collision 检查和 corrupt DB 错误脱敏。
+- Test evidence: binding/source/staging focused -> 95 passed, 5 skipped；扩展 resolver/API focused -> 137 passed, 5 skipped；full `python -m pytest -q` -> 793 passed, 6 skipped, 1 upstream Starlette/httpx warning in 297.31s；`python -m py_compile core\agent_bindings.py core\source_resolution_runtime.py` 与 `git diff --check` 通过；静态确认 binding ID digest 只在 `core/agent_bindings.py` 实现一次。
+- Drift check: 绝对 workspace/output 只存 Agent 本机 DB，public view 和中央 ResolvedSpec 只携带 logical binding ID；store 无网络、无 upload、无 simulation/Cluster、无 catalog 写入；Linux central 仍不 inspect Windows workspace；light/full capability gate 与 sentinel 保持不变。
+- Risks: 还没有用户可见的 bind/unbind/health CLI/API 与 folder picker；本地 DB 尚未绑定安装身份/签名，node attestation 后续补；真实 build Stage 尚未证明 legacy config 的 workspace/build script/output 与 binding 一致；Windows junction/SMB workspace 需真实环境 smoke。
+- Next step: WP6-A4 增加 Agent-local bind CLI/健康检查，并实现 v5 `build_selena` Stage adapter：由 binding ID 解析本机路径、校验 legacy build config 与 binding 一致、build 前后 snapshot、校验相对 output 中 `selena.exe` 并回传 redacted evidence；不改变 legacy `local.build_selena` 行为。
+
+### 2026-07-13 - WP6-A4 Agent binding admin CLI
+
+- Goal: 为尚未接 Web folder picker 的阶段提供可释放、可脚本化的一次性本机授权入口，让用户/管理员能 register/list/health/delete workspace binding 并永久保存。
+- Scope: 新增 `cli/agent_binding.py`、`tests/test_agent_binding_cli.py`；更新本 Active Handoff；未修改产品 YAML、Web/SDK、Agent poll loop、build Stage、upload/catalog/scheduler 或 installer，未 add/commit/push。
+- Referenced invariants / WP: INV-01、INV-03、INV-09、INV-11、INV-13；WP6=In Progress（A4 admin CLI done）。
+- Actual changes: 动态 CLI 新增 `rsim agent-binding register|list|health|delete` 且 `NO_CONFIG=True`；register 接收 project/workspace/output roots 并复用 `AgentBindingStore/AuthorizedRoots`，list 支持 project filter 与 deterministic JSON，health 每次重新解析授权 roots，delete 显式删除。所有 stdout 只输出 binding ID/project/output count/health/timestamps/deleted，不输出 workspace/output/db 绝对路径；未指定 `--db` 时复用 A3 的 `RSIM_HOME`/user-home 默认。该 CLI 是管理员/调试/自动化入口，不改变 Web/SDK 作为产品入口的合同。Claude CLI 完成模块与 20 个 focused tests；主 agent 独立复验动态自动注册与 no-path 输出并清理未使用 imports。
+- Test evidence: CLI + store focused -> 67 passed, 2 skipped；`python rsim.py agent-binding --help` 成功显示 4 个子命令；full `python -m pytest -q` -> 813 passed, 6 skipped, 1 upstream Starlette/httpx warning in 280.08s；`python -m py_compile cli\agent_binding.py` 与 `git diff --check` 通过。
+- Drift check: CLI 不进入 SimulationSpec/YAML，不成为第三个产品调度入口；它只管理 Agent 本机授权，无网络、无仿真、无 Cluster、无 artifact catalog；输出和异常不跨机泄露绝对路径。
+- Risks: 命令行路径参数不等于目标 Web 系统文件夹选择器体验；binding 尚未绑定 installer/node attestation；未实现自动环境检查/修复；真实 v5 build/register_artifact Stage 还不能消费 binding。
+- Next step: WP6-A5 安全重构现有 Selena build command 为可注入/可验证的 worker adapter，再让仅 v5 `build_selena` Stage 使用 binding ID、校验本机 legacy config、capture before/after、validate/hash `selena.exe` 并返回 redacted evidence；legacy `local.build_selena` 保持兼容，upload/register 后置。
+
+### 2026-07-13 - WP6-A5 v5 configured-script Selena build Stage adapter
+
+- Goal: 让 Windows full/light Agent 能安全执行真实 v5 `build_selena` Stage：只消费逻辑 binding ID，在本机解析授权路径，执行已验证 build script，并回传 build 前后 snapshot 与产物 hash evidence。
+- Scope: 新增 `core/agent_build_stage.py`、`tests/test_agent_build_stage.py`；修改 `cli/agent.py`、`core/agent_policy.py`、`core/control_service.py`、`tests/test_control_agent.py`、`tests/test_agent_policy.py`、`tests/test_control_service.py` 与本 Active Handoff；未接 scheduler payload enrichment、R2D2 fallback、register_artifact/upload/catalog、Web/SDK/installer，未 add/commit/push。
+- Referenced invariants / WP: INV-04、INV-05、INV-09、INV-11、INV-12、INV-13；WP6=In Progress（A5 adapter done，真实环境 smoke pending）。
+- Actual changes: `prepare_selena_build()` 只接受 project/`workspace_binding_id`/build mode/strict bool clean/optional logical profile，拒绝任何本地 path key；通过 Agent-local store 解析授权 roots，加载本机 config 并用共享 binding ID 验证 config workspace 完全一致；P0 v5 Stage 只允许 configured Selena build script，拒绝 legacy R2D2 fallback，script 必须 regular、非 symlink/hardlink、位于授权 workspace，实际 command 必须是 `cmd /c <同一 script>`，cwd 必须是授权目录，预期 `selena.exe` 必须位于授权 output。prepare 在全部校验后 capture before，并记录 script SHA-256；`verify_prepared_build()` 在 `Popen` 前重验 script identity/checksum；`finish_selena_build()` capture after、validate/hash artifact，返回只含 project/`workspace_binding_id`/build mode/public snapshots/source-changed/logical path/checksum/size 的 redacted result。`cli.agent._run_task()` 仅对正式 `build_selena` Stage 走 prepare -> verify -> subprocess -> finish，使用授权 cwd，不在日志起始或 result 回传 command/cwd；setup/finish 失败转为 path-free Stage failure。legacy `local.build_selena` 保持原命令行为。服务端 formal `build.selena` capability 新增 `build_selena` Stage alias 匹配，但 sentinel 尚未解除。Claude CLI 生成初始 kernel 后未完成 tests；主 agent 缩小为 script-only P0、修复 fallback/clean/binding field/command identity/path leak，并实现 23 个 kernel tests 与 Agent 集成 tests。
+- Test evidence: kernel focused -> 23 passed；Agent/policy/control focused -> 121 passed；扩展 build/binding/staging/API focused -> 322 passed, 5 skipped, 1 upstream warning；full `python -m pytest -q` -> 840 passed, 6 skipped, 1 upstream Starlette/httpx warning in 297.06s；`python -m py_compile core\agent_build_stage.py cli\agent.py` 与 `git diff --check` 通过。
+- Drift check: Linux 不编译；light Agent 仍不能领取 local simulation/Cluster runtime；中央 Stage payload 不含绝对路径；legacy build 未被强制 binding 化；v5 R2D2 fallback 明确拒绝，不用未审计路径绕过 configured script；build evidence 尚未伪装成可供 Cluster 使用的 `SelenaArtifact`。
+- Risks: 尚未在真实 Selena repo/toolchain 执行 smoke，compiler stdout 可能包含本机路径（result 已脱敏，日志脱敏策略待 WP8）；scheduler 尚未把 resolved project/binding/build mode 写入 Stage payload 并安全重绑定 Agent，当前 v1 stages 仍 sentinel；build 成功 evidence 仍在 task result，未形成 upload session/storage_ref/catalog artifact；Windows batch descendant/cancel 行为需真实机验证；R2D2 fallback 暂不支持 v5 Agent Stage。
+- Next step: WP4/WP6-A6 实现 `register_artifact` 的 upload session + Agent uploader + central finalize/catalog transaction；scheduler 在此之前先实现 build Stage payload enrichment/agent assignment，但不得解除 run/collect/finalize 的 light Agent 禁令。
+
+### 2026-07-13 - WP4/WP6-A6 path-first central artifact upload and shared catalog
+
+- Goal: 按用户决定实现“用户选择复用路径优先、clean 多用户可见、dirty/source-changed 私有”的中央 Selena 上传与 catalog application boundary，使 Windows 编译产物上传后形成不依赖用户 PC 在线的稳定逻辑引用。
+- Scope: 新增 `core/artifact_store.py`、`core/artifact_upload_service.py`、`tests/test_artifact_store.py`、`tests/test_artifact_upload_service.py`；修改 `core/artifacts.py`、`core/spec/model.py`、`core/api_v1.py`、`core/api_v1_fastapi.py`、`core/control_service.py`、`cli/server.py`、`radar_sim_sdk/*` 及相关 tests/PRD/design/HANDOFF；未实现 Agent 自动上传、真实 Stage scheduler、data upload、local/Cluster run Stage、Web picker 或 installer，未 add/commit/push。
+- Referenced invariants / WP: INV-03、INV-04、INV-05、INV-07、INV-10、INV-12、INV-13、INV-14；WP4=In Progress，WP6=In Progress（A6 central boundary done）。
+- Actual changes: `SimulationSpec.selena.publish_path` 成为可复用的项目内业务路径且拒绝绝对路径/URI/traversal；`ArtifactStore` 使用 `RSIM_ARTIFACT_ROOT` 下 project-isolated content 与独立 sessions DB，提供 persisted resumable offset、chunk retry 幂等、size/SHA256 finalize、restart recovery、same-path same-checksum reuse 和 different-checksum conflict，并防 traversal/UNC/drive/device/reserved namespace、symlink/junction/reparse/hardlink escape；公开引用固定为 `shared://selena/<project>/<publish-path>/selena.exe`，不返回物理路径。`ArtifactUploadService` 只接受 build attempt evidence ref 与可选 publish path，checksum/size/project/branch/commit/dirty/source-changed/build mode/builder 均从成功的同 owner Windows build attempt 读取；finalize 原子形成 `SelenaArtifact` 并写共享 catalog，clean 默认 shared，dirty/source-changed 强制 private。`ArtifactCatalog` 改为 storage-ref/path-first identity，同路径冲突但相同 binary 在不同用户路径保留独立记录；新增 storage-ref lookup/access check。FastAPI 新增 `/api/v1/artifact-uploads` create/get/PATCH/finalize，SDK 新增会话方法与 `upload_artifact()` 文件便利方法；`serve-v1` 使用同一中央 catalog 支持 clean 产物多用户可见。
+- Test evidence: 初始 focused 捕获并修复 stale test fixture 后，artifact/API/SDK/build/control/source/spec focused `python -m pytest -q ...` -> 208 passed, 1 skipped, 1 upstream warning；全量首次 -> 902 passed, 7 skipped，捕获 Windows 并发 finalize 中 `C:\\...` 与 `\\\\?\\C:\\...` 同路径表示误判；修复仅用于比较的 Windows extended-path normalization 后，并发用例连续 20 次通过，store/upload/catalog/source focused -> 84 passed, 1 skipped, 1 upstream warning；最终 full `python -m pytest -q` -> 903 passed, 7 skipped, 1 upstream Starlette/httpx warning in 297.27s；相关模块 `py_compile` 通过；`git diff --check` exit 0（仅既有 LF/CRLF warning）。
+- Drift check: Linux central 仍不编译 Selena；上传 metadata 不信任客户端自报；绝对 Windows/服务器路径不进入 YAML/API/result；light Agent 仍不能 local sim/Cluster runtime；`__v1_scheduler__` sentinel 未解除，未伪造任何 Stage 成功；旧 Web/CLI/control/本地及 Cluster 原型通过全量回归，但不等于 v5 自动流水线已完成。
+- Risks: Windows Agent 尚未实现 `register_artifact` Stage uploader，build 成功后不会自动调用中央上传；真实企业共享盘/SMB/junction、多进程故障和大文件需环境 smoke；`X-Rsim-User` 仍只是 owner normalization 而非认证/attestation；session 清理/保留策略属后续；scheduler 尚未把 resolved payload 绑定到具体 Windows node，用户提交的 job 仍不会自动前进。
+- Next step: WP6-A7 实现受限 Stage binder：先让中央只完成已真实发生的 `resolve_spec`，为 `prepare_source/build_selena/register_artifact` 生成不含路径的 payload，并绑定具备 capability 的同一 Windows full/light Agent；Agent 完成 register/upload 后中央只消费 `storage_ref`。不放行尚无执行器的 data/preflight/run/collect/finalize。
+
+### 2026-07-13 - WP1/WP2/WP8-A7a minimal config, project adapter, environment plan and task center
+
+- Goal: 在实现真实 Stage binder 前，先固化用户最少配置、项目差异归属、分部署环境依赖计划和任务中心 P0 合同，避免 scheduler 把 `local.yaml`、工具链路径或 Cluster 拓扑泄漏回用户。
+- Scope: 新增 `core/environment_contract.py`、`tests/test_environment_contract.py`；修改 `core/spec/model.py`、`core/spec/legacy_adapter.py`、`core/stages.py`、`core/control_service.py`、`core/api_v1.py`、`core/api_v1_fastapi.py`、`radar_sim_sdk/client.py`、`radar_sim_sdk/models.py` 及相邻 tests/PRD/design/HANDOFF；未实现真实 EnvironmentSnapshot checker、Stage binder、Agent uploader、data resolver、local/Cluster run executor、Web 或 installer，未 add/commit/push。
+- Referenced invariants / WP: INV-01、INV-03、INV-04、INV-05、INV-06、INV-07、INV-08、INV-10、INV-11、INV-13；WP1/WP2 保持 Done，WP8=In Progress（A7a plan/task-center boundary done）。
+- Actual changes: `SimulationSpec` 导入现在只要求 `project` 和 `data.path`，schema version、Selena auto、target auto、default profile、结果保留期由模型补齐，canonical YAML 导出仍完整可追溯；JSON Schema required 只含 project/data。`ProjectCatalog.adapter` 从项目 `recipe` 或 platform 生成并纳入 revision，项目 build/runtime 差异留在受版本控制的 ProjectCatalog/adapter，不进入用户 YAML。新增纯 `environment_plan`，按 spec 生成 path-free Stage/capability/node-kind requirements：build 只路由 Windows full/light，local runtime 只路由 Windows full，Cluster runtime 只路由 Linux executor/platform gateway，data path 继续由 resolver 判断 shared/local/upload；validate 与 pending/resolved spec 均暴露同一 plan，source provider 解析后写入真实 project adapter。`ControlService.list_jobs` 增加 owner/status/job-type 安全过滤；`GET /api/v1/jobs` 与 SDK `list_jobs()` 返回当前用户 v1 jobs、overall progress、current Stage 和 available actions，避免 shared DB 跨用户/legacy 泄漏；running/queued 提供 cancel、failed Stage 提供精准 retry、blocked/needs_input 透传修复动作，terminal 不伪造 current Stage/action。配置安全审计同时移除两个 versioned project config 的 `cluster.kill_password` 和代码默认密码，真实提交只从 deployment env `RSIM_CLUSTER_KILL_PASSWORD` 或显式 node-local config 取值；prepare/dry-run/Manifest/CLI command 只写 `<redacted>`，未配置 secret 的真实提交以稳定错误停止，新增测试禁止项目 config 再出现 password/token。
+- Independent CLI review: 首次全仓 Claude CLI 只读审计超时并被终止，不计入证据；缩小为事实输入后的 Haiku 审计认可两字段 YAML 与配置分层，并指出外部 Cluster 取消补偿风险。主 agent 修正其“无部署用户需要 workspace”的误判：无部署用户只需 existing Selena + data path + Cluster；workspace 只属于 Windows 编译用户。取消补偿风险已写入 PRD，真实外部 cancel adapter 仍属 WP7/WP8。
+- Test evidence: 新增/相邻 focused `python -m pytest -q tests/test_environment_contract.py ...` -> 130 passed, 1 upstream warning；首次 full -> 910 passed, 7 skipped，捕获 environment plan frozen tuple 与公开 JSON list 导致 ResolvedSpec/Stage snapshot 不一致；统一 public `node_kinds` 为 JSON list 后 resolver/environment/API/spec focused -> 114 passed, 1 upstream warning；第二次 full -> 911 passed, 7 skipped；secret migration 后 cluster/environment focused -> 54 passed；最终 full `python -m pytest -q` -> 913 passed, 7 skipped, 1 upstream Starlette/httpx warning in 267.88s；相关模块 `py_compile` 通过。
+- Drift check: 最小 YAML 仍不包含 workspace/build script/VS/MATLAB/Qt/Boost/TCC/Agent ID/Cluster address/group/password/queue/storage map；environment plan 只描述逻辑要求，不伪装成节点实际检查结果；项目 adapter 复用 layered config/profile/recipe 和既有 build/simulation 代码，不建立第二套项目调度器；v1 sentinel 未解除，未把任何未执行 Stage 标为成功。
+- Risks: environment plan 尚未形成真实 `EnvironmentSnapshot`，不能据此声称机器 ready；`GET /api/v1/projects` 和新版 Web task center 尚未实现；任务 list 当前是 limit/status 而非 cursor 分页；Cluster 外部取消/补偿尚未接 adapter；project 配置里仍有机器绝对路径和 Cluster 拓扑参数，需后续继续拆入 UserBindings/DeploymentPolicy，但凭据已迁出且它们不会进入 SimulationSpec。
+- Next step: WP6/WP8-A7b 实现受限 Stage binder + environment_check executor：先把 plan 转成具体 node-local checks/EnvironmentSnapshot，只有 snapshot 满足 requirements 才绑定 `prepare_source/build_selena/register_artifact`；同一 Windows Agent 完成 build/upload handoff 后才让中央继续。无真实 executor 的 data/preflight/run/collect/finalize 保持 sentinel。
+
+### 2026-07-14 - WP6/WP8-A7b.1 node-local EnvironmentSnapshot and durable Agent affinity
+
+- Goal: 建立受限 Stage binder 的第一段真实执行内核，让 Windows Agent 在不泄漏路径的前提下检查 current-workspace Selena build 环境，并保证后续 build/retry 不漂移到另一台机器。
+- Scope: 新增 `core/environment_snapshot.py`、`core/stage_binder.py`、`tests/test_environment_snapshot.py`、`tests/test_stage_binder.py`；修改 `cli/agent.py`、`core/agent_policy.py`、`core/control_service.py`、相邻 tests 和本详细设计/计划。尚未解除默认 v1 sentinel，尚未实现 prepare_source/register_artifact uploader/data/preflight/run/collect/finalize，未 add/commit/push。
+- Referenced invariants / WP: INV-04、INV-05、INV-09、INV-11、INV-12、INV-13；WP6/WP8=In Progress（A7b.1 kernel done，live scheduling pending）。
+- Actual changes: 新增不可变、带 TTL 和内容 fingerprint 的 path-free `EnvironmentSnapshot`/check result，递归拒绝绝对路径和 credential-shaped 内容；`inspect_selena_build_environment()` 在 Windows Agent 内复用严格的 `prepare_selena_build()` 授权/config/script/command/output 校验但不启动 compiler，输出 workspace/toolchain/local-staging 三项证据。Agent 为 `environment_check` 增加显式 node-local executor，ready 才成功，blocked 以结构化 snapshot 失败，不回落 legacy subprocess；注册 metadata 移除绝对 `cwd`。formal capability map 增加 environment/prepare/register aliases。`tasks` 增加可迁移的 `required_agent_id`，claim 同时校验 transient assignment 与 durable affinity；stale reclaim 只清 assignment、不清 affinity。`bind_stage_to_agent()` 以 SQLite transaction/CAS 绑定真实 Agent 并写 `stage.bound` event；`bind_current_workspace_build()` 只接受同 job、成功且未过期、agent/project/binding 一致、required checks 全通过的 snapshot，将 build path-free payload 与 `stage:attempt` snapshot ref 绑定回同一 Agent。branch build 明确不放行，等待 detached worktree/source lease adapter；未实现 Stage 继续 sentinel。
+- Independent review: Claude CLI Sonnet 只读调用 60 秒无输出并超时，不计入证据；并行只读 agent 审计确认五个阻塞：sentinel、Linux/Windows machine-resolvable 分类、缺 executor、assigned affinity 会被 reclaim 清空、branch/workspace 强绑定。主线采纳 snapshot attempt + durable affinity + current_workspace-first，未采纳一次性放行全部 Stage。
+- Test evidence: 环境/Agent/policy/build focused -> 103 passed；增加 durable binder/migration/control regression 后 focused -> 106 passed；`py_compile` 通过；full `python -m pytest -q` -> 921 passed, 7 skipped, 1 upstream Starlette/httpx warning in 311.58s。
+- Drift check: Linux 不执行环境 build 检查和 Selena compile；light Agent 仍不领取 preflight/local sim/Cluster runtime；snapshot/result 不含绝对 path；过期/错误 snapshot 不解除 sentinel；build 仅 current_workspace 且 `clean=false`，不会 checkout/stash/reset 用户工作区；branch 不伪装完成。
+- Risks: v1 submit 仍会把 Linux 看不到 workspace fingerprint 的 machine-resolvable 状态误判为 user needs_input 并全 blocked；默认 job 尚未把真实 environment payload 交给 Agent；prepare_source/register upload 未闭环；legacy control 8877 与 v1 upload 8878 仍需显式双 URL 或统一服务；多用户 Agent enrollment/owner identity 尚未完成。
+- Next step: A7b.2 将 `workspace_fingerprint_required`/`branch_commit_required` 与真实用户缺 binding 分开；仅 current_workspace 先由拥有同 project logical binding 的 Agent 执行 environment/source snapshot，重算 ResolvedSpec 后调用受限 binder。随后实现 Agent-local artifact lease + register upload；branch 在 detached worktree adapter 完成前保持明确 unavailable。
+
+### 2026-07-14 - WP6/WP8-A7b.2/A7b.3 live workspace dispatch and build-to-upload handoff
+
+- Goal: 让默认 v1 Job 从最小 YAML 真正进入 Windows node-local environment check，并在成功后自动完成同机 build/register-artifact handoff，而不是只存在可单测 binder。
+- Scope: 修改 `core/api_v1.py`、`core/control_service.py`、`core/control_http.py`、`core/stage_binder.py`、`core/environment_snapshot.py`、`core/spec/legacy_adapter.py`、`cli/agent.py`；新增 `core/agent_artifact_lease.py`、`tests/test_agent_artifact_lease.py`，扩展 API/control/Agent/binder tests 与 PRD/design/HANDOFF。未实现 data resolver/upload、preflight、local/Cluster run/collect/finalize、branch detached worktree、新 Web 或 installer，未 add/commit/push。
+- Referenced invariants / WP: INV-01、INV-04、INV-05、INV-07、INV-09、INV-11、INV-12、INV-13、INV-14；WP6/WP8=In Progress（current_workspace/auto build-to-upload dispatch connected，data/runtime pending）。
+- Actual changes: Agent 注册 metadata 新增仅含 ID/project/health 的 workspace binding 广告并移除 cwd；中央对 `current_workspace` 缺 fingerprint、以及最小 YAML 默认 `auto + auto_build` 且已有 binding/无 artifact 的情况写 `pending_node/workspace_snapshot_pending`，不再全 blocked；真正无 binding 仍为 `workspace_binding_required/needs_input`。在线 Agent 提交时直接匹配，离线 Agent 后续 poll 通过 `bind_pending_environment_stage()` CAS 领取；resolve_spec 标记为同步提交时已解析，prepare_source 对 current workspace 显式由 environment snapshot 覆盖。environment result HTTP hook 更新 path-free ResolvedSpec workspace decision，并自动绑定 build。build 成功后 Agent-local `artifact_leases.db` 保存绝对 path/file identity，公开只返回随机 lease ID；上传前重验 identity+SHA256。build result hook 以精确 `stage:attempt` 将 register Stage 绑定回同一 required Agent；Agent `register_artifact` executor 使用显式 `--api-url` 调既有 v1 resumable upload/central trusted evidence/catalog，上传期间保持 heartbeat，结果只返回 artifact/storage_ref/session ID。未实现 Stage 继续 sentinel。
+- Test evidence: A7b.2 API/control/source/Agent 宽回归 -> 233 passed；machine-pending + live poll + HTTP env-to-build integration -> 7 passed；lease/binder/register executor/artifact upload focused -> 133 passed；最小 auto config 和 env->build->register HTTP chain -> 22 passed；扩展宽回归首次 314 passed, 1 skipped 并捕获旧 v5 build test 缺 lease fixture，已修复；最终 full `python -m pytest -q` -> 931 passed, 7 skipped, 1 upstream Starlette/httpx warning in 327.32s；`py_compile` 和 `git diff --check` 通过。
+- Drift check: Linux 不读取 Windows path、不编译 Selena；light Agent 不获得 local simulation/Cluster runtime；用户 YAML 仍不含 Agent ID/API URL/toolchain/shared mapping；API URL 是部署参数；absolute artifact path 只存在 Agent-local SQLite；central upload metadata 仍只信成功 Windows build attempt；dirty workspace decision 保留 fingerprint 并最终强制 private；branch 不放行。
+- Risks: v1 API 与 legacy Agent control 当前仍为显式双 URL/双服务，安装器需固化；Agent owner/enrollment 仍依赖 `X-Rsim-User` normalization；upload cancel 只能保持 heartbeat且 resumable，尚未实现 chunk 间主动 abort/compensation；真实 Windows 大产物、进程重启、中央 8878/Agent 8877 跨机 smoke 未跑；register 完成后 prepare_data/preflight 仍 sentinel。
+- Next step: WP5/WP6-A8 实现统一 `DataRef` resolver：shared path 中央直用、Windows local path 由同一 Agent检索/校验/可续传上传、browser/SDK upload 形成中央 DatasetRef；随后 preflight 只消费 ArtifactRef+DatasetRef，并把 light Agent 从 Cluster 运行期完全释放。
+
+## 5. CLI coding agent 任务更新模板
+
+每个后续 CLI coding agent 子任务（当前使用 Claude CLI）在声称完成前，必须在本 Active 区域追加或更新一条记录：
+
+```text
+### YYYY-MM-DD HH:mm - <short task title>
+
+- Goal:
+- Scope:
+- Referenced invariants / WP:
+- Actual changes:
+- Test evidence:
+- Drift check:
+- Risks:
+- Next step:
+```
+
+## 6. Architecture Conformance Gate
+
+标记任何 WP 或子任务完成前必须满足：
+
+1. 没有代码证据和测试证据就不能完成，即使已有原型。
+2. 用户可见合同变化必须先改 `PRD.md` 并明确产品决策。
+3. 技术边界、依赖、协议、执行拓扑或部署形态变化必须先改 `docs/DETAILED_DESIGN.md`。
+4. 新依赖或协议必须通过复用决策门禁：解决缺口、复用模块、成本/风险、PoC/退出标准、回退方案。
+5. 第三方组件 spike 还必须提供：版本 pin、许可证审查、漏洞/维护状态、内部镜像或 vendoring、Windows/Linux 离线打包、代理/证书兼容；缺任一证据则 spike 不通过。
+6. WinSW 只默认评估已批准的 stable 版本，不默认采用 pre-release。
+7. 代码任务必须使用上方模板更新本 Active Handoff。
+8. 任何实现违反 INV 时必须停止，先更新 PRD/design 再继续编码。
+9. 既有 dirty workspace 变更在完成审计、归属 WP 并有测试前，不是完成证据。
+
+## Legacy History
+
+The content below is preserved for traceability. It may describe historical Mode A/B or T1/T2/T3 work, old tests, prototypes, light Agent local simulation assumptions, or Linux server dependency on user Windows Agent; it does not define current v5 product status. Any conflict with the product invariants above, `PRD.md`, or `docs/DETAILED_DESIGN.md` is legacy/history only and must not be cited as the current contract or delivered state.
+
 # radar-sim Handoff
 
 Last updated: 2026-07-07

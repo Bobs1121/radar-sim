@@ -5,6 +5,10 @@ description: 多项目雷达仿真工具的配置指南
 
 # radar-sim 配置手册
 
+> 新用户只维护一份项目无关 `UserRunConfig 2.0`，可在 Web 导入/修改/导出，并由 SDK 直接提交。最小字段见 [`config/simulation.example.yaml`](../config/simulation.example.yaml)：代码路径/分支/编译脚本或 Runtime Bundle、数据路径、Adapter、MatFilter、执行目标与结果选项。用户不填写 project、recipe、manager、共享盘映射或 Agent。
+>
+> 下文 `config/projects/*` 是平台管理员维护的内部适配层和 legacy CLI 说明，不是业务用户配置。
+
 ## 1. 配置文件架构
 
 ```
@@ -258,6 +262,8 @@ profiles:
 | `data.copy` | 数据是否复制。本地后端：公盘 UNC 数据默认原地引用（不下载），`copy=true` 才下载到本地临时区。集群后端：本地盘数据 `copy=true` 迁移到共享工作区，`copy=false` 则报错（不静默提交 worker 看不见的路径） |
 | `data.required_signals` | `--select` 扫描时校验每个 MF4 是否含这些信号（bounded byte 扫描，不开 asammdf） |
 | `cluster.*` | 集群调度参数（group/subgroup/simulation_prio/timeout_min 等） |
+
+Cluster 提交凭据不得写入项目 YAML 或用户 `SimulationSpec`。部署服务通过环境变量 `RSIM_CLUSTER_KILL_PASSWORD` 注入；日志、任务事件和 dry-run command 只显示 `<redacted>`。
 
 **向后兼容**：旧 `cluster.profiles`（扁平格式，无 `backend`/`selena`/`data` 嵌套）自动转换为统一 profile（backend=cluster）。顶层 `profiles` 与旧 `cluster.profiles` 合并，同名时顶层优先。
 

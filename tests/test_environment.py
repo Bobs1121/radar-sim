@@ -100,6 +100,70 @@ def test_check_repo_context_branch_mismatch_warning(tmp_path):
     branch_item = next(i for i in items if "branch" in i.name.lower() and not i.ok)
     assert i_severity(branch_item) == "warning"
     assert "feature" in branch_item.detail
+    assert branch_item.auto_repairable is False
+    assert branch_item.repair_action == ""
+    assert "isolated worktree" in branch_item.repair_hint
+
+
+def test_prepare_repo_context_current_branch_allows_dirty_state(tmp_path, monkeypatch):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=str(repo), capture_output=True)
+    (repo / "f.txt").write_text("x")
+    subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True)
+    current_branch = subprocess.run(["git", "branch", "--show-current"], cwd=str(repo), capture_output=True, text=True).stdout.strip()
+    (repo / "f.txt").write_text("dirty")
+    (repo / "staged.txt").write_text("staged")
+    subprocess.run(["git", "add", "staged.txt"], cwd=str(repo), capture_output=True)
+    (repo / "untracked.txt").write_text("untracked")
+
+    def fail_mutating_git(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and any(part in ("checkout", "stash", "reset") for part in cmd):
+            raise AssertionError(f"mutating git command was called: {cmd}")
+        return original_run(cmd, *args, **kwargs)
+
+    original_run = subprocess.run
+    monkeypatch.setattr(subprocess, "run", fail_mutating_git)
+
+    assert prepare_repo_context({
+        "repos": {"inner_repo_root": str(repo)},
+        "build": {"selena_branch": current_branch},
+    }) == ""
+
+
+def test_prepare_repo_context_clean_mismatch_does_not_checkout(tmp_path, monkeypatch):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=str(repo), capture_output=True)
+    (repo / "f.txt").write_text("x")
+    subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "branch", "feature"], cwd=str(repo), capture_output=True)
+    before = subprocess.run(["git", "branch", "--show-current"], cwd=str(repo), capture_output=True, text=True).stdout.strip()
+
+    def fail_mutating_git(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and any(part in ("checkout", "stash", "reset") for part in cmd):
+            raise AssertionError(f"mutating git command was called: {cmd}")
+        return original_run(cmd, *args, **kwargs)
+
+    original_run = subprocess.run
+    monkeypatch.setattr(subprocess, "run", fail_mutating_git)
+
+    msg = prepare_repo_context({
+        "repos": {"inner_repo_root": str(repo)},
+        "build": {"selena_branch": "feature"},
+    })
+
+    assert "Automatic branch switching is disabled" in msg
+    after = original_run(["git", "branch", "--show-current"], cwd=str(repo), capture_output=True, text=True).stdout.strip()
+    assert after == before
 
 
 def test_prepare_repo_context_no_branch_returns_empty():

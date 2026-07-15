@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def _cluster_config(tmp_path):
     assets = tmp_path / "assets"
@@ -84,6 +86,8 @@ def test_prepare_cluster_job_generates_package(tmp_path):
     assert Path(package.manifest_path).exists()
     assert package.datafile_path == str(input_mf4)
     assert package.submit_command[1].endswith("client.py")
+    assert package.submit_command[3] == "<redacted>"
+    assert "1234" not in " ".join(package.submit_command)
 
     cfg = Path(package.config_path).read_text(encoding="utf-8")
     assert "simulation =" in cfg
@@ -318,6 +322,26 @@ def test_submit_command_supports_py_launcher(tmp_path):
 
     assert cmd[:2] == ["py", "-2"]
     assert cmd[2].endswith("client.py")
+
+
+def test_cluster_secret_comes_from_deployment_env_and_dry_run_is_redacted(tmp_path, monkeypatch):
+    from core.cluster import build_submit_command, get_cluster_config, submit_cluster_job
+
+    monkeypatch.delenv("RSIM_CLUSTER_KILL_PASSWORD", raising=False)
+    config = {"cluster": {"software_path": str(tmp_path), "python_path": "py -2"}}
+    cluster = get_cluster_config(config)
+    assert "kill_password" not in cluster
+    with pytest.raises(RuntimeError, match="RSIM_CLUSTER_KILL_PASSWORD"):
+        build_submit_command(tmp_path / "Config.cfg", cluster=cluster)
+
+    dry_run = submit_cluster_job(str(tmp_path / "Config.cfg"), config, dry_run=True)
+    assert "<redacted>" in dry_run.command
+
+    monkeypatch.setenv("RSIM_CLUSTER_KILL_PASSWORD", "deployment-secret")
+    configured = get_cluster_config(config)
+    assert configured["kill_password"] == "deployment-secret"
+    command = build_submit_command(tmp_path / "Config.cfg", cluster=configured)
+    assert command[-1] == "deployment-secret"
 
 
 def test_get_cluster_web_status_preserves_readable_state(tmp_path, monkeypatch):

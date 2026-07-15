@@ -1,5 +1,10 @@
 """Focused tests for the minimal control-plane service."""
 
+import json
+import sqlite3
+
+import pytest
+
 from core.control_service import ControlService
 
 
@@ -226,3 +231,80 @@ def test_list_agents_returns_shape_and_status(tmp_path):
     assert len(agents) == 2  # still two, not three
     by_id = {x["agent_id"]: x for x in agents}
     assert by_id["agent-a"]["name"] == "win-01-renamed"
+
+
+def test_light_agent_registration_filters_self_declared_runtime_capabilities(tmp_path):
+    service = make_service(tmp_path)
+    agent = service.register_agent(
+        "light",
+        agent_id="light-a",
+        capabilities=["LOCAL.BUILD_SELENA", "*", "local.run_sim", "cluster.run"],
+        metadata={"node_kind": " Windows_Agent ", "windows_mode": "light"},
+    )
+    assert agent["capabilities"] == ["local.build_selena"]
+    assert agent["metadata"]["node_kind"] == "windows_agent"
+    assert agent["metadata"]["capability_policy"] == "filtered"
+    assert agent["metadata"]["rejected_capability_count"] == 3
+    assert "rejected_capabilities" not in agent["metadata"]
+
+
+def test_light_agent_claim_gate_blocks_corrupt_wildcard_runtime_record(tmp_path):
+    db_path = tmp_path / "control.db"
+    service = ControlService(db_path=db_path)
+    service.register_agent(
+        "light",
+        agent_id="light-a",
+        capabilities=["local.build_selena"],
+        metadata={"node_kind": "windows_agent"},
+    )
+    forbidden = service.create_job("local.run_sim", payload={"project": "demo"})
+    allowed = service.create_job("local.build_selena", payload={"project": "demo"})
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE agents SET capabilities_json=? WHERE agent_id=?",
+            (json.dumps(["*", "local.run_sim", "cluster.run"]), "light-a"),
+        )
+
+    claimed = service.claim_next_task("light-a")
+    assert claimed["job_id"] == allowed["job_id"]
+    assert service.get_job(forbidden["job_id"])["status"] == "queued"
+
+
+def test_windows_full_can_claim_local_sim_but_not_cluster_runtime(tmp_path):
+    service = make_service(tmp_path)
+    agent = service.register_agent(
+        "full",
+        agent_id="full-a",
+        capabilities=["local.run_sim", "cluster.run"],
+        metadata={"node_kind": "windows_full", "windows_mode": "full"},
+    )
+    assert agent["capabilities"] == ["local.run_sim"]
+    cluster = service.create_job("cluster.run", payload={})
+    local = service.create_job("local.run_sim", payload={})
+    claimed = service.claim_next_task("full-a")
+    assert claimed["job_id"] == local["job_id"]
+    assert service.get_job(cluster["job_id"])["status"] == "queued"
+
+
+def test_public_registration_rejects_unknown_declared_node_kind(tmp_path):
+    service = make_service(tmp_path)
+    with pytest.raises(ValueError, match="unsupported agent node kind"):
+        service.register_agent(
+            "typo",
+            capabilities=["*"],
+            metadata={"node_kind": "window_agent"},
+        )
+
+
+def test_light_agent_formal_build_capability_claims_v5_build_stage_alias(tmp_path):
+    service = make_service(tmp_path)
+    service.register_agent(
+        "light",
+        agent_id="light-a",
+        capabilities=["build.selena"],
+        metadata={"node_kind": "windows_agent"},
+    )
+    job = service.create_job("simulation.v1", tasks=[{"task_type": "build_selena"}])
+    claimed = service.claim_next_task("light-a")
+    assert claimed["job_id"] == job["job_id"]
+    assert claimed["task_type"] == "build_selena"

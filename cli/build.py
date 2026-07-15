@@ -221,6 +221,16 @@ def _build_selena(config: dict, clean: bool, mode: str) -> "BuildResult":
             cmd.extend(vs_postfix.split())
 
     try:
+        from core.build_lock import WorkspaceBuildLock, build_workspace_from_config
+        build_lock = WorkspaceBuildLock(build_workspace_from_config(config)).acquire()
+    except Exception as exc:
+        return BuildResult(
+            success=False,
+            build_type="selena",
+            duration_sec=time.time() - start,
+            errors=[str(exc)],
+        )
+    try:
         print(f"  Build entry: {build_label}")
         if script and os.path.exists(script):
             print(f"  Script: {script}")
@@ -275,6 +285,8 @@ def _build_selena(config: dict, clean: bool, mode: str) -> "BuildResult":
             duration_sec=time.time() - start,
             errors=[f"Command not found: {script or python3}"],
         )
+    finally:
+        build_lock.release()
 
 
 def _build_selena_script_command(config: dict, mode: str) -> tuple[list[str], str]:
@@ -299,7 +311,7 @@ def _prepare_repo_context(config: dict) -> str:
             or config.get("repos", {}).get("inner_repo_branch", "")
         )
         if target_branch:
-            print(f"[INFO] Inner repo switched to Selena branch: {target_branch}")
+            print(f"[INFO] Inner repo verified on Selena branch: {target_branch}")
     return message
 
 
@@ -313,11 +325,10 @@ def _print_progress_line(line: str, spinner: bool = False):
 
 
 def _extract_errors(lines: list[str]) -> list[str]:
-    errors = []
-    for line in lines:
-        if any(kw in line.lower() for kw in ["error", "failed", "- error -"]):
-            errors.append(line.strip())
-    return errors[:20]
+    from core.build_diagnostics import extract_actionable_build_errors
+
+    errors = extract_actionable_build_errors(lines)
+    return errors or ["Selena build failed; inspect the build log for details"]
 
 
 def _extract_warnings(lines: list[str]) -> list[str]:

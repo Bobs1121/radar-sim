@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+*.db
+*.log
+http-auth.json
+credentials.json
+install.json
+.pytest_cache
+.mypy_cache
+dist
+results
+tests
+third_party/python-wheels

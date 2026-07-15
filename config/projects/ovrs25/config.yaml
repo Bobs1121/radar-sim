@@ -65,7 +65,6 @@ cluster:
   workspace_root: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster"
   project_folder: "radar-sim"
   python_path: "C:/Python27/python.exe"
-  kill_password: "1234"
   group: "Radar"
   subgroup: "PSS2"
   python_version: "*"

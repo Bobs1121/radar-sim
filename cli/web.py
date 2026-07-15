@@ -46,6 +46,13 @@ def register(subparsers):
     p.add_argument("--user", default="",
                    help="User identity for the remote server (default: RSIM_USER env or OS user). "
                         "Jobs/logs are isolated per-user on the server.")
+    p.add_argument(
+        "--windows-mode",
+        choices=("light", "full"),
+        default="full",
+        help="Embedded Windows deployment policy. full enables local simulation; "
+             "light only enables authorized build/upload work. Ignored for remote/Linux web.",
+    )
 
 
 # Module-level web mode state (set in run(), read by _server_info).
@@ -54,10 +61,12 @@ _REMOTE_SERVER_URL = ""
 _REMOTE_USER = ""
 _ACTIVE_CONFIG_PATH = ""  # set by RSIM_CONFIG env var — pins the single local.yaml
 _ACTIVE_PROJECT = ""
+_EMBEDDED_WINDOWS_MODE = "full"
 
 
 def run(args, config):
     global _WEB_MODE, _REMOTE_SERVER_URL, _REMOTE_USER, _ACTIVE_CONFIG_PATH, _ACTIVE_PROJECT
+    global _EMBEDDED_WINDOWS_MODE
     host = getattr(args, "host", "127.0.0.1")
     port = int(getattr(args, "port", 8765))
     default_project = getattr(args, "project", None) or config.get("_meta", {}).get("project") or ""
@@ -91,9 +100,18 @@ def run(args, config):
         print(f"Control plane: remote {server_url} (user={user})", flush=True)
         print("Tasks execute on the remote server's agent; this web instance only submits/polls.", flush=True)
     elif not getattr(args, "no_control", False):
-        control_url = _start_embedded_control(getattr(args, "control_port", 8877))
+        _EMBEDDED_WINDOWS_MODE = str(getattr(args, "windows_mode", "full") or "full")
+        control_url = _start_embedded_control(
+            getattr(args, "control_port", 8877),
+            windows_mode=_EMBEDDED_WINDOWS_MODE,
+        )
         _WEB_MODE = "embedded"
-        print(f"Control plane: {control_url} (embedded server + agent)", flush=True)
+        execution = (
+            f"embedded Windows {_EMBEDDED_WINDOWS_MODE} agent"
+            if sys.platform.startswith("win")
+            else "control only; Linux never registers a Windows execution node"
+        )
+        print(f"Control plane: {control_url} ({execution})", flush=True)
     else:
         _WEB_MODE = "legacy"
         print("Control plane: disabled (--no-control), using legacy BuildTaskRegistry", flush=True)
@@ -114,7 +132,7 @@ def run(args, config):
     return 0
 
 
-def _start_embedded_control(preferred_port: int) -> str:
+def _start_embedded_control(preferred_port: int, *, windows_mode: str = "full") -> str:
     """Start an embedded control server + polling agent; return the server URL.
 
     The agent reuses ``cli.agent`` logic but polls this in-process server over
@@ -150,14 +168,17 @@ def _start_embedded_control(preferred_port: int) -> str:
     ctrl_url = f"http://127.0.0.1:{ctrl_port}"
     threading.Thread(target=ctrl_server.serve_forever, daemon=True).start()
 
-    # Embedded agent: poll the control server and execute claimed tasks locally.
-    _start_embedded_agent(ctrl_url)
+    # Only Windows may create a Windows execution node.  The old implementation
+    # registered a hard-coded windows_full Agent even when cli/web.py ran on
+    # Linux, which made scheduler capabilities lie about the host.
+    if sys.platform.startswith("win"):
+        _start_embedded_agent(ctrl_url, windows_mode=windows_mode)
     return ctrl_url
 
 
-def _start_embedded_agent(server_url: str) -> None:
+def _start_embedded_agent(server_url: str, *, windows_mode: str = "full") -> None:
     """Run a polling agent loop in a daemon thread (reuses cli.agent internals)."""
-    from cli.agent import _ControlClient, _run_task, DEFAULT_CAPABILITIES
+    from cli.agent import _ControlClient, _capabilities_for_mode, _run_task
     from core.user import current_user
     import os
     import platform as platform_mod
@@ -165,6 +186,7 @@ def _start_embedded_agent(server_url: str) -> None:
 
     client = _ControlClient(server_url, timeout=30)
     user = current_user()
+    mode, node_kind, capabilities = _capabilities_for_mode(windows_mode)
     # Unique per (user, pid) so two users / two web instances on one machine don't collide.
     agent_id = f"embedded-{user}-{os.getpid()}"
     try:
@@ -173,11 +195,17 @@ def _start_embedded_agent(server_url: str) -> None:
             agent_id=agent_id,
             hostname=socket.gethostname(),
             platform=platform_mod.platform(),
-            capabilities=list(DEFAULT_CAPABILITIES),
-            metadata={"cwd": str(ROOT), "embedded": True, "user": user},
+            capabilities=capabilities,
+            metadata={
+                "cwd": str(ROOT),
+                "embedded": True,
+                "user": user,
+                "node_kind": node_kind,
+                "windows_mode": mode,
+            },
         )
         agent_id = agent["agent_id"]
-        print(f"Embedded agent registered: {agent_id} (capabilities={len(DEFAULT_CAPABILITIES)})", flush=True)
+        print(f"Embedded agent registered: {agent_id} (capabilities={len(capabilities)})", flush=True)
     except Exception as exc:
         print(f"[WARN] embedded agent failed to register: {exc}", flush=True)
         return
@@ -189,7 +217,13 @@ def _start_embedded_agent(server_url: str) -> None:
                 claim = client.poll(agent_id)
                 task = claim.get("task")
                 if task:
-                    _run_task(client, agent_id, task, heartbeat_interval=10.0)
+                    _run_task(
+                        client,
+                        agent_id,
+                        task,
+                        heartbeat_interval=10.0,
+                        node_kind=node_kind,
+                    )
                 else:
                     time.sleep(3.0)
             except Exception as exc:
@@ -229,6 +263,33 @@ def _make_handler(default_project: str):
             project = query.get("project", [default_project or _default_project()])[0]
             if parsed.path == "/api/server-info":
                 return self._json(_server_info())
+            # -- Wizard endpoints (PRD §1.5 / §1.7 setup flow) --
+            if parsed.path == "/api/wizard/validate":
+                from core.config import validate_wizard_fields
+                # Collect all query params as flat dict for validation.
+                fields = {k: v[0] for k, v in query.items()}
+                return self._json(validate_wizard_fields(fields))
+            if parsed.path == "/api/wizard/agent-status":
+                info = _server_info()
+                agents = []
+                has_build_agent = False
+                try:
+                    import core.web_control as wc
+                    agents = wc.list_agents_via_control() or []
+                    for a in agents:
+                        caps = a.get("capabilities") or []
+                        if "local.build_selena" in caps or any(c.startswith("local.") for c in caps):
+                            has_build_agent = True
+                except Exception:
+                    pass
+                return self._json({
+                    "has_build_agent": has_build_agent,
+                    "cluster_executor": info.get("cluster_executor", False),
+                    "mode": info.get("mode", "embedded"),
+                    "agents": [{"agent_id": a.get("agent_id"), "name": a.get("name"),
+                                "status": a.get("status"), "capabilities": a.get("capabilities")}
+                               for a in agents],
+                })
             if parsed.path == "/api/active-config":
                 return self._json({"config_path": _ACTIVE_CONFIG_PATH, "project": _ACTIVE_PROJECT or default_project or _default_project()})
             if parsed.path == "/api/projects":
@@ -289,6 +350,17 @@ def _make_handler(default_project: str):
                     "filename": "local.yaml",
                     "yaml_content": local_path.read_text(encoding="utf-8"),
                 })
+            # -- Full config export (one-file portable YAML) --
+            if parsed.path == "/api/config/export-full":
+                from core.config import export_full_config, get_empty_project_template
+                fmt = query.get("format", ["full"])[0]
+                if fmt == "template":
+                    return self._json({"yaml_content": get_empty_project_template(), "project": ""})
+                try:
+                    content = export_full_config(project)
+                    return self._json({"yaml_content": content, "project": project})
+                except Exception as exc:
+                    return self._json({"error": str(exc)}, 500)
             if parsed.path == "/api/build/check":
                 from core.config import resolve_selena_executable
                 cfg = load_config(project)
@@ -383,8 +455,36 @@ def _make_handler(default_project: str):
             self.send_error(404)
 
         def _handle_api_post(self, parsed):
+            global _ACTIVE_PROJECT, _ACTIVE_CONFIG_PATH
             body = self.rfile.read(int(self.headers.get("content-length", "0") or 0))
             payload = json.loads(body.decode("utf-8") or "{}")
+            # -- Wizard: create project from browser form (must run BEFORE load_config) --
+            if parsed.path == "/api/wizard/init":
+                from core.config import create_project_from_wizard
+                try:
+                    result = create_project_from_wizard(payload)
+                    _ACTIVE_PROJECT = payload.get("project_name", "").strip()
+                    _ACTIVE_CONFIG_PATH = result.get("local_yaml_path", "")
+                    return self._json({"ok": True, **result})
+                except ValueError as exc:
+                    return self._json({"error": str(exc)}, 400)
+                except Exception as exc:
+                    return self._json({"error": f"wizard init failed: {exc}"}, 500)
+            # -- Full config import (one-file portable YAML) --
+            if parsed.path == "/api/config/import-full":
+                from core.config import import_full_config
+                yaml_content = payload.get("yaml_content", "")
+                if not yaml_content:
+                    return self._json({"error": "yaml_content required"}, 400)
+                try:
+                    result = import_full_config(yaml_content)
+                    _ACTIVE_PROJECT = result["project"]
+                    _ACTIVE_CONFIG_PATH = result.get("local_yaml_path", "")
+                    return self._json(result)
+                except ValueError as exc:
+                    return self._json({"error": str(exc)}, 400)
+                except Exception as exc:
+                    return self._json({"error": f"import failed: {exc}"}, 500)
             project = payload.get("project") or default_project or _default_project()
             cfg = load_config(project)
             if parsed.path == "/api/user-config":
@@ -572,7 +672,9 @@ def _server_info() -> dict:
         # Embedded server+agent on this machine. Local sim available if this
         # machine is Windows (has the selena toolchain) — Linux web host can't
         # run local.build_selena / local.run_sim.
-        info["local_sim_available"] = sys.platform.startswith("win")
+        info["local_sim_available"] = (
+            sys.platform.startswith("win") and _EMBEDDED_WINDOWS_MODE == "full"
+        )
         # Embedded mode doesn't start the cluster executor by default (that's a
         # server-side flag); cluster runs go through the local agent.
         info["cluster_executor"] = False
@@ -659,11 +761,14 @@ def _run_repair(payload: dict) -> dict:
     action = payload.get("repair_action", "")
     project = payload.get("project", "")
     if action == "switch_branch":
-        from core.repo import prepare_repo_context
-        from core.config import load_config
-        cfg = load_config(project)
-        msg = prepare_repo_context(cfg)
-        return {"ok": not msg, "message": msg or "switched to target branch"}
+        return {
+            "ok": False,
+            "repair_action": "switch_branch",
+            "guidance": (
+                "Automatic branch switching is disabled to protect the main workspace. "
+                "Use the current workspace branch, or submit a branch build through the isolated worktree path."
+            ),
+        }
     if action == "build_selena":
         import core.web_control as web_control
         task_id = web_control.start_build_via_control(project)

@@ -212,6 +212,12 @@ def make_control_handler(service, allowed_task_types=None):
             parts = split_path(self.path)
             payload = read_json_body(self)
             if parts == ["api", "agents", "register"]:
+                metadata = require_object(payload, "metadata")
+                # node_kind may be passed explicitly or inside metadata. An
+                # explicit top-level value wins so the contract is unambiguous.
+                node_kind = optional_string(payload, "node_kind")
+                if not node_kind:
+                    node_kind = str(metadata.get("node_kind") or metadata.get("node.kind") or "") or None
                 write_json(
                     self,
                     self._svc.register_agent(
@@ -220,7 +226,8 @@ def make_control_handler(service, allowed_task_types=None):
                         platform=require_string(payload, "platform"),
                         hostname=require_string(payload, "hostname"),
                         capabilities=require_string_list(payload, "capabilities"),
-                        metadata=require_object(payload, "metadata"),
+                        metadata=metadata,
+                        node_kind=node_kind or "",
                     ),
                     201,
                 )
@@ -244,7 +251,12 @@ def make_control_handler(service, allowed_task_types=None):
                 )
                 return
             if parts == ["api", "agents", "poll"]:
-                task = self._svc.claim_next_task(require_string(payload, "agent_id"))
+                agent_id = require_string(payload, "agent_id")
+                self._svc.bind_pending_run_config_resolution(agent_id)
+                self._svc.bind_pending_runtime_bundle_cache(agent_id)
+                self._svc.bind_pending_environment_stage(agent_id)
+                self._svc.bind_pending_data_stage(agent_id)
+                task = self._svc.claim_next_task(agent_id)
                 write_json(self, {"task": task})
                 return
             if parts == ["api", "agents", "heartbeat"]:
@@ -269,17 +281,39 @@ def make_control_handler(service, allowed_task_types=None):
                 )
                 return
             if parts == ["api", "tasks", "result"]:
-                write_json(
-                    self,
-                    self._svc.submit_task_result(
-                        require_string(payload, "task_id"),
+                task_id = require_string(payload, "task_id")
+                completed = self._svc.submit_task_result(
+                        task_id,
                         agent_id=require_string(payload, "agent_id"),
                         status=require_string(payload, "status"),
                         returncode=require_int(payload.get("returncode"), "returncode"),
                         result=require_object(payload, "result"),
                         error=require_string(payload, "error"),
-                    ),
-                )
+                    )
+                try:
+                    from core.stage_binder import StageBindingError, advance_after_stage_result
+
+                    completed_stage = next(
+                        (
+                            stage
+                            for stage in completed.get("stages", [])
+                            if str(stage.get("stage_id") or stage.get("task_id") or "") == task_id
+                        ),
+                        {},
+                    )
+                    handoff = advance_after_stage_result(self._svc, completed_stage)
+                    if handoff is not None:
+                        completed["handoff"] = {
+                            "status": "bound",
+                            "stage_id": handoff["stage_id"],
+                            "stage_type": handoff["stage_type"],
+                        }
+                except StageBindingError as exc:
+                    # The completed environment attempt remains authoritative;
+                    # expose a stable handoff refusal instead of making the
+                    # Agent retry an already-completed result submission.
+                    completed["handoff"] = {"status": "blocked", "message": str(exc)}
+                write_json(self, completed)
                 return
             if parts == ["api", "jobs", "cancel"]:
                 write_json(self, self._svc.cancel_job(require_string(payload, "job_id")))

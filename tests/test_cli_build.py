@@ -45,7 +45,7 @@ def test_build_hex_respects_no_progress_and_writes_state(tmp_path, monkeypatch):
     assert json.loads(state_file.read_text())["status"] == "copy_done"
 
 
-def test_prepare_repo_context_blocks_dirty_branch_switch(tmp_path, monkeypatch):
+def test_prepare_repo_context_rejects_mismatch_without_checkout(tmp_path, monkeypatch):
     module = _load_build_module()
     repo = tmp_path / "apl" / "byd"
     repo.mkdir(parents=True)
@@ -57,8 +57,10 @@ def test_prepare_repo_context_blocks_dirty_branch_switch(tmp_path, monkeypatch):
         calls.append(cmd)
         if "branch" in cmd:
             return SimpleNamespace(returncode=0, stdout="feature_a\n", stderr="")
-        if "status" in cmd:
-            return SimpleNamespace(returncode=0, stdout=" M modified.txt\n", stderr="")
+        if "rev-parse" in cmd:
+            return SimpleNamespace(returncode=0, stdout="abc\n", stderr="")
+        if any(part in ("checkout", "stash", "reset") for part in cmd):
+            raise AssertionError(f"mutating git command was called: {cmd}")
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(module.subprocess, "run", _run)
@@ -67,7 +69,34 @@ def test_prepare_repo_context_blocks_dirty_branch_switch(tmp_path, monkeypatch):
         "build": {"selena_branch": "selena_branch_x"},
     })
 
-    assert "uncommitted changes" in issue
+    assert "Automatic branch switching is disabled" in issue
+    assert not any(any(part in ("checkout", "stash", "reset") for part in cmd) for cmd in calls)
+
+
+def test_prepare_repo_context_allows_current_dirty_branch(tmp_path, monkeypatch):
+    module = _load_build_module()
+    repo = tmp_path / "apl" / "byd"
+    repo.mkdir(parents=True)
+    (repo / ".git").mkdir()
+
+    calls = []
+
+    def _run(cmd, capture_output=True, text=True, timeout=10):
+        calls.append(cmd)
+        if "branch" in cmd:
+            return SimpleNamespace(returncode=0, stdout="selena_branch_x\n", stderr="")
+        if any(part in ("checkout", "stash", "reset") for part in cmd):
+            raise AssertionError(f"mutating git command was called: {cmd}")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(module.subprocess, "run", _run)
+    issue = module._prepare_repo_context({
+        "repos": {"inner_repo_root": str(repo), "inner_repo_branch": "selena_branch_x"},
+        "build": {"selena_branch": "selena_branch_x"},
+    })
+
+    assert issue == ""
+    assert not any(any(part in ("checkout", "stash", "reset") for part in cmd) for cmd in calls)
 
 
 def test_build_selena_uses_script_when_present(tmp_path, monkeypatch):

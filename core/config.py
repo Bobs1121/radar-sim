@@ -569,6 +569,23 @@ def load_config(project: Optional[str] = None) -> dict[str, Any]:
     )
 
 
+def load_simulation_spec_bundle(
+    project: Optional[str] = None,
+    *,
+    profile: str | None = None,
+    data_path: str | None = None,
+) -> Any:
+    """Load legacy config and map it to read-only v5 spec/catalog/bindings.
+
+    Importing the v5 spec adapter stays lazy so legacy ``core.config`` remains
+    importable without the optional ``v5-spec`` dependencies installed.
+    """
+    effective_config = load_config(project)
+    from core.spec.legacy_adapter import adapt_legacy_config
+
+    return adapt_legacy_config(effective_config, project=project, profile=profile, data_path=data_path)
+
+
 def load_config_from_path(local_yaml_path: str | Path) -> dict[str, Any]:
     """Load config from a local.yaml path (any location), not a project name.
 
@@ -1473,9 +1490,14 @@ def save_local_config(project: str, user_input: dict[str, Any]) -> Path:
     overlay = _flat_to_nested_user_config(user_input)
     merged = _deep_merge(existing, {k: v for k, v in overlay.items() if k != "profiles"})
     # Merge profiles by name (lists don't deep-merge).
-    if "profiles" in overlay:
+    # Also merge any _extra_profiles injected by callers (e.g. wizard).
+    all_new_profiles = list(overlay.get("profiles") or [])
+    for ep in user_input.get("_extra_profiles") or []:
+        if isinstance(ep, dict) and ep.get("name"):
+            all_new_profiles.append(ep)
+    if all_new_profiles:
         merged_profiles = list(existing.get("profiles") or [])
-        for new_prof in overlay["profiles"]:
+        for new_prof in all_new_profiles:
             idx = next((i for i, p in enumerate(merged_profiles) if isinstance(p, dict) and p.get("name") == new_prof.get("name")), None)
             if idx is not None:
                 merged_profiles[idx] = _deep_merge(merged_profiles[idx], new_prof)
@@ -1555,3 +1577,507 @@ def _flat_to_nested_user_config(user_input: dict[str, Any]) -> dict[str, Any]:
     result["profiles"] = [local_build, existing_selena]
     result["active_profile"] = "local-build" if source == "build" else "existing-selena"
     return result
+
+
+# ---------------------------------------------------------------------------
+# Wizard: create project from browser form (PRD §1.5 / §1.7)
+# ---------------------------------------------------------------------------
+
+def validate_wizard_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """Validate wizard form fields and preview auto-derived values.
+
+    Supports two scenarios (PRD §1.5.1):
+      - ``has_code`` (T1/T2): requires outer_repo_root; build script optional
+      - ``no_code`` (T3): no repo needed; requires selena_exe instead
+
+    Returns ``{ok: bool, errors: [...], warnings: [...], derived: {...}}``.
+    Does NOT write anything to disk — pure validation + derivation preview.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    derived: dict[str, Any] = {}
+
+    scenario = str(fields.get("scenario") or "has_code").strip()
+    project_name = str(fields.get("project_name") or "").strip()
+    if not project_name:
+        errors.append("项目名称不能为空")
+    elif not re.match(r"^[A-Za-z0-9_\-]+$", project_name):
+        errors.append("项目名称只能包含字母、数字、下划线和连字符")
+
+    if scenario == "no_code":
+        # T3: no repo, must have selena exe path.
+        selena_exe = str(fields.get("selena_exe") or "").strip()
+        if not selena_exe:
+            errors.append("T3 场景需要提供已有 Selena 可执行文件路径")
+    else:
+        # T1/T2: requires repo root.
+        outer_repo = str(fields.get("outer_repo_root") or "").strip()
+        if not outer_repo:
+            errors.append("源码仓路径不能为空")
+
+        script = str(fields.get("selena_build_script") or "").strip()
+        if script:
+            ctx = derive_project_context_from_selena_script(script)
+            for key in ("build_config", "build_output", "binding", "project_root", "r2d2_script"):
+                if ctx.get(key):
+                    derived[key] = ctx[key]
+            if not fields.get("build_config") and derived.get("build_config"):
+                derived["build_config_auto"] = True
+            if not fields.get("build_output") and derived.get("build_output"):
+                derived["build_output_auto"] = True
+        else:
+            warnings.append("未填写 Selena 编译脚本，将跳过自动推导 build_config / build_output")
+
+    # Check for duplicate project name.
+    if project_name:
+        existing = get_projects_dir() / project_name / "config.yaml"
+        if existing.exists():
+            errors.append(f"项目 '{project_name}' 已存在（{existing}）")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "derived": derived,
+    }
+
+
+def create_project_from_wizard(fields: dict[str, Any]) -> dict[str, Any]:
+    """Create a complete project configuration from wizard form data.
+
+    Dispatches to ``_create_t3_project()`` for ``scenario=no_code`` or
+    ``_create_t1t2_project()`` for ``scenario=has_code`` (default).
+
+    Returns ``{project_dir, config_yaml_path, local_yaml_path,
+    effective_config, derived_fields}``.
+
+    Raises ``ValueError`` on validation failure.
+    """
+    validation = validate_wizard_fields(fields)
+    if not validation["ok"]:
+        raise ValueError("; ".join(validation["errors"]))
+
+    scenario = str(fields.get("scenario") or "has_code").strip()
+    if scenario == "no_code":
+        return _create_t3_project(fields, validation)
+    return _create_t1t2_project(fields, validation)
+
+
+def _create_t3_project(fields: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
+    """Create a T3 project: no compile, existing selena, cluster only.
+
+    Creates a single 'existing-selena' profile (no local-build).
+    """
+    project_name = str(fields["project_name"]).strip()
+    platform = str(fields.get("platform") or "gen5_selena").strip()
+    selena_exe = str(fields.get("selena_exe") or "").strip()
+
+    cfg: dict[str, Any] = {
+        "project": {"name": project_name, "platform": platform},
+    }
+
+    # Assets (optional for T3).
+    assets: dict[str, Any] = {}
+    for fk, yk in (("runtime_xml", "runtime_xml"), ("adapter_file", "adapter_file"), ("matfilefilter", "matfilefilter")):
+        val = str(fields.get(fk) or "").strip()
+        if val:
+            assets[yk] = val
+    if assets:
+        cfg["assets"] = assets
+
+    # Datasets.
+    raw_datasets = fields.get("datasets")
+    if isinstance(raw_datasets, list) and raw_datasets:
+        datasets = [{"name": str(ds["name"]), "input_dir": str(ds["input_dir"])}
+                     for ds in raw_datasets if isinstance(ds, dict) and ds.get("name") and ds.get("input_dir")]
+        if datasets:
+            cfg.setdefault("simulation", {})["datasets"] = datasets
+
+    # Cluster settings.
+    cluster: dict[str, Any] = {}
+    for fk, yk in (("cluster_workspace_root", "workspace_root"), ("cluster_software_path", "software_path"),
+                    ("cluster_group", "group"), ("cluster_subgroup", "subgroup"), ("cluster_timeout_min", "timeout_min")):
+        val = fields.get(fk)
+        if val is not None and str(val).strip():
+            cluster[yk] = val
+    if cluster:
+        cfg["cluster"] = cluster
+
+    # Single profile: existing-selena + cluster.
+    cfg["profiles"] = [{
+        "name": "cloud-shared",
+        "description": "Cluster: 使用已有 Selena + 共享数据",
+        "backend": "cluster",
+        "selena": {"source": "path", "exe": selena_exe},
+        "data": {"copy": False},
+        "cluster": {
+            "group": str(fields.get("cluster_group") or "Radar"),
+            "subgroup": str(fields.get("cluster_subgroup") or "PSS2"),
+            "simulation_prio": 4,
+            "timeout_min": int(fields.get("cluster_timeout_min") or 120),
+        },
+    }]
+
+    # Write config.yaml.
+    project_dir = get_projects_dir() / project_name
+    project_dir.mkdir(parents=True, exist_ok=True)
+    config_yaml_path = project_dir / "config.yaml"
+    config_yaml_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+    # Create local.yaml with source=path.
+    user_input: dict[str, Any] = {"source": "path", "backend": "cluster", "selena_exe": selena_exe}
+    local_path = save_local_config(project_name, user_input)
+
+    try:
+        effective = load_config(project_name)
+    except Exception:
+        effective = cfg
+
+    return {
+        "project_dir": str(project_dir),
+        "config_yaml_path": str(config_yaml_path),
+        "local_yaml_path": str(local_path),
+        "effective_config": effective,
+        "derived_fields": {},
+    }
+
+
+def _create_t1t2_project(fields: dict[str, Any], validation: dict[str, Any]) -> dict[str, Any]:
+    """Create a T1/T2 project: has code repo, can compile, dual profiles."""
+    project_name = str(fields["project_name"]).strip()
+    platform = str(fields.get("platform") or "gen5_selena").strip()
+    outer_repo = str(fields["outer_repo_root"]).strip()
+    inner_repo = str(fields.get("inner_repo_root") or outer_repo).strip()
+    script = str(fields.get("selena_build_script") or "").strip()
+    branch = str(fields.get("selena_branch") or "").strip()
+
+    # Auto-derive from script.
+    derived = validation["derived"]
+    build_config = str(fields.get("build_config") or derived.get("build_config") or "").strip()
+    build_output = str(fields.get("build_output") or derived.get("build_output") or "").strip()
+
+    # Build the nested config.yaml structure.
+    cfg: dict[str, Any] = {
+        "project": {"name": project_name, "platform": platform},
+        "repos": {"outer_repo_root": outer_repo, "inner_repo_root": inner_repo},
+    }
+
+    build_section: dict[str, Any] = {}
+    if script:
+        build_section["selena_build_script"] = script
+    if branch:
+        build_section["selena_branch"] = branch
+    if build_config:
+        build_section["build_config"] = build_config
+    if build_output:
+        build_section["build_output"] = build_output
+    if build_section:
+        cfg["build"] = build_section
+
+    # Assets.
+    assets: dict[str, Any] = {}
+    for field_key, yaml_key in (
+        ("runtime_xml", "runtime_xml"),
+        ("adapter_file", "adapter_file"),
+        ("matfilefilter", "matfilefilter"),
+    ):
+        val = str(fields.get(field_key) or "").strip()
+        if val:
+            assets[yaml_key] = val
+    if assets:
+        cfg["assets"] = assets
+
+    # Datasets.
+    raw_datasets = fields.get("datasets")
+    if isinstance(raw_datasets, list) and raw_datasets:
+        datasets = []
+        for ds in raw_datasets:
+            if isinstance(ds, dict) and ds.get("name") and ds.get("input_dir"):
+                datasets.append({"name": str(ds["name"]), "input_dir": str(ds["input_dir"])})
+        if datasets:
+            cfg.setdefault("simulation", {})["datasets"] = datasets
+
+    # Cluster settings.
+    cluster: dict[str, Any] = {}
+    for field_key, yaml_key in (
+        ("cluster_workspace_root", "workspace_root"),
+        ("cluster_software_path", "software_path"),
+        ("cluster_group", "group"),
+        ("cluster_subgroup", "subgroup"),
+        ("cluster_timeout_min", "timeout_min"),
+    ):
+        val = fields.get(field_key)
+        if val is not None and str(val).strip():
+            cluster[yaml_key] = val
+    if cluster:
+        cfg["cluster"] = cluster
+
+    # Generate default profiles.
+    cfg["profiles"] = [
+        {
+            "name": "local-build",
+            "description": "本地编译 Selena + 本地/共享数据原地引用",
+            "backend": "local",
+            "selena": {"source": "build"},
+            "data": {"copy": False},
+        },
+        {
+            "name": "cloud-build",
+            "description": "Cluster: 打包本地编译 Selena + 引用共享数据",
+            "backend": "cluster",
+            "selena": {"source": "build"},
+            "data": {"copy": False},
+            "cluster": {
+                "group": str(fields.get("cluster_group") or "Radar"),
+                "subgroup": str(fields.get("cluster_subgroup") or "PSS2"),
+                "simulation_prio": 4,
+                "timeout_min": int(fields.get("cluster_timeout_min") or 120),
+            },
+        },
+    ]
+
+    # Write config.yaml.
+    project_dir = get_projects_dir() / project_name
+    project_dir.mkdir(parents=True, exist_ok=True)
+    config_yaml_path = project_dir / "config.yaml"
+    config_yaml_path.write_text(
+        yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+    # Create initial local.yaml via save_local_config.
+    # We inject the cloud-build profile explicitly so it survives the merge
+    # with the auto-generated local-build / existing-selena profiles.
+    user_input: dict[str, Any] = {
+        "source": "build",
+        "backend": "local",
+        "code_path": outer_repo,
+    }
+    if script:
+        user_input["selena_build_script"] = script
+    if branch:
+        user_input["selena_branch"] = branch
+    # Pass extra profiles so save_local_config merges them by name.
+    cloud_profile = cfg["profiles"][1]  # cloud-build
+    user_input["_extra_profiles"] = [cloud_profile]
+    local_path = save_local_config(project_name, user_input)
+
+    # Load back through the standard pipeline to verify round-trip.
+    try:
+        effective = load_config(project_name)
+    except Exception:
+        effective = cfg  # Fallback: return what we wrote.
+
+    return {
+        "project_dir": str(project_dir),
+        "config_yaml_path": str(config_yaml_path),
+        "local_yaml_path": str(local_path),
+        "effective_config": effective,
+        "derived_fields": derived,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Full config export / import (one-file portable project config)
+# ---------------------------------------------------------------------------
+
+_EMPTY_PROJECT_TEMPLATE = """\
+# radar-sim 项目配置 — 一个文件搞定一切
+# 填写后点「保存配置」即可使用
+
+project:
+  name: "my_project"
+  platform: "gen5_selena"
+
+# 源码仓（T3 无代码用户可删除此段）
+repos:
+  outer_repo_root: ""       # 例: D:/bydod25fr/byd
+  inner_repo_root: ""       # 默认同上
+
+# 编译配置（T3 用户可删除此段）
+build:
+  selena_build_script: ""   # 例: D:/.../jenkins_selena_build.bat
+  selena_branch: ""         # 例: develop_evo
+
+# 仿真资产
+assets:
+  runtime_xml: ""           # Runtime XML 路径
+  adapter_file: ""          # Adapter 文件路径（可选）
+  matfilefilter: ""         # Matfilefilter 路径（可选）
+
+# 数据集
+simulation:
+  datasets:
+    - name: "default"
+      input_dir: ""         # MF4 文件或目录路径
+
+# Cluster 设置
+cluster:
+  workspace_root: "\\\\\\\\abtvdfs2.de.bosch.com\\\\ismdfs\\\\loc\\\\szh\\\\Isilon3\\\\Cluster"
+  software_path: "\\\\\\\\szhradar01\\\\cluster_software"
+  group: "Radar"
+  subgroup: "PSS2"
+  timeout_min: 120
+
+# Profile: 选择编译方式和仿真后端
+profiles:
+  - name: "local-build"
+    description: "本地编译 + 本地仿真"
+    backend: "local"
+    selena: { source: "build" }
+  - name: "cloud-build"
+    description: "本地编译 + Cluster 仿真"
+    backend: "cluster"
+    selena: { source: "build" }
+    cluster: { group: "Radar", subgroup: "PSS2" }
+  - name: "cloud-shared"
+    description: "已有 Selena + Cluster 仿真 (T3)"
+    backend: "cluster"
+    selena: { source: "path", exe: "" }   # T3 用户填写 selena.exe 路径
+    cluster: { group: "Radar", subgroup: "PSS2" }
+"""
+
+
+def get_empty_project_template() -> str:
+    """Return a blank project YAML template for new projects."""
+    return _EMPTY_PROJECT_TEMPLATE
+
+
+def export_full_config(project: str) -> str:
+    """Export the complete merged config for a project as a YAML string.
+
+    Includes all layers (defaults + platform + recipe + config.yaml + local.yaml)
+    plus signals and rules. The result is a self-contained, portable YAML that
+    can be imported on any machine to recreate the project.
+    """
+    cfg = load_config(project)
+
+    # Strip internal/meta keys that shouldn't be in a portable export.
+    strip_keys = {"_meta", "_profile_selena_source", "_profile_selena_branch",
+                  "_active_profile_name"}
+    export_cfg = {k: v for k, v in cfg.items() if k not in strip_keys}
+
+    # Attach signals and rules if they exist.
+    try:
+        sigs = load_signals(project)
+        if sigs:
+            export_cfg["signals"] = sigs
+    except Exception:
+        pass
+
+    rules_path = get_projects_dir() / project / "rules.yaml"
+    if rules_path.exists():
+        rules = _load_yaml_file(rules_path)
+        if rules:
+            export_cfg["rules"] = rules
+
+    return yaml.safe_dump(export_cfg, sort_keys=False, allow_unicode=True, default_flow_style=False)
+
+
+def import_full_config(yaml_content: str) -> dict[str, Any]:
+    """Import a complete project config from a YAML string.
+
+    Creates or overwrites the project directory with config.yaml (and
+    optionally signals.yaml / rules.yaml). Auto-generates local.yaml.
+
+    Returns ``{ok, project, config_yaml_path, local_yaml_path}``.
+    Raises ``ValueError`` on invalid input.
+    """
+    try:
+        data = yaml.safe_load(yaml_content)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"YAML 解析失败: {exc}")
+
+    if not isinstance(data, dict):
+        raise ValueError("配置文件必须是 YAML 字典")
+
+    project_section = data.get("project") or {}
+    project_name = str(project_section.get("name") or "").strip()
+    if not project_name:
+        raise ValueError("缺少 project.name 字段")
+    if not re.match(r"^[A-Za-z0-9_\-]+$", project_name):
+        raise ValueError("project.name 只能包含字母、数字、下划线和连字符")
+
+    # Create project directory.
+    project_dir = get_projects_dir() / project_name
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    # Separate signals and rules from the main config.
+    signals_data = data.pop("signals", None)
+    rules_data = data.pop("rules", None)
+
+    # Write config.yaml (everything except signals/rules).
+    config_yaml_path = project_dir / "config.yaml"
+    config_yaml_path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+    # Write signals.yaml if present.
+    if signals_data:
+        sig_path = project_dir / "signals.yaml"
+        sig_path.write_text(
+            yaml.safe_dump(signals_data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+
+    # Write rules.yaml if present.
+    if rules_data:
+        rules_path = project_dir / "rules.yaml"
+        rules_path.write_text(
+            yaml.safe_dump(rules_data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )
+
+    # Generate local.yaml from profiles.
+    profiles = data.get("profiles") or []
+    active_profile = "local-build"
+    source = "build"
+    selena_exe = ""
+    code_path = ""
+    build_script = ""
+    branch = ""
+    backend = "local"
+
+    for p in profiles:
+        if not isinstance(p, dict):
+            continue
+        pname = p.get("name", "")
+        if pname == "local-build":
+            active_profile = "local-build"
+        selena = p.get("selena") or {}
+        if selena.get("source") == "path":
+            selena_exe = selena.get("exe", "")
+        s = str(selena.get("source") or "build")
+        b = str(p.get("backend") or "local")
+        if pname == active_profile:
+            source = s
+            backend = b
+
+    repos = data.get("repos") or {}
+    code_path = str(repos.get("outer_repo_root") or "")
+    build_section = data.get("build") or {}
+    build_script = str(build_section.get("selena_build_script") or "")
+    branch = str(build_section.get("selena_branch") or "")
+
+    user_input: dict[str, Any] = {
+        "source": source,
+        "backend": backend,
+        "code_path": code_path,
+        "selena_build_script": build_script,
+        "selena_branch": branch,
+        "selena_exe": selena_exe,
+    }
+    # Inject non-local-build profiles so they survive the merge.
+    extra_profiles = [p for p in profiles if isinstance(p, dict) and p.get("name") != "local-build"]
+    if extra_profiles:
+        user_input["_extra_profiles"] = extra_profiles
+
+    local_path = save_local_config(project_name, user_input)
+
+    return {
+        "ok": True,
+        "project": project_name,
+        "config_yaml_path": str(config_yaml_path),
+        "local_yaml_path": str(local_path),
+    }

@@ -35,7 +35,6 @@ cluster:
   software_path: "\\\\szhradar01\\cluster_software"
   workspace_root: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster"
   project_folder: "radar-sim"
-  kill_password: "1234"
   group: "Radar"
   subgroup: "PSS2"
   timeout_min: 120

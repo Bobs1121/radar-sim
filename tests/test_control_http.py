@@ -8,8 +8,10 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
+from core.agent_policy import DEFAULT_LIGHT_CAPABILITIES
 from core.control_http import make_control_handler, split_path
-from core.control_service import ControlService
+from core.control_service import ControlService, INTERNAL_V1_SCHEDULER_AGENT_ID
+from core.environment_snapshot import EnvironmentCheckResult, EnvironmentSnapshot
 
 
 @pytest.fixture
@@ -164,6 +166,66 @@ def test_control_http_list_agents(control_server):
     assert by_id["agent-a"]["current_task_id"] == task["task_id"]
 
 
+def test_control_http_rejects_reserved_internal_scheduler_identity(control_server):
+    request = urllib.request.Request(
+        f"{control_server}/api/agents/register",
+        data=json.dumps({
+            "name": "spoofed-scheduler",
+            "agent_id": "__v1_scheduler__",
+            "capabilities": ["*"],
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request, timeout=15)
+    assert excinfo.value.code == 400
+    assert "reserved" in _read_http_error(excinfo)["error"]
+
+    agents = _get(f"{control_server}/api/agents")["agents"]
+    assert all(agent["agent_id"] != "__v1_scheduler__" for agent in agents)
+
+
+def test_control_http_filters_light_agent_capabilities_and_claims_build_only(control_server):
+    agent = _post(
+        f"{control_server}/api/agents/register",
+        {
+            "name": "light-agent",
+            "agent_id": "light-a",
+            "platform": "Windows",
+            "capabilities": ["local.build_selena", "*", "local.run_sim", "cluster.run"],
+            "metadata": {"node_kind": "windows_agent", "windows_mode": "light"},
+        },
+    )
+    assert agent["capabilities"] == ["local.build_selena"]
+    assert agent["metadata"]["capability_policy"] == "filtered"
+    assert agent["metadata"]["rejected_capability_count"] == 3
+    assert "rejected_capabilities" not in agent["metadata"]
+
+    cluster = _post(f"{control_server}/api/jobs", {"job_type": "cluster.run"})
+    local_sim = _post(f"{control_server}/api/jobs", {"job_type": "local.run_sim"})
+    build = _post(f"{control_server}/api/jobs", {"job_type": "local.build_selena"})
+    claimed = _post(f"{control_server}/api/agents/poll", {"agent_id": "light-a"})["task"]
+    assert claimed["job_id"] == build["job_id"]
+    assert _get(f"{control_server}/api/jobs/{cluster['job_id']}")["status"] == "queued"
+    assert _get(f"{control_server}/api/jobs/{local_sim['job_id']}")["status"] == "queued"
+
+
+def test_control_http_rejects_unknown_declared_node_kind(control_server):
+    request = urllib.request.Request(
+        f"{control_server}/api/agents/register",
+        data=json.dumps({
+            "name": "typo-agent",
+            "capabilities": ["*"],
+            "metadata": {"node_kind": "window_agent"},
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request, timeout=15)
+    assert excinfo.value.code == 400
+    assert "unsupported agent node kind" in _read_http_error(excinfo)["error"]
+
+
 def test_control_http_rejects_invalid_json(control_server):
     request = urllib.request.Request(
         f"{control_server}/api/jobs",
@@ -232,6 +294,133 @@ def test_control_http_rejects_result_from_wrong_agent(control_server):
 
     fetched = _get(f"{control_server}/api/jobs/{job['job_id']}")
     assert fetched["status"] == "running"
+
+
+def test_control_http_environment_result_automatically_hands_off_build(tmp_path):
+    service = ControlService(tmp_path / "handoff.db")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_control_handler(service))
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    binding_id = "workspace:sha256:" + "c" * 24
+    try:
+        _post(
+            f"{url}/api/agents/register",
+            {
+                "name": "light",
+                "agent_id": "light-a",
+                "platform": "Windows",
+                "capabilities": list(DEFAULT_LIGHT_CAPABILITIES),
+                "metadata": {
+                    "node_kind": "windows_agent",
+                    "windows_mode": "light",
+                    "workspace_bindings": [
+                        {"id": binding_id, "project": "ovrs25", "healthy": True}
+                    ],
+                },
+            },
+        )
+        job = service.create_job(
+            "simulation.v1",
+            owner="alice",
+            spec={
+                "project": "ovrs25",
+                "selena": {"mode": "current_workspace", "build_mode": "Release"},
+                "simulation": {"profile": "default", "target": "cluster"},
+            },
+            resolved_spec={"status": "pending_node", "decisions": {}},
+            tasks=[
+                {"task_type": "resolve_spec", "stage_type": "resolve_spec", "status": "skipped"},
+                {
+                    "task_type": "environment_check",
+                    "stage_type": "environment_check",
+                    "dependencies": ["resolve_spec"],
+                    "assigned_agent_id": "light-a",
+                    "required_agent_id": "light-a",
+                    "payload": {"project": "ovrs25", "workspace_binding_id": binding_id},
+                },
+                {
+                    "task_type": "prepare_source",
+                    "stage_type": "prepare_source",
+                    "dependencies": ["environment_check"],
+                    "status": "skipped",
+                },
+                {
+                    "task_type": "build_selena",
+                    "stage_type": "build_selena",
+                    "dependencies": ["prepare_source"],
+                    "assigned_agent_id": INTERNAL_V1_SCHEDULER_AGENT_ID,
+                },
+                {
+                    "task_type": "register_artifact",
+                    "stage_type": "register_artifact",
+                    "dependencies": ["build_selena"],
+                    "assigned_agent_id": INTERNAL_V1_SCHEDULER_AGENT_ID,
+                },
+            ],
+        )
+        environment = _post(f"{url}/api/agents/poll", {"agent_id": "light-a"})["task"]
+        snapshot = EnvironmentSnapshot(
+            agent_id="light-a",
+            node_kind="windows_agent",
+            project="ovrs25",
+            workspace_binding_id=binding_id,
+            scope="selena_build",
+            checks=(
+                EnvironmentCheckResult("workspace_binding", "source.workspace.read", "passed"),
+                EnvironmentCheckResult("selena_build_toolchain", "build.selena", "passed"),
+                EnvironmentCheckResult("artifact_local_staging", "artifact.validate", "passed"),
+            ),
+            created_at=1,
+            expires_at=4102444800,
+            workspace={"branch": "feature/dirty", "commit": "1" * 40, "dirty": True, "sha256": "2" * 64},
+        ).to_dict()
+        completed = _post(
+            f"{url}/api/tasks/result",
+            {
+                "task_id": environment["task_id"],
+                "agent_id": "light-a",
+                "status": "succeeded",
+                "returncode": 0,
+                "result": {"environment_snapshot": snapshot},
+            },
+        )
+        assert completed["handoff"]["status"] == "bound"
+        build = _post(f"{url}/api/agents/poll", {"agent_id": "light-a"})["task"]
+        assert build["stage_type"] == "build_selena"
+        assert build["required_agent_id"] == "light-a"
+        resolved = service.get_job(job["job_id"])["resolved_spec"]
+        assert resolved["status"] == "partial"
+        assert resolved["decisions"]["selena"]["resolution"] == "workspace_build"
+        assert resolved["decisions"]["selena"]["dirty"] is True
+
+        completed_build = _post(
+            f"{url}/api/tasks/result",
+            {
+                "task_id": build["task_id"],
+                "agent_id": "light-a",
+                "status": "succeeded",
+                "returncode": 0,
+                "result": {
+                    "project": "ovrs25",
+                    "workspace_binding_id": binding_id,
+                    "artifact_lease_ref": "artifact-lease:sha256:" + "5" * 64,
+                    "artifact": {
+                        "logical_path": "selena.exe",
+                        "checksum": "sha256:" + "6" * 64,
+                        "size": 10,
+                    },
+                },
+            },
+        )
+        assert completed_build["handoff"]["status"] == "bound"
+        register = _post(f"{url}/api/agents/poll", {"agent_id": "light-a"})["task"]
+        assert register["stage_type"] == "register_artifact"
+        assert register["required_agent_id"] == "light-a"
+        assert register["payload"]["build_evidence_ref"] == f"{build['stage_id']}:1"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
 
 
 # --- task_type whitelist (Mode A: cluster-only server) ---

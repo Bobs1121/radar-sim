@@ -1,43 +1,82 @@
-# radar-sim — 雷达仿真辅助与数据分析工具
+# radar-sim — Selena 编译与雷达数据仿真的统一调度平台
 
-代码改动后，辅助完成 **编译 → VS 仿真 → 数据分析** 的完整工作流。
+radar-sim v5 的产品入口是 **Web** 和 **Python SDK / versioned REST API**。两者共用同一个后端调度器和同一份项目无关 `UserRunConfig 2.0` YAML；CLI 只用于安装、运维、调试和兼容。
 
-## 快速开始（两种使用模式）
+## 文档权威顺序
 
-| 模式 | 适用场景 | 仿真执行位置 | Windows 端依赖 |
-|------|----------|--------------|----------------|
-| **模式 A：Linux 服务** | 多用户共享、不想装繁重依赖 | SZHRADAR 集群节点 | 仅 Python + PyYAML（无 MATLAB/Qt/Boost/VS） |
-| **模式 B：Windows 本机仓** | 本地编译 + 仿真，需要完整能力 | 本机 + 集群 | Python + VS2019 + MATLAB + Qt + Boost |
+1. `PRD.md`：v5 产品口径、场景边界和发布范围的唯一来源。
+2. `docs/DETAILED_DESIGN.md`：v5 目标架构、现有代码迁移映射和技术边界。
+3. `DEVELOPMENT_PLAN.md`：当前可执行发布计划和下一阶段编码 backlog。
+4. `HANDOFF.md`：v5 唯一实时状态、WP 完成度和架构一致性检查记录。
+5. `CHECKPOINT.md`、`docs/handoff.md` 以及旧 phase 文档：历史记录，仅用于追溯，不再作为当前 backlog 或产品口径。
 
-### 模式 B：Windows 本机仓一键部署
+## 当前实现状态
 
-clone 本仓库到 Windows 后，一条命令完成 venv + 依赖 + 配置 + 自检：
+当前正在按 [`docs/PRODUCT_CONTRACT.md`](docs/PRODUCT_CONTRACT.md) 收敛统一 `serve-v1`、Web、SDK 和 Stage 调度。内部 Runtime Bundle、数据/配置传输、Windows full/light Agent 与 Cluster 执行器已有实现基础，但只有通过公开 `existing_path + runtime_xml` 和四种组合重新验证后才算交付。
+
+发布边界：Linux 永不编译 Selena或执行本地仿真；light 只编译/上传后交给 Cluster；full 才能本地仿真；没有 Windows 时填写/上传已有 Selena 文件夹后由 Linux 调度 Cluster。用户不选择 Runtime Bundle；系统从目录校验 `Selena.exe + 同目录 DLL + Runtime XML` 并在内部打包。真实企业 Cluster 共享盘/manager 仍需在目标环境最终验收。
+
+## V1 首版：一个 YAML、一个 SDK 方法
+
+完整 PRD 不变，当前首版只交付“已有 Selena + Cluster”。用户 YAML：
+
+```yaml
+schema_version: "2.0"
+selena:
+  source: existing
+  existing_path: "D:/path/to/Selena-folder"
+  runtime_xml: "D:/path/to/Runtime.xml"
+data:
+  path: "D:/path/to/data"
+simulation:
+  target: cluster
+  adapter_file: ""       # ovrs25 可空
+  mat_filter: "D:/path/to/MatFilter.cfg"
+```
+
+SDK 调用：
+
+```python
+from radar_sim_sdk import RadarSimClient
+
+with RadarSimClient("http://10.190.171.44:8878") as client:
+    job = client.submit_cluster_yaml("simulation.yaml")
+    print(job.id)
+```
+
+SDK/服务会根据路径在哪一侧可达，自动准备 Selena 目录、Runtime、数据和配置资产；用户不填写 project、Bundle、Cluster 参数或输出目录。详见 [`docs/V1_MVP_SCOPE.md`](docs/V1_MVP_SCOPE.md)。
+
+## 现有兼容 CLI 快速开始
+
+### Windows 一键部署
+
+轻量模式只编译、上传，再由 Linux Cluster 仿真：
 
 ```powershell
-git clone <repo> radar-sim
-cd radar-sim
-.\scripts\bootstrap.ps1 -Project ovrs25
+.\scripts\bootstrap.ps1 -Mode light -ControlPlane linux `
+  -ServerUrl http://linux-rsim:8878 -AgentId <agent-id> `
+  -AgentToken <agent-token> -ApiToken <user-token> -Start
 ```
 
-脚本会：① 检测 Python 3.9+ → ② 创建 `.venv` → ③ `pip install -r requirements.txt` + `pip install -e .` → ④ 从模板生成 `local.yaml` → ⑤ 跑 `rsim doctor`（系统级）+ `rsim check`（配置级）。
+完整模式连接 Linux 时，同一 Web 可选本地或 Cluster：
 
-VS2019 / MATLAB / Qt / Boost / selena_environment 这些重依赖需自行安装（license 绑定，脚本不自动装），`rsim doctor` 会告诉你缺什么。完整依赖矩阵见 `docs/environment-setup.md`。
+```powershell
+.\scripts\bootstrap.ps1 -Mode full -ControlPlane linux `
+  -ServerUrl http://linux-rsim:8878 -AgentId <agent-id> `
+  -AgentToken <agent-token> -ApiToken <user-token> -Start
+```
 
-### 模式 A：Linux 服务（仅 cluster 仿真）
+`-Mode full -ControlPlane local` 提供离线本地 Web/编译/仿真，不启动 Cluster executor。详见 `docs/release-deployment.md`。
 
-Linux 上起 control server（只接受 cluster.run），Windows 端起 agent 连上即可提交集群仿真，无需 clone 完整仓的工具链：
+### Linux 统一入口
 
 ```bash
-# Linux server（纯 stdlib，零 pip install）
-rsim server serve --host 0.0.0.0 --port 8877 --allowed-task-types cluster.run
+bash scripts/linux_deploy.sh --yes
+bash scripts/linux_deploy.sh status
+bash scripts/linux_deploy.sh test
 ```
 
-```bat
-:: Windows agent（最小依赖：Python + PyYAML + 本仓库用于 cluster 链路）
-rsim agent --server-url http://<linux-server>:8877
-```
-
-详见 `docs/cluster-only-quickstart.md`（模式 A 快速开始）、`docs/linux-server-deploy.md` 和 `docs/e2e-linux-windows-runbook.md`。
+Linux 发布只启动认证后的 `serve-v1`（默认 8878），同时提供 Web/API/SDK、Agent 接口和 Cluster 调度。无 Windows 用户直接使用该入口和已有 Runtime Bundle。
 
 ### 开发安装
 
@@ -101,24 +140,24 @@ rsim --project ovrs25 ask "FCTA 为什么没有激活？"
 | `rsim doctor` | 系统级诊断：VS/MATLAB/Qt/Boost/selena_env 实际安装、Python 包、集群 UNC 可达性 |
 | `rsim tcc` | TCC 工具链：bootstrap-itc2 / install / auto-repair / status |
 
-### 控制平面（双模式）
+### 控制平面（legacy/历史兼容双模式）
 
-控制平面把"调度入口"和"执行"解耦。两种部署模式共用同一份代码，靠 server 启动参数区分：
+控制平面把"调度入口"和"执行"解耦。下面的 Mode A/Mode B 仅描述当前 legacy CLI/control-plane 兼容用法，不是 v5 当前产品模式；v5 产品部署以 Windows full 和 Linux central + optional light Agent 为准。
 
-- **模式 A（Linux cluster-only）**：server 用 `--allowed-task-types cluster.run` 启动，拒绝 local task；agent 默认只认领 cluster.run。Windows 端无需繁重依赖。
-- **模式 B（Windows 本机仓）**：server 不带白名单（全允许），agent 显式 `--capability local.*` 启用本机编译/仿真。`rsim web` 内置 server+agent，单机一条命令即用。
+- **legacy Mode A（Linux cluster-only）**：server 用 `--allowed-task-types cluster.run` 启动，拒绝 local task；agent 默认只认领 cluster.run。Windows 端无需繁重依赖。
+- **legacy Mode B（Windows 本机仓）**：server 不带白名单（全允许），agent 显式 `--capability local.*` 启用本机编译/仿真。`rsim web` 内置 server+agent，单机一条命令即用。
 
 ```bash
-# 模式 A：Linux 跑 server（cluster-only），Windows 跑 agent
+# legacy Mode A：Linux 跑 server（cluster-only），Windows 跑 agent
 rsim server serve --host 0.0.0.0 --port 8877 --allowed-task-types cluster.run
 rsim agent --server-url http://<server>:8877   # 默认 capability: cluster.run
 
-# 模式 B：单机 rsim web 内置 control server + agent，前端 build/sim/cluster 都能用
+# legacy Mode B：单机 rsim web 内置 control server + agent，前端 build/sim/cluster 都能用
 rsim --project ovrs25 web
 rsim --project ovrs25 web --no-control        # 退回本地 BuildTaskRegistry
 rsim --project ovrs25 web --control-port 8877 # 指定控制端口
 
-# 模式 B：跨机全功能（server 不限 task_type）
+# legacy Mode B：跨机全功能（server 不限 task_type）
 rsim server serve --host 0.0.0.0 --port 8877
 rsim server create-job local.build_selena --project ovrs25 --mode RelWithDebInfo
 rsim server create-job cluster.run      --project ovrs25 --dataset smoke --max-minutes 5

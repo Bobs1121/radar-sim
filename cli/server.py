@@ -17,7 +17,7 @@ def register(subparsers):
     parser = subparsers.add_parser("server", help="Run or inspect the minimal control server")
     server_sub = parser.add_subparsers(dest="server_command", help="Server commands")
 
-    serve = server_sub.add_parser("serve", help="Start the stdlib HTTP JSON control server")
+    serve = server_sub.add_parser("serve", help="Start the stdlib HTTP JSON control server (legacy /api/* Agent endpoints)")
     serve.add_argument("--host", default="127.0.0.1", help="Bind host")
     serve.add_argument("--port", type=int, default=8877, help="Bind port")
     serve.add_argument("--db-path", default="", help="SQLite database path")
@@ -37,6 +37,29 @@ def register(subparsers):
         "directly — no Windows agent needed. Requires PyYAML + write access to the "
         "cluster workspace share + reachability to SZHRADAR01:8123. Use this so T2/T3 "
         "users can submit cluster sims from the browser without a Windows machine.",
+    )
+
+    serve_v1 = server_sub.add_parser(
+        "serve-v1",
+        help="Start the unified FastAPI /api/v1 and Windows Agent control server",
+    )
+    serve_v1.add_argument("--host", default="127.0.0.1", help="Bind host")
+    serve_v1.add_argument("--port", type=int, default=8878, help="Bind port")
+    serve_v1.add_argument("--db-path", default="", help="SQLite database path")
+    serve_v1.add_argument(
+        "--auth-file",
+        default="",
+        help="Versioned JSON Bearer credential file (required for non-loopback release binds)",
+    )
+    serve_v1.add_argument(
+        "--insecure-no-auth",
+        action="store_true",
+        help="Explicitly allow an unauthenticated non-loopback bind (development only)",
+    )
+    serve_v1.add_argument(
+        "--no-cluster-executor",
+        action="store_true",
+        help="Disable the built-in Linux/Gateway v2 Cluster Stage executor.",
     )
 
     create = server_sub.add_parser("create-job", help="Create a control job in the local control DB")
@@ -113,6 +136,8 @@ def run(args, config):
     command = getattr(args, "server_command", "") or ""
     if command == "serve":
         return _run_serve(args)
+    if command == "serve-v1":
+        return _run_serve_v1(args)
     if command == "create-job":
         return _run_create_job(args)
     if command == "get-job":
@@ -138,7 +163,7 @@ def run(args, config):
     if command == "list-agents":
         agents = _service_from_args(args).list_agents()
         return _print_json({"agents": agents})
-    print("Missing server command. Use: rsim server serve|create-job|get-job|get-logs|cancel|reclaim|list-agents")
+    print("Missing server command. Use: rsim server serve|serve-v1|create-job|get-job|get-logs|cancel|reclaim|list-agents")
     return 1
 
 
@@ -184,6 +209,229 @@ def _run_serve(args) -> int:
             executor.stop()
         server.server_close()
     return 0
+
+
+def _run_serve_v1(args) -> int:
+    host = getattr(args, "host", "127.0.0.1")
+    port = int(getattr(args, "port", 8878))
+    explicit_db = getattr(args, "db_path", "") or ""
+    auth_file = str(getattr(args, "auth_file", "") or "").strip()
+    authenticator = None
+    if auth_file:
+        try:
+            from core.http_auth import HttpAuthError, load_http_auth
+            authenticator = load_http_auth(auth_file)
+        except (HttpAuthError, OSError) as exc:
+            print(f"Invalid HTTP authentication configuration: {exc}")
+            return 2
+    elif not _is_loopback_bind(host) and not bool(getattr(args, "insecure_no_auth", False)):
+        print(
+            "Refusing unauthenticated non-loopback serve-v1 bind. "
+            "Provide --auth-file or explicitly use --insecure-no-auth for development."
+        )
+        return 2
+
+    try:
+        import importlib
+        from core.api_v1 import ApiV1Service
+        from core.api_v1_fastapi import create_app
+        from core.artifact_store import ArtifactStore, default_artifact_catalog_db_path
+        from core.artifact_upload_service import ArtifactUploadService, trusted_build_evidence_from_control
+        from core.artifacts import ArtifactCatalog
+        from core.dataset_store import DatasetStore, default_dataset_catalog_db_path, default_dataset_root
+        from core.dataset_upload_service import DatasetUploadService, trusted_data_stage_evidence_from_control
+        from core.datasets import DatasetCatalog
+        from core.datasets import resolve_data_reference
+        from core.shared_namespace import SharedNamespaceRegistry
+        from core.source_resolution_runtime import build_legacy_source_resolution_inputs
+        from core.runtime_bundle_catalog import RuntimeBundleCatalog
+        from core.runtime_bundle_upload_service import RuntimeBundleUploadService, trusted_runtime_bundle_evidence_from_control
+        from core.config_assets import ConfigAssetStore
+        from core.local_results import default_result_catalog
+        uvicorn = importlib.import_module("uvicorn")
+    except ImportError as exc:
+        print(
+            "serve-v1 requires optional dependencies. Install with "
+            "`pip install .[v5-server]` on Python 3.10+."
+        )
+        print(f"Missing dependency: {exc.name or exc}")
+        return 2
+
+    if explicit_db:
+        db_path = Path(explicit_db)
+        service = ControlService(db_path)
+
+        def factory(user: str) -> ControlService:
+            return service
+
+        shared_catalog = ArtifactCatalog(db_path)
+        artifact_store = ArtifactStore(
+            root=db_path.parent / f"{db_path.stem}_artifacts",
+            db_path=db_path,
+        )
+        dataset_catalog = DatasetCatalog(db_path)
+        dataset_store = DatasetStore(
+            root=db_path.parent / f"{db_path.stem}_datasets",
+            db_path=db_path,
+        )
+        runtime_bundle_db = db_path.parent / f"{db_path.stem}_runtime_bundles.db"
+        runtime_bundle_catalog = RuntimeBundleCatalog(runtime_bundle_db)
+        runtime_bundle_store = ArtifactStore(
+            root=db_path.parent / f"{db_path.stem}_runtime_bundles",
+            db_path=runtime_bundle_db,
+            object_filename="runtime-bundle.zip",
+            storage_ref_prefix="shared://selena-bundles/",
+        )
+        config_asset_store = ConfigAssetStore(
+            db_path.parent / f"{db_path.stem}_config_assets",
+            db_path.parent / f"{db_path.stem}_config_assets.db",
+        )
+    else:
+        # v2 uses one central control DB with owner-scoped rows.  A shared DB is
+        # required so the Linux/Gateway executor can schedule every user's job
+        # without discovering per-user database files from filesystem names.
+        service = ControlService(default_artifact_catalog_db_path().parent / "control_v1.db")
+
+        def factory(_user: str) -> ControlService:
+            return service
+
+        shared_catalog = ArtifactCatalog(default_artifact_catalog_db_path())
+        artifact_store = ArtifactStore()
+        dataset_catalog = DatasetCatalog(default_dataset_catalog_db_path())
+        dataset_store = DatasetStore(default_dataset_root())
+        runtime_bundle_db = default_artifact_catalog_db_path().parent / "runtime_bundles.db"
+        runtime_bundle_catalog = RuntimeBundleCatalog(runtime_bundle_db)
+        runtime_bundle_store = ArtifactStore(
+            root=default_artifact_catalog_db_path().parent / "runtime_bundles",
+            db_path=runtime_bundle_db,
+            object_filename="runtime-bundle.zip",
+            storage_ref_prefix="shared://selena-bundles/",
+        )
+        config_asset_store = ConfigAssetStore(
+            default_artifact_catalog_db_path().parent / "config_assets",
+            default_artifact_catalog_db_path().parent / "config_assets.db",
+        )
+
+    def catalog_factory(_user: str) -> ArtifactCatalog:
+        return shared_catalog
+
+    def evidence_provider(owner: str, evidence_ref: str):
+        return trusted_build_evidence_from_control(factory(owner), owner, evidence_ref)
+
+    artifact_upload_service = ArtifactUploadService(artifact_store, shared_catalog, evidence_provider)
+
+    def artifact_upload_service_factory(_owner: str) -> ArtifactUploadService:
+        return artifact_upload_service
+
+    runtime_bundle_upload_service = RuntimeBundleUploadService(
+        runtime_bundle_store,
+        runtime_bundle_catalog,
+        lambda owner, evidence_ref: trusted_runtime_bundle_evidence_from_control(
+            factory(owner), owner, evidence_ref
+        ),
+    )
+
+    def runtime_bundle_upload_service_factory(_owner: str) -> RuntimeBundleUploadService:
+        return runtime_bundle_upload_service
+
+    def project_available(project: str) -> bool:
+        if str(project or "") == "run-config-v2":
+            return True
+        try:
+            from core.config import list_projects
+            return str(project or "") in set(list_projects())
+        except Exception:
+            return False
+
+    dataset_upload_service = DatasetUploadService(
+        dataset_store,
+        dataset_catalog,
+        project_validator=project_available,
+        evidence_provider=lambda owner, evidence_ref: trusted_data_stage_evidence_from_control(
+            factory(owner), owner, evidence_ref
+        ),
+    )
+
+    def dataset_upload_service_factory(_owner: str) -> DatasetUploadService:
+        return dataset_upload_service
+
+    def config_loader(project: str, profile: str, data_path: str):
+        from core.config import load_simulation_spec_bundle
+        return load_simulation_spec_bundle(project, profile=profile, data_path=data_path)
+
+    def source_resolution_provider(owner: str, spec):
+        return build_legacy_source_resolution_inputs(
+            owner,
+            spec,
+            catalog_factory=catalog_factory,
+            config_loader=config_loader,
+            now_fn=__import__("time").time,
+            inspect_local_workspace=False,
+        )
+
+    def data_resolution_provider(owner: str, spec):
+        from core.config import load_config
+        project_config = load_config(spec.project)
+        return resolve_data_reference(
+            dataset_catalog,
+            SharedNamespaceRegistry.from_config(project_config),
+            owner=owner,
+            project=spec.project,
+            data_path=spec.data.path,
+            required_signals=spec.data.required_signals,
+        )
+
+    api_service = ApiV1Service(
+        control_service_factory=factory,
+        source_resolution_provider=source_resolution_provider,
+        data_resolution_provider=data_resolution_provider,
+        artifact_upload_service_factory=artifact_upload_service_factory,
+        dataset_upload_service_factory=dataset_upload_service_factory,
+        runtime_bundle_upload_service_factory=runtime_bundle_upload_service_factory,
+        config_asset_store=config_asset_store,
+        result_catalog=default_result_catalog(),
+        project_names_provider=lambda: __import__("core.config", fromlist=["list_projects"]).list_projects(),
+    )
+    app_kwargs = {"api_service": api_service}
+    if authenticator is not None:
+        app_kwargs["authenticator"] = authenticator
+    app = create_app(**app_kwargs)
+    cluster_stage_executor = None
+    if not bool(getattr(args, "no_cluster_executor", False)):
+        from core.cluster_runs import ClusterRunStore
+        from core.cluster_stage_executor import ClusterStageContext, ClusterStageExecutor
+
+        cluster_stage_context = ClusterStageContext(
+            runtime_catalog=runtime_bundle_catalog,
+            runtime_store=runtime_bundle_store,
+            dataset_catalog=dataset_catalog,
+            config_assets=config_asset_store,
+            run_store=ClusterRunStore(runtime_bundle_db.parent / "cluster_runs.db"),
+            work_root=runtime_bundle_db.parent / "cluster_stage_work",
+            config_loader=lambda project: __import__("core.config", fromlist=["load_config"]).load_config(project),
+        )
+        cluster_stage_executor = ClusterStageExecutor(service, cluster_stage_context)
+        cluster_stage_executor.start()
+    print(f"Radar Sim v1 API server: http://{host}:{port}/api/v1/")
+    print("HTTP Bearer authentication: " + ("enabled" if authenticator is not None else "disabled (loopback/development)"))
+    print("Linux/Gateway Cluster Stage executor: " + ("enabled" if cluster_stage_executor else "disabled"))
+    print("Windows Agent control endpoints: enabled on this same server")
+    try:
+        uvicorn.run(app, host=host, port=port, workers=1)
+    finally:
+        if cluster_stage_executor is not None:
+            cluster_stage_executor.stop()
+    return 0
+
+
+def _is_loopback_bind(host: str) -> bool:
+    text = str(host or "").strip().lower()
+    if text == "localhost":
+        return True
+    try:
+        return __import__("ipaddress").ip_address(text).is_loopback
+    except ValueError:
+        return False
 
 
 def _start_cluster_executor(host: str, port: int):

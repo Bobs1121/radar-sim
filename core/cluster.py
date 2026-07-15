@@ -59,6 +59,8 @@ RUNTIME_COPY_NAMES = {
     "XmlParser_x64.dll",
 }
 
+CLUSTER_KILL_PASSWORD_ENV = "RSIM_CLUSTER_KILL_PASSWORD"
+
 
 @dataclass
 class CheckItem:
@@ -123,7 +125,10 @@ def get_cluster_config(config: dict[str, Any]) -> dict[str, Any]:
         cluster["python_path"] = configured_python if _python_config_looks_usable(configured_python) else (detected_python or configured_python)
     else:
         cluster["python_path"] = detected_python or r"C:\Python27\python.exe"
-    cluster.setdefault("kill_password", "1234")
+    if not str(cluster.get("kill_password") or "").strip():
+        secret = str(os.environ.get(CLUSTER_KILL_PASSWORD_ENV) or "").strip()
+        if secret:
+            cluster["kill_password"] = secret
     cluster.setdefault("group", "Radar")
     cluster.setdefault("subgroup", "PSS2")
     cluster.setdefault("python_version", "*")
@@ -802,7 +807,12 @@ def prepare_cluster_job(
     )
 
     # submit_command passes config_path to the Windows manager — must be UNC.
-    submit_command = build_submit_command(Path(config_unc), cluster=cluster, username=str(cluster.get("username", "") or ""))
+    submit_command = build_submit_command(
+        Path(config_unc),
+        cluster=cluster,
+        username=str(cluster.get("username", "") or ""),
+        redact_secret=True,
+    )
     manifest = {
         "run_id": run_id,
         "project": project_key,
@@ -836,10 +846,26 @@ def prepare_cluster_job(
     )
 
 
-def build_submit_command(config_path: Path, *, cluster: dict[str, Any], username: str = "") -> list[str]:
+def _cluster_kill_password(cluster: dict[str, Any]) -> str:
+    password = str(cluster.get("kill_password") or os.environ.get(CLUSTER_KILL_PASSWORD_ENV) or "").strip()
+    if not password:
+        raise RuntimeError(
+            f"Cluster submission credential is not configured; set {CLUSTER_KILL_PASSWORD_ENV} in the deployment environment"
+        )
+    return password
+
+
+def build_submit_command(
+    config_path: Path,
+    *,
+    cluster: dict[str, Any],
+    username: str = "",
+    redact_secret: bool = False,
+) -> list[str]:
     python_path = str(cluster.get("python_path") or r"C:\Python27\python.exe")
     cmd = _python_command_prefix(python_path)
-    cmd.extend([str(_client_path(cluster)), str(config_path), str(cluster.get("kill_password") or "1234")])
+    password = "<redacted>" if redact_secret else _cluster_kill_password(cluster)
+    cmd.extend([str(_client_path(cluster)), str(config_path), password])
     if username:
         cmd.append(username)
     return cmd
@@ -847,7 +873,12 @@ def build_submit_command(config_path: Path, *, cluster: dict[str, Any], username
 
 def submit_cluster_job(config_path: str, config: dict[str, Any], *, dry_run: bool = True) -> SubmitResult:
     cluster = get_cluster_config(config)
-    cmd = build_submit_command(Path(config_path), cluster=cluster, username=str(cluster.get("username", "") or ""))
+    cmd = build_submit_command(
+        Path(config_path),
+        cluster=cluster,
+        username=str(cluster.get("username", "") or ""),
+        redact_secret=dry_run,
+    )
     mode = _resolve_submit_mode(cluster)
     if dry_run:
         return SubmitResult(mode=mode, dry_run=True, command=cmd, returncode=0, stdout="", stderr="")
@@ -956,7 +987,7 @@ def _submit_via_xmlrpc(config_path: str, config: dict[str, Any], cluster: dict[s
 
     username = str(cluster.get("username") or os.environ.get("USERNAME") or os.environ.get("USER") or "radar-sim")
     longname = str(cluster.get("longname") or username)
-    password = str(cluster.get("kill_password") or "1234")
+    password = _cluster_kill_password(cluster)
     hostname = socket.getfqdn().split(".")[0]
     try:
         manager = xmlrpc.client.ServerProxy(_manager_url(cluster), allow_none=True)

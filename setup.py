@@ -11,6 +11,7 @@ setup(
     python_requires=">=3.9",
     packages=find_packages(),
     include_package_data=True,
+    package_data={"radar_sim_web": ["static/*.html", "static/*.css", "static/*.js"]},
     entry_points={
         "console_scripts": [
             "rsim=rsim:main",
@@ -27,6 +28,30 @@ setup(
         # Control-plane server/agent: PyYAML only (already in install_requires).
         # Listed for clarity / future light deps.
         "control": [],
+        # v5 SimulationSpec schema/model spike. Keep out of install_requires so
+        # legacy control-plane installs remain PyYAML-only until WP1 is complete.
+        "v5-spec": [
+            "pydantic==2.13.4",
+        ],
+        # v5 /api/v1 server stack. Kept out of install_requires so legacy
+        # Python 3.9/control-plane imports remain PyYAML-only; these packages
+        # require Python 3.10+ and pip will fail clearly on unsupported Python.
+        "v5-server": [
+            "fastapi==0.139.0",
+            "uvicorn==0.50.2",
+            "pydantic==2.13.4",
+        ],
+        # Official Python SDK transport stack.
+        "sdk": [
+            "httpx==0.28.1",
+            "pydantic==2.13.4",
+        ],
+        "v5": [
+            "fastapi==0.139.0",
+            "uvicorn==0.50.2",
+            "httpx==0.28.1",
+            "pydantic==2.13.4",
+        ],
         # Full local-execution stack: MF4 analysis + AI Q&A + config.
         "full": [
             "asammdf>=6.0",

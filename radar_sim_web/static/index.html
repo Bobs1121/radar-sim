@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Radar Sim 控制台</title>
+  <link rel="stylesheet" href="/console/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">RS</span>
+      <div>
+        <strong>Radar Sim</strong>
+        <span>仿真任务控制台</span>
+      </div>
+    </div>
+    <nav aria-label="主要导航">
+      <button class="nav-item is-active" data-view="create">新建任务</button>
+      <button class="nav-item" data-view="tasks">任务中心</button>
+    </nav>
+    <div class="connection-tools">
+      <div class="auth-entry" id="authEntry" hidden>
+        <label for="accessToken">访问令牌</label>
+        <input id="accessToken" type="password" autocomplete="off" placeholder="粘贴个人令牌">
+        <button type="button" class="button secondary" id="saveToken">连接</button>
+      </div>
+      <div class="api-state" id="apiState" role="status">正在连接服务</div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section id="createView" class="view is-active" aria-labelledby="createTitle">
+      <div class="page-heading">
+        <div>
+          <p class="kicker">一套配置，本地与 Cluster 自动调度</p>
+          <h1 id="createTitle">创建仿真任务</h1>
+          <p>填写 Selena、数据和三项仿真配置。系统自动识别内部适配方式并生成执行计划。</p>
+        </div>
+        <div class="heading-actions">
+          <input id="yamlFile" type="file" accept=".yaml,.yml,text/yaml" hidden>
+          <button class="button secondary" id="importYaml">导入 YAML</button>
+          <button class="button secondary" id="exportYaml">导出 YAML</button>
+        </div>
+      </div>
+
+      <div class="create-grid">
+        <form id="simulationForm" class="form-stack" novalidate>
+          <section class="form-section" aria-labelledby="basicHeading">
+            <div class="section-heading">
+              <h2 id="basicHeading">执行位置</h2>
+              <p>只选择本地或 Cluster，不需要了解项目、环境名或调度节点。</p>
+            </div>
+            <div class="field-grid one">
+              <fieldset class="field compact-choice">
+                <legend>执行目标</legend>
+                <div class="segmented" id="targetChoice">
+                  <label><input type="radio" name="target" value="auto" checked><span>自动</span></label>
+                  <label><input type="radio" name="target" value="local"><span>本地</span></label>
+                  <label><input type="radio" name="target" value="cluster"><span>Cluster</span></label>
+                </div>
+                <small>自动模式优先匹配已配置的可用环境。</small>
+              </fieldset>
+            </div>
+          </section>
+
+          <section class="form-section" aria-labelledby="dataHeading">
+            <div class="section-heading">
+              <h2 id="dataHeading">仿真数据</h2>
+              <p>系统自动判断本地/共享并按执行目标直读或上传。</p>
+            </div>
+            <label class="field">
+              <span>数据路径</span>
+              <input id="dataPath" name="dataPath" required placeholder="D:/measurements/run 或 //server/share/run">
+              <small>系统递归检索路径下的输入 MF4，不要求固定目录层级。共享路径由 Cluster 直读，本机路径调度到已授权的 Windows Agent。</small>
+            </label>
+            <div class="folder-picker">
+              <button type="button" class="button secondary" id="chooseDataFolder">选择本机文件夹</button>
+              <input id="dataFolderInput" type="file" webkitdirectory directory multiple hidden>
+              <span id="dataUploadState">没有 Windows Agent 时，可直接选择浏览器本机文件夹；提交时自动上传。</span>
+            </div>
+            <div class="upload-progress" id="dataUploadProgress" hidden>
+              <div><span>正在准备 Cluster 可访问的数据</span><strong id="dataUploadPercent">0%</strong></div>
+              <progress id="dataUploadBar" max="100" value="0"></progress>
+            </div>
+          </section>
+
+          <section class="form-section" aria-labelledby="selenaHeading">
+            <div class="section-heading">
+              <h2 id="selenaHeading">Selena 来源</h2>
+              <p>选择编译脚本或已有 Selena 文件夹；产物完整性和内部登记由系统处理。</p>
+            </div>
+            <label class="field">
+              <span>使用方式</span>
+              <select id="selenaSource" name="selenaSource">
+                <option value="build">本地代码编译并使用</option>
+                <option value="existing">使用已有 Selena 文件夹</option>
+              </select>
+            </label>
+            <div id="buildFields" class="field-grid two">
+              <label class="field full">
+                <span>代码路径</span>
+                <input id="codePath" name="codePath" placeholder="D:/workspace/selena" required>
+                <small>软件在 Windows 节点内部识别构建适配方式，不需要选择项目。</small>
+              </label>
+              <label class="field">
+                <span>Selena 分支</span>
+                <input id="selenaBranch" name="selenaBranch" placeholder="留空使用当前工作区修改">
+                <small>填写分支时使用隔离工作区切换；留空时编译当前修改。</small>
+              </label>
+              <label class="field full">
+                <span>Selena 编译脚本</span>
+                <input id="selenaBuildScript" name="selenaBuildScript" placeholder="代码路径内的 jenkins_selena_build.bat" required>
+                <small>编译 Selena 主产物的脚本，必填。</small>
+              </label>
+              <label class="field full">
+                <span>软件包编译脚本</span>
+                <input id="packageBuildScript" name="packageBuildScript" placeholder="代码仓内的软件包编译脚本" required>
+                <small>用于识别代码适配并检查/修复构建依赖，必填。</small>
+              </label>
+            </div>
+            <div id="existingFields" hidden>
+              <label class="field">
+                <span>已有 Selena 文件夹</span>
+                <input id="existingPath" name="existingPath" placeholder="D:/runtime/Selena 或 //server/share/Selena">
+                <small>填写包含 Selena.exe 和依赖 DLL 的文件夹；系统自动检查并按执行位置传输。</small>
+              </label>
+            </div>
+            <label class="field">
+              <span>Runtime XML</span>
+              <input id="runtimeXml" name="runtimeXml" placeholder="D:/runtime/Runtime.xml" required>
+              <small>Runtime 必须与编译产物或已有 Selena 文件夹匹配。</small>
+            </label>
+          </section>
+
+          <section class="form-section" aria-labelledby="assetsHeading">
+            <div class="section-heading">
+              <h2 id="assetsHeading">仿真配置文件</h2>
+              <p>Adapter 可选，系统识别项目后决定是否需要；MatFilter 必填。</p>
+            </div>
+            <div class="field-grid two">
+              <div class="field">
+                <span>Adapter（可选）</span>
+                <input id="adapterFile" placeholder="可选，系统识别项目后决定是否需要">
+                <button type="button" class="folder-picker" id="chooseAdapter">选择并上传 Adapter</button>
+                <input id="adapterUpload" type="file" hidden>
+              </div>
+              <div class="field">
+                <span>MatFilter</span>
+                <input id="matFilter" required placeholder="本地/共享路径，或已上传的配置引用">
+                <button type="button" class="folder-picker" id="chooseMatFilter">选择并上传 MatFilter</button>
+                <input id="matFilterUpload" type="file" hidden>
+              </div>
+            </div>
+          </section>
+
+          <div id="formError" class="notice error" role="alert" hidden></div>
+          <div class="submit-bar">
+            <div>
+              <strong id="routeSummary">系统将自动选择可用执行路径</strong>
+              <span>提交后可以在任务中心查看环境检查、编译、上传和仿真进度。</span>
+            </div>
+            <button type="button" class="button secondary" id="validateSpec">检查配置</button>
+            <button type="submit" class="button primary" id="submitJob">提交任务</button>
+          </div>
+        </form>
+
+        <aside class="plan-panel" aria-labelledby="planHeading">
+          <div class="plan-sticky">
+            <h2 id="planHeading">执行预览</h2>
+            <p id="planStatus">填写基础配置后检查执行计划。</p>
+            <ol id="planStages" class="stage-preview">
+              <li><span>1</span><div><strong>识别配置</strong><small>内部适配和数据定位</small></div></li>
+              <li><span>2</span><div><strong>检查环境</strong><small>按选定路径检查依赖</small></div></li>
+              <li><span>3</span><div><strong>准备 Selena 和数据</strong><small>仅在需要时编译或上传</small></div></li>
+              <li><span>4</span><div><strong>运行仿真</strong><small>本地或 Cluster</small></div></li>
+            </ol>
+            <div class="deployment-note">
+              <strong>部署能力边界</strong>
+              <dl>
+                <div><dt>完全部署</dt><dd>本地编译、本地仿真、Cluster 提交</dd></div>
+                <div><dt>轻量部署</dt><dd>本地编译和上传，再由 Cluster 仿真</dd></div>
+                <div><dt>无需部署</dt><dd>已有 Selena 和共享或上传数据，直接 Cluster 仿真</dd></div>
+              </dl>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="tasksView" class="view" aria-labelledby="tasksTitle">
+      <div class="page-heading">
+        <div><p class="kicker">统一查看 Web 和 SDK 任务</p><h1 id="tasksTitle">任务中心</h1><p>状态来自结构化 Stage 事件，不从日志文本猜测。</p></div>
+        <button class="button secondary" id="refreshJobs">刷新</button>
+      </div>
+      <div class="task-layout">
+        <section class="task-list-panel" aria-label="任务列表">
+          <div class="task-filters">
+            <select id="statusFilter" aria-label="按状态筛选">
+              <option value="">全部状态</option><option value="queued">排队中</option><option value="running">运行中</option>
+              <option value="needs_input">需要处理</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option>
+            </select>
+          </div>
+          <div id="jobList" class="job-list"><div class="empty-state">正在加载任务</div></div>
+        </section>
+        <section id="jobDetail" class="job-detail" aria-live="polite">
+          <div class="empty-state"><strong>选择一个任务</strong><span>查看阶段进度、操作建议和运行日志。</span></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/console/app.js" defer></script>
+</body>
+</html>

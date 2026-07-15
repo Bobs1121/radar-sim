@@ -1,183 +1,236 @@
 <#
 .SYNOPSIS
-    radar-sim one-click deploy (Mode B: Windows local repo, full local+cluster).
+    radar-sim Windows one-click installer.
 
 .DESCRIPTION
-    Runs the post-clone setup that takes a fresh checkout of this repo on a
-    Windows machine to a working rsim install:
+    Installs one of two explicit product modes and persists the connection once.
+    The current sprint keeps loopback-only ``full + local`` free of login/token
+    setup; authentication remains required for every Linux control plane:
 
-      1. Preflight  : Python 3.9+ present, repo layout sane.
-      2. venv       : create .venv if missing, upgrade pip.
-      3. Deps       : pip install -r requirements.txt + pip install -e .
-                     (if third_party/python-wheels/ has wheels, install offline)
-      4. local.yaml : rsim config init (copy template) if local.yaml missing.
-      5. Diagnostics: rsim doctor (system-level) + rsim check (config-level).
+      light - local Selena compile + Runtime Bundle/data upload only.  Simulation
+              always continues on Cluster; this mode never enables local simulation.
+      full  - Windows full Agent.  ControlPlane=local starts an offline local-only
+              Web/API; ControlPlane=linux connects the full Agent to the central
+              Web so one task entry can select either local or Cluster simulation.
 
-    Does NOT auto-install VS/MATLAB/Qt/Boost (too heavy / license-bound) —
-    doctor reports what's missing and points at docs/environment-setup.md.
-
-    Re-runnable: each step is idempotent (skips work already done).
-
-.PARAMETER Project
-    Project name under config/projects/ to configure (default: ovrs25).
-
-.PARAMETER SkipDeps
-    Skip the pip install step (use if deps already installed).
-
-.PARAMETER SkipCheck
-    Skip the final doctor/check step.
+    The installer does not ask users to select an internal project.  Code/data/
+    Runtime/Adapter/MatFilter bindings are configured later through the unified
+    Web/YAML contract.  Re-running the installer updates dependencies but preserves
+    the persisted connection configuration unless new values are supplied.
 
 .EXAMPLE
-    .\scripts\bootstrap.ps1 -Project ovrs25
+    .\scripts\bootstrap.ps1 -Mode light -ServerUrl http://rsim:8878 `
+        -AgentId alice-laptop -AgentToken <agent-token> -ApiToken <user-token> -Start
+
+.EXAMPLE
+    .\scripts\bootstrap.ps1 -Mode full -Start
+
+.EXAMPLE
+    .\scripts\bootstrap.ps1 -Mode full -ControlPlane linux `
+        -ServerUrl http://rsim:8878 -AgentId alice-full `
+        -AgentToken <agent-token> -ApiToken <user-token> -Start
 #>
 
 [CmdletBinding()]
 param(
-    [string]$Project = "ovrs25",
+    [ValidateSet("light", "full")]
+    [string]$Mode = "light",
+    [ValidateSet("local", "linux")]
+    [string]$ControlPlane = "",
+    [string]$ServerUrl = "",
+    [string]$AgentId = "",
+    [string]$AgentToken = "",
+    [string]$ApiToken = "",
+    [string]$InstallRoot = "",
     [switch]$SkipDeps,
-    [switch]$SkipCheck
+    [switch]$SkipCheck,
+    [switch]$Start
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+if (-not $InstallRoot) {
+    $base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME "AppData\Local" }
+    $InstallRoot = Join-Path $base "radar-sim"
+}
+$InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
+$ConfigPath = Join-Path $InstallRoot "install.json"
+$SecretsPath = Join-Path $InstallRoot "credentials.json"
+$AuthPath = Join-Path $InstallRoot "http-auth.json"
+$DataRoot = Join-Path $InstallRoot "data"
+$VenvDir = Join-Path $RepoRoot ".venv"
+$VenvPy = Join-Path $VenvDir "Scripts\python.exe"
 
-function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
-function Write-Ok($msg)   { Write-Host "    OK  $msg" -ForegroundColor Green }
-function Write-Warn($msg) { Write-Host "    WARN $msg" -ForegroundColor Yellow }
-function Write-Err($msg)  { Write-Host "    ERR  $msg" -ForegroundColor Red }
+function Write-Step($message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
+function Write-Ok($message) { Write-Host "    OK  $message" -ForegroundColor Green }
+function Write-Warn($message) { Write-Host "    WARN $message" -ForegroundColor Yellow }
+function Fail($message) { Write-Host "    ERR  $message" -ForegroundColor Red; exit 1 }
 
 Set-Location $RepoRoot
-
-# --------------------------------------------------------------------------
-# Step 1: Preflight — Python 3.9+
-# --------------------------------------------------------------------------
-Write-Step "Step 1/5: preflight checks"
-
-$pyExe = $null
+Write-Step "1/5 Check Windows and Python"
+if (-not $IsWindows -and $env:OS -ne "Windows_NT") {
+    Fail "The full/light installer only runs on Windows. Without Windows, use Linux Web/SDK and an existing Runtime Bundle."
+}
+$Python = $null
 foreach ($candidate in @("python", "py")) {
     try {
-        $ver = & $candidate --version 2>&1
-        if ($LASTEXITCODE -eq 0 -and $ver -match "Python (\d+)\.(\d+)") {
-            $maj = [int]$Matches[1]; $min = [int]$Matches[2]
-            if ($maj -ge 3 -and $min -ge 9) {
-                $pyExe = $candidate
-                Write-Ok "Python $maj.$min found ($candidate)"
-                break
-            }
-        }
+        $version = & $candidate -c "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
+        if ($LASTEXITCODE -eq 0) { $Python = $candidate; Write-Ok "Python $version ($candidate)"; break }
     } catch { }
 }
-if (-not $pyExe) {
-    Write-Err "Python 3.9+ not found on PATH."
-    Write-Err "Install Python 3.9+ from https://www.python.org/ and re-run."
-    exit 1
+if (-not $Python) { Fail "Python 3.10+ is required." }
+
+Write-Step "2/5 Install $Mode dependencies"
+if (-not (Test-Path $VenvPy)) {
+    & $Python -m venv $VenvDir
+    if ($LASTEXITCODE -ne 0) { Fail "Failed to create .venv." }
 }
-
-$projectDir = Join-Path $RepoRoot "config/projects/$Project"
-if (-not (Test-Path $projectDir)) {
-    Write-Err "Project dir not found: $projectDir"
-    Write-Err "Available: $((Get-ChildItem (Join-Path $RepoRoot 'config/projects') -Directory).Name -join ', ')"
-    exit 1
-}
-Write-Ok "Project '$Project' config present"
-
-# --------------------------------------------------------------------------
-# Step 2: venv
-# --------------------------------------------------------------------------
-Write-Step "Step 2/5: virtual environment (.venv)"
-
-$venvDir = Join-Path $RepoRoot ".venv"
-if (Test-Path (Join-Path $venvDir "Scripts/python.exe")) {
-    Write-Ok ".venv already exists, reusing"
-} else {
-    & $pyExe -m venv .venv
-    if ($LASTEXITCODE -ne 0) { Write-Err "venv creation failed"; exit 1 }
-    Write-Ok ".venv created"
-}
-
-$venvPy = Join-Path $venvDir "Scripts/python.exe"
-& $venvPy -m pip install --upgrade pip --quiet
-Write-Ok "pip upgraded"
-
-# --------------------------------------------------------------------------
-# Step 3: dependencies
-# --------------------------------------------------------------------------
 if (-not $SkipDeps) {
-    Write-Step "Step 3/5: install Python dependencies"
+    & $VenvPy -m pip install --quiet --upgrade pip
+    $extra = if ($Mode -eq "full") { ".[v5,full]" } else { ".[sdk]" }
+    & $VenvPy -m pip install --quiet -e $extra
+    if ($LASTEXITCODE -ne 0) { Fail "Failed to install $Mode dependencies." }
+}
+Write-Ok "$Mode Python environment is ready."
 
-    $wheelsDir = Join-Path $RepoRoot "third_party/python-wheels"
-    if ((Test-Path $wheelsDir) -and ((Get-ChildItem $wheelsDir -Filter *.whl -ErrorAction SilentlyContinue).Count -gt 0)) {
-        Write-Ok "Using offline wheels from third_party/python-wheels/"
-        & $venvPy -m pip install --no-index --find-links $wheelsDir -r requirements.txt
-        if ($LASTEXITCODE -ne 0) { Write-Err "offline pip install failed"; exit 1 }
+Write-Step "3/5 Persist the one-time connection configuration"
+New-Item -ItemType Directory -Force -Path $InstallRoot, $DataRoot | Out-Null
+$existing = $null
+if (Test-Path $ConfigPath) {
+    try { $existing = Get-Content -Raw -Encoding UTF8 $ConfigPath | ConvertFrom-Json } catch { }
+}
+if (-not $AgentId) {
+    $AgentId = if ($existing.agent_id) { [string]$existing.agent_id } else { "agent-$env:USERNAME-$env:COMPUTERNAME" }
+}
+if (-not $ControlPlane) {
+    if ($Mode -eq "light") { $ControlPlane = "linux" }
+    elseif ($existing.control_plane) { $ControlPlane = [string]$existing.control_plane }
+    else { $ControlPlane = "local" }
+}
+if ($Mode -eq "light" -and $ControlPlane -ne "linux") {
+    Fail "Light mode requires -ControlPlane linux and has no local Web or local simulation."
+}
+$UseLocalControl = ($Mode -eq "full" -and $ControlPlane -eq "local")
+
+if ($UseLocalControl) {
+    if (-not $ServerUrl) { $ServerUrl = "http://127.0.0.1:8878" }
+    # Local control is bound to loopback and intentionally has no token gate in
+    # this sprint.  Do not generate credentials that the user cannot usefully
+    # distinguish from ordinary simulation configuration.
+    $ApiToken = ""
+    $AgentToken = ""
+} else {
+    if (-not $ServerUrl -and $existing.server_url) { $ServerUrl = [string]$existing.server_url }
+    if (Test-Path $SecretsPath) {
+        $oldSecrets = Get-Content -Raw -Encoding UTF8 $SecretsPath | ConvertFrom-Json
+        if (-not $AgentToken) { $AgentToken = [string]$oldSecrets.agent_token }
+        if (-not $ApiToken) { $ApiToken = [string]$oldSecrets.api_token }
+    }
+    if (-not $ServerUrl) { Fail "$Mode + linux requires the Linux -ServerUrl." }
+    if (-not $AgentToken -or -not $ApiToken) {
+        Fail "$Mode + linux requires -AgentToken and -ApiToken from the Linux administrator."
+    }
+}
+
+$installConfig = [ordered]@{
+    version = 2
+    mode = $Mode
+    control_plane = $ControlPlane
+    server_url = $ServerUrl.TrimEnd('/')
+    agent_id = $AgentId
+    repo_root = $RepoRoot
+    data_root = $DataRoot
+    auth_file = ""
+}
+$secrets = [ordered]@{ version = 1; agent_token = $AgentToken; api_token = $ApiToken }
+$installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
+$secrets | ConvertTo-Json | Set-Content -Encoding UTF8 $SecretsPath
+
+# Remote token persistence is required for unattended reconnect.  Local mode
+# writes an empty compatibility document; no local access token is generated.
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+& icacls.exe $InstallRoot /inheritance:r /grant:r "${identity}:(OI)(CI)F" 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Warn "Could not restrict ACL automatically. Ensure only this user can read $InstallRoot." }
+if ($UseLocalControl) {
+    Write-Ok "Config: $ConfigPath. Local loopback access does not require a token in this sprint."
+} else {
+    Write-Ok "Config: $ConfigPath. Credentials stay in the restricted folder, never in simulation YAML."
+}
+
+Write-Step "4/5 Verify deployment-mode boundaries"
+$policyCheck = @'
+from core.agent_policy import default_capabilities_for_mode
+import sys
+mode = sys.argv[1]
+caps = set(default_capabilities_for_mode(mode))
+forbidden = {'simulation.local', 'simulation.cluster', 'cluster.gateway', 'cluster.run', 'result.collect'}
+if mode == 'light' and caps & forbidden:
+    raise SystemExit('light mode exposes forbidden runtime capabilities')
+print(','.join(sorted(caps)))
+'@
+$capabilities = $policyCheck | & $VenvPy - $Mode
+if ($LASTEXITCODE -ne 0) { Fail "Agent mode policy check failed." }
+if ($Mode -eq "light") {
+    Write-Ok "light only allows local build/upload/data staging; simulation continues on Cluster"
+} elseif ($ControlPlane -eq "linux") {
+    Write-Ok "full + linux: central Web can schedule Windows local simulation and Linux Cluster"
+} else {
+    Write-Ok "full + local: offline Web/API, build and local simulation; no Cluster executor"
+}
+
+Write-Step "5/5 Basic verification"
+if (-not $SkipCheck) {
+    $env:RSIM_AGENT_TOKEN = $AgentToken
+    $env:RSIM_API_TOKEN = $ApiToken
+    $checkSucceeded = $true
+    if ($UseLocalControl) {
+        & $VenvPy rsim.py server serve-v1 --help | Out-Null
+        $checkSucceeded = ($LASTEXITCODE -eq 0)
     } else {
-        & $venvPy -m pip install -r requirements.txt
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warn "pip install -r requirements.txt failed (asammdf C-extension needs a compiler or prebuilt wheel)."
-            Write-Warn "Try: pip install asammdf separately, or prepare third_party/python-wheels/ (see docs/environment-setup.md)."
+        try {
+            Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/health" -TimeoutSec 5 | Out-Null
+            $headers = @{ Authorization = "Bearer $AgentToken" }
+            $registration = @{
+                name = "$env:COMPUTERNAME-installer-check"
+                agent_id = $AgentId
+                hostname = $env:COMPUTERNAME
+                platform = "Windows"
+                capabilities = @($capabilities -split ',' | Where-Object { $_ })
+                metadata = @{
+                    node_kind = if ($Mode -eq "full") { "windows_full" } else { "windows_agent" }
+                    windows_mode = $Mode
+                    installer_check = $true
+                }
+            } | ConvertTo-Json -Depth 4
+            Invoke-RestMethod -Method Post -Uri "$ServerUrl/api/agents/register" `
+                -Headers $headers -ContentType "application/json" -Body $registration -TimeoutSec 10 | Out-Null
+        } catch {
+            Write-Warn "Remote verification failed: $($_.Exception.Message)"
+            $checkSucceeded = $false
         }
     }
-
-    & $venvPy -m pip install -e .
-    if ($LASTEXITCODE -ne 0) { Write-Err "pip install -e . failed"; exit 1 }
-    Write-Ok "rsim installed in editable mode"
-} else {
-    Write-Step "Step 3/5: install Python dependencies (skipped)"
-}
-
-# --------------------------------------------------------------------------
-# Step 4: local.yaml
-# --------------------------------------------------------------------------
-Write-Step "Step 4/5: local config (local.yaml)"
-
-$localYaml = Join-Path $projectDir "local.yaml"
-if (Test-Path $localYaml) {
-    Write-Ok "local.yaml already exists, leaving as-is"
-} else {
-    & $venvPy rsim.py config init --project $Project 2>$null
-    if (-not (Test-Path $localYaml)) {
-        # Fallback: copy the example template directly.
-        $example = Join-Path $projectDir "local.example.yaml"
-        if (Test-Path $example) { Copy-Item $example $localYaml }
-    }
-    if (Test-Path $localYaml) {
-        Write-Ok "local.yaml created from template"
-        Write-Warn "Edit $localYaml environment.* paths for your machine, then re-run to verify."
+    if (-not $checkSucceeded) {
+        Write-Warn "Initial verification failed. Check URL, tokens, and network before starting."
     } else {
-        Write-Warn "Could not create local.yaml; create it manually from local.example.yaml"
-    }
-}
-
-# --------------------------------------------------------------------------
-# Step 5: diagnostics
-# --------------------------------------------------------------------------
-if (-not $SkipCheck) {
-    Write-Step "Step 5/5: diagnostics (rsim doctor + rsim check)"
-
-    Write-Host "`n  --- rsim doctor (system-level) ---" -ForegroundColor DarkGray
-    & $venvPy rsim.py --project $Project doctor
-    $doctorRc = $LASTEXITCODE
-
-    Write-Host "`n  --- rsim check (config-level) ---" -ForegroundColor DarkGray
-    & $venvPy rsim.py --project $Project check
-    $checkRc = $LASTEXITCODE
-
-    Write-Host ""
-    if ($doctorRc -eq 0 -and $checkRc -eq 0) {
-        Write-Ok "All diagnostics passed. rsim is ready."
-    } else {
-        Write-Warn "Some diagnostics reported issues (see above)."
-        Write-Warn "Fix environment paths in local.yaml and re-run: .\scripts\bootstrap.ps1 -Project $Project -SkipDeps"
-        Write-Warn "Full guide: docs/environment-setup.md"
+        if ($UseLocalControl) { Write-Ok "Local serve-v1 command check passed." }
+        else { Write-Ok "$Mode Agent central registration check passed." }
     }
 } else {
-    Write-Step "Step 5/5: diagnostics (skipped)"
+    Write-Warn "Remote connectivity verification skipped."
 }
 
-Write-Host "`nBootstrap complete.`n" -ForegroundColor Cyan
-Write-Host "Next steps:"
-Write-Host "  - Activate venv:  .\.venv\Scripts\Activate.ps1"
-Write-Host "  - Build selena:   rsim --project $Project build selena"
-Write-Host "  - Run sim:        rsim --project $Project run <input.mf4>"
-Write-Host "  - Cluster run:    rsim --project $Project cluster run --dataset <name>"
-Write-Host "  - Web console:    rsim --project $Project web"
+Write-Host "`nInstallation complete." -ForegroundColor Cyan
+Write-Host "Mode: $Mode / control plane: $ControlPlane"
+Write-Host "Start: .\scripts\start_windows.ps1"
+Write-Host "Background: .\scripts\start_windows.ps1 -Background"
+if ($Mode -eq "light") {
+    Write-Host "light has no local simulation. After upload, Linux continues Cluster scheduling without this PC."
+} elseif ($ControlPlane -eq "linux") {
+    Write-Host "full + linux Web: $ServerUrl/ (one entry for local or Cluster simulation)"
+} else {
+    Write-Host "full + local Web: $ServerUrl/ (offline local only; use -ControlPlane linux for Cluster)"
+    Write-Host "Local loopback Web does not require an access token in this sprint."
+}
+if ($Start) {
+    & (Join-Path $PSScriptRoot "start_windows.ps1") -InstallRoot $InstallRoot -Background
+}

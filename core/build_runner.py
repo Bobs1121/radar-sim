@@ -207,6 +207,8 @@ class TaskRegistry:
             task.stdout_lines.append(f"[INFO] Build command: {' '.join(cmd)}")
             task.stdout_lines.append(f"[INFO] Working dir: {cwd}")
             env = _build_env(config)
+            from core.build_lock import WorkspaceBuildLock, build_workspace_from_config
+            build_lock = WorkspaceBuildLock(build_workspace_from_config(config)).acquire()
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, env=env, bufsize=1, cwd=cwd,
@@ -216,6 +218,18 @@ class TaskRegistry:
             for line in iter(proc.stdout.readline, ""):
                 if line:
                     task.stdout_lines.append(line.rstrip())
+                    # Parse build progress tokens ([n/N] Compiling x.cpp) so the
+                    # Web UI gets a real progress bar (PRD §1.7.4). Only the most
+                    # recent token wins; legacy sim-style file counts set via
+                    # start_sim are left untouched when no build token is present.
+                    from core.progress_parser import parse_build_progress
+                    parsed = parse_build_progress(line.rstrip())
+                    if parsed:
+                        done, total, label = parsed
+                        task.files_done = done
+                        task.files_total = total
+                        if label:
+                            task.current_file = label
                     # Persist every 20 lines for live progress without DB thrash.
                     if len(task.stdout_lines) - last_persist >= 20:
                         self._persist(task, new_lines=task.stdout_lines[last_persist:])
@@ -228,6 +242,9 @@ class TaskRegistry:
                 task.stdout_lines.append(f"[OK] Build success. selena.exe: {task.exe_path}")
                 task.status = "success"
             else:
+                from core.build_diagnostics import extract_actionable_build_errors
+
+                task.errors.extend(extract_actionable_build_errors(task.stdout_lines))
                 task.errors.append(f"build exit code {retcode}")
                 task.status = "failed"
             self._persist(task, new_lines=task.stdout_lines[last_persist:])
@@ -235,6 +252,8 @@ class TaskRegistry:
             task.errors.append(str(exc))
             task.status = "failed"
         finally:
+            if "build_lock" in locals():
+                build_lock.release()
             task.finished_at = time.time()
             self._persist(task, new_lines=task.stdout_lines[last_persist:])
     # Sim execution

@@ -1,5 +1,8 @@
 """Focused tests for control-plane agent command mapping."""
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from cli.agent import _build_task_command, _run_task
@@ -153,3 +156,94 @@ def test_run_task_reports_popen_failure(monkeypatch):
     assert any("cannot start process" in line for line in client.logs)
     assert client.results[-1]["status"] == "failed"
     assert client.results[-1]["returncode"] == -1
+
+
+class _V5Client:
+    def __init__(self):
+        self.logs = []
+        self.results = []
+
+    def append_logs(self, _task_id, lines):
+        self.logs.extend(lines)
+
+    def heartbeat(self, *_args, **_kwargs):
+        return {"cancel_requested": False}
+
+    def submit_result(self, _task_id, **kwargs):
+        self.results.append(kwargs)
+
+
+def test_run_v5_build_stage_uses_adapter_and_returns_redacted_evidence(monkeypatch, tmp_path):
+    prepared = SimpleNamespace(
+        command=(sys.executable, "-c", "print('build ok')"),
+        cwd=tmp_path,
+    )
+    calls = []
+    monkeypatch.setattr("cli.agent._prepare_v5_selena_build", lambda payload: calls.append(("prepare", payload)) or prepared)
+    monkeypatch.setattr("cli.agent._verify_v5_selena_build", lambda value: calls.append(("verify", value)))
+    evidence = {
+        "project": "demo",
+        "workspace_binding_id": "workspace:sha256:" + "a" * 24,
+        "artifact": {"logical_path": "selena.exe", "checksum": "sha256:" + "b" * 64, "size": 6},
+    }
+    monkeypatch.setattr(
+        "cli.agent._finish_v5_selena_build",
+        lambda value, **_kwargs: calls.append(("finish", value)) or evidence,
+    )
+    monkeypatch.setattr(
+        "cli.agent._create_v5_artifact_lease",
+        lambda prepared, result, **kwargs: {
+            "lease_id": "artifact-lease:sha256:" + "c" * 64,
+            "build_evidence_ref": f"{kwargs['build_stage_id']}:{kwargs['build_attempt']}",
+        },
+    )
+    client = _V5Client()
+    task = {
+        "task_id": "stage-build",
+        "task_type": "build_selena",
+        "stage_type": "build_selena",
+        "attempt_count": 1,
+        "payload": {
+            "project": "demo",
+            "workspace_binding_id": "workspace:sha256:" + "a" * 24,
+            "build_mode": "Release",
+        },
+    }
+    assert _run_task(
+        client,
+        "light-a",
+        task,
+        heartbeat_interval=1,
+        node_kind="windows_agent",
+    ) == 0
+    assert [item[0] for item in calls] == ["prepare", "verify", "finish"]
+    assert client.results[-1]["status"] == "succeeded"
+    assert client.results[-1]["result"] == evidence
+    assert evidence["artifact_lease_ref"].startswith("artifact-lease:sha256:")
+    assert "command" not in client.results[-1]["result"]
+    assert str(tmp_path) not in str(client.results[-1]["result"])
+
+
+def test_run_v5_build_setup_failure_does_not_spawn_or_return_local_cwd(monkeypatch):
+    from core.agent_build_stage import AgentBuildStageError
+
+    monkeypatch.setattr(
+        "cli.agent._prepare_v5_selena_build",
+        lambda _payload: (_ for _ in ()).throw(AgentBuildStageError("binding not found")),
+    )
+    monkeypatch.setattr(
+        "cli.agent.subprocess.Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")),
+    )
+    client = _V5Client()
+    task = {"task_id": "stage-build", "task_type": "build_selena", "payload": {}}
+    assert _run_task(
+        client,
+        "light-a",
+        task,
+        heartbeat_interval=1,
+        node_kind="windows_agent",
+    ) == 1
+    result = client.results[-1]["result"]
+    assert result == {"error": "binding not found"}
+    assert "cwd" not in result

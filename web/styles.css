@@ -588,3 +588,11 @@ h1 {
   .env-row { grid-template-columns: 36px 1fr; }
   .env-row .env-detail { grid-column: 2; }
 }
+
+/* ── Config Form ───────────────────────────────────────── */
+.config-toolbar{display:flex;gap:8px;margin-bottom:var(--sp-3);flex-wrap:wrap}
+.cfg-form h2{font-size:.95rem;margin:var(--sp-4) 0 var(--sp-2);padding-bottom:var(--sp-1);border-bottom:1px solid var(--line);color:var(--accent)}
+.cfg-form h2:first-child{margin-top:0}
+.config-actions{display:flex;align-items:center;gap:var(--sp-3);margin:var(--sp-4) 0}
+.primary-btn{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;padding:0 24px;min-height:40px;font-size:.95rem}
+.primary-btn:hover{background:color-mix(in srgb,var(--accent) 85%,#fff);border-color:var(--accent)}

@@ -150,6 +150,18 @@ def test_api_repair_run_env_script_no_script(web_server):
     assert "env_build_script" in data["guidance"] or "cmake_build.bat" in data["guidance"]
 
 
+def test_api_repair_switch_branch_refuses_git(web_server, monkeypatch):
+    def fail_prepare(*args, **kwargs):
+        raise AssertionError("prepare_repo_context must not be called")
+
+    monkeypatch.setattr("core.repo.prepare_repo_context", fail_prepare)
+    data = _post(f"{web_server}/api/repair", {"project": "test", "repair_action": "switch_branch"})
+    assert data["ok"] is False
+    assert data["repair_action"] == "switch_branch"
+    assert "disabled" in data["guidance"]
+    assert "worktree" in data["guidance"]
+
+
 def test_api_repair_bootstrap_itc2_returns_task(web_server):
     data = _post(f"{web_server}/api/repair", {"project": "test", "repair_action": "bootstrap_itc2"})
     assert data["ok"] is True
@@ -388,4 +400,3 @@ def test_api_build_cancel_routes_to_control(web_server, tmp_path, monkeypatch):
     assert data["ok"] is True
     assert svc.get_job(job["job_id"])["cancel_requested"] is True
     web_control.set_service(None)
-

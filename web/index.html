@@ -18,16 +18,15 @@
           </div>
         </div>
         <button class="nav-button active" data-view="sim">仿真</button>
-        <button class="nav-button" data-view="cluster">Cluster 仿真</button>
         <button class="nav-button" data-view="check">环境校验</button>
-        <button class="nav-button" data-view="config">配置</button>
+        <button class="nav-button" data-view="wizard">📋 项目配置</button>
       </aside>
 
       <main class="main">
         <header class="topbar">
           <div>
             <h1 id="viewTitle">仿真</h1>
-            <p id="viewSub">选 Selena 来源 + 数据 + 执行方式，一键仿真</p>
+            <p id="viewSub">配置驱动仿真，修改数据路径即可运行</p>
           </div>
           <div class="topbar-right">
             <span id="activeConfigLabel" class="hint"></span>
@@ -35,46 +34,27 @@
           </div>
         </header>
 
-        <!-- 仿真 tab: 分步表单 -->
+        <!-- 仿真 tab: 配置驱动，只改数据 -->
         <section class="view active" id="view-sim">
           <section class="panel">
-            <h2>① Selena 来源</h2>
-            <div class="radio-row">
-              <label class="checkline"><input type="radio" name="selenaSource" value="build" checked /> 本地编译（自动切分支 + 跑编译脚本）</label>
-              <label class="checkline"><input type="radio" name="selenaSource" value="path" /> 已有 Selena（填写 selena.exe 路径）</label>
-            </div>
-
-            <div id="sourceBuild" class="source-block">
-              <label>本地代码路径 <input id="codePath" placeholder="D:\bydod25fr\byd" /></label>
-              <label>Selena 编译脚本 <input id="selenaBuildScript" placeholder="...\jenkins_selena_build.bat" /></label>
-              <label>Selena 分支 <input id="selenaBranch" placeholder="develop_evo（留空则不切换）" /></label>
-              <label>软件包编译脚本（环境修复用）<input id="envBuildScript" placeholder="...\cmake_build.bat" /></label>
-              <button id="buildBtn">编译 Selena</button>
-              <span id="buildStatus" class="hint"></span>
-            </div>
-
-            <div id="sourcePath" class="source-block" style="display:none">
-              <label>selena.exe 路径 <input id="selenaExe" placeholder="\\share\...\selena.exe 或 C:\...\selena.exe" /></label>
-            </div>
+            <h2>当前配置</h2>
+            <div id="simConfigSummary" class="cfg-summary hint"></div>
           </section>
 
           <section class="panel">
-            <h2>② 数据</h2>
-            <label>数据路径 <input id="dataPath" placeholder="单 MF4 文件 / 数据目录 / UNC 共享路径" /></label>
+            <h2>数据</h2>
+            <label>数据路径 <input id="dataPath" placeholder="MF4 文件 / 数据目录 / UNC 路径" /></label>
             <div id="dataHint" class="hint"></div>
           </section>
 
           <section class="panel">
-            <h2>③ 执行方式</h2>
-            <div class="radio-row">
-              <label class="checkline"><input type="radio" name="backend" value="local" checked /> 本地仿真</label>
-              <label class="checkline"><input type="radio" name="backend" value="cluster" /> 服务器仿真（Cluster）</label>
-            </div>
-            <label class="checkline" id="dryRunLine"><input id="dryRun" type="checkbox" checked /> 先 dry-run（只准备不真跑）</label>
+            <h2>操作</h2>
             <div class="toolbar">
-              <button id="simBtn">开始仿真</button>
-              <button id="simStatusBtn" style="display:none">刷新状态</button>
+              <button id="buildBtn">🔨 编译 Selena</button>
+              <button id="simBtn">▶️ 开始仿真</button>
+              <label class="checkline"><input id="dryRun" type="checkbox" /> dry-run</label>
             </div>
+            <span id="buildStatus" class="hint"></span>
           </section>
 
           <section class="panel">
@@ -84,61 +64,11 @@
           </section>
         </section>
 
-        <!-- Cluster 仿真 tab: 无 Windows 也能用，提交到集群 -->
-        <section class="view" id="view-cluster">
-          <div id="clusterModeBanner" class="hint" style="margin-bottom:8px"></div>
-          <section class="panel">
-            <h2>① Profile</h2>
-            <label>Cluster Profile（Selena 来源由 profile 决定，无需手选）
-              <select id="clusterProfileSelect"><option value="">加载中...</option></select>
-            </label>
-            <div id="clusterProfileDetail" class="hint"></div>
-          </section>
-
-          <section class="panel">
-            <h2>② 数据</h2>
-            <div class="radio-row">
-              <label class="checkline"><input type="radio" name="clusterDataSource" value="dataset" checked /> 选择数据集</label>
-              <label class="checkline"><input type="radio" name="clusterDataSource" value="path" /> 指定 MF4 路径</label>
-            </div>
-            <div id="clusterDataDataset" class="source-block">
-              <label>数据集
-                <select id="clusterDatasetSelect"><option value="">加载中...</option></select>
-              </label>
-            </div>
-            <div id="clusterDataPath" class="source-block" style="display:none">
-              <label>输入 MF4 / 目录 (UNC 或本地路径) <input id="clusterInputMf4" placeholder="\\share\...\case.MF4" /></label>
-            </div>
-          </section>
-
-          <section class="panel">
-            <h2>③ 执行</h2>
-            <div class="toolbar">
-              <button id="clusterRunBtn">提交 Cluster 仿真</button>
-              <label class="checkline"><input type="checkbox" id="clusterDryRun" /> 仅准备 (dry-run，不实际提交)</label>
-              <span id="clusterStatus" class="hint"></span>
-            </div>
-          </section>
-
-          <section class="panel">
-            <h2>状态 / 日志</h2>
-            <div id="clusterSummary" class="hint"></div>
-            <pre id="clusterLog" class="log"></pre>
-          </section>
-        </section>
-
         <!-- 环境校验 tab -->
         <section class="view" id="view-check">
           <div class="toolbar">
             <button id="envCheckBtn">运行环境校验</button>
             <button id="autoRepairBtn" class="repair-all-btn">一键修复全部</button>
-            <label class="project-picker">
-              <span>Backend</span>
-              <select id="envCheckBackend">
-                <option value="local">local</option>
-                <option value="cluster">cluster</option>
-              </select>
-            </label>
           </div>
           <section class="panel">
             <h2>校验结果 <span id="envCheckSummary" class="hint"></span></h2>
@@ -146,32 +76,47 @@
           </section>
         </section>
 
-        <!-- 配置 tab -->
-        <section class="view" id="view-config">
-          <div class="toolbar">
-            <button id="saveConfigBtn">保存配置到 local.yaml</button>
-            <span id="saveStatus" class="hint"></span>
+        <!-- 项目配置 -->
+        <section class="view" id="view-wizard">
+          <div class="config-toolbar">
+            <button id="cfgImportBtn">📂 导入配置</button>
+            <button id="cfgExportBtn">💾 导出配置</button>
+            <input type="file" id="cfgFileInput" accept=".yaml,.yml" style="display:none" />
           </div>
-          <section class="panel">
-            <h2>用户配置</h2>
-            <div class="radio-row">
-              <label class="checkline"><input type="radio" name="cfgSource" value="build" checked /> 本地编译</label>
-              <label class="checkline"><input type="radio" name="cfgSource" value="path" /> 已有 Selena</label>
+          <section class="panel cfg-form">
+            <h2>基本信息</h2>
+            <label>项目名称 <input id="cfgProjectName" placeholder="例: bydod25" /></label>
+
+            <h2>代码与编译</h2>
+            <div class="radio-row" style="margin-top:8px">
+              <label class="checkline"><input type="radio" name="cfgCompileWhere" value="build" checked /> 本地编译</label>
+              <label class="checkline"><input type="radio" name="cfgCompileWhere" value="existing" /> 已有 Selena 文件夹</label>
             </div>
-            <label>本地代码路径 <input id="cfgCodePath" /></label>
-            <label>Selena 编译脚本 <input id="cfgSelenaBuildScript" /></label>
-            <label>Selena 分支 <input id="cfgSelenaBranch" /></label>
-            <label>软件包编译脚本（环境修复用）<input id="cfgEnvBuildScript" /></label>
-            <label>runtime 路径 <input id="cfgRuntimePath" /></label>
-            <label>adapter 路径 <input id="cfgAdapterPath" /></label>
-            <label>数据路径 <input id="cfgDataPath" /></label>
-            <label id="cfgExeLabel" style="display:none">selena.exe 路径 <input id="cfgSelenaExe" /></label>
-            <div class="hint">执行方式（本地/集群）在"仿真"tab 选择，这里只配置 Selena 来源与路径。</div>
+            <div id="cfgBuildBlock">
+              <label>代码仓路径 <input id="cfgCodePath" placeholder="D:/bydod25fr/byd" /></label>
+              <label>Selena 分支 <input id="cfgBranch" placeholder="develop_evo（留空不切换）" /></label>
+              <label>Selena 编译脚本 <input id="cfgBuildScript" placeholder=".../jenkins_selena_build.bat" /></label>
+              <label>软件包编译脚本 <input id="cfgEnvScript" placeholder=".../cmake_build.bat（可选）" /></label>
+              <label>Runtime XML <input id="cfgRuntimeXml" placeholder="Runtime_xxx.xml 路径（与编译产物绑定）" /></label>
+            </div>
+            <div id="cfgExistingBlock" style="display:none;margin-top:8px">
+              <label>已有 Selena 文件夹路径 <input id="cfgExistingPath" placeholder="D:/existing/Selena" /></label>
+              <label>Runtime XML <input id="cfgExistingRuntimeXml" placeholder="Runtime.xml 路径" /></label>
+            </div>
+
+            <h2>仿真设置</h2>
+            <div class="radio-row">
+              <label class="checkline"><input type="radio" name="cfgSimWhere" value="local" checked /> 本地仿真</label>
+              <label class="checkline"><input type="radio" name="cfgSimWhere" value="cluster" /> Cluster 仿真</label>
+            </div>
+            <label>数据路径 <input id="cfgDataPath" placeholder="MF4 文件 / 数据目录 / UNC 路径" /></label>
+            <label>Adapter 文件 <input id="cfgAdapterFile" placeholder="adapter.txt 路径（可选）" /></label>
+            <label>Matfilefilter <input id="cfgMatfilefilter" placeholder=".filter 路径（必填）" /></label>
           </section>
-          <section class="panel">
-            <h2>有效配置（只读）</h2>
-            <pre id="configOutput" class="log"></pre>
-          </section>
+          <div class="config-actions">
+            <button id="cfgSaveBtn" class="primary-btn">💾 保存配置</button>
+            <span id="cfgSaveStatus" class="hint"></span>
+          </div>
         </section>
       </main>
     </div>

@@ -1,10 +1,9 @@
 const state = { project: "", buildTaskId: null, simTaskId: null, pollTimer: null };
 
 const titles = {
-  sim: ["仿真", "选 Selena 来源 + 数据 + 执行方式，一键仿真"],
-  cluster: ["Cluster 仿真", "提交到 SZHRADAR 集群执行（无需本机工具链）"],
-  check: ["环境校验", "多分支/多仓/多数据统一校验 + 修复"],
-  config: ["配置", "用户私有配置（存 local.yaml，切项目自动带出）"],
+  sim: ["仿真", "配置驱动仿真，修改数据路径即可运行"],
+  check: ["环境校验", "自动检测环境问题并修复"],
+  wizard: ["项目配置", "导入/编辑/导出一站式配置文件"],
 };
 
 function qs(id) { return document.getElementById(id); }
@@ -27,8 +26,7 @@ function selectedSource() {
   return el ? el.value : "build";
 }
 function selectedBackend() {
-  const el = document.querySelector('input[name="backend"]:checked');
-  return el ? el.value : "local";
+  return state.currentBackend || "local";
 }
 
 // ---------- Project / config loading ----------
@@ -60,54 +58,54 @@ async function loadAllTabs(path) {
   state.localYamlPath = path;
   LS.set("currentConfigPath", path);
   applyUserConfig(data.user_config);
-  setLog("configOutput", data.effective_config);
+  if (qs("configOutput")) setLog("configOutput", data.effective_config);
   // Cluster tab depends on project config too.
   loadClusterProfiles();
 }
 
 function applyUserConfig(uc) {
-  // Sim tab
-  const source = uc.source || "build";
-  document.querySelector(`input[name="selenaSource"][value="${source}"]`).checked = true;
-  toggleSourceBlocks(source);
-  qs("codePath").value = uc.code_path || "";
-  qs("selenaBuildScript").value = uc.selena_build_script || "";
-  qs("selenaBranch").value = uc.selena_branch || "";
-  qs("envBuildScript").value = uc.env_build_script || "";
-  qs("selenaExe").value = uc.selena_exe || "";
+  // Sim tab: only populate data path + config summary (everything else is read from config)
   qs("dataPath").value = uc.data_path || "";
-  document.querySelector(`input[name="backend"][value="${uc.backend || 'local'}"]`).checked = true;
+  state.currentSource = uc.source || "build";
+  state.currentBackend = uc.backend || "local";
+  state.currentCodePath = uc.code_path || "";
+  state.currentBuildScript = uc.selena_build_script || "";
+  state.currentBranch = uc.selena_branch || "";
+  state.currentExistingPath = uc.existing_path || "";
+  state.currentRuntimeXml = uc.runtime_xml || "";
   updateDataHint();
-  // Config tab
-  document.querySelector(`input[name="cfgSource"][value="${source}"]`).checked = true;
-  toggleCfgExe(source);
-  qs("cfgCodePath").value = uc.code_path || "";
-  qs("cfgSelenaBuildScript").value = uc.selena_build_script || "";
-  qs("cfgSelenaBranch").value = uc.selena_branch || "";
-  qs("cfgEnvBuildScript").value = uc.env_build_script || "";
-  qs("cfgRuntimePath").value = uc.runtime_path || "";
-  qs("cfgAdapterPath").value = uc.adapter_path || "";
-  qs("cfgDataPath").value = uc.data_path || "";
-  qs("cfgSelenaExe").value = uc.selena_exe || "";
-  // backend is NOT set here — it lives only in the sim tab (selectedBackend).
-  // The sim-tab radio was already set above from uc.backend.
+  updateSimConfigSummary();
+}
+
+function updateSimConfigSummary() {
+  const el = qs("simConfigSummary");
+  if (!el) return;
+  const src = state.currentSource || "build";
+  const be = state.currentBackend || "local";
+  const lines = [];
+  lines.push(`编译方式: ${src === "build" ? "本地编译" : "已有 Selena 文件夹"} | 仿真后端: ${be === "cluster" ? "Cluster" : "本地"}`);
+  if (src === "build") {
+    if (state.currentCodePath) lines.push(`代码仓: ${state.currentCodePath}`);
+    if (state.currentBranch) lines.push(`分支: ${state.currentBranch}`);
+    if (state.currentBuildScript) lines.push(`编译脚本: ${state.currentBuildScript}`);
+  } else {
+    if (state.currentExistingPath) lines.push(`已有文件夹: ${state.currentExistingPath}`);
+  }
+  if (state.currentRuntimeXml) lines.push(`Runtime XML: ${state.currentRuntimeXml}`);
+  el.textContent = lines.join("\n");
+  // Show/hide build button based on source.
+  const buildBtn = qs("buildBtn");
+  if (buildBtn) buildBtn.style.display = src === "build" ? "" : "none";
 }
 
 async function loadEffectiveConfig(project) {
   const data = await api(`/api/config?project=${encodeURIComponent(project)}`);
-  setLog("configOutput", data);
+  if (qs("configOutput")) setLog("configOutput", data);
 }
 
-function toggleSourceBlocks(source) {
-  qs("sourceBuild").style.display = source === "build" ? "" : "none";
-  qs("sourcePath").style.display = source === "path" ? "" : "none";
-}
-function toggleCfgExe(source) {
-  qs("cfgExeLabel").style.display = source === "path" ? "" : "none";
-}
 function updateDataHint() {
-  const p = qs("dataPath").value.trim();
-  const backend = selectedBackend();
+  const p = qs("dataPath")?.value?.trim() || "";
+  const backend = state.currentBackend || "local";
   let hint = "";
   if (!p) hint = "";
   else if (p.startsWith("\\\\")) {
@@ -124,24 +122,11 @@ function updateDataHint() {
 // ---------- Save config ----------
 
 async function saveConfig() {
-  const payload = {
-    project: activeProject(),
-    source: document.querySelector('input[name="cfgSource"]:checked').value,
-    code_path: qs("cfgCodePath").value.trim(),
-    selena_build_script: qs("cfgSelenaBuildScript").value.trim(),
-    selena_branch: qs("cfgSelenaBranch").value.trim(),
-    env_build_script: qs("cfgEnvBuildScript").value.trim(),
-    runtime_path: qs("cfgRuntimePath").value.trim(),
-    adapter_path: qs("cfgAdapterPath").value.trim(),
-    data_path: qs("cfgDataPath").value.trim(),
-    selena_exe: qs("cfgSelenaExe").value.trim(),
-    // backend comes from the sim-tab radio (single source of truth).
-    backend: selectedBackend(),
-  };
-  qs("saveStatus").textContent = "保存中...";
-  const data = await api("/api/user-config", { method: "POST", body: JSON.stringify(payload) });
-  qs("saveStatus").textContent = `已保存到 ${data.local_yaml_path}`;
-  await loadAllTabs(activeProject());
+  // Config tab removed — persist from sim-tab values instead.
+  await persistSimTabConfig();
+  const saveStatus = qs("saveStatus");
+  if (saveStatus) saveStatus.textContent = `已保存到 ${state.localYamlPath || "local.yaml"}`;
+  await loadAllTabs(state.localYamlPath || activeProject());
 }
 
 async function newProject() {
@@ -149,11 +134,10 @@ async function newProject() {
   if (!name) return;
   const data = await api("/api/config/new", { method: "POST", body: JSON.stringify({ project: name }) });
   if (data.ok) {
+    // Reload active config state and refresh all tabs with the new project.
     await loadConfigFiles();
-    // Select the new project's (empty) local.yaml.
-    const sel = qs("configFileSelect");
-    for (const opt of sel.options) {
-      if (opt.textContent === name) { sel.value = opt.value; loadAllTabs(opt.value); break; }
+    if (state.localYamlPath) {
+      await loadAllTabs(state.localYamlPath);
     }
   }
 }
@@ -177,14 +161,10 @@ async function importConfig(ev) {
     project: state.project, yaml_content: text, mode: "replace",
   })});
   if (data.ok) {
-    // Reload the config-file dropdown so imported files appear, then re-select
-    // the current project's local.yaml and refresh the form.
+    // Reload active config state and refresh all tabs with the imported config.
     await loadConfigFiles();
-    const sel = qs("configFileSelect");
-    const target = state.localYamlPath || (sel.options.length ? sel.options[0].value : "");
-    if (target) {
-      sel.value = target;
-      await loadAllTabs(target);
+    if (state.localYamlPath) {
+      await loadAllTabs(state.localYamlPath);
     }
     alert("配置已导入");
   }
@@ -229,64 +209,60 @@ async function pollBuild() {
 // ---------- Simulation ----------
 
 async function persistSimTabConfig() {
-  // Save current sim-tab form to local.yaml so backend uses it.
-  const source = selectedSource();
+  // Only save data_path (the only user-editable field on the sim tab).
+  // Everything else comes from config and is managed in the config page.
   const payload = {
     project: activeProject(),
-    source,
-    code_path: qs("codePath").value.trim(),
-    selena_build_script: qs("selenaBuildScript").value.trim(),
-    selena_branch: qs("selenaBranch").value.trim(),
-    env_build_script: qs("envBuildScript").value.trim(),
-    runtime_path: "",  // keep existing runtime; sim tab doesn't edit it
-    data_path: qs("dataPath").value.trim(),
-    selena_exe: qs("selenaExe").value.trim(),
+    source: state.currentSource || "build",
+    code_path: state.currentCodePath || "",
+    selena_build_script: state.currentBuildScript || "",
+    selena_branch: state.currentBranch || "",
+    existing_path: state.currentExistingPath || "",
+    runtime_xml: state.currentRuntimeXml || "",
+    data_path: qs("dataPath")?.value?.trim() || "",
     backend: selectedBackend(),
   };
   await api("/api/user-config", { method: "POST", body: JSON.stringify(payload) });
 }
 
 async function startSim() {
+  // Save current data path to config before starting.
   await persistSimTabConfig();
   const backend = selectedBackend();
-  const dataPath = qs("dataPath").value.trim();
-  const dryRun = qs("dryRun").checked;
+  const dataPath = qs("dataPath")?.value?.trim() || "";
+  const dryRun = qs("dryRun")?.checked || false;
   if (!dataPath) { qs("simSummary").textContent = "请填写数据路径"; return; }
 
-  // UI 限制：本地仿真 + 服务器(UNC)数据 → 提示将下载到本地
-  const isUNC = dataPath.startsWith("\\\\");
-  if (backend === "local" && isUNC && !dryRun) {
-    if (!window.confirm(
-      "本地仿真 + 服务器(UNC)数据：\n\n" +
-      "数据将从服务器下载到本地临时目录，输出也写在本地，避免服务器写入失败。\n" +
-      "大文件（几百MB~GB）下载可能较慢。\n\n" +
-      "确认继续？"
-    )) {
-      qs("simSummary").textContent = "已取消";
-      return;
-    }
-  }
-  if (backend === "local" && isUNC && dryRun) {
-    qs("simSummary").textContent = "提示：dry-run 不下载，真实执行时 UNC 数据会自动下载到本地";
-  }
-
-  qs("simSummary").textContent = `${backend} 仿真启动中...${dryRun ? "（DRY-RUN，不产生输出）" : ""}`;
+  qs("simSummary").textContent = `${backend === "cluster" ? "Cluster" : "本地"} 仿真启动中...${dryRun ? "（DRY-RUN）" : ""}`;
   setLog("simLog", "");
+
   try {
-    const data = await api("/api/sim/start", { method: "POST", body: JSON.stringify({
-      project: activeProject(), backend, data_path: dataPath, dry_run: dryRun,
-    })});
-    if (data.blocked) {
-      qs("simSummary").textContent = "环境校验未通过，请先到'环境校验'tab 修复";
-      setLog("simLog", data.items);
-      switchView("check");
-      renderCheckItems(data.items);
-      return;
+    if (backend === "cluster") {
+      // Cluster path: submit via cluster API.
+      const res = await api("/api/cluster/submit-job", {
+        method: "POST", body: JSON.stringify({
+          project: activeProject(), input_mf4: dataPath, execute: !dryRun,
+        }),
+      });
+      state.clusterJobId = res.job_id;
+      LS.set("lastClusterJobId", res.job_id);
+      clusterSince = 0;
+      pollCluster();
+    } else {
+      // Local path.
+      const data = await api("/api/sim/start", { method: "POST", body: JSON.stringify({
+        project: activeProject(), backend: "local", data_path: dataPath, dry_run: dryRun,
+      })});
+      if (data.blocked) {
+        qs("simSummary").textContent = "环境校验未通过，请到「环境校验」修复";
+        setLog("simLog", JSON.stringify(data.items, null, 2));
+        return;
+      }
+      state.simTaskId = data.task_id;
+      LS.set("lastTaskId", data.task_id); LS.set("lastTaskKind", "sim");
+      simSince = 0;
+      pollSim();
     }
-    state.simTaskId = data.task_id;
-    LS.set("lastTaskId", data.task_id); LS.set("lastTaskKind", "sim");
-    simSince = 0;
-    pollSim();
   } catch (e) {
     qs("simSummary").textContent = "启动失败: " + e.message;
   }
@@ -352,9 +328,9 @@ async function loadServerInfo() {
   if (!localAvailable) {
     const clusterRadio = document.querySelector('input[name="backend"][value="cluster"]');
     if (clusterRadio) clusterRadio.checked = true;
-    const buildRadio = document.querySelector('input[name="selenaSource"][value="path"]');
-    if (buildRadio) buildRadio.checked = true;
-    if (typeof toggleSourceBlocks === "function") toggleSourceBlocks("path");
+    const existingRadio = document.querySelector('input[name="selenaSource"][value="existing"]');
+    if (existingRadio) existingRadio.checked = true;
+    if (typeof toggleSourceBlocks === "function") toggleSourceBlocks("existing");
   }
 }
 
@@ -442,10 +418,7 @@ async function pollCluster() {
 }
 
 async function runEnvCheck() {
-  const backend = qs("envCheckBackend").value;
-  // Pass the currently-selected cluster profile so the check inspects the
-  // actual selena.exe/runtime_xml the user will submit with.
-  const profile = qs("clusterProfileSelect") ? qs("clusterProfileSelect").value : "";
+  const backend = selectedBackend();
   qs("envCheckSummary").textContent = "校验中...";
   qs("envCheckList").innerHTML = "";
   const url = `/api/check?project=${encodeURIComponent(activeProject())}&backend=${backend}` + (profile ? `&profile=${encodeURIComponent(profile)}` : "");
@@ -505,31 +478,29 @@ async function runRepair(action) {
 function switchView(name) {
   document.querySelectorAll(".nav-button").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === `view-${name}`));
-  qs("viewTitle").textContent = titles[name][0];
-  qs("viewSub").textContent = titles[name][1];
+  qs("viewTitle").textContent = titles[name]?.[0] || name;
+  qs("viewSub").textContent = titles[name]?.[1] || "";
+  if (name === "wizard") {
+    loadConfigEditor();
+  }
 }
 
 // ---------- Bindings ----------
 
 function bindEvents() {
   document.querySelectorAll(".nav-button").forEach((btn) => btn.addEventListener("click", () => switchView(btn.dataset.view)));
-  // Source radio toggles (sim tab)
-  document.querySelectorAll('input[name="selenaSource"]').forEach((r) => r.addEventListener("change", () => toggleSourceBlocks(selectedSource())));
-  document.querySelectorAll('input[name="cfgSource"]').forEach((r) => r.addEventListener("change", () => toggleCfgExe(r.value)));
-  qs("dataPath").addEventListener("input", updateDataHint);
-  document.querySelectorAll('input[name="backend"]').forEach((r) => r.addEventListener("change", updateDataHint));
-  qs("buildBtn").addEventListener("click", startBuild);
-  qs("simBtn").addEventListener("click", startSim);
-  qs("envCheckBtn").addEventListener("click", runEnvCheck);
-  qs("autoRepairBtn").addEventListener("click", () => runRepair("auto_repair_all"));
-  qs("saveConfigBtn").addEventListener("click", saveConfig);
-  // Cluster tab bindings
-  document.querySelectorAll('input[name="clusterDataSource"]').forEach((r) => r.addEventListener("change", () => {
-    qs("clusterDataDataset").style.display = selectedClusterDataSource() === "dataset" ? "" : "none";
-    qs("clusterDataPath").style.display = selectedClusterDataSource() === "path" ? "" : "none";
-  }));
-  qs("clusterProfileSelect").addEventListener("change", updateClusterProfileDetail);
-  qs("clusterRunBtn").addEventListener("click", startClusterRun);
+  qs("dataPath")?.addEventListener("input", updateDataHint);
+  qs("buildBtn")?.addEventListener("click", startBuild);
+  qs("simBtn")?.addEventListener("click", startSim);
+  qs("envCheckBtn")?.addEventListener("click", runEnvCheck);
+  qs("autoRepairBtn")?.addEventListener("click", () => runRepair("auto_repair_all"));
+  // Config form bindings
+  qs("cfgSaveBtn")?.addEventListener("click", saveConfigEditor);
+  qs("cfgExportBtn")?.addEventListener("click", exportFullConfig);
+  qs("cfgImportBtn")?.addEventListener("click", () => qs("cfgFileInput")?.click());
+  qs("cfgFileInput")?.addEventListener("change", importFullConfig);
+  document.querySelectorAll('input[name="cfgCompileWhere"]').forEach(r =>
+    r.addEventListener("change", () => _toggleCfgBlocks(r.value)));
 }
 
 // ---------- localStorage persistence (refresh recovery) ----------
@@ -538,6 +509,112 @@ const LS = {
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
+
+// ---------- Config Form (clean user-facing fields only) ----------
+
+function _cfgVal(id) { return qs(id)?.value?.trim() || ""; }
+function _cfgSet(id, v) { const el = qs(id); if (el) el.value = v || ""; }
+
+async function loadConfigEditor() {
+  // Load current config into form fields.
+  try {
+    const uc = await api(`/api/user-config?project=${encodeURIComponent(activeProject())}`);
+    _cfgSet("cfgProjectName", activeProject());
+    _cfgSet("cfgCodePath", uc.code_path);
+    _cfgSet("cfgBranch", uc.selena_branch);
+    _cfgSet("cfgBuildScript", uc.selena_build_script);
+    _cfgSet("cfgEnvScript", uc.env_build_script);
+    _cfgSet("cfgRuntimeXml", uc.runtime_xml);
+    _cfgSet("cfgExistingPath", uc.existing_path);
+    _cfgSet("cfgExistingRuntimeXml", uc.existing_runtime_xml);
+    _cfgSet("cfgDataPath", uc.data_path);
+    _cfgSet("cfgAdapterFile", uc.adapter_path);
+    _cfgSet("cfgMatfilefilter", uc.matfilefilter);
+    // Source radio.
+    const src = uc.source || "build";
+    const srcRadio = document.querySelector(`input[name="cfgCompileWhere"][value="${src === "existing" ? "existing" : "build"}"]`);
+    if (srcRadio) srcRadio.checked = true;
+    _toggleCfgBlocks(src === "existing" ? "existing" : "build");
+    // Backend radio.
+    const be = uc.backend || "local";
+    const beRadio = document.querySelector(`input[name="cfgSimWhere"][value="${be}"]`);
+    if (beRadio) beRadio.checked = true;
+  } catch {
+    // No config yet — form stays empty.
+    _cfgSet("cfgProjectName", activeProject());
+  }
+}
+
+function _toggleCfgBlocks(val) {
+  const buildBlock = qs("cfgBuildBlock");
+  const existingBlock = qs("cfgExistingBlock");
+  if (buildBlock) buildBlock.style.display = val === "existing" ? "none" : "";
+  if (existingBlock) existingBlock.style.display = val === "existing" ? "" : "none";
+}
+
+function _collectCfgForm() {
+  const compileWhere = document.querySelector('input[name="cfgCompileWhere"]:checked')?.value || "build";
+  const simWhere = document.querySelector('input[name="cfgSimWhere"]:checked')?.value || "local";
+  const isExisting = compileWhere === "existing";
+  return {
+    project: _cfgVal("cfgProjectName") || activeProject(),
+    source: isExisting ? "existing" : "build",
+    code_path: isExisting ? "" : _cfgVal("cfgCodePath"),
+    selena_branch: isExisting ? "" : _cfgVal("cfgBranch"),
+    selena_build_script: isExisting ? "" : _cfgVal("cfgBuildScript"),
+    env_build_script: isExisting ? "" : _cfgVal("cfgEnvScript"),
+    existing_path: isExisting ? _cfgVal("cfgExistingPath") : "",
+    runtime_xml: isExisting ? _cfgVal("cfgExistingRuntimeXml") : _cfgVal("cfgRuntimeXml"),
+    data_path: _cfgVal("cfgDataPath"),
+    adapter_path: _cfgVal("cfgAdapterFile"),
+    matfilefilter: _cfgVal("cfgMatfilefilter"),
+    backend: simWhere,
+  };
+}
+
+async function saveConfigEditor() {
+  const status = qs("cfgSaveStatus");
+  const payload = _collectCfgForm();
+  if (!payload.project) { status.textContent = "❌ 请填写项目名称"; return; }
+  status.textContent = "保存中...";
+  try {
+    const res = await api("/api/user-config", { method: "POST", body: JSON.stringify(payload) });
+    status.textContent = `✅ 已保存`;
+    state.project = payload.project;
+    await loadConfigFiles();
+    if (state.localYamlPath) await loadAllTabs(state.localYamlPath);
+  } catch (e) { status.textContent = `❌ ${e.message}`; }
+}
+
+async function exportFullConfig() {
+  try {
+    const data = await api(`/api/config/export-full?project=${encodeURIComponent(activeProject())}`);
+    const blob = new Blob([data.yaml_content || ""], { type: "text/yaml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${activeProject() || "project"}.yaml`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert("导出失败: " + e.message); }
+}
+
+function importFullConfig(ev) {
+  const file = ev.target.files[0];
+  if (!file) return;
+  file.text().then(async (text) => {
+    try {
+      const res = await api("/api/config/import-full", {
+        method: "POST", body: JSON.stringify({ yaml_content: text }),
+      });
+      qs("cfgSaveStatus").textContent = `✅ 已导入: ${res.project}`;
+      state.project = res.project;
+      await loadConfigFiles();
+      if (state.localYamlPath) await loadAllTabs(state.localYamlPath);
+      await loadConfigEditor(); // Refresh form with imported values.
+    } catch (e) { qs("cfgSaveStatus").textContent = `❌ 导入失败: ${e.message}`; }
+  });
+  ev.target.value = "";
+}
 
 async function init() {
   bindEvents();
