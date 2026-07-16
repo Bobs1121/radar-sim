@@ -1106,6 +1106,22 @@ def _validate_submit_package(config_path: Path, mount_map: dict[str, str] | None
         # A dataset directory is valid as datafile_path; accept dir or file.
         if not Path(local_df).exists():
             errors.append(f"Datafile path not found: {datafile_path}")
+    worker_assets = {
+        "Selena executable": cfg.get("selenaPathExe", ""),
+        "Runtime XML": cfg.get("runTimeConfigFile", ""),
+        "MatFilter": cfg.get("matfilefilter", ""),
+        "Adapter": cfg.get("adapterFile", ""),
+        "paramconfig template": cfg.get("paramconfigTemplate", ""),
+    }
+    for label, value in worker_assets.items():
+        if not value:
+            continue
+        normalized = str(value).replace("/", "\\")
+        if not normalized.startswith("\\\\"):
+            errors.append(f"{label} must use a Cluster-visible UNC path: {value}")
+            continue
+        if not Path(_local(str(value))).exists():
+            errors.append(f"{label} not found: {value}")
     return errors
 
 

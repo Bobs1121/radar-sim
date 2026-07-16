@@ -129,6 +129,42 @@ def test_prepare_cluster_job_copies_runtime_assets_from_effective_simulation(tmp
     assert str(tmp_path / "assets" / "matfilefilter.txt") not in cfg
 
 
+def test_submit_package_rejects_linux_local_worker_assets(tmp_path):
+    from core.cluster import _validate_submit_package
+
+    script = tmp_path / "SIMULATION_RADAR_SIM.py"
+    script.write_text("import sys\nsys.path.append('cluster')\n", encoding="utf-8")
+    data = tmp_path / "data"
+    data.mkdir()
+    cfg = tmp_path / "Config.cfg"
+    cfg.write_text(
+        "\n".join([
+            f'simulation = "{script}";',
+            'simulation_prio = 4;',
+            'python_version = "*";',
+            f'datafile_path = "{data}";',
+            'extension = "*.MF4";',
+            'skip_dir = "";',
+            'skip_filename = "";',
+            'finalstep = 0;',
+            'send_email = 0;',
+            'send_netsend = 0;',
+            'group = "Radar";',
+            'subgroup = "PSS2";',
+            'selenaPathExe = "/home/server/selena.exe";',
+            'runTimeConfigFile = "/home/server/runtime.xml";',
+            'matfilefilter = "/home/server/filter.txt";',
+        ]),
+        encoding="utf-8",
+    )
+
+    errors = _validate_submit_package(cfg)
+
+    assert any("Selena executable must use a Cluster-visible UNC path" in item for item in errors)
+    assert any("Runtime XML must use a Cluster-visible UNC path" in item for item in errors)
+    assert any("MatFilter must use a Cluster-visible UNC path" in item for item in errors)
+
+
 def test_prepare_cluster_job_infers_fr_radar_from_input_name(tmp_path):
     from core.cluster import prepare_cluster_job
 
