@@ -236,6 +236,32 @@ def test_inspect_and_fetch_cluster_job_outputs(tmp_path):
     assert len(result["copied"]) == 3
 
 
+def test_inspect_cluster_job_rejects_worker_success_without_output_and_reads_zip(tmp_path):
+    import zipfile
+    from core.cluster import inspect_cluster_job
+
+    job = tmp_path / "job"
+    out = job / "OUT" / "case.MF4"
+    out.mkdir(parents=True)
+    (out / "result.ini").write_text(
+        "successfull=1\nout_size=0\nerror_message=\n", encoding="utf-8"
+    )
+    with zipfile.ZipFile(out / "logfile.txt.zip", "w") as archive:
+        archive.writestr(
+            "logfile.txt",
+            "Traceback (most recent call last):\n"
+            "ImportError: No module named simulation_runtime\n",
+        )
+
+    status = inspect_cluster_job(str(job))
+
+    assert status["state"] == "finished-failed"
+    assert status["success_count"] == 1
+    assert status["output_mf4"] == []
+    assert any("simulation_runtime" in line for line in status["error_summary"])
+    assert any("no simulation output MF4" in line for line in status["error_summary"])
+
+
 def test_inspect_cluster_job_extracts_error_summary(tmp_path):
     from core.cluster import inspect_cluster_job
 

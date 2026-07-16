@@ -32,7 +32,7 @@ simulation:
       input_dir: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon2\\OverseaData\\Driving\\AU_data\\BYD_SR\\12-5-26_CBNA\\12-5-26_CBNA"
 
 cluster:
-  software_path: "\\\\szhradar01\\cluster_software"
+  software_path: "\\\\szhradar01\\_CLUSTER_SOFTWARE"
   workspace_root: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster"
   project_folder: "radar-sim"
   group: "Radar"

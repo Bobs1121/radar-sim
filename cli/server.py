@@ -381,6 +381,32 @@ def _run_serve_v1(args) -> int:
             required_signals=spec.data.required_signals,
         )
 
+    def cluster_result_roots() -> list[Path]:
+        """Return deployment-authorized Cluster workspaces for result archiving."""
+        from core.config import list_projects, load_config
+
+        roots: list[Path] = []
+        for project in list_projects():
+            try:
+                cluster = dict((load_config(project).get("cluster") or {}))
+                workspace = str(cluster.get("workspace_root") or "").strip()
+                if not workspace:
+                    continue
+                for unc_prefix, mount in dict(cluster.get("linux_mount_map") or {}).items():
+                    if workspace.lower().startswith(str(unc_prefix).lower()):
+                        workspace = str(mount) + workspace[len(str(unc_prefix)):].replace("\\", "/")
+                        break
+                root = Path(workspace).expanduser()
+                if root.is_dir() and root not in roots:
+                    roots.append(root)
+            except Exception:
+                continue
+        return roots
+
+    result_catalog = default_result_catalog(
+        extra_allowed_source_roots=cluster_result_roots()
+    )
+
     api_service = ApiV1Service(
         control_service_factory=factory,
         source_resolution_provider=source_resolution_provider,
@@ -389,7 +415,7 @@ def _run_serve_v1(args) -> int:
         dataset_upload_service_factory=dataset_upload_service_factory,
         runtime_bundle_upload_service_factory=runtime_bundle_upload_service_factory,
         config_asset_store=config_asset_store,
-        result_catalog=default_result_catalog(),
+        result_catalog=result_catalog,
         project_names_provider=lambda: __import__("core.config", fromlist=["list_projects"]).list_projects(),
     )
     app_kwargs = {"api_service": api_service}
@@ -409,6 +435,7 @@ def _run_serve_v1(args) -> int:
             run_store=ClusterRunStore(runtime_bundle_db.parent / "cluster_runs.db"),
             work_root=runtime_bundle_db.parent / "cluster_stage_work",
             config_loader=lambda project: __import__("core.config", fromlist=["load_config"]).load_config(project),
+            result_catalog=result_catalog,
         )
         cluster_stage_executor = ClusterStageExecutor(service, cluster_stage_context)
         cluster_stage_executor.start()

@@ -17,6 +17,7 @@ import subprocess
 import time
 import urllib.request
 import xmlrpc.client
+import zipfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
@@ -41,8 +42,8 @@ ClusterDataFile = DataFile
 
 DEFAULT_WORKSPACE_ROOT = r"\\abtvdfs2.de.bosch.com\ismdfs\loc\szh\Isilon3\Cluster"
 DEFAULT_SOFTWARE_PATHS = [
-    r"\\szhradar01\cluster_software",
     r"\\szhradar01\_cluster_software",
+    r"\\szhradar01\cluster_software",
 ]
 
 RUNTIME_COPY_EXCLUDES = {".pdb", ".ilk", ".exp", ".lib"}
@@ -533,7 +534,10 @@ def inspect_cluster_job(job_dir: str, *, max_files: int = 500) -> dict[str, Any]
             suffix = path.suffix.lower()
             if suffix == ".mf4":
                 output_mf4.append(item)
-            elif suffix in {".log", ".txt"} or path.name.lower() in {"result.ini", "robocopy.txt"}:
+            elif (
+                suffix in {".log", ".txt"}
+                or path.name.lower() in {"result.ini", "robocopy.txt", "logfile.txt.zip"}
+            ):
                 logs.append(item)
             if path.name.lower() == "result.ini":
                 result_files.append(item)
@@ -545,7 +549,20 @@ def inspect_cluster_job(job_dir: str, *, max_files: int = 500) -> dict[str, Any]
     fail_count = sum(1 for item in task_results if item.get("successfull") == "0")
     error_summary = _summarize_cluster_errors(task_results, logs)
     if result_files:
-        state = "finished-success" if success_count and not fail_count else "finished-failed"
+        # Cluster's result.ini can report success even when the worker script
+        # aborted before Selena ran.  A simulation is only useful when at least
+        # one non-empty MF4 was copied back into the controlled job directory.
+        valid_outputs = [item for item in output_mf4 if int(item.get("size") or 0) > 0]
+        state = (
+            "finished-success"
+            if success_count and not fail_count and valid_outputs
+            else "finished-failed"
+        )
+        if success_count and not fail_count and not valid_outputs:
+            _append_unique(
+                error_summary,
+                "Cluster worker reported success but produced no simulation output MF4",
+            )
     elif output_mf4:
         state = "output-present"
     elif files:
@@ -577,13 +594,42 @@ def _summarize_cluster_errors(task_results: list[dict[str, str]], logs: list[dic
             _append_unique(summaries, f"Cluster result: {message}")
     for log in logs:
         name = Path(str(log.get("path") or "")).name.lower()
+        path = Path(str(log.get("path") or ""))
+        if name == "logfile.txt.zip":
+            for line in _zip_error_lines(path):
+                _append_unique(summaries, line)
+                if len(summaries) >= 6:
+                    return summaries
+            continue
         if name not in {"selena.log", "result.ini"} and not name.endswith(".log"):
             continue
-        for line in _tail_error_lines(Path(str(log.get("path") or ""))):
+        for line in _tail_error_lines(path):
             _append_unique(summaries, line)
             if len(summaries) >= 6:
                 return summaries
     return summaries[:6]
+
+
+def _zip_error_lines(path: Path, *, max_chars: int = 65536) -> list[str]:
+    """Read bounded worker diagnostics from Cluster's logfile.txt.zip."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = [name for name in archive.namelist() if not name.endswith("/")]
+            if not names:
+                return []
+            payload = archive.read(names[0])[-max_chars:]
+    except Exception:
+        return []
+    text = payload.decode("utf-8", errors="replace")
+    candidates = []
+    for raw in text.splitlines()[-400:]:
+        line = raw.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(token in lowered for token in ("traceback", "error", "exception", "failed", "return code")):
+            candidates.append(line)
+    return candidates[-5:]
 
 
 def _tail_error_lines(path: Path, *, max_chars: int = 65536) -> list[str]:

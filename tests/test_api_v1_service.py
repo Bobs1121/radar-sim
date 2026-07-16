@@ -545,6 +545,20 @@ def test_events_json_cursor_maps_task_logs(tmp_path):
     assert "event: log" in "".join(iter_sse([event for event in next_page["events"] if event["event"] == "log"]))
 
 
+def test_events_tail_returns_latest_page_in_chronological_order(tmp_path):
+    api, services = make_api(tmp_path)
+    job = api.submit_job("alice", spec_payload=spec_dict())
+    task_id = job["tasks"][0]["task_id"]
+    services["alice"].append_logs(task_id, [f"line-{index}" for index in range(20)])
+
+    page = api.events("alice", job["id"], since=0, limit=5, tail=True)
+
+    assert [event["message"] for event in page["events"]] == [
+        "line-15", "line-16", "line-17", "line-18", "line-19"
+    ]
+    assert page["next_cursor"] == page["events"][-1]["id"]
+
+
 def test_v1_submit_existing_selena_keeps_skipped_source_build_visible(tmp_path):
     api, _ = make_api(tmp_path)
     existing = spec_dict(

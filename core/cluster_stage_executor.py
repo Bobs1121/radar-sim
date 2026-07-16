@@ -23,6 +23,7 @@ from core.runtime_bundle_archive import extract_runtime_bundle_archive
 from core.runtime_bundle_catalog import RuntimeBundleCatalog, RuntimeBundleRecord
 from core.shared_namespace import SharedNamespaceRegistry, looks_like_shared_path
 from core.user import normalize_user
+from core.local_results import ResultCatalog
 from core.agent_policy import (
     LINUX_EXECUTOR_CAPABILITIES,
     PLATFORM_GATEWAY_CAPABILITIES,
@@ -47,6 +48,7 @@ class ClusterStageContext:
     run_store: ClusterRunStore
     work_root: Path
     config_loader: Callable[[str], dict[str, Any]]
+    result_catalog: ResultCatalog | None = None
     now_fn: Callable[[], float] = time.time
 
     def __post_init__(self) -> None:
@@ -128,9 +130,22 @@ class ClusterStageExecutor:
                     sleep_fn=lambda seconds: self._stop.wait(min(float(seconds), 15.0)),
                 )
             elif stage_type == "finalize_manifest":
-                result_ref = str(_stage_result(job, "collect_results").get("result_ref") or "")
-                cluster_result = self.context.run_store.get_result(result_ref, owner=_owner(job))
-                result = {"manifest": build_public_run_manifest(job, cluster_result)}
+                collected = _stage_result(job, "collect_results")
+                cluster_result_ref = str(
+                    collected.get("cluster_result_ref")
+                    or collected.get("result_ref")
+                    or ""
+                )
+                cluster_result = self.context.run_store.get_result(
+                    cluster_result_ref, owner=_owner(job)
+                )
+                result = {
+                    "manifest": build_public_run_manifest(
+                        job,
+                        cluster_result,
+                        result_ref=str(collected.get("result_ref") or ""),
+                    )
+                }
             else:
                 raise ClusterStageExecutionError("Stage is not supported by this executor")
             completed = self.control.submit_task_result(
@@ -393,6 +408,17 @@ def execute_cluster_collect(
     files = [str(item.get("relative_path") or "") for item in inspected.get("files", [])]
     if not files:
         files = [str(item.get("relative_path") or "") for key in ("output_mf4", "logs", "result_files") for item in inspected.get(key, [])]
+    errors = list(inspected.get("error_summary") or [])[:6]
+    output_files = [
+        str(item.get("relative_path") or "")
+        for item in inspected.get("output_mf4", [])
+        if int(item.get("size") or 0) > 0
+    ]
+    if state == "succeeded" and not output_files:
+        state = "failed"
+        message = "Cluster worker produced no simulation output MF4"
+        if message not in errors:
+            errors.append(message)
     result = context.run_store.finalize_result(
         run_ref,
         owner=owner,
@@ -403,11 +429,27 @@ def execute_cluster_collect(
             "file_count": int(inspected.get("file_count") or 0),
             "success_count": int(inspected.get("success_count") or 0),
             "fail_count": int(inspected.get("fail_count") or 0),
-            "errors": list(inspected.get("error_summary") or [])[:6],
+            "errors": errors,
         },
-        physical_root=lease.output_location,
+        physical_root=lease.job_dir,
     )
-    return {"cluster_run_ref": run_ref, "result": result.to_dict(), "result_ref": result.ref}
+    public_result_ref = ""
+    if state == "succeeded":
+        public_result_ref = result.ref
+        if context.result_catalog is not None:
+            published = context.result_catalog.publish(
+                owner=owner,
+                run_ref=run_ref,
+                source_root=lease.job_dir,
+                files=[item for item in files if item],
+            )
+            public_result_ref = published.ref
+    return {
+        "cluster_run_ref": run_ref,
+        "cluster_result_ref": result.ref,
+        "result": result.to_dict(),
+        "result_ref": public_result_ref,
+    }
 
 
 def _apply_existing_cluster_profile_defaults(
@@ -452,7 +494,12 @@ def _normalized_path(value: str) -> str:
     return str(value or "").strip().replace("\\", "/").rstrip("/").casefold()
 
 
-def build_public_run_manifest(job: dict[str, Any], result: ClusterResultRef) -> dict[str, Any]:
+def build_public_run_manifest(
+    job: dict[str, Any],
+    result: ClusterResultRef,
+    *,
+    result_ref: str | None = None,
+) -> dict[str, Any]:
     decisions = dict((job.get("resolved_spec") or {}).get("decisions") or {})
     dataset = dict((decisions.get("data") or {}).get("dataset") or {})
     bundle = dict((decisions.get("selena") or {}).get("runtime_bundle") or {})
@@ -468,7 +515,7 @@ def build_public_run_manifest(job: dict[str, Any], result: ClusterResultRef) -> 
         "runtime_bundle_id": str(bundle["id"]),
         "dataset_id": str(dataset["id"]),
         "cluster_run_ref": result.run_ref,
-        "result_ref": result.ref,
+        "result_ref": result.ref if result_ref is None else result_ref,
         "files": list(result.files),
         "summary": dict(result.summary),
         "created_at": result.created_at,

@@ -135,11 +135,20 @@ class ResultCatalog:
         storage_root: str | Path,
         db_path: str | Path,
         *,
-        allowed_source_root: str | Path,
+        allowed_source_root: str | Path | Iterable[str | Path],
         now_fn: Callable[[], float] = time.time,
     ) -> None:
         self._storage_root = _prepare_root(storage_root, "result storage root")
-        self._allowed_source_root = _prepare_root(allowed_source_root, "allowed result source root")
+        raw_roots = (
+            (allowed_source_root,)
+            if isinstance(allowed_source_root, (str, Path))
+            else tuple(allowed_source_root)
+        )
+        if not raw_roots:
+            raise ResultCatalogError("at least one allowed result source root is required")
+        self._allowed_source_roots = tuple(
+            _prepare_root(root, "allowed result source root") for root in raw_roots
+        )
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._now_fn = now_fn
@@ -187,7 +196,7 @@ class ResultCatalog:
         retention = float(retain_until)
         if not math.isfinite(retention) or retention < 0:
             raise ResultCatalogError("result retention is invalid")
-        source = _authorized_source_root(self._allowed_source_root, source_root)
+        source = _authorized_source_root(self._allowed_source_roots, source_root)
         relatives = _validate_file_set(files)
         evidence = tuple(_file_evidence(source, relative) for relative in relatives)
 
@@ -314,14 +323,16 @@ class ResultCatalog:
         )
 
 
-def default_result_catalog() -> ResultCatalog:
+def default_result_catalog(
+    *, extra_allowed_source_roots: Iterable[str | Path] = ()
+) -> ResultCatalog:
     """Return the shared local-full catalog under the configured RSIM_HOME."""
     home_text = str(os.environ.get("RSIM_HOME") or "").strip()
     home = Path(home_text).expanduser() if home_text else Path.home() / ".rsim"
     return ResultCatalog(
         home / "results" / "local-archives",
         home / "results" / "local-results.db",
-        allowed_source_root=home / "agent" / "runs",
+        allowed_source_root=(home / "agent" / "runs", *tuple(extra_allowed_source_roots)),
     )
 
 
@@ -336,13 +347,18 @@ def _prepare_root(value: str | Path, label: str) -> Path:
         raise ResultCatalogError(f"{label} is unavailable") from exc
 
 
-def _authorized_source_root(allowed: Path, value: str | Path) -> Path:
+def _authorized_source_root(allowed: tuple[Path, ...], value: str | Path) -> Path:
     lexical = Path(value).expanduser()
     if lexical.is_symlink() or not lexical.is_dir():
         raise ResultCatalogError("result source root is unavailable")
     source = lexical.resolve(strict=True)
-    _ensure_contained(allowed, source)
-    return source
+    for root in allowed:
+        try:
+            source.relative_to(root)
+            return source
+        except ValueError:
+            continue
+    raise ResultCatalogError("result path escapes its controlled root")
 
 
 def _ensure_contained(root: Path, target: Path) -> None:

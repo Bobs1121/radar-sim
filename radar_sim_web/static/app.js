@@ -465,9 +465,10 @@ async function loadJobDetail(jobId, resetEvents) {
   try {
     const known = state.eventsByJob.get(jobId) || [];
     const cursor = known.length ? Number(known[known.length - 1].id || 0) : 0;
+    const tail = known.length ? "" : "&tail=true";
     const [job, eventPage, manifestPage] = await Promise.all([
       api(`/jobs/${encodeURIComponent(jobId)}`),
-      api(`/jobs/${encodeURIComponent(jobId)}/events?since=${cursor}&limit=300`),
+      api(`/jobs/${encodeURIComponent(jobId)}/events?since=${cursor}&limit=300${tail}`),
       api(`/jobs/${encodeURIComponent(jobId)}/manifest`),
     ]);
     const events = known.concat(eventPage.events || []);
@@ -566,6 +567,12 @@ function renderJobDetail(job, events, manifest) {
   log.className = "event-log";
   log.setAttribute("aria-label", "任务事件");
   if (!events.length) log.textContent = "暂无新事件";
+  if (events.length && Number(events[0].id || 0) > 1) {
+    const notice = document.createElement("div");
+    notice.className = "event-line event-history-notice";
+    notice.textContent = `仅显示最近 ${events.length} 条事件；更早的编译日志已折叠`;
+    log.append(notice);
+  }
   events.forEach((event) => {
     const line = document.createElement("div");
     line.className = "event-line";

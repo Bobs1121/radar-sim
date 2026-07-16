@@ -61,7 +61,7 @@ simulation:
 cluster:
   # Server-deployed Cluster V2.0. The web page is for status/progress viewing;
   # task submission is done through client.py from the mapped software share.
-  software_path: "\\\\szhradar01\\cluster_software"
+  software_path: "\\\\szhradar01\\_CLUSTER_SOFTWARE"
   workspace_root: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster"
   project_folder: "radar-sim"
   python_path: "C:/Python27/python.exe"

@@ -450,6 +450,7 @@ def create_app(
         job_id: str,
         since: int = Query(default=0, ge=0),
         limit: int = Query(default=200, ge=1, le=1000),
+        tail: bool = Query(default=False),
         stream: bool = Query(default=False),
         last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     ):
@@ -459,7 +460,9 @@ def create_app(
                 cursor = max(int(last_event_id), 0)
             except ValueError:
                 cursor = 0
-        page = service.events(owner(request), job_id, since=cursor, limit=limit)
+        page = service.events(
+            owner(request), job_id, since=cursor, limit=limit, tail=tail
+        )
         if not stream:
             return page
         return StreamingResponse(

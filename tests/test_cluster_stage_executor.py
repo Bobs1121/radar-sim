@@ -15,6 +15,7 @@ from core.datasets import DatasetCatalog, DatasetFileRef
 from core.runtime_bundle import RuntimeSourceEvidence, discover_runtime_bundle
 from core.runtime_bundle_archive import stage_runtime_bundle_archive
 from core.runtime_bundle_catalog import RuntimeBundleCatalog, RuntimeBundleRecord
+from core.local_results import ResultCatalog
 
 
 def _job():
@@ -92,9 +93,10 @@ def test_collect_uses_result_ini_when_official_page_has_no_tasks(tmp_path: Path,
         sleep_fn=lambda _seconds: (_ for _ in ()).throw(AssertionError("must not wait")),
     )
 
-    result = store.get_result(output["result_ref"], owner="alice")
+    result = store.get_result(output["cluster_result_ref"], owner="alice")
     assert result.state == "failed"
     assert result.summary["failed_count"] == 1
+    assert output["result_ref"] == ""
 
 
 def test_public_manifest_contains_refs_but_no_physical_locations(tmp_path: Path):
@@ -196,9 +198,15 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
     adapter = assets.put(owner="alice", kind="adapter", filename="adapter.txt", content=b"adapter\n")
     mat_filter = assets.put(owner="alice", kind="mat_filter", filename="signals.filter", content=b"*\n")
     runs = ClusterRunStore(tmp_path / "runs.db")
+    results = ResultCatalog(
+        tmp_path / "result-archives",
+        tmp_path / "results.db",
+        allowed_source_root=tmp_path,
+    )
     private_job = tmp_path / "cluster-job"
     (private_job / "output").mkdir(parents=True)
     (private_job / "output" / "result.ini").write_text("successfull=1", encoding="utf-8")
+    (private_job / "output" / "inputout.MF4").write_bytes(b"simulated-output")
 
     monkeypatch.setattr("core.cluster.check_cluster_environment", lambda _cfg: [SimpleNamespace(name="manager", ok=True)])
     monkeypatch.setattr("core.preflight.run_preflight", lambda _cfg: SimpleNamespace(ok=True, checks=[]))
@@ -220,7 +228,8 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
     monkeypatch.setattr(
         "core.cluster.inspect_cluster_job",
         lambda *_args, **_kwargs: {
-            "file_count": 1, "success_count": 1, "fail_count": 0, "error_summary": [],
+            "file_count": 2, "success_count": 1, "fail_count": 0, "error_summary": [],
+            "output_mf4": [{"relative_path": "output/inputout.MF4", "size": 16}],
             "result_files": [{"relative_path": "output/result.ini"}],
         },
     )
@@ -232,6 +241,7 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
         runtime_catalog=runtime_catalog, runtime_store=runtime_store,
         dataset_catalog=datasets, config_assets=assets, run_store=runs,
         work_root=tmp_path / "work", config_loader=lambda _project: config,
+        result_catalog=results,
     )
     executor = ClusterStageExecutor(control, context, poll_interval=0.02)
     executor.start()
@@ -240,6 +250,7 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
         api = ApiV1Service(
             control_service_factory=lambda _owner: control,
             runtime_bundle_upload_service_factory=lambda _owner: upload_service,
+            result_catalog=results,
         )
         config_payload = {
             "schema_version": "2.0",
@@ -269,6 +280,9 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
         manifest = api.manifest("alice", submitted["id"])
         assert manifest["available"] is True
         assert manifest["manifest"]["runtime_bundle_id"] == record.manifest.id
+        result_ref = manifest["manifest"]["result_ref"]
+        assert api.get_result("alice", result_ref)["file_count"] == 2
+        assert results.resolve_archive(result_ref, owner="alice").is_file()
         assert str(tmp_path) not in str(manifest)
         assert all(
             stage["status"] in {"succeeded", "skipped"}

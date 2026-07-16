@@ -1803,21 +1803,43 @@ class ControlService:
             finally:
                 conn.close()
 
-    def list_events(self, job_id: str, *, since: int = 0, limit: int = 200) -> dict[str, Any]:
+    def list_events(
+        self,
+        job_id: str,
+        *,
+        since: int = 0,
+        limit: int = 200,
+        tail: bool = False,
+    ) -> dict[str, Any]:
         with self._lock:
             conn = self._conn()
             try:
                 self._get_job_locked(conn, job_id)
-                rows = conn.execute(
-                    """
-                    SELECT *
-                    FROM job_events
-                    WHERE job_id=? AND sequence>?
-                    ORDER BY sequence ASC
-                    LIMIT ?
-                    """,
-                    (job_id, int(since or 0), int(limit or 200)),
-                ).fetchall()
+                if tail and int(since or 0) == 0:
+                    rows = conn.execute(
+                        """
+                        SELECT * FROM (
+                            SELECT *
+                            FROM job_events
+                            WHERE job_id=?
+                            ORDER BY sequence DESC
+                            LIMIT ?
+                        )
+                        ORDER BY sequence ASC
+                        """,
+                        (job_id, int(limit or 200)),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT *
+                        FROM job_events
+                        WHERE job_id=? AND sequence>?
+                        ORDER BY sequence ASC
+                        LIMIT ?
+                        """,
+                        (job_id, int(since or 0), int(limit or 200)),
+                    ).fetchall()
                 events = [self._event_row_to_dict(row) for row in rows]
                 next_cursor = int(since or 0)
                 if events:

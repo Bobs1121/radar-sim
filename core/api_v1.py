@@ -822,11 +822,24 @@ class ApiV1Service:
             "manifest": manifest,
         }
 
-    def events(self, owner: str, job_id: str, *, since: int = 0, limit: int = 200) -> dict[str, Any]:
+    def events(
+        self,
+        owner: str,
+        job_id: str,
+        *,
+        since: int = 0,
+        limit: int = 200,
+        tail: bool = False,
+    ) -> dict[str, Any]:
         job = self._get_owned_job(owner, job_id)
         safe_limit = min(max(int(limit or 200), 1), 1000)
         cursor = max(int(since or 0), 0)
-        page = self._control(self._owner(owner)).list_events(job_id, since=cursor, limit=safe_limit)
+        page = self._control(self._owner(owner)).list_events(
+            job_id,
+            since=cursor,
+            limit=safe_limit,
+            tail=bool(tail),
+        )
         events = list(page.get("events") or [])
         current = self._get_owned_job(owner, job_id)
         return {
