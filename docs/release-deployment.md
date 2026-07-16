@@ -40,6 +40,24 @@ docker run --rm -p 8878:8878 \
   radar-sim-control
 ```
 
+### Linux 共享盘映射
+
+用户任务 YAML 只填写原始数据路径，例如 Windows 可访问的 UNC 路径；不要让用户填写 Linux 挂载点或选择“本地/公盘”。Linux 管理员在每台控制服务器配置一次部署级映射：
+
+```bash
+mkdir -p "$RSIM_HOME/config"
+cp config/deployment.example.yaml "$RSIM_HOME/config/deployment.yaml"
+```
+
+`deployment.yaml` 中的 `cluster.linux_mount_map` 把 worker 使用的 UNC 前缀映射到 Linux 已挂载的 CIFS 目录。该覆盖层对所有内部项目识别结果生效，并在项目配置之后合并；它不属于 Web/SDK 导入导出的用户配置。也可用 `RSIM_DEPLOYMENT_CONFIG=/run/secrets/rsim-deployment.yaml` 指向外部只读文件。
+
+部署前应同时验证挂载和目标数据目录，而不只是检查 Windows 可访问性：
+
+```bash
+mountpoint /mnt/cluster
+find /mnt/cluster/loc/szh/Isilon2/OverseaData -maxdepth 1 -type d
+```
+
 ## Windows 一键安装
 
 light 连接 Linux，需管理员分配的 `ServerUrl`、`AgentId`、Agent token 和同 owner 的 API token：

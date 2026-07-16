@@ -180,6 +180,36 @@ def test_prepare_detached_worktree_is_concurrent_unique_and_preserves_main_works
     assert _git_bytes(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all") == before_status
 
 
+def test_prepare_detached_worktree_initializes_submodules(tmp_path, monkeypatch):
+    child = tmp_path / "child"
+    child.mkdir()
+    _git(child, "init", "-b", "main")
+    _git(child, "config", "user.email", "test@example.com")
+    _git(child, "config", "user.name", "Test")
+    (child / "required.txt").write_text("runtime dependency", encoding="utf-8")
+    _git(child, "add", "required.txt")
+    _git(child, "commit", "-m", "child")
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    repo = _make_repo(parent)
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", str(child), "dependency")
+    _git(repo, "commit", "-am", "add submodule")
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+
+    handle = prepare_detached_worktree(
+        repo,
+        "main",
+        "job",
+        "source",
+        tmp_path / "controlled-submodule-worktrees",
+    )
+    try:
+        assert (Path(handle.path) / "dependency" / "required.txt").read_text(encoding="utf-8") == "runtime dependency"
+    finally:
+        cleanup_detached_worktree(handle)
+
+
 def test_cleanup_detached_worktree_rejects_out_of_bounds_path(tmp_path):
     repo = _make_repo(tmp_path)
     outside = tmp_path / "outside"

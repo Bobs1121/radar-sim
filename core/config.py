@@ -74,6 +74,25 @@ def local_yaml_path_for_project(project: str) -> Path:
     return get_projects_dir() / project / "local.yaml"
 
 
+def deployment_yaml_path() -> Path:
+    """Return the host-level deployment overlay path.
+
+    Infrastructure settings such as Linux CIFS mount mappings belong to the
+    control-plane deployment, not to a user task or a business project.  An
+    explicit path is useful for packaged/container deployments; otherwise the
+    overlay lives below RSIM_HOME and is shared by every configured project.
+    """
+    explicit = os.environ.get("RSIM_DEPLOYMENT_CONFIG", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return get_data_root() / "config" / "deployment.yaml"
+
+
+def load_deployment_config() -> dict[str, Any]:
+    """Load the optional host-level deployment overlay."""
+    return _load_yaml_file(deployment_yaml_path())
+
+
 def get_recipes_dir() -> Path:
     """Get config/recipes/ directory."""
     return get_config_dir() / "recipes"
@@ -617,6 +636,7 @@ def load_config_from_path(local_yaml_path: str | Path) -> dict[str, Any]:
         _normalize_layer(load_global_defaults()),
         _normalize_layer(_load_yaml_file(platform_path)),
         _normalize_layer(local_content),
+        _normalize_layer(load_deployment_config()),
     ]
     config: dict[str, Any] = {}
     for layer in layers:
@@ -628,6 +648,9 @@ def load_config_from_path(local_yaml_path: str | Path) -> dict[str, Any]:
     config.setdefault("_meta", {})
     config["_meta"]["project"] = project
     config["_meta"]["local_config_path"] = str(local_path)
+    deployment_path = deployment_yaml_path()
+    if deployment_path.exists():
+        config["_meta"]["deployment_config_path"] = str(deployment_path)
     return config
 
 
@@ -705,6 +728,7 @@ def _load_project_config(project: str, path: Path) -> dict[str, Any]:
     layers.extend([
         _normalize_layer(project_layer),
         _normalize_layer(_load_yaml_file(local_path)),
+        _normalize_layer(load_deployment_config()),
     ])
 
     config: dict[str, Any] = {}
@@ -726,6 +750,9 @@ def _load_project_config(project: str, path: Path) -> dict[str, Any]:
         config["_meta"]["recipe_path"] = str(recipe_path)
     if local_path.exists():
         config["_meta"]["local_config_path"] = str(local_path)
+    deployment_path = deployment_yaml_path()
+    if deployment_path.exists():
+        config["_meta"]["deployment_config_path"] = str(deployment_path)
 
     return config
 
@@ -739,6 +766,8 @@ def _load_legacy_config(path: Path) -> dict[str, Any]:
     with open(path, encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
 
+    config = _deep_merge(config, load_deployment_config())
+
     if "project_root" not in config and "paths" in config:
         config = _migrate_old_config(config)
 
@@ -751,6 +780,9 @@ def _load_legacy_config(path: Path) -> dict[str, Any]:
     config.setdefault("_meta", {})
     config["_meta"]["project"] = "default"
     config["_meta"]["config_path"] = str(path)
+    deployment_path = deployment_yaml_path()
+    if deployment_path.exists():
+        config["_meta"]["deployment_config_path"] = str(deployment_path)
 
     return config
 

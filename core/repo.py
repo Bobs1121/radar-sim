@@ -106,7 +106,7 @@ _WORKTREE_LOCK = threading.Lock()
 
 def _git(repo: str, args: list[str], *, timeout: int = 10) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", repo, *args],
+        ["git", "-c", "core.longpaths=true", "-C", repo, *args],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -117,7 +117,7 @@ def _git_bytes(repo: str, args: list[str], *, timeout: int = 10) -> subprocess.C
     env = os.environ.copy()
     env["GIT_OPTIONAL_LOCKS"] = "0"
     return subprocess.run(
-        ["git", "-C", repo, *args],
+        ["git", "-c", "core.longpaths=true", "-C", repo, *args],
         capture_output=True,
         text=False,
         timeout=timeout,
@@ -433,13 +433,55 @@ def prepare_detached_worktree(
     resolved_path, resolved_root = _assert_within_root(worktree_path, controlled_root)
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
 
-    add = _git(str(repo_root), ["worktree", "add", "--detach", str(resolved_path), commit], timeout=120)
+    try:
+        # Large Selena repositories can contain tens of thousands of files.
+        # A cold Windows checkout regularly exceeds two minutes even when Git
+        # long-path support is enabled, so this must not use the small timeout
+        # intended for read-only ref inspection.
+        add = _git(
+            str(repo_root),
+            ["worktree", "add", "--detach", str(resolved_path), commit],
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # git records the worktree before checkout completes. Remove both that
+        # registration and any partial directory so a retry starts cleanly.
+        _git(
+            str(repo_root),
+            ["worktree", "remove", "--force", str(resolved_path)],
+            timeout=300,
+        )
+        _git(str(repo_root), ["worktree", "prune"], timeout=120)
+        if resolved_path.exists():
+            shutil.rmtree(resolved_path)
+        raise RepoSourceError(f"Timed out creating detached worktree for '{ref}'") from exc
     if add.returncode != 0:
         if resolved_path.exists():
             shutil.rmtree(resolved_path)
         _git(str(repo_root), ["worktree", "prune"])
         detail = add.stderr.strip() or add.stdout.strip() or "git worktree add failed"
         raise RepoSourceError(f"Failed to create detached worktree for '{ref}': {detail}")
+
+    # A Git worktree contains only the superproject checkout. Selena build
+    # scripts expect ip_dc/ip_if/ip_rc and the other registered submodules to
+    # contain their pinned files; leaving gitlink directories empty can make
+    # legacy XCOPY commands wait for interactive F/D input forever.
+    submodules = _git(
+        str(resolved_path),
+        ["submodule", "update", "--init", "--recursive", "--jobs", "4"],
+        timeout=1200,
+    )
+    if submodules.returncode != 0:
+        detail = submodules.stderr.strip() or submodules.stdout.strip() or "git submodule update failed"
+        _git(
+            str(repo_root),
+            ["worktree", "remove", "--force", str(resolved_path)],
+            timeout=300,
+        )
+        _git(str(repo_root), ["worktree", "prune"], timeout=120)
+        if resolved_path.exists():
+            shutil.rmtree(resolved_path)
+        raise RepoSourceError(f"Failed to initialize submodules for '{ref}': {detail}")
 
     handle = DetachedWorktreeHandle(
         repo=str(repo_root),

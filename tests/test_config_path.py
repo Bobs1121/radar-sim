@@ -103,3 +103,59 @@ def test_load_config_from_path_missing_file(tmp_path):
     from core.config import load_config_from_path
     with pytest.raises(FileNotFoundError):
         load_config_from_path(tmp_path / "nope.yaml")
+
+
+def test_deployment_overlay_applies_to_every_project(tmp_path, monkeypatch):
+    """Host mount mappings must not depend on a hidden business project."""
+    from core.config import load_config
+
+    projects = tmp_path / "repo-config" / "projects"
+    for name in ("first", "second"):
+        pdir = projects / name
+        pdir.mkdir(parents=True)
+        (pdir / "config.yaml").write_text(
+            f"project:\n  name: {name}\n"
+            f"paths:\n  project_root: '{tmp_path}'\n  build_output: '{tmp_path / 'build'}'\n"
+            "selena:\n  exe_pattern: 'selena.exe'\n",
+            encoding="utf-8",
+        )
+
+    rsim_home = tmp_path / "rsim-home"
+    deployment = rsim_home / "config" / "deployment.yaml"
+    deployment.parent.mkdir(parents=True)
+    deployment.write_text(
+        "cluster:\n  linux_mount_map:\n"
+        "    '\\\\server\\share': /mnt/share\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RSIM_HOME", str(rsim_home))
+    monkeypatch.setattr("core.config.get_projects_dir", lambda: projects)
+    monkeypatch.setattr("core.config.get_config_dir", lambda: tmp_path / "repo-config")
+
+    for name in ("first", "second"):
+        cfg = load_config(name)
+        assert cfg["cluster"]["linux_mount_map"] == {r"\\server\share": "/mnt/share"}
+        assert cfg["_meta"]["deployment_config_path"] == str(deployment)
+
+
+def test_explicit_deployment_overlay_overrides_project_mount_map(tmp_path, monkeypatch):
+    """The Linux operator's real mount point is authoritative on that host."""
+    from core.config import load_config
+
+    pdir = _make_standard_project(tmp_path, monkeypatch, "mounted")
+    (pdir / "config.yaml").write_text(
+        "project:\n  name: mounted\n"
+        f"paths:\n  project_root: '{tmp_path}'\n  build_output: '{tmp_path / 'build'}'\n"
+        "selena:\n  exe_pattern: 'selena.exe'\n"
+        "cluster:\n  linux_mount_map:\n    '\\\\server\\share': /wrong\n",
+        encoding="utf-8",
+    )
+    deployment = tmp_path / "operator.yaml"
+    deployment.write_text(
+        "cluster:\n  linux_mount_map:\n    '\\\\server\\share': /mnt/right\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RSIM_DEPLOYMENT_CONFIG", str(deployment))
+
+    cfg = load_config("mounted")
+    assert cfg["cluster"]["linux_mount_map"][r"\\server\share"] == "/mnt/right"

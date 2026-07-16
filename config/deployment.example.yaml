@@ -1,0 +1,7 @@
+# Linux control-plane deployment settings.
+# Copy to $RSIM_HOME/config/deployment.yaml on each server. These values are
+# infrastructure-owned and are intentionally absent from user simulation YAML.
+cluster:
+  linux_mount_map:
+    "\\\\abtvdfs2.de.bosch.com\\ismdfs": "/mnt/cluster"
+    "\\\\szhradar01\\_CLUSTER_SOFTWARE": "/mnt/cluster_sw"
