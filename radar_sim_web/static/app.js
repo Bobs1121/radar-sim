@@ -270,7 +270,7 @@ function updateRouteSummary() {
   const source = byId("selenaSource").value;
   const targetText = { auto: "自动选择本地或 Cluster", local: "在完整 Windows 节点本地仿真", cluster: "由 Cluster 执行仿真" }[target];
   const selenaText = source === "build"
-    ? (byId("selenaBranch").value.trim() ? "隔离切换分支并编译 Selena" : "编译当前工作区修改")
+    ? (byId("selenaBranch").value.trim() ? "校验期望分支并编译当前工作区" : "编译当前工作区修改")
     : "使用已有 Selena 文件夹";
   byId("routeSummary").textContent = `${selenaText}，${targetText}`;
 }

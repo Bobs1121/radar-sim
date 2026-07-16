@@ -106,9 +106,9 @@
                 <small>软件在 Windows 节点内部识别构建适配方式，不需要选择项目。</small>
               </label>
               <label class="field">
-                <span>Selena 分支</span>
-                <input id="selenaBranch" name="selenaBranch" placeholder="留空使用当前工作区修改">
-                <small>填写分支时使用隔离工作区切换；留空时编译当前修改。</small>
+                <span>期望 Selena 分支</span>
+                <input id="selenaBranch" name="selenaBranch" placeholder="用于差异提醒；不会自动切换或清理代码仓">
+                <small>系统始终编译当前代码仓及未提交修改；分支不一致时警告，但仍允许执行。</small>
               </label>
               <label class="field full">
                 <span>Selena 编译脚本</span>
