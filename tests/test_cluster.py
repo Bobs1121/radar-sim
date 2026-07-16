@@ -104,13 +104,17 @@ def test_prepare_cluster_job_copies_runtime_assets_from_effective_simulation(tmp
     from core.cluster import prepare_cluster_job
 
     config = _cluster_config(tmp_path)
+    resolved_runtime = tmp_path / "resolved-runtime.xml"
+    resolved_runtime.write_text("<runtime resolved='true' />", encoding="utf-8")
+    resolved_filter = tmp_path / "resolved.filter"
+    resolved_filter.write_text("resolved", encoding="utf-8")
     adapter = tmp_path / "adapter.txt"
     adapter.write_text("adapter", encoding="utf-8")
+    config["simulation"]["runtime_xml"] = str(resolved_runtime)
+    config["simulation"]["matfilefilter"] = str(resolved_filter)
     config["simulation"]["adapter_file"] = str(adapter)
     # v2 Stage execution resolves these into simulation.*.  They must still be
-    # copied into the shared Cluster job instead of leaking Linux-local paths.
-    config["assets"].pop("runtime_xml")
-    config["assets"].pop("matfilefilter")
+    # preferred over stale static project assets and copied into the shared job.
     input_mf4 = tmp_path / "input.MF4"
     input_mf4.write_text("dummy", encoding="utf-8")
 
@@ -118,10 +122,11 @@ def test_prepare_cluster_job_copies_runtime_assets_from_effective_simulation(tmp
 
     cfg = Path(package.config_path).read_text(encoding="utf-8")
     job_assets = Path(package.job_dir) / "assets"
-    assert f'runTimeConfigFile = "{job_assets / "runtime.xml"}";' in cfg
-    assert f'matfilefilter = "{job_assets / "matfilefilter.txt"}";' in cfg
+    assert f'runTimeConfigFile = "{job_assets / "resolved-runtime.xml"}";' in cfg
+    assert f'matfilefilter = "{job_assets / "resolved.filter"}";' in cfg
     assert f'adapterFile = "{job_assets / "adapter.txt"}";' in cfg
     assert str(tmp_path / "assets" / "runtime.xml") not in cfg
+    assert str(tmp_path / "assets" / "matfilefilter.txt") not in cfg
 
 
 def test_prepare_cluster_job_infers_fr_radar_from_input_name(tmp_path):

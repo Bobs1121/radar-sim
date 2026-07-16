@@ -1222,9 +1222,15 @@ def _copy_assets(config: dict[str, Any], assets_dir: Path, warnings: list[str], 
         "config_template": "config_template",
     }
     for key in ("runtime_xml", "matfilefilter", "adapter_file", "config_template"):
+        # Stage execution writes the resolved Runtime/MatFilter/Adapter into
+        # simulation.*.  Those values are authoritative for this run; static
+        # project assets are only fallbacks.  The template remains primarily
+        # project-owned because Stage resolution does not normally replace it.
+        primary = assets.get(key) if key == "config_template" else simulation.get(simulation_keys[key])
+        fallback = simulation.get(simulation_keys[key]) if key == "config_template" else assets.get(key)
         value = str(
-            assets.get(key)
-            or simulation.get(simulation_keys[key])
+            primary
+            or fallback
             or ""
         )
         if not value:
