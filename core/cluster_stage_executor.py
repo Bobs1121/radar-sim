@@ -12,7 +12,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
 from core.artifact_store import ArtifactStore
@@ -360,7 +360,13 @@ def execute_cluster_collect(
     if timeout <= 0:
         timeout = int((config.get("cluster") or {}).get("timeout_min") or 120)
     deadline = context.now_fn() + max(timeout + 10, 15) * 60
-    query = lease.public.external_job_id or run_ref
+    # XML-RPC addSimulation returns the number of created tasks on this
+    # deployment (for example ``12``), not the durable Cluster job id.  The
+    # generated Config path is unique and lets the official status page resolve
+    # the actual job (for example ``10357``) without exposing that detail to the
+    # user contract.
+    query = str(PureWindowsPath(lease.config_path).parent)
+    expected_count = _expected_cluster_task_count(job)
     state = "running"
     summary: dict[str, Any] = {}
     from core.cluster import get_cluster_web_status, inspect_cluster_job
@@ -384,9 +390,13 @@ def execute_cluster_collect(
         if state == "running" and not list(info.get("tasks") or []):
             inspected_probe = inspect_cluster_job(lease.job_dir)
             inspected_state = str(inspected_probe.get("state") or "")
-            if inspected_state == "finished-success":
+            finished_probe = int(inspected_probe.get("success_count") or 0) + int(
+                inspected_probe.get("fail_count") or 0
+            )
+            complete_probe = not expected_count or finished_probe >= expected_count
+            if inspected_state == "finished-success" and complete_probe:
                 state = "succeeded"
-            elif inspected_state == "finished-failed":
+            elif inspected_state == "finished-failed" and complete_probe:
                 state = "failed"
             if state in {"succeeded", "failed"}:
                 summary = {
@@ -405,6 +415,13 @@ def execute_cluster_collect(
         raise ClusterStageExecutionError("Cluster job is still running after the observation window")
 
     inspected = inspect_cluster_job(lease.job_dir)
+    finished_count = int(inspected.get("success_count") or 0) + int(
+        inspected.get("fail_count") or 0
+    )
+    if expected_count and finished_count < expected_count:
+        raise ClusterStageExecutionError(
+            "Cluster results are incomplete; collection can be retried without rerunning simulation"
+        )
     files = [str(item.get("relative_path") or "") for item in inspected.get("files", [])]
     if not files:
         files = [str(item.get("relative_path") or "") for key in ("output_mf4", "logs", "result_files") for item in inspected.get(key, [])]
@@ -450,6 +467,15 @@ def execute_cluster_collect(
         "result": result.to_dict(),
         "result_ref": public_result_ref,
     }
+
+
+def _expected_cluster_task_count(job: dict[str, Any]) -> int:
+    decisions = dict((job.get("resolved_spec") or {}).get("decisions") or {})
+    dataset = dict((decisions.get("data") or {}).get("dataset") or {})
+    try:
+        return max(int(dataset.get("file_count") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _apply_existing_cluster_profile_defaults(
