@@ -401,6 +401,7 @@ def _run_task(
     returncode = None
     execution_error = ""
     lines: list[str] = []
+    diagnostic_lines: list[str] = []
     last_reported_progress = 0.0
     last_progress_report_at = 0.0
     try:
@@ -453,6 +454,10 @@ def _run_task(
                 if text:
                     lines.append(text)
                     if is_v5_build:
+                        diagnostic_lines.append(text)
+                        if len(diagnostic_lines) > 4000:
+                            diagnostic_lines = diagnostic_lines[-4000:]
+                    if is_v5_build:
                         progress_value, progress_label = _build_progress_from_output(text)
                         now = time.monotonic()
                         if (
@@ -495,6 +500,10 @@ def _run_task(
                     text = line.rstrip()
                     if text:
                         lines.append(text)
+                        if is_v5_build:
+                            diagnostic_lines.append(text)
+                            if len(diagnostic_lines) > 4000:
+                                diagnostic_lines = diagnostic_lines[-4000:]
                 break
         if lines:
             client.append_logs(task_id, lines)
@@ -559,7 +568,21 @@ def _run_task(
                 client.append_logs(task_id, [f"[agent] execution error: {execution_error}"])
                 result = {"error": execution_error}
         else:
-            result = {"error": execution_error or "v5 Selena build failed"}
+            from core.build_diagnostics import classify_build_failure
+
+            diagnostic = classify_build_failure(diagnostic_lines)
+            result = {
+                "error": execution_error or diagnostic.summary,
+                "code": diagnostic.code,
+                "diagnostic": diagnostic.to_dict(),
+            }
+            client.append_logs(
+                task_id,
+                [
+                    f"[diagnostic] {diagnostic.summary}",
+                    f"[action] {diagnostic.action}",
+                ],
+            )
     else:
         result = {
             "command": command,

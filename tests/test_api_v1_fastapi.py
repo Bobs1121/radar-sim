@@ -348,6 +348,7 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert "jobsRequestInFlight" in app_js.text
     assert "followedLogTail" in app_js.text
     assert "仿真失败原因" in app_js.text
+    assert "stage.error?.diagnostic?.action" in app_js.text
     assert "校验期望分支并编译当前工作区" in app_js.text
     assert "隔离切换分支并编译 Selena" not in app_js.text
     assert client.get("/console/styles.css").status_code == 200

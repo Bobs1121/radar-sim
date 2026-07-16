@@ -94,6 +94,8 @@ full 有两种控制面，Agent 能力相同：
 
 安装器持久化的是部署模式、服务地址和 Agent 标识；连接 Linux 时另行持久化受限凭证。它不会创建或要求用户理解内部 project。代码路径、Selena 分支/编译脚本、数据路径、Runtime Bundle、Adapter 和 MatFilter 仍通过统一 Web/YAML 配置。远端凭证单独保存在 `%LOCALAPPDATA%\radar-sim` 且 ACL 收紧，不写入用户 YAML。
 
+Visual Studio 由用户自行安装，Windows Agent 不下载或安装 VS。安装阶段检查是否存在受支持的 C++ compiler；具体任务的 `environment_check` 再根据用户选择的 Selena 脚本和本机 VS 做精确校验，并且只对 R2D2 的 `-vs`/`VS_POSTFIX` 做可见、幂等的脚本适配。其余 TCC、CMake、MinGW、Python、Qt、Boost 等依赖从软件包编译脚本及其 workspace-local batch 调用链解析，并在安全的非交互安装入口存在时自动修复。若软件包脚本旁存在可识别的 `GEN_PAD_PARAMS.bat` 且生成头缺失，Agent 使用已安装的 TCC Perl 在任务子进程内补齐 PATH 并执行 workspace-local PAD generator；不运行交互式整包编译，也不修改全局 PATH。
+
 后续启动：
 
 ```powershell

@@ -445,6 +445,79 @@ def _legacy_toolcollection_from_workspace(script_path: Path) -> dict | None:
         }
     return None
 
+
+def _workspace_root_from_script(script_path: Path) -> Path | None:
+    for root in (script_path.parent, *script_path.parents):
+        if (root / "ip_if").is_dir():
+            return root
+    return None
+
+
+def _modern_toolcollection_from_workspace(script_path: Path) -> dict | None:
+    root = _workspace_root_from_script(script_path)
+    if root is None:
+        return None
+    version_file = root / "ip_if" / "tcc_toolversion_itc2.txt"
+    try:
+        name = version_file.read_text(encoding="utf-8", errors="replace").strip().split()[0]
+    except (OSError, IndexError):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+", name):
+        return None
+    return {"kind": "toolcollection", "name": name, "source": str(version_file)}
+
+
+def _batch_dependency_sources(script_path: Path, *, max_files: int = 20) -> list[tuple[Path, str]]:
+    """Read a bounded workspace-local batch call graph without executing it."""
+    workspace = _workspace_root_from_script(script_path)
+    workspace_resolved = workspace.resolve(strict=False) if workspace is not None else None
+    pending = [script_path.resolve(strict=False)]
+    seen: set[Path] = set()
+    sources: list[tuple[Path, str]] = []
+    call_re = re.compile(
+        r"^\s*@?call\s+(?:\"([^\"]+\.(?:bat|cmd))\"|([^\s]+\.(?:bat|cmd)))",
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    while pending and len(sources) < max_files:
+        current = pending.pop(0)
+        if current in seen or not current.is_file():
+            continue
+        seen.add(current)
+        try:
+            text = current.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        sources.append((current, text))
+        for match in call_re.finditer(text):
+            raw = str(match.group(1) or match.group(2) or "").strip()
+            expanded = re.sub(
+                r"%~dp0",
+                lambda _match: str(current.parent) + os.sep,
+                raw,
+                flags=re.IGNORECASE,
+            )
+            expanded = re.sub(
+                r"%(?:cp|script_dir)%",
+                lambda _match: str(current.parent),
+                expanded,
+                flags=re.IGNORECASE,
+            )
+            if "%" in expanded or "!" in expanded:
+                continue
+            candidate = Path(expanded.replace("/", os.sep))
+            if not candidate.is_absolute():
+                candidate = current.parent / candidate
+            candidate = candidate.resolve(strict=False)
+            if workspace_resolved is not None:
+                try:
+                    candidate.relative_to(workspace_resolved)
+                except ValueError:
+                    continue
+            if candidate not in seen:
+                pending.append(candidate)
+    return sources
+
+
 def derive_dependencies_from_build_script(config: dict) -> list[dict]:
     """Statically parse the env build script (cmake_build.bat) for dependencies.
 
@@ -457,51 +530,57 @@ def derive_dependencies_from_build_script(config: dict) -> list[dict]:
     script_path = str(build.get("env_build_script") or build.get("selena_build_script") or "")
     if not script_path or not Path(script_path).exists():
         return []
-    try:
-        text = Path(script_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    script = Path(script_path).resolve(strict=False)
+    sources = _batch_dependency_sources(script)
+    if not sources:
         return []
 
     deps: list[dict] = []
-    source = str(script_path)
+    unresolved_toolcollection = False
+    for source_path, text in sources:
+        source = str(source_path)
+        install_matches = re.findall(r"itc2\.exe\s+install\s+(\S+)", text, flags=re.IGNORECASE)
+        for name in install_matches:
+            name = name.strip().strip('"')
+            if "%" in name or "!" in name:
+                unresolved_toolcollection = True
+            else:
+                deps.append({"kind": "toolcollection", "name": name, "source": source})
 
-    # 1. toolcollection name: itc2 install <name> > set TOOLCOLLECTION= > set /p TOOLCOLLECTION=<file>
-    install_match = re.search(r"itc2\.exe\s+install\s+(\S+)", text, flags=re.IGNORECASE)
-    if install_match:
-        deps.append({"kind": "toolcollection", "name": install_match.group(1), "source": source})
-    else:
         set_matches = re.findall(r"set\s+TOOLCOLLECTION=([^\r\n]+)", text, flags=re.IGNORECASE)
         for m in set_matches:
             m = m.strip().strip('"')
             if m and not m.startswith("<"):  # skip "<...txt" file-redirect, handled below
                 deps.append({"kind": "toolcollection", "name": m, "source": source})
-        # set /p TOOLCOLLECTION=<file.txt> → resolve via read_required_toolcollection
         prompt_match = re.search(r"set\s+/p\s+TOOLCOLLECTION=<([^\r\n]+)", text, flags=re.IGNORECASE)
-        if prompt_match and not any(d["kind"] == "toolcollection" for d in deps):
-            tc = read_required_toolcollection(config)
-            if tc:
-                deps.append({"kind": "toolcollection", "name": tc, "source": f"{source} -> {prompt_match.group(1).strip()}"})
+        unresolved_toolcollection = unresolved_toolcollection or bool(prompt_match)
 
-    # 2. init.bat calls
-    init_matches = re.findall(r"call\s+([^\r\n]*tcc_init[^\r\n]*init\.bat)", text, flags=re.IGNORECASE)
-    for m in init_matches:
-        deps.append({"kind": "init_bat", "path": m.strip(), "source": source})
+        for match in re.findall(r"call\s+([^\r\n]*tcc_init[^\r\n]*init\.bat)", text, flags=re.IGNORECASE):
+            deps.append({"kind": "init_bat", "path": match.strip(), "source": source})
+        for var in sorted(set(re.findall(r"%(TCCPATH_\w+)%", text, flags=re.IGNORECASE))):
+            deps.append({"kind": "env_var", "name": var, "value": f"%{var}%", "source": source})
+        if re.search(r"python3\s+.*R2D2\.py\b", text, flags=re.IGNORECASE):
+            deps.append({"kind": "build_entry", "name": "R2D2.py", "source": source})
 
-    # 3. TCCPATH_* env vars referenced (boost/python3/selena_environment/cmake/mingw64 ...)
-    tccpath_vars = set(re.findall(r"%(TCCPATH_\w+)%", text))
-    for var in sorted(tccpath_vars):
-        deps.append({"kind": "env_var", "name": var, "value": f"%{var}%", "source": source})
-
-    # 4. R2D2 / python3 build entry
-    if re.search(r"python3\s+.*R2D2\.py\b", text, flags=re.IGNORECASE):
-        deps.append({"kind": "build_entry", "name": "R2D2.py", "source": source})
+    if unresolved_toolcollection:
+        modern = _modern_toolcollection_from_workspace(script)
+        if modern is not None:
+            deps.append(modern)
 
     if not any(item["kind"] in {"toolcollection", "legacy_toolcollection"} for item in deps):
-        legacy = _legacy_toolcollection_from_workspace(Path(script_path).resolve(strict=False))
+        legacy = _legacy_toolcollection_from_workspace(script)
         if legacy is not None:
             deps.append(legacy)
 
-    return deps
+    unique: list[dict] = []
+    identities: set[tuple[str, str]] = set()
+    for item in deps:
+        identity = (str(item.get("kind") or ""), str(item.get("name") or item.get("path") or ""))
+        if identity in identities:
+            continue
+        identities.add(identity)
+        unique.append(item)
+    return unique
 
 
 # ------------------------------------------------------------------

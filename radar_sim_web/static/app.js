@@ -707,7 +707,10 @@ function friendlyStageDetail(stage) {
     not_needed: "当前执行路径不需要此阶段",
   };
   if (byReason[stage.skip_reason]) return byReason[stage.skip_reason];
-  if (stage.error?.message) return stage.error.message;
+  if (stage.error?.message) {
+    const action = stage.error?.action || stage.error?.diagnostic?.action || "";
+    return action ? `${stage.error.message}；建议：${action}` : stage.error.message;
+  }
   if (stage.status === "running" && Number(stage.progress || 0) <= 0) {
     return "正在运行，日志持续更新";
   }

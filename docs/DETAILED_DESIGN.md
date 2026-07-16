@@ -21,7 +21,7 @@
 
 ### 0.3 首次 Agent 自动配置与脚本职责
 
-- `selena_build_script` 是实际 Selena 编译入口；`package_build_script` 用于识别内部项目适配、静态提取 TCC/toolcollection 等依赖并在环境阶段执行允许的自动修复。
+- `selena_build_script` 是实际 Selena 编译入口；Windows Agent 根据本机已安装的 VS C++ toolset 对其中 R2D2 `-vs`/`VS_POSTFIX` 做最小、可见、幂等适配。`package_build_script` 用于识别内部项目适配、静态提取 TCC/toolcollection 等依赖，并执行其明确声明且可安全识别的非交互代码生成步骤；VS 始终由用户自行安装。
 - 两个脚本必须位于用户填写的 `code_path` 内，中央只保存用户合同，Agent 回传并继续使用工作区内相对逻辑引用。
 - 一键安装的 full/light Agent 声明 `auto_configure`。首次匹配任务可在本机验证路径后登记 workspace/output、Runtime 父目录和数据根；后续心跳只发布哈希化 binding ID，实现“一次配置、永久复用”。
 - `target=auto` 在提交时基于在线 capability 选择：有 `windows_full` 时优先本地；否则选择 Cluster。`windows_light` 只承担编译/上传，永不成为本地仿真节点。

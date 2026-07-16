@@ -158,6 +158,24 @@ if ($UseLocalControl) {
 }
 
 Write-Step "4/5 Verify deployment-mode boundaries"
+$vsCompilers = @()
+$vs2015 = "${env:ProgramFiles(x86)}\Microsoft Visual Studio 14.0\VC\bin\amd64\cl.exe"
+if (Test-Path $vs2015) { $vsCompilers += "Visual Studio 2015 (v140)" }
+foreach ($candidate in @(
+    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2017\*\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe",
+    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\*\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe",
+    "$env:ProgramFiles\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe"
+)) {
+    if (Get-Item $candidate -ErrorAction SilentlyContinue) { $vsCompilers += $candidate }
+}
+if ($vsCompilers.Count -eq 0) {
+    Write-Warn "No supported Visual Studio C++ compiler found. Install Visual Studio yourself before submitting a Selena build."
+} else {
+    Write-Ok "User-managed Visual Studio detected: $($vsCompilers -join ', ')"
+}
+$installConfig["visual_studio_detected"] = ($vsCompilers.Count -gt 0)
+$installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
+
 $policyCheck = @'
 from core.agent_policy import default_capabilities_for_mode
 import sys
@@ -221,6 +239,7 @@ if (-not $SkipCheck) {
 
 Write-Host "`nInstallation complete." -ForegroundColor Cyan
 Write-Host "Mode: $Mode / control plane: $ControlPlane"
+Write-Host "Visual Studio is user-managed; every build task validates and adapts the Selena script to the installed version."
 Write-Host "Start: .\scripts\start_windows.ps1"
 Write-Host "Background: .\scripts\start_windows.ps1 -Background"
 if ($Mode -eq "light") {

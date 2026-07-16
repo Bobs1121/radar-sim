@@ -116,3 +116,73 @@ def test_expected_branch_mismatch_is_a_non_blocking_visible_warning():
     assert branch_check.code == "workspace_branch_mismatch"
     assert "feature/expected" in branch_check.message
     assert "feature/actual" in branch_check.message
+
+
+def test_environment_adapts_visual_studio_before_capturing_final_workspace_snapshot():
+    calls = {"prepare": 0}
+    before = SimpleNamespace(
+        to_dict=lambda: {
+            "branch": "feature/current",
+            "commit": "a" * 40,
+            "dirty": True,
+            "sha256": "b" * 64,
+        }
+    )
+
+    def prepare(_payload, _store):
+        calls["prepare"] += 1
+        return SimpleNamespace(
+            before=before,
+            build_script_path="jenkins.bat",
+            package_build_script_path=None,
+        )
+
+    installation = SimpleNamespace(year="2015", tag="vs14", toolset="v140")
+    adaptation = SimpleNamespace(changed=True, installation=installation)
+    snapshot = inspect_selena_build_environment(
+        {"project": "bydod25", "workspace_binding_id": BINDING_ID, "build_mode": "Release"},
+        object(),
+        agent_id="agent-alice-host1",
+        node_kind=NODE_KIND_WINDOWS_AGENT,
+        now_fn=lambda: 100,
+        prepare_fn=prepare,
+        vs_adapter=lambda _path: adaptation,
+    )
+
+    assert calls["prepare"] == 2
+    assert snapshot.status == "ready"
+    check = next(item for item in snapshot.checks if item.requirement_id == "visual_studio_toolchain")
+    assert check.code == "selena_build_script_vs_adapted"
+    assert "Visual Studio 2015" in check.message
+
+
+def test_environment_prepares_package_generated_dependencies():
+    before = SimpleNamespace(
+        to_dict=lambda: {"branch": "main", "commit": "a" * 40, "dirty": False, "sha256": "b" * 64}
+    )
+    prepared = SimpleNamespace(
+        before=before,
+        build_script_path="jenkins.bat",
+        package_build_script_path="cmake_build.bat",
+        authorized=SimpleNamespace(workspace_root="D:/workspace"),
+    )
+    generated = SimpleNamespace(
+        generator="D:/workspace/ip_if/tools/pad_gen/bin/pad_generator.pl",
+        changed=True,
+        generated_targets=("apl/byd/padrpm",),
+    )
+    installation = SimpleNamespace(year="2015", tag="vs14", toolset="v140")
+
+    snapshot = inspect_selena_build_environment(
+        {"project": "bydod25", "workspace_binding_id": BINDING_ID},
+        object(),
+        agent_id="agent-a",
+        node_kind=NODE_KIND_WINDOWS_AGENT,
+        prepare_fn=lambda _payload, _store: prepared,
+        vs_adapter=lambda _path: SimpleNamespace(changed=False, installation=installation),
+        generated_dependency_preparer=lambda *_args: generated,
+    )
+
+    check = next(item for item in snapshot.checks if item.requirement_id == "package_generated_dependencies")
+    assert check.status == "passed"
+    assert check.code == "package_generated_dependencies_prepared"

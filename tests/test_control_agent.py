@@ -259,3 +259,38 @@ def test_run_v5_build_setup_failure_does_not_spawn_or_return_local_cwd(monkeypat
     result = client.results[-1]["result"]
     assert result == {"error": "binding not found"}
     assert "cwd" not in result
+
+
+def test_run_v5_build_failure_returns_visual_studio_diagnostic(monkeypatch, tmp_path):
+    prepared = SimpleNamespace(
+        command=(
+            sys.executable,
+            "-c",
+            "print('could not find any instance of Visual Studio'); raise SystemExit(1)",
+        ),
+        cwd=tmp_path,
+        source_lease_ref="",
+    )
+    monkeypatch.setattr("cli.agent._prepare_v5_selena_build", lambda _payload: prepared)
+    monkeypatch.setattr("cli.agent._verify_v5_selena_build", lambda _prepared: None)
+    client = _V5Client()
+    task = {
+        "task_id": "stage-build",
+        "task_type": "build_selena",
+        "stage_type": "build_selena",
+        "attempt_count": 1,
+        "payload": {},
+    }
+
+    assert _run_task(
+        client,
+        "light-a",
+        task,
+        heartbeat_interval=1,
+        node_kind="windows_agent",
+    ) == 1
+
+    result = client.results[-1]["result"]
+    assert result["code"] == "VISUAL_STUDIO_UNAVAILABLE"
+    assert result["diagnostic"]["category"] == "environment"
+    assert any(line.startswith("[diagnostic]") for line in client.logs)

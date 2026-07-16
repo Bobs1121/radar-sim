@@ -49,7 +49,7 @@ simulation:
 强制约束：
 
 - `data` 只有一个 `path`。用户不区分本地、公盘或上传数据；系统自动识别、检索 MF4，并在目标不可访问时传输到 Cluster 可访问存储。
-- `source=build` 时，系统从用户给出的 Selena 编译脚本确认真实输出位置，并在编译后验证 `Selena.exe` 与同目录 DLL；软件包编译脚本只用于内部项目识别和环境依赖发现/处理。
+- `source=build` 时，系统从用户给出的 Selena 编译脚本确认真实输出位置，并在编译后验证 `Selena.exe` 与同目录 DLL；软件包编译脚本只用于内部项目识别、环境依赖发现/处理及其明确声明的代码生成步骤。
 - `source=build` 始终编译用户当前工作区及其未提交修改，默认认为用户已自行切好分支。系统不得自动执行 checkout、reset、clean 或 stash。`branch` 仅是可选的期望分支；与实际分支不一致时，Web、SDK Job 结果和任务日志必须明确警告，但允许用户继续执行。
 - 清仓只属于用户明确选择并二次确认的可选动作，默认流程不执行。`git clean -xfd`、`git reset --hard`、递归 submodule reset/clean 等破坏性命令绝不能静默作用于用户工作区。
 - `source=existing` 时，用户只填写 Selena 文件夹路径和 Runtime XML。系统必须使用该目录中的 `Selena.exe` 和所需 DLL，不能只复制一个 exe。
@@ -76,7 +76,7 @@ simulation:
 | Linux + Windows light Agent | Windows 本地编译、完整产物/必要数据上传；Linux 后续调度 Cluster | light 首版不支持本地仿真，不承担 Cluster 运行期 |
 | 完全不部署 / 没有 Windows | 在 Web/SDK 填写 Linux/共享存储可达的已有 Selena 文件夹，或从 Web/SDK 选择并上传；Linux 调度 Cluster | 不支持 Selena 编译，不支持本地仿真 |
 
-Windows Agent 安装必须一键完成。可自动发现且安全的环境在第一次任务中自动配置并持久复用；环境缺失必须在任务执行前给出明确检查结果和处理动作。
+Windows Agent 安装必须一键完成。Visual Studio 由用户自行安装，Agent 负责识别可用 C++ toolset、校验并对 Selena 脚本的 VS 参数做最小适配，不代替用户安装 VS。其余可自动发现且安全的环境在第一次任务中自动配置并持久复用；环境缺失必须在任务执行前给出明确检查结果和处理动作。
 
 ## 5. 任务编排与可视化验收
 

@@ -127,6 +127,35 @@ def test_multistep_job_claims_tasks_in_order_and_stops_after_failure(tmp_path):
     assert service.claim_next_task(agent["agent_id"]) is None
 
 
+def test_failed_task_promotes_structured_diagnostic_to_public_stage_error(tmp_path):
+    service = make_service(tmp_path)
+    job = service.create_job("build_selena", payload={})
+    agent = service.register_agent("builder", capabilities=["build_selena"])
+    task = service.claim_next_task(agent["agent_id"])
+
+    completed = service.submit_task_result(
+        task["task_id"],
+        agent_id=agent["agent_id"],
+        status="failed",
+        returncode=1,
+        result={
+            "error": "The selected Visual Studio is unavailable",
+            "code": "VISUAL_STUDIO_UNAVAILABLE",
+            "diagnostic": {
+                "code": "VISUAL_STUDIO_UNAVAILABLE",
+                "category": "environment",
+                "action": "Adapt the Selena script and retry",
+            },
+        },
+    )
+
+    error = completed["tasks"][0]["error"]
+    assert error["code"] == "VISUAL_STUDIO_UNAVAILABLE"
+    assert error["message"] == "The selected Visual Studio is unavailable"
+    assert error["action"] == "Adapt the Selena script and retry"
+    assert error["diagnostic"]["category"] == "environment"
+
+
 def test_cancel_completed_job_is_noop(tmp_path):
     service = make_service(tmp_path)
     job = service.create_job("local.check", payload={"project": "ovrs25"})

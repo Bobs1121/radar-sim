@@ -40,6 +40,7 @@
 | INV-16 | Linux 是可迁移的统一控制面（当前目标 10.190.171.44），只调度和传输；不编译 Selena、不执行本地仿真。 |
 | INV-17 | 必须支持 build/existing × local/cluster 四种组合；auto 只负责在四种组合中自动选择并展示原因。 |
 | INV-18 | 已有 Selena 路径与 data.path 均由系统解析可达性；本地不可达时自动上传/传输，Cluster 就绪后不依赖用户电脑。 |
+| INV-19 | Visual Studio 由 Windows 用户自行安装；Agent 必须检测可用 C++ toolset、最小适配 Selena 脚本并展示结果。软件包脚本是其他依赖与明确代码生成步骤的事实来源，不得要求用户理解内部 toolchain 参数。 |
 
 ## 2. WP0-WP10 实时状态
 
@@ -83,6 +84,8 @@
 | 2026-07-16 | Linux 共享路径作用域修复 | 将 `linux_mount_map` 从项目 `local.yaml` 提升为 `$RSIM_HOME/config/deployment.yaml` 部署覆盖层，对所有内部项目识别结果生效，用户 YAML 仍只写 `data.path`；真实 UNC `//abtvdfs2.../20-4-26_CCCscp` 已解析到 `/mnt/cluster/...`，原任务 `job_f571e99f20f1` 的 `prepare_data` 重试成功。后续 Windows `prepare_source` 暴露长路径与大型 checkout 120 秒限制，已启用调用级 `core.longpaths=true`、600 秒 checkout 与超时半成品清理，重试后进入 `build_selena`。 |
 | 2026-07-16 | 当前工作区编译语义收敛 | 用户确认默认认为代码分支已自行切好，`source=build` 始终直接编译当前工作区并包含未提交修改；填写的 branch 改为可选期望值，不触发 checkout/worktree。实际分支不一致时 EnvironmentSnapshot、ResolvedSpec、Web/SDK Job 与任务日志输出非阻断 `workspace_branch_mismatch`。默认流程禁止 checkout/reset/clean/stash；用户手工清仓不由软件代执行。专项回归 106 passed。 |
 | 2026-07-16 | 当前工作区语义发布待验 | 修复实际发布入口 `radar_sim_web/static` 与旧 `web/` 双目录漂移，服务器 `10.190.171.44:8877` 已验证 health、HTML 和 JS 均为新口径；旧计划任务 `job_eed9ca41ce7b` 已取消，避免用户手工清仓期间领取 `prepare_source/build_selena`。Windows Agent 保持未重启，待用户确认清仓完成后重启并重新提交真实 build-to-cluster 任务。 |
+| 2026-07-16 | VS/软件包依赖真实编译闭环 | `job_8559ea0fa5e6` 首次失败于脚本硬编码 VS2019，而节点仅有 VS2015/v140；新增 VS 检测和 R2D2 `-vs`/`VS_POSTFIX` 幂等适配。第二次已越过 VS 配置并编译 18 分钟，暴露清仓删除 ignored PAD 生成头；从软件包脚本定位 `GEN_PAD_PARAMS.bat`，用 TCC Perl 的进程内 PATH 恢复生成头，并加入环境检查自动处理。失败诊断现向 Web/SDK 透传 code/message/action；第三次真实编译已启动，最终 build-to-cluster 结果待验。 |
+| 2026-07-16 | 后续独立运维与 MCP 诊断方向（不进入当前 Sprint） | 全流程打通后补稳定错误码/Stage Attempt/环境快照/诊断包/版本化 Runbook 与安全恢复动作，使无 AI 用户可自助排障；再提供版本化 MCP tools/resources，让 Agent 读取配置摘要、节点证据、首条真实错误、已尝试动作和 Runbook。重试/取消/恢复类 MCP 操作必须具备权限、幂等和确认边界；禁止以 `reset --hard` 等方式“回滚”用户工作区。 |
 | 2026-07-14 | 最少配置与动态调度收敛 | Web/YAML/SDK 统一为单一 data.path；新增 Selena/软件包脚本双入口、首次 Agent 自动配置、auto 本地/Cluster 选择、浏览器文件夹透明上传及 Adapter 条件校验；全量 1173 passed/8 skipped，真实页面复验通过 |
 | 2026-07-15 | 用户合同最终复验 | OpenCode 独立审计配置/Web/SDK 子合同无缺口且专项 36 passed；主 Agent 调度/数据/Agent 专项 102 passed、合同组合 137 passed、全量 1173 passed/8 skipped；真实页面确认单数据路径、双构建脚本、无 project、Adapter 可选、MatFilter 必填、auto/local/Cluster 与结构化 Stage 任务中心 |
 | 2026-07-15 | V1 existing + Cluster 收敛 | 单 YAML + 单 SDK 方法；SDK/服务端双侧已有 Selena 导入、数据/配置资产准备、manifest role 解包、Cluster 提交/结果回收纵向门禁通过；聚焦 101 passed，目标服务器烟测 Pending |

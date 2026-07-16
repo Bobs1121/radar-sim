@@ -241,6 +241,31 @@ def test_derive_dependencies_finds_legacy_package_toolcollection_in_workspace(tm
     )
 
 
+def test_derive_dependencies_follows_package_wrapper_to_itc2_version_file(tmp_path):
+    workspace = tmp_path / "workspace"
+    builder = workspace / "apl" / "byd" / "tools" / "builder"
+    builder.mkdir(parents=True)
+    entry = builder / "cmake_build.bat"
+    entry.write_text("call %~dp0\\cmake_gen.bat -m\n", encoding="utf-8")
+    (builder / "cmake_gen.bat").write_text(
+        "set /p TOOLCOLLECTION=<%project_dir%\\ip_if\\tcc_toolversion_itc2.txt\n"
+        "C:\\TCC\\itc2\\itc2.exe install %TOOLCOLLECTION% --tpdir %BUILD_DIR%\n"
+        "set PATH=%TCCPATH_cmake%\\bin;%TCCPATH_mingw64%\\bin\n",
+        encoding="utf-8",
+    )
+    version = workspace / "ip_if" / "tcc_toolversion_itc2.txt"
+    version.parent.mkdir(parents=True)
+    version.write_text("IF:BTC-7.0.0\n", encoding="utf-8")
+
+    deps = tcc.derive_dependencies_from_build_script({"build": {"env_build_script": str(entry)}})
+
+    assert any(item["kind"] == "toolcollection" and item["name"] == "IF:BTC-7.0.0" for item in deps)
+    assert {item["name"] for item in deps if item["kind"] == "env_var"} == {
+        "TCCPATH_cmake",
+        "TCCPATH_mingw64",
+    }
+
+
 def test_auto_repair_all_installed(tmp_path, monkeypatch):
     """itc2 + toolcollection both ready → ok, no install call."""
     exe = tmp_path / "itc2.exe"

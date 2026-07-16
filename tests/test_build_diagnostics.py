@@ -47,6 +47,24 @@ def test_build_failure_codes_are_stable(line, code):
     assert classify_build_failure([line]).code == code
 
 
+def test_visual_studio_generator_failure_is_specific_and_actionable():
+    diagnostic = classify_build_failure(
+        ["Generator Visual Studio 16 2019", "could not find any instance of Visual Studio"]
+    )
+    assert diagnostic.code == "VISUAL_STUDIO_UNAVAILABLE"
+    assert diagnostic.category == "environment"
+    assert "adapt" in diagnostic.action.lower()
+
+
+def test_missing_generated_header_points_to_package_generation_step():
+    diagnostic = classify_build_failure(
+        ["foo.cpp(4): fatal error C1083: Cannot open include file: 'padrpm_pub_gen.h': No such file"]
+    )
+    assert diagnostic.code == "GENERATED_SOURCE_MISSING"
+    assert diagnostic.category == "generated_dependency"
+    assert "code-generation" in diagnostic.action
+
+
 def _try_lock(path, queue):
     try:
         with WorkspaceBuildLock(path):

@@ -9,7 +9,7 @@ from typing import Iterable
 
 _STRONG_ERROR = re.compile(
     r"(?:fatal error|\berror\s+(?:C|LNK|MSB)\d+\b|\bFAILED:|undefined reference|"
-    r"cannot open (?:file|include)|no such file)",
+    r"cannot open (?:file|include)|no such file|could not find any instance of\s+Visual Studio)",
     re.IGNORECASE,
 )
 _GENERIC_ERROR = re.compile(r"(?:\bR2D2 execution failed\b|\bFailed to run (?:make|cmake)\b)", re.IGNORECASE)
@@ -22,7 +22,15 @@ _MISSING_LIBRARY = re.compile(r"(?:fatal error\s+LNK1104|cannot open file).*\.(?
 _LINKER = re.compile(r"\b(?:fatal error\s+)?LNK\d+\b|undefined reference", re.IGNORECASE)
 _TOOLCHAIN = re.compile(
     r"(?:not recognized as an internal or external command|command not found|"
-    r"could not find (?:cmake|compiler|toolchain)|MSB8020)",
+    r"could not find (?:cmake|compiler|toolchain)|could not find any instance of\s+Visual Studio|MSB8020)",
+    re.IGNORECASE,
+)
+_VISUAL_STUDIO = re.compile(
+    r"(?:could not find any instance of\s+Visual Studio|Visual Studio\s+(?:14|15|16|17|2015|2017|2019|2022).*not found)",
+    re.IGNORECASE,
+)
+_GENERATED_HEADER = re.compile(
+    r"(?:cannot open include file|no such file).*?(?:_gen|_generated)\.h\b",
     re.IGNORECASE,
 )
 
@@ -74,12 +82,28 @@ def classify_build_failure(lines: Iterable[str]) -> BuildDiagnostic:
     """
     errors = extract_actionable_build_errors(lines)
     detail = errors[0] if errors else "Build exited without an actionable compiler or linker error"
+    if _VISUAL_STUDIO.search(detail):
+        return BuildDiagnostic(
+            code="VISUAL_STUDIO_UNAVAILABLE",
+            category="environment",
+            summary="The Selena build script selected a Visual Studio version that is not installed",
+            action="Let the Windows Agent adapt the Selena script to the installed Visual Studio version, then retry",
+            detail=detail,
+        )
     if _SOURCE_EXCEPTION_SPEC.search(detail):
         return BuildDiagnostic(
             code="SOURCE_EXCEPTION_SPEC_MISMATCH",
             category="source",
             summary="Selena source declarations and definitions use different exception specifications",
             action="Fix the reported declaration/definition mismatch in the Selena branch, then rebuild",
+            detail=detail,
+        )
+    if _GENERATED_HEADER.search(detail):
+        return BuildDiagnostic(
+            code="GENERATED_SOURCE_MISSING",
+            category="generated_dependency",
+            summary="A generated source header required by Selena is missing",
+            action="Run the code-generation step discovered from the software-package build scripts, then retry",
             detail=detail,
         )
     if _MISSING_INCLUDE.search(detail):

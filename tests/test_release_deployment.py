@@ -59,3 +59,6 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert '$controlPlane -eq "local"' in starter
     assert '"--auth-file"' not in starter
     assert 'Local loopback access does not require a token' in bootstrap
+    assert "Visual Studio is user-managed" in bootstrap
+    assert "Visual Studio 2015 (v140)" in bootstrap
+    assert "visual_studio_detected" in bootstrap

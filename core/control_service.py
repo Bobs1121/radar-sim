@@ -1510,7 +1510,15 @@ class ControlService:
                 if error and not error_obj:
                     error_obj = {"message": error}
                 elif result.get("error") and not error_obj:
-                    error_obj = {"message": str(result.get("error"))}
+                    diagnostic = result.get("diagnostic") if isinstance(result.get("diagnostic"), dict) else {}
+                    error_obj = {
+                        "code": str(result.get("code") or diagnostic.get("code") or "stage_failed"),
+                        "message": str(result.get("error")),
+                    }
+                    if diagnostic:
+                        error_obj["diagnostic"] = dict(diagnostic)
+                        if diagnostic.get("action"):
+                            error_obj["action"] = str(diagnostic["action"])
                 elif final_status == "failed" and result.get("message") and not error_obj:
                     error_obj = {
                         "code": str(result.get("code") or "stage_failed"),

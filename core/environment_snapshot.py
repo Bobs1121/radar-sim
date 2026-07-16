@@ -19,6 +19,10 @@ from typing import Any, Callable, Mapping
 from core.agent_bindings import AgentBindingStore
 from core.agent_build_stage import AgentBuildStageError, prepare_selena_build
 from core.agent_policy import NODE_KIND_WINDOWS_AGENT, NODE_KIND_WINDOWS_FULL
+from core.windows_toolchain import (
+    WindowsToolchainError,
+    adapt_selena_script_visual_studio,
+)
 
 
 class EnvironmentSnapshotError(ValueError):
@@ -217,6 +221,8 @@ def inspect_selena_build_environment(
     now_fn: Callable[[], float] = time.time,
     ttl_seconds: float = 300.0,
     prepare_fn: Callable[..., Any] = prepare_selena_build,
+    vs_adapter: Callable[..., Any] = adapt_selena_script_visual_studio,
+    generated_dependency_preparer: Callable[..., Any] | None = None,
 ) -> EnvironmentSnapshot:
     """Inspect the authorized build boundary without starting a subprocess."""
     if not isinstance(payload, Mapping):
@@ -224,8 +230,27 @@ def inspect_selena_build_environment(
     project = str(payload.get("project") or "").strip()
     binding_id = str(payload.get("workspace_binding_id") or "").strip()
     created_at = float(now_fn())
+    adaptation = None
     try:
         prepared = prepare_fn(payload, binding_store)
+        build_script = getattr(prepared, "build_script_path", None)
+        if build_script is not None:
+            adaptation = vs_adapter(build_script)
+            if bool(getattr(adaptation, "changed", False)):
+                # The adaptation is an intentional current-workspace change.
+                # Re-prepare so checksum and dirty fingerprint include it.
+                prepared = prepare_fn(payload, binding_store)
+    except WindowsToolchainError as exc:
+        checks = (
+            EnvironmentCheckResult(
+                requirement_id="visual_studio_toolchain",
+                capability="build.selena",
+                status="failed",
+                code="visual_studio_toolchain_unavailable",
+                message=str(exc) or "A compatible Visual Studio C++ compiler is unavailable.",
+                action="Install the required Visual Studio C++ environment, then retry. The Agent does not install Visual Studio.",
+            ),
+        )
     except (AgentBuildStageError, ValueError, TypeError, OSError) as exc:
         checks = (
             EnvironmentCheckResult(
@@ -245,9 +270,32 @@ def inspect_selena_build_environment(
             EnvironmentCheckResult("selena_build_toolchain", "build.selena", "passed"),
             EnvironmentCheckResult("artifact_local_staging", "artifact.validate", "passed"),
         ]
+        if adaptation is not None:
+            installation = getattr(adaptation, "installation", None)
+            year = str(getattr(installation, "year", "") or "")
+            tag = str(getattr(installation, "tag", "") or "")
+            toolset = str(getattr(installation, "toolset", "") or "")
+            changed = bool(getattr(adaptation, "changed", False))
+            checks_list.append(
+                EnvironmentCheckResult(
+                    "visual_studio_toolchain",
+                    "build.selena",
+                    "passed",
+                    code="selena_build_script_vs_adapted" if changed else "",
+                    message=(
+                        f"Selena build script adapted to Visual Studio {year} ({tag}, {toolset})."
+                        if changed
+                        else f"Visual Studio {year} ({tag}, {toolset}) matches the Selena build script."
+                    ),
+                )
+            )
         package_script = getattr(prepared, "package_build_script_path", None)
         if package_script is not None:
             from core.tcc import auto_repair_environment, derive_dependencies_from_build_script
+            from core.windows_generated_dependencies import (
+                GeneratedDependencyError,
+                prepare_package_generated_dependencies,
+            )
 
             dependency_config = {"build": {"env_build_script": str(package_script)}}
             dependencies = derive_dependencies_from_build_script(dependency_config)
@@ -277,6 +325,37 @@ def inspect_selena_build_environment(
                         message=f"{len(dependencies)} dependency hints inspected",
                     )
                 )
+            prepare_generated = generated_dependency_preparer or prepare_package_generated_dependencies
+            try:
+                generated = prepare_generated(package_script, prepared.authorized.workspace_root)
+            except GeneratedDependencyError as exc:
+                checks_list.append(
+                    EnvironmentCheckResult(
+                        "package_generated_dependencies",
+                        "build.dependencies.generate",
+                        "failed",
+                        code="package_generated_dependencies_unavailable",
+                        message=str(exc) or "Package-generated source dependencies are unavailable.",
+                        action="Repair the generator dependency reported by the software-package script, then retry.",
+                    )
+                )
+            else:
+                if str(getattr(generated, "generator", "") or ""):
+                    changed = bool(getattr(generated, "changed", False))
+                    targets = tuple(getattr(generated, "generated_targets", ()) or ())
+                    checks_list.append(
+                        EnvironmentCheckResult(
+                            "package_generated_dependencies",
+                            "build.dependencies.generate",
+                            "passed",
+                            code="package_generated_dependencies_prepared" if changed else "",
+                            message=(
+                                f"Prepared generated source dependencies for {len(targets)} package target(s)."
+                                if changed
+                                else "Package-generated source dependencies are ready."
+                            ),
+                        )
+                    )
         expected_branch = str(payload.get("expected_branch") or "").strip()
         actual_branch = str((workspace or {}).get("branch") or "").strip()
         mismatch = bool(expected_branch and expected_branch != actual_branch)
