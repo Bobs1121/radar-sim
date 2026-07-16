@@ -94,7 +94,8 @@
             </div>
             <div id="cfgBuildBlock">
               <label>代码仓路径 <input id="cfgCodePath" placeholder="D:/bydod25fr/byd" /></label>
-              <label>Selena 分支 <input id="cfgBranch" placeholder="develop_evo（留空不切换）" /></label>
+              <label>期望 Selena 分支 <input id="cfgBranch" placeholder="用于差异提醒；不会自动切换或清理代码仓" /></label>
+              <div class="hint">系统直接编译当前代码仓及未提交修改；实际分支与期望分支不一致时会警告，但仍允许执行。</div>
               <label>Selena 编译脚本 <input id="cfgBuildScript" placeholder=".../jenkins_selena_build.bat" /></label>
               <label>软件包编译脚本 <input id="cfgEnvScript" placeholder=".../cmake_build.bat（可选）" /></label>
               <label>Runtime XML <input id="cfgRuntimeXml" placeholder="Runtime_xxx.xml 路径（与编译产物绑定）" /></label>

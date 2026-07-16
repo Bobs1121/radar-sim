@@ -155,6 +155,7 @@ def bind_run_config_environment(
             "package_build_script_ref": package_script_ref,
             "asset_bindings": asset_bindings,
             "runtime_xml": str(selena.get("runtime_xml") or ""),
+            "expected_branch": str(selena.get("branch") or ""),
         },
     )
 
@@ -296,11 +297,11 @@ def bind_current_workspace_build(
     *,
     now_fn: Callable[[], float] = time.time,
 ) -> dict:
-    """Bind ``build_selena`` to the Agent that produced a ready snapshot.
+    """Bind ``build_selena`` to the Agent that inspected the current workspace.
 
-    A7b intentionally allows only ``current_workspace`` here. Branch builds
-    require a detached source lease/worktree adapter; binding them to the
-    user's dirty checkout would violate the product contract.
+    UserRunConfig 2.0 always compiles the workspace exactly as the user left
+    it, including uncommitted changes. ``selena.branch`` is an expectation for
+    a visible warning, never an instruction to checkout/reset the repository.
     """
     job = control.get_job(job_id)
     stages = {str(item.get("stage_type") or ""): item for item in job.get("stages") or []}
@@ -325,8 +326,6 @@ def bind_current_workspace_build(
     if is_run_config:
         if str(selena.get("source") or "") != "build":
             raise StageBindingError("run config does not request a build")
-        if str(selena.get("branch") or "").strip():
-            raise StageBindingError("isolated branch worktree executor is not yet bound")
     elif mode not in {"current_workspace", "auto"} or not bool(selena.get("auto_build", True)):
         raise StageBindingError("only current_workspace build binding is available")
     raw_snapshot = dict((environment.get("result") or {}).get("environment_snapshot") or {})
@@ -348,6 +347,21 @@ def bind_current_workspace_build(
         raise StageBindingError("environment snapshot has no workspace fingerprint")
 
     workspace = dict(snapshot.workspace)
+    actual_branch = str(workspace.get("branch") or "")
+    expected_branch = str(selena.get("branch") or "").strip() if is_run_config else ""
+    branch_mismatch = bool(expected_branch and expected_branch != actual_branch)
+    branch_warnings: list[dict[str, str]] = []
+    if branch_mismatch:
+        warning = {
+            "code": "workspace_branch_mismatch",
+            "message": (
+                f"Expected branch '{expected_branch}', but the workspace is on "
+                f"'{actual_branch}'. The current workspace will be compiled unchanged."
+            ),
+            "action": "Confirm the branch and local modifications before relying on this build.",
+        }
+        branch_warnings.append(warning)
+        control.append_logs(str(environment["stage_id"]), [f"[warning] {warning['message']}"])
     resolved_spec = dict(job.get("resolved_spec") or {})
     decisions = dict(resolved_spec.get("decisions") or {})
     decisions["selena"] = {
@@ -356,7 +370,10 @@ def bind_current_workspace_build(
         "action": "build_current_workspace",
         "resolution": "workspace_build",
         "workspace_binding_id": snapshot.workspace_binding_id,
-        "branch": str(workspace.get("branch") or ""),
+        "branch": actual_branch,
+        "expected_branch": expected_branch,
+        "branch_mismatch": branch_mismatch,
+        "warnings": branch_warnings,
         "commit": str(workspace.get("commit") or ""),
         "dirty": bool(workspace.get("dirty")),
         "dirty_fingerprint": str(workspace.get("sha256") or "") if workspace.get("dirty") else "",
@@ -390,6 +407,9 @@ def bind_current_workspace_build(
                 environment.get("payload", {}).get("package_build_script_ref") or ""
             ),
             "runtime_xml": str(selena.get("runtime_xml") or ""),
+            "expected_branch": expected_branch,
+            "actual_branch": actual_branch,
+            "branch_mismatch": branch_mismatch,
         },
     )
 
@@ -918,8 +938,9 @@ def advance_after_stage_result(control: ControlService, completed_stage: dict) -
                 str(completed_stage.get("stage_id") or completed_stage.get("task_id") or ""),
             )
         job = control.get_job(str(completed_stage.get("job_id") or ""))
+        is_run_config = str((job.get("metadata") or {}).get("contract") or "") == "user-run-config/2.0"
         branch = str(((job.get("spec") or {}).get("selena") or {}).get("branch") or "").strip()
-        binder = bind_branch_source if branch else bind_current_workspace_build
+        binder = bind_current_workspace_build if is_run_config or not branch else bind_branch_source
         return binder(
             control, str(completed_stage.get("job_id") or ""),
             str(completed_stage.get("stage_id") or completed_stage.get("task_id") or ""),

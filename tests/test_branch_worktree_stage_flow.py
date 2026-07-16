@@ -8,7 +8,7 @@ from core.stage_binder import advance_after_stage_result
 from tests.test_api_v1_service import run_config_dict
 
 
-def test_branch_job_handoffs_environment_to_source_lease_then_build(tmp_path):
+def test_expected_branch_builds_dirty_current_workspace_and_warns_on_mismatch(tmp_path):
     control = ControlService(tmp_path / "control.db")
     api = ApiV1Service(control_service_factory=lambda _owner: control)
     code_path = "D:/workspace/byd"
@@ -59,29 +59,21 @@ def test_branch_job_handoffs_environment_to_source_lease_then_build(tmp_path):
         result={"environment_snapshot": snapshot},
     )
     env_stage = next(stage for stage in env_done["stages"] if stage["stage_type"] == "environment_check")
-    source_bound = advance_after_stage_result(control, env_stage)
-    assert source_bound["stage_type"] == "prepare_source"
-    assert source_bound["required_agent_id"] == "agent-1"
-    assert source_bound["payload"]["branch"] == "feature/demo"
-
-    source = control.claim_next_task("agent-1")
-    source_done = control.submit_task_result(
-        source["stage_id"], agent_id="agent-1", status="succeeded", returncode=0,
-        result={"source_lease": {
-            "lease_id": "source-lease:sha256:" + "c" * 64,
-            "source_evidence_ref": f"{source['stage_id']}:1",
-            "project": "internal-demo", "workspace_binding_id": binding_id,
-            "source_kind": "branch_worktree", "branch": "feature/demo", "commit": "d" * 40,
-        }},
-    )
-    source_stage = next(stage for stage in source_done["stages"] if stage["stage_type"] == "prepare_source")
-    build = advance_after_stage_result(control, source_stage)
+    build = advance_after_stage_result(control, env_stage)
     assert build["stage_type"] == "build_selena"
     assert build["required_agent_id"] == "agent-1"
-    assert build["payload"]["source_lease_ref"].startswith("source-lease:sha256:")
-    assert build["payload"]["commit"] == "d" * 40
+    assert build["payload"]["expected_branch"] == "feature/demo"
+    assert build["payload"]["actual_branch"] == "dirty-main"
+    assert build["payload"]["branch_mismatch"] is True
+    assert "source_lease_ref" not in build["payload"]
     assert build["payload"]["selena_build_script_ref"] == "selena/build.bat"
     assert build["payload"]["package_build_script_ref"] == "build/package.bat"
     public = api.get_job("alice", job["id"])
-    assert public["resolved_spec"]["decisions"]["selena"]["action"] == "build_isolated_branch"
+    decision = public["resolved_spec"]["decisions"]["selena"]
+    assert decision["action"] == "build_current_workspace"
+    assert decision["dirty"] is True
+    assert decision["branch_mismatch"] is True
+    assert decision["warnings"][0]["code"] == "workspace_branch_mismatch"
+    logs = control.get_logs(task_id=environment["stage_id"])["entries"]
+    assert any("current workspace will be compiled unchanged" in item["message"] for item in logs)
     assert "source-lease" not in str(public)

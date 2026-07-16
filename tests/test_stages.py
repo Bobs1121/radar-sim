@@ -48,6 +48,15 @@ def test_project_free_run_config_starts_with_internal_recognition():
     assert all("D:/" not in str(item) for item in plan.resolved_spec["environment_plan"]["requirements"])
 
 
+def test_named_expected_branch_still_skips_source_checkout():
+    raw = _run_config().to_dict()
+    raw["selena"]["branch"] = "feature/expected"
+    plan = plan_user_run_stages(UserRunConfig.from_dict(raw))
+    source = next(item for item in plan.stages if item.stage_type == "prepare_source")
+    assert source.initial_status == "skipped"
+    assert source.skip_reason == "current_workspace_selected"
+
+
 def test_existing_folder_skips_source_build_but_keeps_internal_registration():
     plan = plan_user_run_stages(_run_config(source="existing"))
     statuses = {item.stage_type: item.initial_status for item in plan.stages}

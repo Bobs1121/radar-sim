@@ -34,13 +34,14 @@ def test_build_config_has_no_project_profile_or_environment_concept():
         assert forbidden not in raw
 
 
-def test_current_workspace_is_branch_empty_and_named_branch_is_explicit():
+def test_branch_is_optional_expectation_for_the_same_current_workspace_flow():
     current = UserRunConfig.from_dict(_build_config())
     branch_values = _build_config()
     branch_values["selena"]["branch"] = "feature/FRGVBYDP-21653"
     branch = UserRunConfig.from_dict(branch_values)
     assert current.selena.branch == ""
     assert branch.selena.branch == "feature/FRGVBYDP-21653"
+    assert current.selena.source == branch.selena.source == "build"
 
 
 def test_existing_requires_existing_path_and_runtime_xml():

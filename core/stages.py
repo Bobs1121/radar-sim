@@ -139,7 +139,7 @@ def plan_user_run_stages(config: UserRunConfig) -> StagePlan:
     for stage_type in STAGE_TYPES:
         status = "queued"
         reason = ""
-        if config.selena.source == "build" and not config.selena.branch and stage_type == "prepare_source":
+        if config.selena.source == "build" and stage_type == "prepare_source":
             status = "skipped"
             reason = "current_workspace_selected"
         if config.selena.source == "existing" and stage_type in {"prepare_source", "build_selena"}:

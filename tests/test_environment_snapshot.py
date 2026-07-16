@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from core.agent_policy import NODE_KIND_WINDOWS_AGENT
 from core.environment_snapshot import (
@@ -83,3 +84,35 @@ def test_build_environment_inspection_returns_blocked_path_free_failure():
 
     assert snapshot.status == "blocked"
     assert snapshot.checks[0].code == "selena_build_environment_unavailable"
+
+
+def test_expected_branch_mismatch_is_a_non_blocking_visible_warning():
+    before = SimpleNamespace(
+        to_dict=lambda: {
+            "branch": "feature/actual",
+            "commit": "a" * 40,
+            "dirty": True,
+            "sha256": "b" * 64,
+        }
+    )
+    prepared = SimpleNamespace(before=before, package_build_script_path=None)
+    snapshot = inspect_selena_build_environment(
+        {
+            "project": "ovrs25",
+            "workspace_binding_id": BINDING_ID,
+            "build_mode": "Release",
+            "expected_branch": "feature/expected",
+        },
+        object(),
+        agent_id="agent-alice-host1",
+        node_kind=NODE_KIND_WINDOWS_AGENT,
+        now_fn=lambda: 100,
+        prepare_fn=lambda _payload, _store: prepared,
+    )
+
+    branch_check = next(item for item in snapshot.checks if item.requirement_id == "workspace_branch_expectation")
+    assert snapshot.status == "ready"
+    assert branch_check.status == "passed"
+    assert branch_check.code == "workspace_branch_mismatch"
+    assert "feature/expected" in branch_check.message
+    assert "feature/actual" in branch_check.message

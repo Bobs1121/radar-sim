@@ -369,6 +369,17 @@ def _run_task(
     start_logs = [f"[agent] starting {task['task_type']}"]
     if is_v5_build:
         start_logs.append("[agent] authorized Selena build command prepared")
+        build_payload = dict(task.get("payload") or {})
+        if build_payload.get("branch_mismatch") is True:
+            start_logs.append(
+                "[warning] expected branch "
+                f"'{build_payload.get('expected_branch')}', current branch "
+                f"'{build_payload.get('actual_branch')}'; compiling the current workspace unchanged"
+            )
+        elif build_payload.get("actual_branch"):
+            start_logs.append(
+                f"[agent] compiling current workspace on branch '{build_payload.get('actual_branch')}'"
+            )
     else:
         start_logs.append(f"[agent] command: {_quote_command(command)}")
     client.append_logs(task_id, start_logs)

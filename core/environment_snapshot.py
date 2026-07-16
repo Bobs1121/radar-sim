@@ -277,6 +277,28 @@ def inspect_selena_build_environment(
                         message=f"{len(dependencies)} dependency hints inspected",
                     )
                 )
+        expected_branch = str(payload.get("expected_branch") or "").strip()
+        actual_branch = str((workspace or {}).get("branch") or "").strip()
+        mismatch = bool(expected_branch and expected_branch != actual_branch)
+        checks_list.append(
+            EnvironmentCheckResult(
+                "workspace_branch_expectation",
+                "source.workspace.read",
+                "passed",
+                code="workspace_branch_mismatch" if mismatch else "",
+                message=(
+                    f"Expected branch '{expected_branch}', current branch is '{actual_branch}'. "
+                    "The current workspace will be compiled unchanged."
+                    if mismatch
+                    else f"Current branch is '{actual_branch}'."
+                ),
+                action=(
+                    "Confirm the branch and local modifications before relying on this build."
+                    if mismatch
+                    else ""
+                ),
+            )
+        )
         checks = tuple(checks_list)
     return EnvironmentSnapshot(
         agent_id=agent_id,
