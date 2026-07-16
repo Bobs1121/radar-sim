@@ -1,12 +1,12 @@
 # radar-sim V1 首版交付范围
 
 > 状态：当前最高实施优先级
-> 确认日期：2026-07-15
+> 确认日期：2026-07-16
 > 与总 PRD 的关系：这是完整产品中的第一条纵向子功能；`PRD.md` 和 `docs/PRODUCT_CONTRACT.md` 保持不变，其余组合进入后续版本。
 
 ## 当前交付状态（2026-07-15）
 
-- 已完成一个公开 SDK 方法 `RadarSimClient.submit_cluster_yaml(yaml_path)`；
+- 已完成统一公开 SDK 方法 `RadarSimClient.submit_yaml(yaml_path)`；`submit_cluster_yaml()` 仅作为首版严格校验兼容入口；
 - 已完成调用机可达目录的 Selena.exe + 全部同目录 DLL + Runtime XML 校验、内部归档和上传；
 - 已完成 Linux 服务可达共享/挂载目录的同等自动导入，不依赖 Windows Agent；
 - 已完成本地数据、MatFilter、可选 Adapter 的透明上传及统一逻辑引用；
@@ -51,13 +51,13 @@ simulation:
 from radar_sim_sdk import RadarSimClient
 
 with RadarSimClient("http://10.190.171.44:8878") as client:
-    job = client.submit_cluster_yaml("simulation.yaml")
+    job = client.submit_yaml("simulation.yaml")
     print(job.id)
 ```
 
 该方法内部自动完成：
 
-1. 读取并校验同一份 YAML，强制 `source=existing`、`target=cluster`；
+1. 读取并校验同一份 YAML；首版使用 `source=existing`、`target=cluster`，后续组合仍复用此方法；
 2. `existing_path` 在 SDK 调用机可达时，校验唯一 `Selena.exe`、同目录全部 DLL 和 Runtime XML，生成内部归档并上传；若 Linux/共享存储直接可达，则由 Linux staging 读取；
 3. `data.path` 在 SDK 调用机可达时递归检索 MF4 并上传；共享路径由 Linux 直接解析；
 4. MatFilter 必须可达并上传；Adapter 非空时上传；

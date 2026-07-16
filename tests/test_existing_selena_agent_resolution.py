@@ -1,9 +1,10 @@
 import json
 
-from cli.agent import _resolve_existing_v2_run_config
+from cli.agent import _resolve_existing_v2_run_config, _run_task
 from core.agent_policy import DEFAULT_FULL_CAPABILITIES, DEFAULT_LIGHT_CAPABILITIES
 from core.api_v1 import ApiV1Service
 from core.control_service import ControlService
+from core.stage_binder import bind_existing_runtime_resolution
 from tests.test_api_v1_service import run_config_dict
 
 
@@ -108,3 +109,138 @@ def test_agent_existing_resolver_creates_path_free_complete_bundle_lease(tmp_pat
     assert str(tmp_path) not in serialized
     assert str(binary) not in serialized
     assert "output_root" not in serialized
+
+
+def test_agent_existing_resolution_imports_bundle_for_task_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("RSIM_HOME", str(tmp_path / "home"))
+    config, binary, runtime, data = _existing_config(tmp_path, target="cluster")
+
+    class Client:
+        def __init__(self):
+            self.results = []
+            self.imports = []
+
+        def heartbeat(self, *_args, **_kwargs):
+            return {"cancel_requested": False}
+
+        def append_logs(self, *_args, **_kwargs):
+            return {}
+
+        def import_existing_runtime_bundle(self, recognition, *, owner=""):
+            self.imports.append((owner, recognition["runtime_bundle_lease_ref"]))
+            return {
+                "runtime_bundle": {
+                    **recognition["runtime_bundle"],
+                    "storage_ref": "shared://selena-bundles/ovrs25/imported",
+                    "archive_checksum": recognition["archive"]["checksum"],
+                    "archive_size": recognition["archive"]["size"],
+                }
+            }
+
+        def submit_result(self, _task_id, **kwargs):
+            self.results.append(kwargs)
+            return {}
+
+    client = Client()
+    task = {
+        "task_id": "resolve-existing-2",
+        "stage_id": "resolve-existing-2",
+        "job_id": "job-existing-2",
+        "task_type": "resolve_spec",
+        "stage_type": "resolve_spec",
+        "attempt_count": 1,
+        "owner": "alice",
+        "payload": {
+            "source": "existing",
+            "existing_path": str(binary),
+            "runtime_xml": str(runtime),
+            "data_path": str(data),
+            "selected_target": "cluster",
+            "auto_configure": True,
+        },
+    }
+
+    assert _run_task(
+        client, "light-1", task, heartbeat_interval=1, node_kind="windows_agent"
+    ) == 0
+    recognition = client.results[0]["result"]["recognition"]
+    assert client.imports[0][0] == "alice"
+    assert recognition["registered_runtime_bundle"]["storage_ref"].startswith(
+        "shared://selena-bundles/"
+    )
+
+
+def _complete_existing_resolution(control, api, config, *, agent_id, mode):
+    _register(control, agent_id=agent_id, mode=mode)
+    job = api.submit_user_run("alice", config_payload=config)
+    task = api.poll_agent("alice", agent_id)["task"]
+    bundle_id = "selena-bundle:sha256:" + "a" * 64
+    completed = control.submit_task_result(
+        task["stage_id"],
+        agent_id=agent_id,
+        status="succeeded",
+        returncode=0,
+        result={
+            "recognition": {
+                "status": "resolved",
+                "source": "existing",
+                "internal_project": "ovrs25",
+                "adapter_key": "project:ovrs25",
+                "runtime_bundle_lease_ref": "runtime-bundle-lease:sha256:" + "b" * 64,
+                "registered_runtime_bundle": {
+                    "id": bundle_id,
+                    "storage_ref": "shared://selena-bundles/ovrs25/opaque",
+                    "archive_checksum": "sha256:" + "c" * 64,
+                    "archive_size": 123,
+                },
+                "data_binding_id": "data-root:sha256:" + "d" * 24,
+                "confidence": 1.0,
+                "evidence": ["existing_folder_validated"],
+            }
+        },
+    )
+    stage = next(item for item in completed["stages"] if item["stage_type"] == "resolve_spec")
+    bound = bind_existing_runtime_resolution(control, job["id"], stage["stage_id"])
+    return control.get_job(job["id"]), bound
+
+
+def test_existing_folder_cluster_handoff_registers_bundle_and_uploads_local_data(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    control.register_agent(
+        "linux",
+        agent_id="linux-v2-stage-executor",
+        capabilities=["environment.cluster.check", "data.resolve", "preflight", "result.collect", "manifest.finalize"],
+        metadata={"node_kind": "linux_executor"},
+    )
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config, *_ = _existing_config(tmp_path, target="cluster")
+
+    job, bound = _complete_existing_resolution(
+        control, api, config, agent_id="light-1", mode="light"
+    )
+    stages = {item["stage_type"]: item for item in job["stages"]}
+
+    assert bound["stage_type"] == "environment_check"
+    assert bound["assigned_agent_id"] == "linux-v2-stage-executor"
+    assert stages["register_artifact"]["assigned_agent_id"] == "light-1"
+    assert stages["register_artifact"]["payload"]["already_registered"] is True
+    assert stages["prepare_data"]["assigned_agent_id"] == "light-1"
+    assert stages["prepare_data"]["payload"]["dispatch_scope"] == "data_upload"
+    assert job["resolved_spec"]["decisions"]["selena"]["status"] == "resolved"
+
+
+def test_existing_folder_local_handoff_reuses_bundle_on_full_agent(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config, *_ = _existing_config(tmp_path, target="local")
+
+    job, bound = _complete_existing_resolution(
+        control, api, config, agent_id="full-1", mode="full"
+    )
+    stages = {item["stage_type"]: item for item in job["stages"]}
+
+    assert bound["stage_type"] == "environment_check"
+    assert bound["assigned_agent_id"] == "full-1"
+    assert bound["payload"]["dispatch_scope"] == "existing_runtime"
+    assert bound["payload"]["data_binding_id"].startswith("data-root:sha256:")
+    assert stages["register_artifact"]["status"] == "skipped"

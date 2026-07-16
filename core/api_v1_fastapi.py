@@ -398,8 +398,8 @@ def create_app(
         return service.export_user_run_config_yaml(body.config.to_dict())
 
     @app.post("/api/v1/run-configs/validate")
-    def validate_run_config(config: UserRunConfig):
-        return service.validate_user_run_config(config.to_dict())
+    def validate_run_config(request: Request, config: UserRunConfig):
+        return service.validate_user_run_config(config.to_dict(), owner=owner(request))
 
     @app.post("/api/v1/run-jobs", status_code=201)
     def submit_run_job(

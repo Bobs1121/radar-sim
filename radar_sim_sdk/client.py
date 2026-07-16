@@ -118,6 +118,20 @@ class RadarSimClient:
             )
         return self.submit_run(config, idempotency_key=idempotency_key)
 
+    def submit_yaml(
+        self,
+        yaml_path: str | Path,
+        *,
+        dry_run: bool = False,
+        idempotency_key: str | None = None,
+    ) -> Job:
+        """Submit any supported build/existing and local/Cluster YAML in one call."""
+        return self.submit_run(
+            UserRunConfig.from_yaml(Path(yaml_path)),
+            dry_run=dry_run,
+            idempotency_key=idempotency_key,
+        )
+
     def _prepare_user_run(
         self,
         config: UserRunConfig,
@@ -181,26 +195,38 @@ class RadarSimClient:
                 # retries; wall-clock time is not source evidence.
                 created_at=0.0,
             )
-            metadata = {
+            imported_record = self.import_existing_runtime_bundle(
+                {
                 "internal_project": imported.internal_project,
                 "adapter_key": imported.adapter_key,
                 "manifest": imported.bundle.manifest.to_dict(),
                 "archive_checksum": imported.archive.checksum,
                 "archive_size": imported.archive.size,
-            }
-            encoded = base64.urlsafe_b64encode(
-                json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).decode("ascii").rstrip("=")
-            imported_record = self._request(
-                "POST",
-                "/api/v1/existing-selena-imports",
-                content=imported.archive.path.read_bytes(),
-                headers={"X-Rsim-Existing-Metadata": encoded},
+                },
+                imported.archive.path,
             )
         bundle_id = str((imported_record.get("runtime_bundle") or {}).get("id") or "")
         if not bundle_id.startswith("selena-bundle:sha256:"):
             raise ValueError("server did not return a valid prepared Selena reference")
         return bundle_id
+
+    def import_existing_runtime_bundle(
+        self,
+        metadata: dict[str, Any],
+        archive: str | Path,
+    ) -> dict[str, Any]:
+        """Register one complete existing Selena archive through the shared API."""
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(dict(metadata), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        return dict(
+            self._request(
+                "POST",
+                "/api/v1/existing-selena-imports",
+                content=Path(archive).read_bytes(),
+                headers={"X-Rsim-Existing-Metadata": encoded},
+            )
+        )
 
     def submit(
         self,

@@ -1,18 +1,18 @@
 schema_version: '2.0'
 
-# 无 Windows 用户：直接选择共享目录中的已有 Selena 文件夹。
+# 无 Windows 用户：填写 Linux 服务或 Cluster 可访问共享目录中的已有 Selena 文件夹。
 selena:
   source: existing
-  existing_path: D:/path/to/existing/Selena
-  runtime_xml: D:/path/to/existing/Selena/Runtime.xml
+  existing_path: /mnt/radar-share/selena/release-2026-07
+  runtime_xml: /mnt/radar-share/selena/release-2026-07/Runtime.xml
 
 # 始终只填写数据路径。软件会自动判断 Cluster 是否可直接访问；
 # 若路径只在已连接的 Windows Agent 上可见，则自动创建上传阶段。
 data:
-  path: D:/path/to/measurements
+  path: /mnt/radar-share/measurements/case-001
 
 # MatFilter 必填；Adapter 仅在识别出的仿真配方需要时才必填。
 simulation:
   target: cluster
   adapter_file: ''
-  mat_filter: config-asset://sha256/0000000000000000000000000000000000000000000000000000000000000000
+  mat_filter: /mnt/radar-share/config/MatFilter.cfg

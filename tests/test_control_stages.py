@@ -444,3 +444,69 @@ def test_finalize_manifest_stage_publishes_job_result(tmp_path):
 
     assert completed["status"] == "succeeded"
     assert completed["result"] == {"manifest": manifest}
+
+
+def test_failed_manifest_marks_job_failed_but_remains_available(tmp_path):
+    service = ControlService(tmp_path / "control.db")
+    job = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "finalize_manifest", "stage_type": "finalize_manifest"}],
+    )
+    service.register_agent("finalizer", agent_id="finalizer", capabilities=["*"])
+    task = service.claim_next_task("finalizer")
+    manifest = {
+        "schema_version": "radar-sim.run-manifest/2.0",
+        "status": "failed",
+        "result_ref": "result:sha256:" + "b" * 64,
+        "summary": {"errors": ["Selena reported a signal mismatch"]},
+    }
+
+    completed = service.submit_task_result(
+        task["stage_id"],
+        agent_id="finalizer",
+        status="succeeded",
+        returncode=0,
+        result={"manifest": manifest},
+    )
+
+    assert completed["status"] == "failed"
+    assert completed["result"] == {"manifest": manifest, "code": "simulation_failed", "message": "Selena reported a signal mismatch"}
+    finalized = {stage["stage_type"]: stage for stage in completed["stages"]}["finalize_manifest"]
+    assert finalized["status"] == "failed"
+    assert finalized["returncode"] == -1
+
+
+def test_startup_reconciles_historical_success_with_failed_manifest(tmp_path):
+    db_path = tmp_path / "control.db"
+    service = ControlService(db_path)
+    job = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "finalize_manifest", "stage_type": "finalize_manifest"}],
+    )
+    service.register_agent("finalizer", agent_id="finalizer", capabilities=["*"])
+    task = service.claim_next_task("finalizer")
+    service.submit_task_result(
+        task["stage_id"], agent_id="finalizer", status="succeeded", returncode=0,
+        result={"manifest": {"status": "succeeded"}},
+    )
+
+    historical = {"manifest": {"status": "failed", "summary": {"errors": ["old failure"]}}}
+    import json
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE jobs SET status='succeeded', result_json=? WHERE job_id=?",
+            (json.dumps(historical), job["job_id"]),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='succeeded', returncode=0, error_json='{}' WHERE task_id=?",
+            (task["stage_id"],),
+        )
+
+    reconciled = ControlService(db_path).get_job(job["job_id"])
+    assert reconciled["status"] == "failed"
+    final = {stage["stage_type"]: stage for stage in reconciled["stages"]}["finalize_manifest"]
+    assert final["status"] == "failed"
+    assert final["error"]["code"] == "simulation_failed"

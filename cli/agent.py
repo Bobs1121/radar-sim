@@ -210,6 +210,10 @@ def _run_task(
         is_v5_environment
         and str((task.get("payload") or {}).get("dispatch_scope") or "") == "runtime_bundle_cache"
     )
+    is_existing_runtime = (
+        is_v5_environment
+        and str((task.get("payload") or {}).get("dispatch_scope") or "") == "existing_runtime"
+    )
     is_v5_source = str(task.get("task_type") or "") == "prepare_source"
     is_v5_register = str(task.get("task_type") or "") == "register_artifact"
     is_v5_data = str(task.get("task_type") or "") == "prepare_data"
@@ -229,6 +233,14 @@ def _run_task(
                 if resolution_source == "existing"
                 else _resolve_v2_run_config(dict(task.get("payload") or {}))
             )
+            if resolution_source == "existing":
+                imported = client.import_existing_runtime_bundle(
+                    recognition,
+                    owner=str(task.get("owner") or ""),
+                )
+                recognition["registered_runtime_bundle"] = dict(
+                    imported.get("runtime_bundle") or {}
+                )
             client.heartbeat(
                 agent_id,
                 status="busy",
@@ -256,6 +268,17 @@ def _run_task(
             )
             return 0
         if is_v5_environment:
+            if is_existing_runtime:
+                existing = _execute_v5_existing_runtime(task)
+                client.append_logs(task_id, ["[agent] existing Runtime Bundle lease verified"])
+                client.submit_result(
+                    task_id,
+                    agent_id=agent_id,
+                    status="succeeded",
+                    returncode=0,
+                    result=existing,
+                )
+                return 0
             if is_runtime_bundle_cache:
                 cached = _execute_v5_runtime_bundle_cache(task, client=client)
                 client.append_logs(task_id, ["[agent] existing Runtime Bundle cached and verified"])
@@ -756,11 +779,27 @@ def _run_v5_register_artifact(
     result: dict = {"error": "artifact upload failed"}
     try:
         client.heartbeat(agent_id, status="busy", current_task_id=task_id)
-        result = _upload_v5_artifact(
-            client,
-            dict(task.get("payload") or {}),
-            owner=str(task.get("owner") or ""),
-        )
+        payload = dict(task.get("payload") or {})
+        if payload.get("already_registered") is True:
+            bundle = dict(payload.get("runtime_bundle") or {})
+            if (
+                not str(bundle.get("id") or "").startswith("selena-bundle:sha256:")
+                or not str(bundle.get("storage_ref") or "").startswith("shared://selena-bundles/")
+            ):
+                raise ValueError("registered Runtime Bundle evidence is invalid")
+            result = {
+                "runtime_bundle": bundle,
+                "storage_ref": str(bundle.get("storage_ref") or ""),
+                "runtime_bundle_lease_ref": str(payload.get("runtime_bundle_lease_ref") or ""),
+                "build_evidence_ref": str(payload.get("build_evidence_ref") or ""),
+                "reused": True,
+            }
+        else:
+            result = _upload_v5_artifact(
+                client,
+                payload,
+                owner=str(task.get("owner") or ""),
+            )
         status = "succeeded"
         returncode = 0
         client.append_logs(task_id, ["[agent] Selena artifact upload and registration completed"])
@@ -1090,6 +1129,28 @@ def _execute_v5_runtime_bundle_cache(task: dict, *, client: "_ControlClient") ->
             "status": "ready",
             "checksum": lease.archive_checksum,
             "size": lease.archive_size,
+        },
+    }
+
+
+def _execute_v5_existing_runtime(task: dict) -> dict:
+    """Verify and reuse the Runtime Bundle lease created by existing-folder resolution."""
+    from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
+
+    payload = dict(task.get("payload") or {})
+    lease = AgentRuntimeBundleLeaseStore().get(
+        str(payload.get("runtime_bundle_lease_ref") or "")
+    )
+    expected = dict(payload.get("runtime_bundle") or {})
+    if lease.manifest.id != str(expected.get("id") or ""):
+        raise ValueError("existing Runtime Bundle identity mismatch")
+    return {
+        "runtime_bundle_lease_ref": lease.lease_id,
+        "runtime_bundle": lease.manifest.to_dict(),
+        "environment_snapshot": {
+            "status": "ready",
+            "node_kind": "windows_full",
+            "runtime_bundle_id": lease.manifest.id,
         },
     }
 
@@ -1636,6 +1697,33 @@ class _ControlClient:
             "upload_session_id": uploaded.session.session_id,
             "reused": bool(uploaded.reused),
         }
+
+    def import_existing_runtime_bundle(self, recognition: dict, *, owner: str = "") -> dict:
+        """Upload an Agent-local existing Selena archive under the task owner."""
+        if not self._api_url:
+            raise ValueError("Agent v1 api-url is required for existing Selena import")
+        from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
+        from core.user import current_user
+        from radar_sim_sdk import RadarSimClient
+
+        evidence_ref = str(recognition.get("build_evidence_ref") or "")
+        lease = AgentRuntimeBundleLeaseStore().get(
+            str(recognition.get("runtime_bundle_lease_ref") or ""),
+            build_evidence_ref=evidence_ref,
+        )
+        metadata = {
+            "internal_project": str(recognition.get("internal_project") or ""),
+            "adapter_key": str(recognition.get("adapter_key") or ""),
+            "manifest": lease.manifest.to_dict(),
+            "archive_checksum": lease.archive_checksum,
+            "archive_size": lease.archive_size,
+        }
+        with RadarSimClient(
+            self._api_url,
+            user=str(owner or current_user()),
+            token=self._api_token,
+        ) as sdk:
+            return sdk.import_existing_runtime_bundle(metadata, lease.archive_path)
 
     def download_config_asset(self, asset_id: str, *, kind: str) -> Path:
         """Cache one owner-scoped Adapter/MatFilter on this authenticated Agent."""

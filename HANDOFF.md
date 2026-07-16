@@ -1,6 +1,6 @@
 # radar-sim v5 Active Handoff
 
-> 最近更新：2026-07-15
+> 最近更新：2026-07-16
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
@@ -45,9 +45,9 @@
 
 > 2026-07-15 V1 收敛决定：完整 PRD 不变，但当前交付只实现 `existing Selena + Cluster`。权威首版范围和门禁见 `docs/V1_MVP_SCOPE.md`；编译和本地仿真组合暂停实施，待 V1 交付后继续。
 
-### V1 纵向交付状态（2026-07-15）
+### V1 纵向交付状态（2026-07-16）
 
-`YAML -> RadarSimClient.submit_cluster_yaml() -> Linux /api/v1 -> Selena/数据/配置资产准备 -> Stage DAG -> Cluster Config.cfg -> submit_cluster_job() -> Result/Manifest` 已通过真实 Cluster 纵向测试。调用机可见路径由 SDK 上传；SDK 不可见但 Linux 已挂载可见的共享路径由服务端导入，UNC 会经管理员 `linux_mount_map` 转换。Runtime XML 不再写死为 `Runtime.xml`，Cluster executor 按 Bundle manifest 的 `runtime_config` role 定位。聚焦回归 `101 passed`、全量 `1197 passed, 8 skipped`，UNC 补丁后专项 `45 passed`。目标环境 `job_bad6f07479e5` 已成功完成 1 个任务并产出 537,269,680-byte MF4；Linux 正式用户服务监听 `0.0.0.0:8878`，健康检查 200，认证按用户决定延后到下一 Sprint。当前发布遗留仅为服务器 `8878` 入站网络放行/反向代理；本机可经 SSH 隧道立即验收。
+统一入口已收敛为 `YAML -> RadarSimClient.submit_yaml() / Web -> Linux /api/v1 -> Selena/数据/配置资产准备 -> Stage DAG -> local/Cluster`；兼容 `submit_cluster_yaml()` 只额外限制 V1 的 `existing + cluster` 组合。2026-07-16 修复 Web 直接填写 Windows 本地已有 Selena 文件夹时错误要求编译工作区的问题：Agent 现在校验并导入 `Selena.exe + 同目录 DLL + Runtime XML`，服务端按已有产物路径绑定环境和数据 Stage。API 配置检查返回与提交共用的执行位置决策和完整 10-stage 计划，Web 原样展示。专项回归 `110 passed`，最终全量回归 `1222 passed, 8 skipped`；部署后 SDK 的 build/auto 与 existing/cluster dry-run 均成功。真实 Web 烟测 `job_3a2dc6949270` 已完成已有 Selena 导入、Linux Cluster 环境检查、共享数据解析和 preflight，并取得外部 Cluster job id `1`；结果文件已回收，Manifest 因输入数据缺少 Runtime 所需信号而明确为 `failed`。控制面已修正为由 Manifest 决定最终 Job 成败，避免把“调度完成但仿真失败”显示为已完成。Linux 正式用户服务监听 `0.0.0.0:8878`，健康检查 200，认证按用户决定延后到下一 Sprint；本机可经 SSH 隧道立即验收。
 
 只有具备代码证据和测试证据的实现才能标记完成。已有原型只算“待审计输入”，不算 v5 完成度。
 
@@ -60,11 +60,11 @@
 | WP3 | Job/Stage/Event DAG | Done | 标准 10-stage planner、兼容 Stage/Attempt/Event persistence、结构化事件、cancel/retry/reclaim 与 v1/SDK 读取已完成；Copilot full 565 passed，主 agent focused/full 复验通过 |
 | WP4 | Selena source resolver、dirty fingerprint、artifact catalog | V1 Done / Full In Progress | V1 existing 路径已接 SDK/Linux 自动导入、内容寻址目录、归档完整性校验和 Cluster 消费；完整产品 build 组合后续继续 |
 | WP5 | Data resolver 与 upload | Done | shared/local/browser/SDK/Agent 数据统一为 `DatasetRef`/`DataLease`，中央多文件 resumable upload 与 Cluster/本地消费闭环完成 |
-| WP6 | Windows full 与 light Agent 执行适配 | In Progress | build/data/full-local 既有路径保留；公开 existing Selena 文件夹仍需接入 full 本地与 full/light 上传 Stage，旧“先登记 Bundle”路径不再算产品完成 |
+| WP6 | Windows full 与 light Agent 执行适配 | V1 Done / Full In Progress | Web/SDK 公开 existing Selena 文件夹已接 Agent 校验、打包和 owner-scoped 上传；`job_3a2dc6949270` 证明 existing-to-cluster 不再要求编译工作区。existing-to-local 与安装体验继续按完整 PRD 验收 |
 | WP7 | Linux central Cluster executor 与平台 Gateway routing | V1 Done | existing + Cluster 从 SDK 到真实 manager 已跑通；`job_bad6f07479e5` succeeded 并产出 537,269,680-byte MF4；Linux 可直接导入已挂载共享 Selena |
 | WP8 | Environment、Preflight、progress、Manifest 集成 | Done | Cluster 与 Windows-local environment/preflight/run/collect/finalize 已接统一 DAG；公共 Manifest/Result ZIP 只含逻辑 ref；外部 Cluster cancel 行为留目标环境验收 |
 | WP9 | Web v5 migration | Done | packaged v1 console 已覆盖最少配置、YAML import/export、上传、任务中心、Stage/event/action、结果下载和 session-only Bearer；认证真实浏览器 smoke 已通过 |
-| WP10 | SDK/package/docs/release gates | V1 Function Done / Network Pending | `submit_cluster_yaml()`、V1 示例、SDK/FastAPI/Cluster 纵向门禁和 10.190.171.44 真实验收均完成；仅剩服务器 8878 入站放行/反向代理 |
+| WP10 | SDK/package/docs/release gates | V1 Function Done / Network Pending | 统一 `submit_yaml()`、V1 兼容入口、Web 动态 10-stage 预览、SDK/FastAPI/Cluster 纵向门禁和 10.190.171.44 真实验收均完成；仅剩服务器 8878 入站放行/反向代理 |
 
 当前工作区包含既有未提交代码和测试变更（`cli/*`、`core/*`、`web/*`、`tests/*` 以及新增原型模块）。这些都视为待审计输入，不计入 v5 完成度，直到某个 WP 引用代码证据并通过测试。
 
@@ -78,6 +78,7 @@
 | 2026-07-10 | 轻量 Agent P0 边界 | PRD/design/plan/HANDOFF 仅文档同步：light Agent 不做本地仿真、不承担 Cluster 运行期；不得误报为运行时代码已交付 |
 | 2026-07-10 | Reviewer gap closure | PRD/design/plan/HANDOFF 仅文档同步：补 light build-to-cluster Stage/capability/node-kind 矩阵、artifact capability 词汇、WP6/WP7 负向门禁和 light Agent 数据 E2E 验收；WP6/WP7 runtime 仍 Pending |
 | 2026-07-14 | Runtime/配置边界与 Cluster 纵切 | Runtime Bundle 仅含 exe/DLL/绑定 Runtime XML；Adapter/MatFilter 独立必填并可上传为 owner-scoped config-asset；Linux/Gateway 四阶段接入、无 Windows mocked E2E 和 Web 真实上传烟测通过 |
+| 2026-07-16 | 统一 YAML/SDK/Web 收敛 | 新增 `submit_yaml()`、验证/提交共用路由决策、Web 10-stage 计划；修复 Web existing Selena 的 Agent 导入和 Stage 绑定；真实任务 `job_3a2dc6949270` 已完成 Cluster 结果回收，Manifest 正确暴露信号不匹配失败；新增 Job/Manifest 状态一致性门禁 |
 | 2026-07-14 | 最少配置与动态调度收敛 | Web/YAML/SDK 统一为单一 data.path；新增 Selena/软件包脚本双入口、首次 Agent 自动配置、auto 本地/Cluster 选择、浏览器文件夹透明上传及 Adapter 条件校验；全量 1173 passed/8 skipped，真实页面复验通过 |
 | 2026-07-15 | 用户合同最终复验 | OpenCode 独立审计配置/Web/SDK 子合同无缺口且专项 36 passed；主 Agent 调度/数据/Agent 专项 102 passed、合同组合 137 passed、全量 1173 passed/8 skipped；真实页面确认单数据路径、双构建脚本、无 project、Adapter 可选、MatFilter 必填、auto/local/Cluster 与结构化 Stage 任务中心 |
 | 2026-07-15 | V1 existing + Cluster 收敛 | 单 YAML + 单 SDK 方法；SDK/服务端双侧已有 Selena 导入、数据/配置资产准备、manifest role 解包、Cluster 提交/结果回收纵向门禁通过；聚焦 101 passed，目标服务器烟测 Pending |

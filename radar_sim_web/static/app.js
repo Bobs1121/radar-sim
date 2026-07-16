@@ -271,6 +271,31 @@ function updateRouteSummary() {
   byId("routeSummary").textContent = `${selenaText}，${targetText}`;
 }
 
+function renderExecutionPlan(result) {
+  const stages = Array.isArray(result?.execution_plan) ? result.execution_plan : [];
+  if (!stages.length) return;
+  const target = result?.execution?.selected_target;
+  const route = target === "local" ? "Windows 本地" : target === "cluster" ? "Cluster" : "待调度";
+  byId("planStatus").textContent = `配置有效，当前将使用 ${route} 路径。`;
+  const list = byId("planStages");
+  list.replaceChildren();
+  stages.forEach((stage, index) => {
+    const item = document.createElement("li");
+    const number = document.createElement("span");
+    number.textContent = String(index + 1);
+    const detail = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = stageName(stage.stage_type);
+    const note = document.createElement("small");
+    note.textContent = stage.status === "skipped"
+      ? `自动跳过：${friendlySkipReason(stage.skip_reason)}`
+      : "按依赖关系自动调度";
+    detail.append(title, note);
+    item.append(number, detail);
+    list.append(item);
+  });
+}
+
 function switchView(view) {
   state.view = view;
   qa(".nav-item").forEach((item) => item.classList.toggle("is-active", item.dataset.view === view));
@@ -286,7 +311,7 @@ async function validateCurrentSpec() {
     await ensureSelectedDataUploaded();
     const config = runConfigFromForm();
     const result = await api("/run-configs/validate", { method: "POST", json: config });
-    byId("planStatus").textContent = "配置有效，系统已生成环境需求。";
+    renderExecutionPlan(result);
     byId("formError").className = "notice success";
     byId("formError").textContent = `配置检查通过，指纹 ${result.fingerprint.slice(0, 19)}...`;
     byId("formError").hidden = false;
@@ -618,6 +643,16 @@ function stageName(value) {
     run_simulation: "运行仿真", collect_results: "收集仿真结果",
     finalize_manifest: "生成结果清单", collect_manifest: "生成结果清单", cluster_run: "Cluster 仿真",
   }[value] || value || "";
+}
+
+function friendlySkipReason(value) {
+  return {
+    current_workspace_selected: "使用当前工作区，不切换分支",
+    existing_selena_uses_registered_artifact: "使用已有 Selena，不需要编译",
+    registered_runtime_bundle_selected: "Selena 已准备完成",
+    existing_selena_kept_on_local_full_agent: "已有 Selena 保留在本机",
+    dry_run_plan_only: "仅生成计划",
+  }[value] || value || "当前路径不需要";
 }
 
 function friendlyStageDetail(stage) {

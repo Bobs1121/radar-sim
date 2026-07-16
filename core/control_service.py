@@ -264,6 +264,7 @@ class ControlService:
                 conn.execute("BEGIN IMMEDIATE")
                 self._migrate_jobs_schema_locked(conn)
                 self._migrate_tasks_schema_locked(conn)
+                self._reconcile_failed_manifest_jobs_locked(conn)
                 conn.execute(
                     """
                     CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_owner_idempotency_key
@@ -314,6 +315,31 @@ class ControlService:
                 conn.execute(statement)
         conn.execute("UPDATE tasks SET stage_type=task_type WHERE stage_type=''")
         conn.execute("UPDATE tasks SET initial_status=status WHERE initial_status=''")
+
+    def _reconcile_failed_manifest_jobs_locked(self, conn: sqlite3.Connection) -> None:
+        """Correct historical jobs finalized before manifest status was authoritative."""
+        rows = conn.execute(
+            "SELECT job_id, result_json FROM jobs WHERE status='succeeded' AND result_json <> '{}'"
+        ).fetchall()
+        for row in rows:
+            result = self._loads(row["result_json"])
+            manifest = result.get("manifest") if isinstance(result.get("manifest"), dict) else {}
+            manifest_status = str(manifest.get("status") or "").strip().lower()
+            if manifest_status not in {"failed", "failure", "cancelled", "canceled", "partial"}:
+                continue
+            error_json = self._dumps({
+                "code": "simulation_failed",
+                "message": "simulation result reported failure",
+            })
+            conn.execute("UPDATE jobs SET status='failed' WHERE job_id=?", (row["job_id"],))
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status='failed', returncode=-1, error_json=?
+                WHERE job_id=? AND stage_type='finalize_manifest' AND status='succeeded'
+                """,
+                (error_json, row["job_id"]),
+            )
 
     def register_agent(
         self,
@@ -1464,6 +1490,22 @@ class ControlService:
                 attempt = self._ensure_attempt_locked(conn, task, agent_id=effective_agent_id, now=now)
                 task = self._get_task_locked(conn, task_id)
                 final_status = self._resolve_task_result_status(task, status=status, returncode=returncode)
+                manifest = result.get("manifest") if isinstance(result.get("manifest"), dict) else {}
+                manifest_status = str(manifest.get("status") or "").strip().lower()
+                if (
+                    str(task.get("stage_type") or "") == "finalize_manifest"
+                    and manifest_status in {"failed", "failure", "cancelled", "canceled", "partial"}
+                ):
+                    # A successfully executed finalizer does not mean that the
+                    # simulation itself succeeded. Keep the manifest available,
+                    # but make the public Job reflect its business outcome.
+                    final_status = "failed"
+                    if returncode in {None, 0}:
+                        returncode = -1
+                    summary = manifest.get("summary") if isinstance(manifest.get("summary"), dict) else {}
+                    errors = summary.get("errors") if isinstance(summary.get("errors"), list) else []
+                    result.setdefault("code", "simulation_failed")
+                    result.setdefault("message", str(errors[0]) if errors else "simulation result reported failure")
                 error_obj = dict(result.get("error_json") or task.get("error") or {})
                 if error and not error_obj:
                     error_obj = {"message": error}
@@ -1527,7 +1569,7 @@ class ControlService:
                     )
                 old_job_status = self._get_job_locked(conn, task["job_id"])["status"]
                 self._refresh_job_status_locked(conn, task["job_id"], now)
-                if str(task.get("stage_type") or "") == "finalize_manifest" and final_status == "succeeded":
+                if str(task.get("stage_type") or "") == "finalize_manifest" and manifest:
                     conn.execute(
                         "UPDATE jobs SET result_json=?, updated_at=? WHERE job_id=?",
                         (self._dumps(result), now, task["job_id"]),

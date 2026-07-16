@@ -153,13 +153,33 @@ class ApiV1Service:
         config = self._parse_user_run_config(config_payload)
         return {"yaml_content": config.to_yaml(), "fingerprint": config.fingerprint()}
 
-    def validate_user_run_config(self, config_payload: dict[str, Any]) -> dict[str, Any]:
+    def validate_user_run_config(
+        self,
+        config_payload: dict[str, Any],
+        *,
+        owner: str = "",
+    ) -> dict[str, Any]:
         config = self._parse_user_run_config(config_payload)
+        plan = plan_user_run_stages(config)
+        selected_target, route_reason = self._select_user_execution_target(owner, config)
         return {
             "valid": True,
             "config": config.to_dict(),
             "fingerprint": config.fingerprint(),
             "environment_plan": plan_user_environment_requirements(config),
+            "execution": {
+                "requested_target": config.simulation.target,
+                "selected_target": selected_target,
+                "reason": route_reason,
+            },
+            "execution_plan": [
+                {
+                    "stage_type": stage.stage_type,
+                    "status": stage.initial_status,
+                    "skip_reason": stage.skip_reason,
+                }
+                for stage in plan.stages
+            ],
         }
 
     def submit_user_run(
@@ -253,34 +273,7 @@ class ApiV1Service:
         task_specs = plan.task_specs()
         resolved_spec = dict(plan.resolved_spec)
         requested_target = config.simulation.target
-        selected_target = requested_target
-        route_reason = "explicit_user_selection"
-        if requested_target == "auto":
-            capabilities = self.execution_capabilities(owner)["capabilities"]
-            data_path = str(config.data.path)
-            data_is_cluster_ready = (
-                data_path.lower().startswith("dataset://")
-                or classify_data_path(data_path) in {"shared", "central"}
-            )
-            if data_is_cluster_ready:
-                # Browser/SDK uploads and shared paths are already reachable
-                # from the Linux control plane.  Choosing a Windows-local run
-                # here would introduce an unnecessary reverse transfer.
-                selected_target = "cluster"
-                route_reason = "cluster_accessible_data"
-            elif capabilities["windows_full"]["available"]:
-                selected_target = "local"
-                route_reason = "windows_full_available"
-            else:
-                # A light Agent can compile/upload but never simulates locally.
-                # Existing bundles also need no Windows node at all, so Cluster
-                # is the safe auto fallback while its executors come online.
-                selected_target = "cluster"
-                route_reason = (
-                    "windows_light_build_then_cluster"
-                    if capabilities["windows_light"]["available"] and config.selena.source == "build"
-                    else "cluster_fallback"
-                )
+        selected_target, route_reason = self._select_user_execution_target(owner, config)
         decisions = dict(resolved_spec.get("decisions") or {})
         decisions["execution"] = {
             "status": "selected",
@@ -469,6 +462,27 @@ class ApiV1Service:
                     return self._job_response(existing)
             self._raise_idempotency_conflict(key)
         return self._job_response(job)
+
+    def _select_user_execution_target(
+        self,
+        owner: str,
+        config: UserRunConfig,
+    ) -> tuple[str, str]:
+        requested = config.simulation.target
+        if requested != "auto":
+            return requested, "explicit_user_selection"
+        data_path = str(config.data.path)
+        if (
+            data_path.lower().startswith("dataset://")
+            or classify_data_path(data_path) in {"shared", "central"}
+        ):
+            return "cluster", "cluster_accessible_data"
+        capabilities = self.execution_capabilities(self._owner(owner))["capabilities"]
+        if capabilities["windows_full"]["available"]:
+            return "local", "windows_full_available"
+        if capabilities["windows_light"]["available"] and config.selena.source == "build":
+            return "cluster", "windows_light_build_then_cluster"
+        return "cluster", "cluster_fallback"
 
     def _server_visible_path(self, value: str) -> Path:
         """Resolve a raw or administrator-authorized shared path on Linux."""

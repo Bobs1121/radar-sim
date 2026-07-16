@@ -235,6 +235,8 @@ def test_project_free_run_config_routes_share_one_contract(tmp_path):
     config = run_config_dict()
     validated = client.post("/api/v1/run-configs/validate", json=config)
     assert validated.status_code == 200
+    assert len(validated.json()["execution_plan"]) == 10
+    assert validated.json()["execution"]["selected_target"] in {"local", "cluster"}
     created = client.post(
         "/api/v1/run-jobs",
         json={"config": config},

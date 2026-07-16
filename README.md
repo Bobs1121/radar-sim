@@ -40,11 +40,11 @@ SDK 调用：
 from radar_sim_sdk import RadarSimClient
 
 with RadarSimClient("http://10.190.171.44:8878") as client:
-    job = client.submit_cluster_yaml("simulation.yaml")
+    job = client.submit_yaml("simulation.yaml")
     print(job.id)
 ```
 
-SDK/服务会根据路径在哪一侧可达，自动准备 Selena 目录、Runtime、数据和配置资产；用户不填写 project、Bundle、Cluster 参数或输出目录。详见 [`docs/V1_MVP_SCOPE.md`](docs/V1_MVP_SCOPE.md)。
+`submit_yaml()` 是 Web 共用的统一入口，可接受已有/编译 Selena 与 local/cluster 的组合；首版验收范围仍是上面的“已有 Selena + Cluster”。兼容方法 `submit_cluster_yaml()` 会额外强制检查这一首版组合。SDK/服务会根据路径在哪一侧可达，自动准备 Selena 目录、Runtime、数据和配置资产；用户不填写 project、Bundle、Cluster 参数或输出目录。详见 [`docs/V1_MVP_SCOPE.md`](docs/V1_MVP_SCOPE.md)。
 
 ## 现有兼容 CLI 快速开始
 

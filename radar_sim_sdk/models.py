@@ -150,6 +150,8 @@ class RunConfigValidationResult:
     config: UserRunConfig
     fingerprint: str
     environment_plan: dict[str, Any] = field(default_factory=dict)
+    execution: dict[str, Any] = field(default_factory=dict)
+    execution_plan: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunConfigValidationResult":
@@ -158,6 +160,8 @@ class RunConfigValidationResult:
             config=UserRunConfig.from_dict(dict(data.get("config") or {})),
             fingerprint=str(data.get("fingerprint") or ""),
             environment_plan=dict(data.get("environment_plan") or {}),
+            execution=dict(data.get("execution") or {}),
+            execution_plan=[dict(item) for item in data.get("execution_plan") or []],
         )
 
 

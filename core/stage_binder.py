@@ -159,6 +159,136 @@ def bind_run_config_environment(
     )
 
 
+def bind_existing_runtime_resolution(
+    control: ControlService,
+    job_id: str,
+    resolution_stage_id: str,
+) -> dict:
+    """Handoff a Windows-local existing folder without pretending it was built."""
+    from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID
+
+    job = control.get_job(job_id)
+    stages = {str(item.get("stage_type") or ""): item for item in job.get("stages") or []}
+    resolution = stages.get("resolve_spec")
+    environment = stages.get("environment_check")
+    register = stages.get("register_artifact")
+    data = stages.get("prepare_data")
+    if (
+        not resolution
+        or resolution.get("stage_id") != resolution_stage_id
+        or resolution.get("status") != "succeeded"
+    ):
+        raise StageBindingError("existing Selena resolution has not succeeded")
+    recognition = dict((resolution.get("result") or {}).get("recognition") or {})
+    bundle = dict(recognition.get("registered_runtime_bundle") or {})
+    lease_ref = str(recognition.get("runtime_bundle_lease_ref") or "")
+    project = str(recognition.get("internal_project") or "")
+    agent_id = str(resolution.get("required_agent_id") or resolution.get("assigned_agent_id") or "")
+    attempt = int(resolution.get("attempt_count") or 0)
+    if (
+        recognition.get("source") != "existing"
+        or not agent_id
+        or agent_id == INTERNAL_V1_SCHEDULER_AGENT_ID
+        or not project
+        or not lease_ref.startswith("runtime-bundle-lease:sha256:")
+        or not str(bundle.get("id") or "").startswith("selena-bundle:sha256:")
+        or not str(bundle.get("storage_ref") or "").startswith("shared://selena-bundles/")
+        or attempt < 1
+    ):
+        raise StageBindingError("existing Selena resolution evidence is invalid")
+
+    resolved_spec = dict(job.get("resolved_spec") or {})
+    decisions = dict(resolved_spec.get("decisions") or {})
+    decisions["recognition"] = {
+        "status": "resolved",
+        "confidence": float(recognition.get("confidence") or 0.0),
+        "evidence": list(recognition.get("evidence") or []),
+    }
+    decisions["selena"] = {
+        "status": "resolved",
+        "code": "existing_runtime_bundle_imported",
+        "action": "use_runtime_bundle",
+        "runtime_bundle": bundle,
+        "evidence": {"reason": "agent_existing_folder_import", "ref": f"{resolution_stage_id}:{attempt}"},
+    }
+    resolved_spec["decisions"] = decisions
+    resolved_spec["status"] = "partial"
+    control.update_resolved_spec(job_id, resolved_spec)
+
+    target = _selected_execution_target(job)
+    if not register:
+        raise StageBindingError("existing Selena registration Stage is unavailable")
+    if register.get("status") == "queued":
+        control.bind_stage_to_agent(
+            str(register["stage_id"]),
+            agent_id=agent_id,
+            expected_assigned_agent_id=INTERNAL_V1_SCHEDULER_AGENT_ID,
+            payload_patch={
+                "contract": "user-run-config/2.0",
+                "project": project,
+                "already_registered": True,
+                "runtime_bundle": bundle,
+                "runtime_bundle_lease_ref": lease_ref,
+                "build_evidence_ref": f"{resolution_stage_id}:{attempt}",
+            },
+        )
+    elif not (target == "local" and register.get("status") == "skipped"):
+        raise StageBindingError("existing Selena registration Stage is unavailable")
+
+    if not environment or environment.get("status") != "queued":
+        raise StageBindingError("existing Selena environment Stage is unavailable")
+    data_binding_id = str(recognition.get("data_binding_id") or "")
+    if target == "cluster":
+        bound = control.bind_stage_to_agent(
+            str(environment["stage_id"]),
+            agent_id=LINUX_STAGE_AGENT_ID,
+            expected_assigned_agent_id=INTERNAL_V1_SCHEDULER_AGENT_ID,
+            payload_patch={
+                "dispatch_scope": "cluster_runtime",
+                "contract": "user-run-config/2.0",
+                "project": project,
+                "runtime_bundle_id": str(bundle.get("id") or ""),
+            },
+        )
+        if (
+            data
+            and data.get("status") == "queued"
+            and str(data.get("assigned_agent_id") or "") == INTERNAL_V1_SCHEDULER_AGENT_ID
+            and data_binding_id.startswith("data-root:sha256:")
+        ):
+            spec = dict(job.get("spec") or {})
+            control.bind_stage_to_agent(
+                str(data["stage_id"]),
+                agent_id=agent_id,
+                expected_assigned_agent_id=INTERNAL_V1_SCHEDULER_AGENT_ID,
+                payload_patch={
+                    "dispatch_scope": "data_upload",
+                    "contract": "user-run-config/2.0",
+                    "project": project,
+                    "data_path": str((spec.get("data") or {}).get("path") or ""),
+                    "data_binding_id": data_binding_id,
+                    "required_signals": [],
+                },
+            )
+        return bound
+
+    if target != "local":
+        raise StageBindingError("existing Selena execution target is unresolved")
+    return control.bind_stage_to_agent(
+        str(environment["stage_id"]),
+        agent_id=agent_id,
+        expected_assigned_agent_id=INTERNAL_V1_SCHEDULER_AGENT_ID,
+        payload_patch={
+            "dispatch_scope": "existing_runtime",
+            "contract": "user-run-config/2.0",
+            "project": project,
+            "runtime_bundle": bundle,
+            "runtime_bundle_lease_ref": lease_ref,
+            "data_binding_id": data_binding_id,
+        },
+    )
+
+
 def bind_current_workspace_build(
     control: ControlService,
     job_id: str,
@@ -626,7 +756,8 @@ def bind_existing_bundle_local_data(
         not environment
         or environment.get("stage_id") != environment_stage_id
         or environment.get("status") != "succeeded"
-        or str((environment.get("payload") or {}).get("dispatch_scope") or "") != "runtime_bundle_cache"
+        or str((environment.get("payload") or {}).get("dispatch_scope") or "")
+        not in {"runtime_bundle_cache", "existing_runtime"}
     ):
         raise StageBindingError("Runtime Bundle cache Stage has not succeeded")
     if not data or data.get("status") != "queued":
@@ -761,6 +892,13 @@ def advance_after_stage_result(control: ControlService, completed_stage: dict) -
         str(completed_stage.get("stage_type") or "") == "resolve_spec"
         and str(completed_stage.get("status") or "") == "succeeded"
     ):
+        job = control.get_job(str(completed_stage.get("job_id") or ""))
+        if str(((job.get("spec") or {}).get("selena") or {}).get("source") or "") == "existing":
+            return bind_existing_runtime_resolution(
+                control,
+                str(completed_stage.get("job_id") or ""),
+                str(completed_stage.get("stage_id") or completed_stage.get("task_id") or ""),
+            )
         return bind_run_config_environment(
             control,
             str(completed_stage.get("job_id") or ""),
@@ -770,7 +908,10 @@ def advance_after_stage_result(control: ControlService, completed_stage: dict) -
         str(completed_stage.get("stage_type") or "") == "environment_check"
         and str(completed_stage.get("status") or "") == "succeeded"
     ):
-        if str((completed_stage.get("payload") or {}).get("dispatch_scope") or "") == "runtime_bundle_cache":
+        if str((completed_stage.get("payload") or {}).get("dispatch_scope") or "") in {
+            "runtime_bundle_cache",
+            "existing_runtime",
+        }:
             return bind_existing_bundle_local_data(
                 control,
                 str(completed_stage.get("job_id") or ""),
@@ -843,4 +984,5 @@ __all__ = [
     "maybe_bind_cluster_data_after_bundle",
     "bind_local_stage_after_result",
     "bind_existing_bundle_local_data",
+    "bind_existing_runtime_resolution",
 ]

@@ -233,6 +233,8 @@ def test_project_free_run_config_validate_and_submit_waits_for_node_recognition(
     assert validation["valid"] is True
     assert "project" not in validation["config"]
     assert validation["environment_plan"]["status"] == "planned"
+    assert len(validation["execution_plan"]) == 10
+    assert validation["execution"]["selected_target"] in {"local", "cluster"}
 
     job = api.submit_user_run(
         "alice",

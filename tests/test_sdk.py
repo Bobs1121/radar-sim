@@ -47,9 +47,23 @@ def test_sdk_and_web_share_project_free_run_config_contract(tmp_path):
     validation = sdk.validate_run(config)
     job = sdk.submit_run(config, idempotency_key="sdk-run-v2")
     assert validation.config == config
+    assert len(validation.execution_plan) == 10
     assert job.spec_hash == config.fingerprint()
     assert job.type == "simulation.run_config.v2"
     assert "project" not in job.spec
+
+
+def test_sdk_submit_yaml_accepts_every_user_run_combination(tmp_path):
+    sdk, _ = make_sdk(tmp_path)
+    config = UserRunConfig.from_dict(run_config_dict())
+    yaml_path = tmp_path / "simulation.yaml"
+    yaml_path.write_text(config.to_yaml(), encoding="utf-8")
+
+    job = sdk.submit_yaml(yaml_path, dry_run=True, idempotency_key="generic-yaml")
+
+    assert job.status == "succeeded"
+    assert job.spec == config.to_dict()
+    assert job.type == "simulation.run_config.v2.dry_run"
 
 
 def test_sdk_submit_run_transparently_uploads_linux_local_data_path(tmp_path, monkeypatch):
