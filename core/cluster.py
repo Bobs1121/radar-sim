@@ -1203,6 +1203,7 @@ def _resolve_datafile_path(sim: dict[str, Any], *, input_path: str, dataset: str
 def _copy_assets(config: dict[str, Any], assets_dir: Path, warnings: list[str], mount_map: dict[str, str] | None = None) -> dict[str, str]:
     assets_dir.mkdir(parents=True, exist_ok=True)
     assets = config.get("assets", {}) or {}
+    simulation = get_simulation_config(config)
     result: dict[str, str] = {}
     is_windows = sys.platform.startswith("win")
 
@@ -1214,8 +1215,18 @@ def _copy_assets(config: dict[str, Any], assets_dir: Path, warnings: list[str], 
                 return mount + p[len(unc_prefix):].replace("\\", "/")
         return p
 
+    simulation_keys = {
+        "runtime_xml": "runtime_xml",
+        "matfilefilter": "matfilefilter",
+        "adapter_file": "adapter_file",
+        "config_template": "config_template",
+    }
     for key in ("runtime_xml", "matfilefilter", "adapter_file", "config_template"):
-        value = str(assets.get(key) or "")
+        value = str(
+            assets.get(key)
+            or simulation.get(simulation_keys[key])
+            or ""
+        )
         if not value:
             continue
         source = Path(_local(value))

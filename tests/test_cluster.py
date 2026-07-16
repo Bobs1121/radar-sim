@@ -100,6 +100,30 @@ def test_prepare_cluster_job_generates_package(tmp_path):
     assert "--paramconfig" in script
 
 
+def test_prepare_cluster_job_copies_runtime_assets_from_effective_simulation(tmp_path):
+    from core.cluster import prepare_cluster_job
+
+    config = _cluster_config(tmp_path)
+    adapter = tmp_path / "adapter.txt"
+    adapter.write_text("adapter", encoding="utf-8")
+    config["simulation"]["adapter_file"] = str(adapter)
+    # v2 Stage execution resolves these into simulation.*.  They must still be
+    # copied into the shared Cluster job instead of leaking Linux-local paths.
+    config["assets"].pop("runtime_xml")
+    config["assets"].pop("matfilefilter")
+    input_mf4 = tmp_path / "input.MF4"
+    input_mf4.write_text("dummy", encoding="utf-8")
+
+    package = prepare_cluster_job(config, input_path=str(input_mf4), run_id="stage-assets")
+
+    cfg = Path(package.config_path).read_text(encoding="utf-8")
+    job_assets = Path(package.job_dir) / "assets"
+    assert f'runTimeConfigFile = "{job_assets / "runtime.xml"}";' in cfg
+    assert f'matfilefilter = "{job_assets / "matfilefilter.txt"}";' in cfg
+    assert f'adapterFile = "{job_assets / "adapter.txt"}";' in cfg
+    assert str(tmp_path / "assets" / "runtime.xml") not in cfg
+
+
 def test_prepare_cluster_job_infers_fr_radar_from_input_name(tmp_path):
     from core.cluster import prepare_cluster_job
 
