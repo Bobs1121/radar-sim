@@ -137,6 +137,14 @@ class AgentLogsRequest(BaseModel):
     stream: str = Field(default="stdout", pattern=r"^(stdout|stderr)$")
 
 
+class AgentProgressRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task_id: str = Field(min_length=1, max_length=200)
+    agent_id: str = Field(min_length=1, max_length=200)
+    progress: float = Field(ge=0.0, le=1.0)
+    message: str = Field(default="", max_length=500)
+
+
 class AgentResultRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     task_id: str = Field(min_length=1, max_length=200)
@@ -320,6 +328,17 @@ def create_app(
         return service.append_agent_logs(
             identity, body.task_id, lines=body.lines, stream=body.stream,
             agent_id=authenticated_agent_id,
+        )
+
+    @app.post("/api/tasks/progress")
+    def report_agent_progress(request: Request, body: AgentProgressRequest):
+        identity, agent_id = agent_identity(request, body.agent_id)
+        return service.report_agent_progress(
+            identity,
+            body.task_id,
+            agent_id=agent_id,
+            progress=body.progress,
+            message=body.message,
         )
 
     @app.post("/api/tasks/result")

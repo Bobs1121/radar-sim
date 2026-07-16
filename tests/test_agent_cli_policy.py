@@ -350,10 +350,11 @@ def test_register_artifact_uses_explicit_uploader_without_spawning(monkeypatch):
     monkeypatch.setattr(
         agent_module,
         "_upload_v5_artifact",
-        lambda client, payload: {
+        lambda client, payload, *, owner="": {
             "artifact": {"storage_ref": "shared://selena/ovrs25/team/a/selena.exe"},
             "storage_ref": "shared://selena/ovrs25/team/a/selena.exe",
             "build_evidence_ref": payload["build_evidence_ref"],
+            "owner": owner,
         },
     )
     monkeypatch.setattr(
@@ -366,6 +367,7 @@ def test_register_artifact_uses_explicit_uploader_without_spawning(monkeypatch):
         "task_id": "stage-register",
         "task_type": "register_artifact",
         "stage_type": "register_artifact",
+        "owner": "alice",
         "payload": {"build_evidence_ref": "stage-build:1"},
     }
     assert agent_module._run_task(
@@ -377,6 +379,7 @@ def test_register_artifact_uses_explicit_uploader_without_spawning(monkeypatch):
     ) == 0
     assert client.results[0]["status"] == "succeeded"
     assert client.results[0]["result"]["storage_ref"].startswith("shared://selena/")
+    assert client.results[0]["result"]["owner"] == "alice"
 
 
 def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkeypatch):
@@ -410,10 +413,11 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
         def heartbeat(self, _agent_id, **_kwargs):
             return {"cancel_requested": False}
 
-        def upload_data_lease(self, evidence_ref, *, agent_id, lease, task_id):
+        def upload_data_lease(self, evidence_ref, *, agent_id, lease, task_id, owner=""):
             assert evidence_ref == "stage-data:1"
             assert agent_id == "agent-a"
             assert task_id == "stage-data"
+            assert owner == "alice"
             return {
                 "dataset": {
                     "id": "dataset:sha256:" + "c" * 64,
@@ -440,6 +444,7 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
         "task_type": "prepare_data",
         "stage_type": "prepare_data",
         "attempt_count": 1,
+        "owner": "alice",
         "payload": {"project": "ovrs25", "data_binding_id": "data-root:sha256:" + "e" * 24},
     }
     assert agent_module._run_task(

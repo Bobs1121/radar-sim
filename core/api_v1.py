@@ -852,7 +852,15 @@ class ApiV1Service:
         control.bind_pending_runtime_bundle_cache(agent_id)
         control.bind_pending_environment_stage(agent_id)
         control.bind_pending_data_stage(agent_id)
-        return {"task": control.claim_next_task(agent_id)}
+        task = control.claim_next_task(agent_id)
+        if task is not None:
+            # Agent-side transfers must act for the user who submitted the job,
+            # not for the Windows login account running the Agent.  This value
+            # is only returned after ControlService has assigned the task to
+            # this Agent; it is not part of the public job/config contract.
+            job = control.get_job(str(task.get("job_id") or ""))
+            task["owner"] = self._owner(str(job.get("owner") or ""))
+        return {"task": task}
 
     def heartbeat_agent(
         self, owner: str, agent_id: str, *, status: str, current_task_id: str = "",
@@ -882,6 +890,40 @@ class ApiV1Service:
                     status_code=403,
                 )
         return control.append_logs(task_id, lines, stream=stream)
+
+    def report_agent_progress(
+        self,
+        owner: str,
+        task_id: str,
+        *,
+        agent_id: str,
+        progress: float,
+        message: str = "",
+    ) -> dict[str, Any]:
+        control = self._control(self._owner(owner))
+        try:
+            task = control.get_task(task_id)
+        except KeyError as exc:
+            raise ApiV1Error("task_not_found", "Task is unavailable", status_code=404) from exc
+        assigned = str(task.get("assigned_agent_id") or "")
+        required = str(task.get("required_agent_id") or "")
+        if str(agent_id) not in {assigned, required}:
+            raise ApiV1Error(
+                "agent_task_mismatch",
+                "Authenticated Agent is not assigned to this task",
+                status_code=403,
+            )
+        if str(task.get("status") or "") != "running":
+            raise ApiV1Error(
+                "task_not_running",
+                "Task progress can only be reported while it is running",
+                status_code=409,
+            )
+        return control.report_stage_progress(
+            task_id,
+            progress=max(0.0, min(float(progress), 1.0)),
+            message=str(message or ""),
+        )
 
     def submit_agent_result(
         self, owner: str, task_id: str, *, agent_id: str, status: str,

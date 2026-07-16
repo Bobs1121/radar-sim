@@ -142,6 +142,7 @@ def test_existing_bundle_local_cache_and_data_are_bound_to_same_full_agent(tmp_p
     task = api.poll_agent("bob", "full-1")["task"]
     assert task["stage_type"] == "environment_check"
     assert task["required_agent_id"] == "full-1"
+    assert task["owner"] == "bob"
     assert "storage_ref" in task["payload"]["runtime_bundle"]
 
     class DownloadClient:

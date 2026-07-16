@@ -103,6 +103,18 @@ def test_agent_bearer_auth_derives_identity_and_rejects_body_spoof(tmp_path):
         json={"task_id": task_id, "agent_id": "agent-1", "lines": ["ok"]},
         headers={"Authorization": f"Bearer {AGENT_TOKEN}"},
     ).status_code == 200
+    progress = client.post(
+        "/api/tasks/progress",
+        json={"task_id": task_id, "agent_id": "agent-1", "progress": 0.25, "message": "Compiling"},
+        headers={"Authorization": f"Bearer {AGENT_TOKEN}"},
+    )
+    assert progress.status_code == 200
+    assert control.get_task(task_id)["progress"] == 0.25
+    assert client.post(
+        "/api/tasks/progress",
+        json={"task_id": task_id, "agent_id": "agent-2", "progress": 0.5},
+        headers={"Authorization": f"Bearer {AGENT_TOKEN}"},
+    ).status_code == 403
     assert client.post(
         "/api/tasks/logs",
         json={"task_id": task_id, "agent_id": "agent-2", "lines": ["spoof"]},
@@ -324,7 +336,10 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     index = client.get("/")
     assert index.status_code == 200
     assert "Radar Sim 控制台" in index.text
-    assert client.get("/console/app.js").status_code == 200
+    app_js = client.get("/console/app.js")
+    assert app_js.status_code == 200
+    assert 'stage.status === "running"' in app_js.text
+    assert '["failed", "cancelled", "succeeded"].includes(job.status)' in app_js.text
     assert client.get("/console/styles.css").status_code == 200
     assert client.get("/api/v1/health").status_code == 200
     assert client.get("/api/config").status_code == 404

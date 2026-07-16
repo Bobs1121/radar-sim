@@ -5,7 +5,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from cli.agent import _build_task_command, _run_task
+from cli.agent import _build_progress_from_output, _build_task_command, _run_task
+
+
+def test_selena_build_progress_output_is_normalized():
+    assert _build_progress_from_output("[R2D2 (make)] [45/120] Compiling main.cpp") == (
+        45 / 120,
+        "Compiling main.cpp",
+    )
+    assert _build_progress_from_output("[R2D2 (make)] [ 72%] Linking") == (
+        0.72,
+        "Selena build in progress",
+    )
+    assert _build_progress_from_output("ordinary compiler warning") == (None, "")
 
 
 def test_build_task_command_for_local_run_sim_matches_cli_flags():

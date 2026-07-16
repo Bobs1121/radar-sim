@@ -53,6 +53,7 @@ from core.agent_policy import (
     normalize_windows_mode,
     validate_light_capabilities,
 )
+from core.progress_parser import parse_build_percentage, parse_build_progress
 
 # Default advertised capabilities for the default (light) mode. Kept as a
 # module name for backward-compatible imports (e.g. the embedded web agent).
@@ -366,6 +367,8 @@ def _run_task(
     returncode = None
     execution_error = ""
     lines: list[str] = []
+    last_reported_progress = 0.0
+    last_progress_report_at = 0.0
     try:
         if prepared_build is not None:
             _verify_v5_selena_build(prepared_build)
@@ -415,6 +418,29 @@ def _run_task(
                 text = line.rstrip()
                 if text:
                     lines.append(text)
+                    if is_v5_build:
+                        progress_value, progress_label = _build_progress_from_output(text)
+                        now = time.monotonic()
+                        if (
+                            progress_value is not None
+                            and progress_value > last_reported_progress
+                            and (
+                                progress_value - last_reported_progress >= 0.005
+                                or now - last_progress_report_at >= 5.0
+                            )
+                        ):
+                            try:
+                                client.report_progress(
+                                    task_id,
+                                    min(progress_value, 0.99),
+                                    message=progress_label,
+                                )
+                                last_reported_progress = progress_value
+                                last_progress_report_at = now
+                            except Exception:
+                                # Progress is advisory. Logs, heartbeat and the
+                                # terminal result remain authoritative.
+                                pass
                 if len(lines) >= 20:
                     client.append_logs(task_id, lines)
                     lines = []
@@ -514,6 +540,18 @@ def _run_task(
             client.append_logs(task_id, ["[agent] isolated source cleanup is pending; bundle evidence is retained"])
     client.submit_result(task_id, agent_id=agent_id, status=status, returncode=returncode, result=result)
     return 0 if status == "succeeded" else 1
+
+
+def _build_progress_from_output(line: str) -> tuple[float | None, str]:
+    """Return normalized Selena build progress from one compiler output line."""
+    counted = parse_build_progress(line)
+    if counted is not None:
+        done, total, label = counted
+        return done / total, label[:500]
+    percentage = parse_build_percentage(line)
+    if percentage is not None:
+        return percentage / 100.0, "Selena build in progress"
+    return None, ""
 
 
 def _prepare_v5_selena_build(payload: dict):
@@ -643,7 +681,7 @@ def _create_v5_artifact_lease(
     return lease.public_dict
 
 
-def _upload_v5_artifact(client: "_ControlClient", payload: dict) -> dict:
+def _upload_v5_artifact(client: "_ControlClient", payload: dict, *, owner: str = "") -> dict:
     from core.agent_artifact_lease import AgentArtifactLeaseStore
 
     lease_ref = str(payload.get("artifact_lease_ref") or "").strip()
@@ -658,6 +696,7 @@ def _upload_v5_artifact(client: "_ControlClient", payload: dict) -> dict:
             evidence_ref,
             lease.archive_path,
             publish_path=str(payload.get("publish_path") or ""),
+            owner=owner,
         )
         runtime_bundle = dict(result.get("runtime_bundle") or {})
         storage_ref = str(runtime_bundle.get("storage_ref") or "")
@@ -677,6 +716,7 @@ def _upload_v5_artifact(client: "_ControlClient", payload: dict) -> dict:
         evidence_ref,
         lease.artifact_path,
         publish_path=str(payload.get("publish_path") or ""),
+        owner=owner,
     )
     artifact = dict(result.get("artifact") or {})
     storage_ref = str(artifact.get("storage_ref") or "")
@@ -716,12 +756,29 @@ def _run_v5_register_artifact(
     result: dict = {"error": "artifact upload failed"}
     try:
         client.heartbeat(agent_id, status="busy", current_task_id=task_id)
-        result = _upload_v5_artifact(client, dict(task.get("payload") or {}))
+        result = _upload_v5_artifact(
+            client,
+            dict(task.get("payload") or {}),
+            owner=str(task.get("owner") or ""),
+        )
         status = "succeeded"
         returncode = 0
         client.append_logs(task_id, ["[agent] Selena artifact upload and registration completed"])
-    except Exception:
-        client.append_logs(task_id, ["[agent] artifact upload failed; retry is safe and resumable"])
+    except Exception as exc:
+        code = str(getattr(exc, "code", "") or "artifact_upload_failed")
+        api_message = str(getattr(exc, "message", "") or "").strip()
+        result = {
+            "code": code,
+            "error": api_message or "artifact upload failed",
+        }
+        client.append_logs(
+            task_id,
+            [
+                f"[agent] artifact upload failed ({code}"
+                + (f": {api_message}" if api_message else "")
+                + "); retry is safe and resumable"
+            ],
+        )
     finally:
         stop_event.set()
         thread.join(timeout=max(1.0, heartbeat_interval))
@@ -807,6 +864,7 @@ def _run_v5_prepare_data(
                 agent_id=agent_id,
                 lease=lease,
                 task_id=task_id,
+                owner=str(task.get("owner") or ""),
             )
             dataset = dict(uploaded.get("dataset") or {})
             dataset_id = str(dataset.get("id") or "")
@@ -1504,6 +1562,18 @@ class _ControlClient:
             {"task_id": task_id, "agent_id": self._agent_id, "lines": lines, "stream": "stdout"},
         )
 
+    def report_progress(self, task_id: str, progress: float, *, message: str = "") -> dict:
+        return self._request(
+            "POST",
+            "/api/tasks/progress",
+            {
+                "task_id": task_id,
+                "agent_id": self._agent_id,
+                "progress": max(0.0, min(float(progress), 1.0)),
+                "message": str(message or ""),
+            },
+        )
+
     def submit_result(self, task_id: str, *, agent_id: str, status: str, returncode: int, result: dict) -> dict:
         return self._request(
             "POST",
@@ -1517,13 +1587,20 @@ class _ControlClient:
             },
         )
 
-    def upload_artifact(self, build_evidence_ref: str, source: Path, *, publish_path: str = "") -> dict:
+    def upload_artifact(
+        self,
+        build_evidence_ref: str,
+        source: Path,
+        *,
+        publish_path: str = "",
+        owner: str = "",
+    ) -> dict:
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for artifact upload")
         from core.user import current_user
         from radar_sim_sdk import RadarSimClient
 
-        with RadarSimClient(self._api_url, user=current_user(), token=self._api_token) as sdk:
+        with RadarSimClient(self._api_url, user=str(owner or current_user()), token=self._api_token) as sdk:
             uploaded = sdk.upload_artifact(
                 build_evidence_ref,
                 source,
@@ -1535,13 +1612,20 @@ class _ControlClient:
             "reused": bool(uploaded.reused),
         }
 
-    def upload_runtime_bundle(self, build_evidence_ref: str, source: Path, *, publish_path: str = "") -> dict:
+    def upload_runtime_bundle(
+        self,
+        build_evidence_ref: str,
+        source: Path,
+        *,
+        publish_path: str = "",
+        owner: str = "",
+    ) -> dict:
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for Runtime Bundle upload")
         from core.user import current_user
         from radar_sim_sdk import RadarSimClient
 
-        with RadarSimClient(self._api_url, user=current_user(), token=self._api_token) as sdk:
+        with RadarSimClient(self._api_url, user=str(owner or current_user()), token=self._api_token) as sdk:
             uploaded = sdk.upload_runtime_bundle(
                 build_evidence_ref,
                 source,
@@ -1647,6 +1731,7 @@ class _ControlClient:
         agent_id: str,
         lease,
         task_id: str,
+        owner: str = "",
     ) -> dict:
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for dataset upload")
@@ -1663,14 +1748,15 @@ class _ControlClient:
         ]
         source = lease.source_path
         root = source if source.is_dir() else source.parent
-        with RadarSimClient(self._api_url, user=current_user(), token=self._token) as agent_sdk:
+        transfer_owner = str(owner or current_user())
+        with RadarSimClient(self._api_url, user=transfer_owner, token=self._token) as agent_sdk:
             session = agent_sdk.create_agent_dataset_upload(
                 lease.project,
                 manifest,
                 evidence_ref=evidence_ref,
                 agent_id=agent_id,
             )
-        with RadarSimClient(self._api_url, user=current_user(), token=self._api_token) as sdk:
+        with RadarSimClient(self._api_url, user=transfer_owner, token=self._api_token) as sdk:
             current = session
             total = len(session.files)
             for index, upload_file in enumerate(session.files, start=1):

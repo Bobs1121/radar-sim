@@ -409,7 +409,12 @@ function renderJobs() {
     const meta = document.createElement("div");
     meta.className = "job-row-meta";
     const stage = document.createElement("span");
-    stage.textContent = stageName(job.current_stage) || "等待调度";
+    const currentStage = stageName(job.current_stage);
+    stage.textContent = currentStage || (
+      ["failed", "cancelled", "succeeded"].includes(job.status)
+        ? statusName(job.status)
+        : "等待调度"
+    );
     const time = document.createElement("time");
     time.textContent = formatTime(job.created_at);
     meta.append(stage, time);
@@ -629,6 +634,9 @@ function friendlyStageDetail(stage) {
   };
   if (byReason[stage.skip_reason]) return byReason[stage.skip_reason];
   if (stage.error?.message) return stage.error.message;
+  if (stage.status === "running" && Number(stage.progress || 0) <= 0) {
+    return "正在运行，日志持续更新";
+  }
   return `${Math.round((stage.progress || 0) * 100)}%`;
 }
 
