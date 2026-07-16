@@ -39,7 +39,7 @@ SDK 调用：
 ```python
 from radar_sim_sdk import RadarSimClient
 
-with RadarSimClient("http://10.190.171.44:8878") as client:
+with RadarSimClient("http://10.190.171.44:8877") as client:
     job = client.submit_yaml("simulation.yaml")
     print(job.id)
 ```

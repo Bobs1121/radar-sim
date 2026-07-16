@@ -342,6 +342,9 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert app_js.status_code == 200
     assert 'stage.status === "running"' in app_js.text
     assert '["failed", "cancelled", "succeeded"].includes(job.status)' in app_js.text
+    assert "jobsRequestInFlight" in app_js.text
+    assert "followedLogTail" in app_js.text
+    assert "仿真失败原因" in app_js.text
     assert client.get("/console/styles.css").status_code == 200
     assert client.get("/api/v1/health").status_code == 200
     assert client.get("/api/config").status_code == 404

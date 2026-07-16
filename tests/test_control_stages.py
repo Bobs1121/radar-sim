@@ -475,6 +475,10 @@ def test_failed_manifest_marks_job_failed_but_remains_available(tmp_path):
     finalized = {stage["stage_type"]: stage for stage in completed["stages"]}["finalize_manifest"]
     assert finalized["status"] == "failed"
     assert finalized["returncode"] == -1
+    assert finalized["error"] == {
+        "code": "simulation_failed",
+        "message": "Simulation failed; inspect the result manifest for details",
+    }
 
 
 def test_startup_reconciles_historical_success_with_failed_manifest(tmp_path):

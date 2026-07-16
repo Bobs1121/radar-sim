@@ -1511,6 +1511,15 @@ class ControlService:
                     error_obj = {"message": error}
                 elif result.get("error") and not error_obj:
                     error_obj = {"message": str(result.get("error"))}
+                elif final_status == "failed" and result.get("message") and not error_obj:
+                    error_obj = {
+                        "code": str(result.get("code") or "stage_failed"),
+                        "message": (
+                            "Simulation failed; inspect the result manifest for details"
+                            if str(result.get("code") or "") == "simulation_failed"
+                            else str(result.get("message"))
+                        ),
+                    }
                 output_ref = result.get("output_ref") if isinstance(result.get("output_ref"), dict) else {}
 
                 conn.execute(

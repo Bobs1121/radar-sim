@@ -2,12 +2,13 @@
 
 const API = "/api/v1";
 const state = {
-  view: "create",
+  view: sessionStorage.getItem("rsimView") || "create",
   jobs: [],
   jobsSignature: "",
-  selectedJobId: "",
+  selectedJobId: sessionStorage.getItem("rsimSelectedJobId") || "",
   eventsByJob: new Map(),
   pollTimer: null,
+  jobsRequestInFlight: false,
   accessToken: sessionStorage.getItem("rsimAccessToken") || "",
   authenticationRequired: false,
   dataFolderFiles: [],
@@ -220,11 +221,14 @@ async function ensureSelectedDataUploaded() {
   const percent = byId("dataUploadPercent");
   progress.hidden = false;
   let uploaded = 0;
+  let displayedValue = -1;
   const total = files.reduce((sum, file) => sum + file.size, 0);
   const update = () => {
     const value = total ? Math.round(uploaded * 100 / total) : 100;
+    if (value === displayedValue) return;
+    displayedValue = value;
     bar.value = value;
-    percent.textContent = `${value}%`;
+    percent.textContent = `${value}% · ${formatBytes(uploaded)} / ${formatBytes(total)}`;
   };
   const session = await api("/run-data-uploads", { method: "POST", json: { files: manifest } });
   const remoteByPath = new Map((session.files || []).map((item) => [item.relative_path, item]));
@@ -298,6 +302,7 @@ function renderExecutionPlan(result) {
 
 function switchView(view) {
   state.view = view;
+  sessionStorage.setItem("rsimView", view);
   qa(".nav-item").forEach((item) => item.classList.toggle("is-active", item.dataset.view === view));
   byId("createView").classList.toggle("is-active", view === "create");
   byId("tasksView").classList.toggle("is-active", view === "tasks");
@@ -382,13 +387,15 @@ async function exportYaml() {
 }
 
 async function loadJobs() {
+  if (state.jobsRequestInFlight) return;
+  state.jobsRequestInFlight = true;
   const list = byId("jobList");
   if (!state.jobs.length) list.innerHTML = '<div class="empty-state">正在加载任务</div>';
   try {
     const filter = byId("statusFilter").value;
     const page = await api(`/jobs?limit=100${filter ? `&status=${encodeURIComponent(filter)}` : ""}`);
     const jobs = page.jobs || [];
-    const signature = JSON.stringify(jobs.map((job) => [job.id, job.status, job.progress, job.current_stage, job.updated_at]));
+    const signature = JSON.stringify(jobs.map((job) => [job.id, job.status, job.progress, job.current_stage]));
     state.jobs = jobs;
     if (signature !== state.jobsSignature) {
       state.jobsSignature = signature;
@@ -401,6 +408,8 @@ async function loadJobs() {
     empty.className = "empty-state";
     empty.textContent = error.message;
     list.append(empty);
+  } finally {
+    state.jobsRequestInFlight = false;
   }
 }
 
@@ -450,6 +459,7 @@ function renderJobs() {
 
 async function loadJobDetail(jobId, resetEvents) {
   state.selectedJobId = jobId;
+  sessionStorage.setItem("rsimSelectedJobId", jobId);
   if (resetEvents) state.eventsByJob.delete(jobId);
   renderJobs();
   try {
@@ -470,6 +480,12 @@ async function loadJobDetail(jobId, resetEvents) {
 
 function renderJobDetail(job, events, manifest) {
   const root = byId("jobDetail");
+  const previousLog = q(".event-log", root);
+  const previousLogTop = previousLog?.scrollTop || 0;
+  const followedLogTail = previousLog
+    ? previousLog.scrollHeight - previousLog.clientHeight - previousLog.scrollTop < 32
+    : true;
+  const previousRootTop = root.scrollTop;
   root.replaceChildren();
   const header = document.createElement("div");
   header.className = "detail-header";
@@ -527,6 +543,25 @@ function renderJobDetail(job, events, manifest) {
   summarySection.append(summaryTitle, summary);
   grid.append(stagesSection, summarySection);
 
+  const manifestStatus = String(manifest?.status || "").toLowerCase();
+  const failure = document.createElement("section");
+  failure.className = "manifest-failure";
+  if (["failed", "failure", "partial"].includes(manifestStatus)) {
+    const failureTitle = document.createElement("h3");
+    failureTitle.textContent = "仿真失败原因";
+    const failureSummary = document.createElement("p");
+    const failed = Number(manifest?.summary?.failed_count ?? manifest?.summary?.fail_count ?? 0);
+    const total = Number(manifest?.summary?.task_count ?? 0);
+    failureSummary.textContent = total ? `${failed}/${total} 个数据任务失败` : "仿真结果报告失败";
+    const errors = document.createElement("ul");
+    (manifest?.summary?.errors || []).slice(0, 5).forEach((message) => {
+      const item = document.createElement("li");
+      item.textContent = message;
+      errors.append(item);
+    });
+    failure.append(failureTitle, failureSummary, errors);
+  }
+
   const log = document.createElement("section");
   log.className = "event-log";
   log.setAttribute("aria-label", "任务事件");
@@ -540,7 +575,11 @@ function renderJobDetail(job, events, manifest) {
     text.textContent = friendlyEvent(event);
     line.append(time, text); log.append(line);
   });
-  root.append(header, grid, log);
+  root.append(header, grid);
+  if (failure.childElementCount) root.append(failure);
+  root.append(log);
+  root.scrollTop = previousRootTop;
+  log.scrollTop = followedLogTail ? log.scrollHeight : Math.min(previousLogTop, log.scrollHeight);
 }
 
 async function downloadResult(resultRef) {
@@ -776,6 +815,7 @@ async function initialize() {
     byId("apiState").className = "api-state error";
     showToast(error.message, 5000);
   }
+  switchView(state.view === "tasks" ? "tasks" : "create");
 }
 
 document.addEventListener("DOMContentLoaded", initialize);

@@ -12,9 +12,9 @@
 - 已完成本地数据、MatFilter、可选 Adapter 的透明上传及统一逻辑引用；
 - 已完成 Runtime Bundle 私有解包、按 manifest role 定位任意文件名 Runtime XML、Cluster preflight、Config.cfg 生成、提交和结果回收；
 - mocked 纵向门禁已从同一个 SDK 方法真实走到 `submit_cluster_job()` 并取得外部任务 ID；V1 聚焦回归 `101 passed`，全量回归 `1197 passed, 8 skipped`；随后补充 UNC 到 Linux 授权挂载解析，相关专项 `45 passed`；
-- 已部署到 `10.190.171.44:8878`，以 systemd user service 常驻并显式关闭首版认证；服务器本机健康检查返回 200；
+- 已部署到 `10.190.171.44:8877`，以 systemd user service 常驻并显式关闭首版认证；服务器本机和调用机健康检查均返回 200；
 - 已使用下文同一份五路径 YAML 和同一个 SDK 方法完成真实 Cluster 烟测：`job_bad6f07479e5` 状态为 `succeeded`，1 个任务成功，产出 MF4 为 537,269,680 bytes；用户未填写 radar、mounting position、project、output root 或 Cluster 参数；
-- 目标服务器当前对调用机直连 `8878` 仍受入站网络策略限制；本机快速验收通过 SSH 隧道访问 `127.0.0.1:8878`，正式多用户发布前需由服务器管理员放行或配置反向代理。
+- 当前正式测试入口为 `http://10.190.171.44:8877`；服务器既有防火墙规则允许该端口。`127.0.0.1:8878` 仅作为本机 Agent/开发兼容隧道，不是用户发布地址。
 
 ## 1. V1 唯一目标
 
@@ -50,7 +50,7 @@ simulation:
 ```python
 from radar_sim_sdk import RadarSimClient
 
-with RadarSimClient("http://10.190.171.44:8878") as client:
+with RadarSimClient("http://10.190.171.44:8877") as client:
     job = client.submit_yaml("simulation.yaml")
     print(job.id)
 ```
