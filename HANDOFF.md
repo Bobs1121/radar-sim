@@ -1,6 +1,6 @@
 # radar-sim v5 Active Handoff
 
-> 最近更新：2026-07-16
+> 最近更新：2026-07-20
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
@@ -87,6 +87,7 @@
 | 2026-07-16 | VS/软件包依赖真实编译闭环 | `job_8559ea0fa5e6` 首次失败于脚本硬编码 VS2019，而节点仅有 VS2015/v140；新增 VS 检测和 R2D2 `-vs`/`VS_POSTFIX` 幂等适配。第二次已越过 VS 配置并编译 18 分钟，暴露清仓删除 ignored PAD 生成头；从软件包脚本定位 `GEN_PAD_PARAMS.bat`，用 TCC Perl 的进程内 PATH 恢复生成头，并加入环境检查自动处理。失败诊断现向 Web/SDK 透传 code/message/action；第三次真实编译已启动，最终 build-to-cluster 结果待验。 |
 | 2026-07-16 | Cluster 假成功、结果下载与日志追赶修复 | `job_8559ea0fa5e6` 第三次 Selena 编译成功，但 Cluster 12 个任务均在 `SIMULATION_RADAR_SIM.py` 导入阶段报 `ImportError: No module named simulation_runtime`，每项 `out_size=0` 且无输出 MF4；旧逻辑仅凭 `result.ini successfull=1` 将其误报成功。根因是配置写成 `\\szhradar01\cluster_software`，实际部署共享为 `\\szhradar01\_CLUSTER_SOFTWARE`。现统一共享名、读取 `logfile.txt.zip` 首条真实错误，并将“至少一个非空输出 MF4”作为成功硬门禁；Cluster 内部结果与公共 ResultCatalog 已分离，成功目录会生成 owner-scoped 可下载 ZIP，失败 Manifest 不再暴露无效下载引用。任务页首次只读取最近 300 条事件，避免结束后补播 11,000+ 编译事件造成日志仍滚动。专项回归 `99 passed, 1 skipped`；已部署到 `10.190.171.44:8877`。未触发新仿真，直接用已有成功任务 `job_bad6f07479e5` 的 537,269,680-byte MF4 登记 6 文件 ZIP，下载实测 `206 application/zip`；历史错误任务已备份控制 DB 后纠正为 failed，Manifest 保留两条真实错误且 `result_ref` 为空。 |
 | 2026-07-16 | 后续独立运维、多用户与 MCP 诊断方向（不进入当前 Sprint） | 全流程打通后补稳定错误码/Stage Attempt/环境快照/诊断包/版本化 Runbook 与安全恢复动作，使无 AI 用户可自助排障；再提供版本化 MCP tools/resources，让 Agent 读取配置摘要、节点证据、首条真实错误、已尝试动作和 Runbook。多人发布前恢复可信认证并验收 owner/数据库/资产隔离、配额和限流；真实编译日志洪峰已证明单 Uvicorn worker + SQLite 同步写会拖慢查询，需批量/异步日志、API/执行器拆分和受控 worker pool。重试/取消/恢复类 MCP 操作必须具备权限、幂等和确认边界；禁止以 `reset --hard` 等方式“回滚”用户工作区。 |
+| 2026-07-20 | SDK、已有 Selena + Cluster 真实 12 文件闭环 | 用户合同继续保持单一 YAML 路径语义：SDK 调用机可读的本地 Selena/Runtime/数据/MatFilter/Adapter 自动校验上传，共享路径由 Linux 部署映射内部转换；Web 填 Windows 本地路径时必须由该用户 Windows Agent 读取，Linux 不直接读取其他电脑盘符。SDK/Cluster 专项 `46 passed, 1 skipped`，真实 SDK 跨机 `get_job/list_jobs` 与 owner 逻辑隔离通过。`job_6ba9d83a6cf4` 使用已有 Selena 在真实 Cluster 完成 12/12、0 failed，12 个输出 MF4 共 12,729,955,152 bytes；修复 XML-RPC 返回任务数被误当 job id、前 4 个结果过早终止、归档终态不可重试、结果分类重复路径，并将共享盘归档从三遍读取收敛为单遍流式哈希+ZIP。最终公共归档 41 文件、570,886,562 bytes，Manifest succeeded，Range 下载实测 `206 application/zip`。当前自动项目识别只承诺 ovrs25/bydod25；任意新代码仓/Runtime 仍需新增 Cluster adapter 和新 Windows 实机验收。当前 8877 使用 `--insecure-no-auth`，不同 owner 列表逻辑隔离但请求头可伪造，只适合可信内网测试。 |
 | 2026-07-14 | 最少配置与动态调度收敛 | Web/YAML/SDK 统一为单一 data.path；新增 Selena/软件包脚本双入口、首次 Agent 自动配置、auto 本地/Cluster 选择、浏览器文件夹透明上传及 Adapter 条件校验；全量 1173 passed/8 skipped，真实页面复验通过 |
 | 2026-07-15 | 用户合同最终复验 | OpenCode 独立审计配置/Web/SDK 子合同无缺口且专项 36 passed；主 Agent 调度/数据/Agent 专项 102 passed、合同组合 137 passed、全量 1173 passed/8 skipped；真实页面确认单数据路径、双构建脚本、无 project、Adapter 可选、MatFilter 必填、auto/local/Cluster 与结构化 Stage 任务中心 |
 | 2026-07-15 | V1 existing + Cluster 收敛 | 单 YAML + 单 SDK 方法；SDK/服务端双侧已有 Selena 导入、数据/配置资产准备、manifest role 解包、Cluster 提交/结果回收纵向门禁通过；聚焦 101 passed，目标服务器烟测 Pending |
