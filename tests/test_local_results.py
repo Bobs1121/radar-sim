@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import core.local_results as local_results
 from core.local_results import ResultCatalog, ResultCatalogError
 
 
@@ -140,3 +141,28 @@ def test_same_run_cannot_be_replaced_with_different_content(tmp_path: Path) -> N
 
     with pytest.raises(ResultCatalogError, match="immutable content"):
         catalog.publish(owner="alice", run_ref="local-run:one", source_root=source, files=["summary.json"])
+
+
+def test_publish_rejects_source_identity_change_during_single_pass_archive(
+    tmp_path: Path, monkeypatch
+) -> None:
+    catalog, allowed = _catalog(tmp_path)
+    source = _result_tree(allowed)
+    original = local_results._source_signature
+    calls = 0
+
+    def changed_after_open(details):
+        nonlocal calls
+        calls += 1
+        signature = original(details)
+        if calls == 4:
+            return (*signature[:-1], signature[-1] + 1)
+        return signature
+
+    monkeypatch.setattr(local_results, "_source_signature", changed_after_open)
+
+    with pytest.raises(ResultCatalogError, match="changed while it was archived"):
+        catalog.publish(
+            owner="alice", run_ref="local-run:race", source_root=source,
+            files=["summary.json"],
+        )

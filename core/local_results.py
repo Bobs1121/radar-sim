@@ -198,15 +198,17 @@ class ResultCatalog:
             raise ResultCatalogError("result retention is invalid")
         source = _authorized_source_root(self._allowed_source_roots, source_root)
         relatives = _validate_file_set(files)
-        evidence = tuple(_file_evidence(source, relative) for relative in relatives)
 
         owner_key = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:24]
         owner_root = self._storage_root / "content" / owner_key
         owner_root.mkdir(parents=True, exist_ok=True)
         temporary = _temporary_archive(owner_root)
         try:
-            _write_deterministic_archive(temporary, source, evidence)
-            _verify_source_evidence(source, evidence)
+            # Cluster results commonly live on a remote share. Hash each source
+            # file while streaming it into the archive, then compare file and
+            # open-handle identities before/after. This keeps the immutable
+            # source-race gate without reading every multi-GB MF4 three times.
+            evidence = _write_deterministic_archive(temporary, source, relatives)
             archive_checksum = _sha256_file(temporary)
             archive_size = temporary.stat().st_size
             archive = owner_root / (archive_checksum.removeprefix("sha256:") + ".zip")
@@ -435,16 +437,61 @@ def _zip_entry(relative: str) -> zipfile.ZipInfo:
     return info
 
 
-def _write_deterministic_archive(path: Path, root: Path, files: tuple[ResultFileRef, ...]) -> None:
+def _write_deterministic_archive(
+    path: Path, root: Path, files: tuple[str, ...]
+) -> tuple[ResultFileRef, ...]:
+    evidence: list[ResultFileRef] = []
     try:
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as archive:
-            for item in files:
-                source = root.joinpath(*PurePosixPath(item.relative_path).parts)
-                with source.open("rb") as reader, archive.open(_zip_entry(item.relative_path), "w", force_zip64=True) as writer:
+            for relative in files:
+                source = root.joinpath(*PurePosixPath(relative).parts)
+                _ensure_contained(root, source)
+                before_path = _regular_source_stat(source)
+                digest = hashlib.sha256()
+                written = 0
+                with source.open("rb") as reader, archive.open(_zip_entry(relative), "w", force_zip64=True) as writer:
+                    before_handle = os.fstat(reader.fileno())
+                    if _source_signature(before_path) != _source_signature(before_handle):
+                        raise ResultCatalogError("result file changed while it was archived")
                     for chunk in iter(lambda: reader.read(1024 * 1024), b""):
                         writer.write(chunk)
+                        digest.update(chunk)
+                        written += len(chunk)
+                    after_handle = os.fstat(reader.fileno())
+                after_path = _regular_source_stat(source)
+                signature = _source_signature(before_path)
+                if (
+                    signature != _source_signature(after_handle)
+                    or signature != _source_signature(after_path)
+                    or written != int(before_path.st_size)
+                ):
+                    raise ResultCatalogError("result file changed while it was archived")
+                evidence.append(
+                    ResultFileRef(relative, written, "sha256:" + digest.hexdigest())
+                )
     except (OSError, zipfile.BadZipFile) as exc:
         raise ResultCatalogError("result archive creation failed") from exc
+    return tuple(evidence)
+
+
+def _regular_source_stat(path: Path) -> os.stat_result:
+    try:
+        details = path.lstat()
+    except OSError as exc:
+        raise ResultCatalogError("result file is unavailable") from exc
+    if path.is_symlink() or not stat.S_ISREG(details.st_mode):
+        raise ResultCatalogError("result file must be a regular non-symlink file")
+    return details
+
+
+def _source_signature(details: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        int(details.st_dev),
+        int(details.st_ino),
+        int(details.st_mode),
+        int(details.st_size),
+        int(details.st_mtime_ns),
+    )
 
 
 def _verify_archive_file(path: Path, checksum: str, size: int) -> None:

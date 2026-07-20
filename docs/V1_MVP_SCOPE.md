@@ -100,6 +100,18 @@ curl http://127.0.0.1:8877/api/v1/health
 正式复制到其他 Linux 服务器时使用 `scripts/linux_deploy.sh`；该发布脚本默认启用 Bearer
 认证，凭证独立于仿真 YAML。
 
+### 当前可承诺的适配边界
+
+- 已有 Selena + Cluster：ovrs25、bydod25 已有产物路径已完成真实环境验证；用户可更换各自的
+  Selena 文件夹、对应 Runtime、数据和配置文件，不需要复用固定文件路径。
+- 本地路径：SDK 在路径所属电脑运行时自动上传；Web 填写 Windows 本地路径时必须有该用户的
+  Windows Agent 在线。没有 Agent 时，Linux 不能读取 `C:/`、`D:/` 等另一台电脑上的路径。
+- 共享路径：当前 Linux 已挂载且在部署映射内的共享路径可自动转换；新的文件服务器或共享根目录
+  需要管理员一次性添加挂载映射，用户 YAML 仍只填写原始路径。
+- 新代码仓/新 Runtime 项目：当前自动识别规则只覆盖 ovrs25、bydod25。显式编译脚本可以进入
+  通用识别，但在新增对应 Cluster adapter 并完成一台新 Windows 机器的实机验收前，不能承诺
+  任意代码仓、任意 Runtime 都能直接运行。
+
 该方法内部自动完成：
 
 1. 读取并校验同一份 YAML；首版使用 `source=existing`、`target=cluster`，后续组合仍复用此方法；
