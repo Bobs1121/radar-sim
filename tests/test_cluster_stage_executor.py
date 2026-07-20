@@ -116,11 +116,15 @@ def test_collect_queries_by_generated_job_directory_and_waits_for_every_dataset_
     # This deployment returns the created task count, not the durable Cluster
     # job id. Collection must therefore resolve the job by its generated path.
     store.mark_submitted(run.ref, owner="alice", external_job_id="2", submit_mode="xmlrpc")
+    published_files = []
     context = SimpleNamespace(
         run_store=store,
         config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
         now_fn=lambda: 10.0,
-        result_catalog=None,
+        result_catalog=SimpleNamespace(
+            publish=lambda **kwargs: published_files.extend(kwargs["files"])
+            or SimpleNamespace(ref="result:sha256:" + "9" * 64)
+        ),
     )
     job = _job()
     job["resolved_spec"]["decisions"]["data"]["dataset"]["file_count"] = 2
@@ -149,6 +153,7 @@ def test_collect_queries_by_generated_job_directory_and_waits_for_every_dataset_
                 {"relative_path": "output/a/result.ini"},
                 {"relative_path": "output/b/result.ini"},
             ],
+            "logs": [{"relative_path": "output/a/result.ini"}],
         },
         {
             "state": "finished-success", "file_count": 4,
@@ -161,6 +166,7 @@ def test_collect_queries_by_generated_job_directory_and_waits_for_every_dataset_
                 {"relative_path": "output/a/result.ini"},
                 {"relative_path": "output/b/result.ini"},
             ],
+            "logs": [{"relative_path": "output/a/result.ini"}],
         },
     ])
     monkeypatch.setattr("core.cluster.inspect_cluster_job", lambda *_args: next(inspections))
@@ -177,6 +183,7 @@ def test_collect_queries_by_generated_job_directory_and_waits_for_every_dataset_
     assert sleeps == [15.0]
     assert output["result"]["state"] == "succeeded"
     assert output["result"]["summary"]["success_count"] == 2
+    assert len(published_files) == len({item.casefold() for item in published_files})
 
 
 def test_collect_archive_failure_does_not_make_cluster_run_terminal(tmp_path: Path, monkeypatch):

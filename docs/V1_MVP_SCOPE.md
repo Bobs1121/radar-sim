@@ -55,6 +55,51 @@ with RadarSimClient("http://10.190.171.44:8877") as client:
     print(job.id)
 ```
 
+完整的提交、等待、结果下载仍然只复用这一份 YAML：
+
+```python
+from pathlib import Path
+from radar_sim_sdk import RadarSimClient
+
+with RadarSimClient(
+    "http://10.190.171.44:8877",
+    user="alice",       # 当前可信内网测试环境用于任务视图隔离；不是登录认证
+) as client:
+    job = client.submit_yaml(
+        "simulation.yaml",
+        idempotency_key="issue-123-first-run",
+    )
+    terminal = client.wait(job.id, timeout=4 * 60 * 60)
+    if terminal.status != "succeeded":
+        raise RuntimeError(f"simulation failed: {terminal.id}")
+
+    manifest = client.manifest(job.id)
+    result_ref = manifest.manifest["result_ref"]
+    archive = client.download_result(result_ref, Path("downloads"))
+    print(archive)
+```
+
+SDK 必须运行在能够读取 YAML 中本地路径的电脑上。SDK 可读到的本地 Selena、Runtime、
+数据、MatFilter 和 Adapter 会自动校验并上传；共享路径保持原路径交给 Linux 解析。
+如果用户只打开 Linux Web 并填写 Windows 本地路径，则该用户电脑必须运行已配对的
+Windows Agent，由 Agent 读取和上传，Linux 不会尝试直接读取另一台电脑的盘符。
+
+### 当前测试服务器的启动方式
+
+`10.190.171.44:8877` 已配置为 systemd user service，且 `Linger=yes`，服务器重启后会自动拉起：
+
+```bash
+systemctl --user start radar-sim-v1.service
+systemctl --user status radar-sim-v1.service
+systemctl --user restart radar-sim-v1.service
+systemctl --user stop radar-sim-v1.service
+curl http://127.0.0.1:8877/api/v1/health
+```
+
+当前测试服务按本 Sprint 决策使用 `--insecure-no-auth`，只允许在可信内网测试。
+正式复制到其他 Linux 服务器时使用 `scripts/linux_deploy.sh`；该发布脚本默认启用 Bearer
+认证，凭证独立于仿真 YAML。
+
 该方法内部自动完成：
 
 1. 读取并校验同一份 YAML；首版使用 `source=existing`、`target=cluster`，后续组合仍复用此方法；

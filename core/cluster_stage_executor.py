@@ -8,6 +8,7 @@ results contain only logical references and path-free summaries.
 from __future__ import annotations
 
 import copy
+import logging
 import re
 import threading
 import time
@@ -33,6 +34,7 @@ from core.agent_policy import (
 
 LINUX_STAGE_AGENT_ID = "linux-v2-stage-executor"
 CLUSTER_GATEWAY_AGENT_ID = "cluster-v2-platform-gateway"
+_LOG = logging.getLogger(__name__)
 
 
 class ClusterStageExecutionError(RuntimeError):
@@ -156,6 +158,12 @@ class ClusterStageExecutor:
         except Exception as exc:
             # Keep the public error stable and path-free; detailed deployment
             # diagnostics belong in trusted server logs, not the task payload.
+            _LOG.exception(
+                "Cluster stage execution failed: job=%s stage=%s attempt=%s",
+                str(task.get("job_id") or ""),
+                stage_type,
+                int(task.get("attempt_count") or 0),
+            )
             message = str(exc) if isinstance(exc, ClusterStageExecutionError) else "Cluster stage execution failed"
             self.control.append_logs(task_id, [f"[executor] {stage_type} failed"], stream="stderr")
             self.control.submit_task_result(
@@ -425,6 +433,7 @@ def execute_cluster_collect(
     files = [str(item.get("relative_path") or "") for item in inspected.get("files", [])]
     if not files:
         files = [str(item.get("relative_path") or "") for key in ("output_mf4", "logs", "result_files") for item in inspected.get(key, [])]
+    files = _dedupe_relative_paths(files)
     errors = list(inspected.get("error_summary") or [])[:6]
     output_files = [
         str(item.get("relative_path") or "")
@@ -481,6 +490,20 @@ def _expected_cluster_task_count(job: dict[str, Any]) -> int:
         return max(int(dataset.get("file_count") or 0), 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _dedupe_relative_paths(values: list[str]) -> list[str]:
+    """Keep one portable result path when inspection categories overlap."""
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        unique.append(text)
+    return unique
 
 
 def _apply_existing_cluster_profile_defaults(
