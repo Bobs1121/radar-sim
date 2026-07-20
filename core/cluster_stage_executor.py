@@ -436,6 +436,20 @@ def execute_cluster_collect(
         message = "Cluster worker produced no simulation output MF4"
         if message not in errors:
             errors.append(message)
+    public_result_ref = ""
+    if state == "succeeded":
+        # Publish the immutable archive before making the Cluster run terminal.
+        # A source file can still change while workers are finishing.  If
+        # publishing detects that race, the Stage remains retryable instead of
+        # leaving a terminal run with no downloadable result.
+        if context.result_catalog is not None:
+            published = context.result_catalog.publish(
+                owner=owner,
+                run_ref=run_ref,
+                source_root=lease.job_dir,
+                files=[item for item in files if item],
+            )
+            public_result_ref = published.ref
     result = context.run_store.finalize_result(
         run_ref,
         owner=owner,
@@ -450,17 +464,8 @@ def execute_cluster_collect(
         },
         physical_root=lease.job_dir,
     )
-    public_result_ref = ""
-    if state == "succeeded":
+    if state == "succeeded" and not public_result_ref:
         public_result_ref = result.ref
-        if context.result_catalog is not None:
-            published = context.result_catalog.publish(
-                owner=owner,
-                run_ref=run_ref,
-                source_root=lease.job_dir,
-                files=[item for item in files if item],
-            )
-            public_result_ref = published.ref
     return {
         "cluster_run_ref": run_ref,
         "cluster_result_ref": result.ref,

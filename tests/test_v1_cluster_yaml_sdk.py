@@ -259,10 +259,13 @@ def test_one_sdk_call_reaches_cluster_submission_with_existing_selena(tmp_path, 
     monkeypatch.setattr(
         "core.cluster.inspect_cluster_job",
         lambda *_args, **_kwargs: {
-            "file_count": 1,
+            "file_count": 2,
             "success_count": 1,
             "fail_count": 0,
             "error_summary": [],
+            "output_mf4": [
+                {"relative_path": "output/oneout.MF4", "size": 1024}
+            ],
             "result_files": [{"relative_path": "output/result.ini"}],
         },
     )
@@ -310,7 +313,8 @@ def test_one_sdk_call_reaches_cluster_submission_with_existing_selena(tmp_path, 
             time.sleep(0.05)
 
         assert current.status == "succeeded", [
-            (stage.type, stage.status, stage.error) for stage in current.stages
+            (stage["stage_type"], stage["status"], stage.get("error"))
+            for stage in current.stages
         ]
         assert submitted_configs == [(str(private_job / "Config.cfg"), False)]
         assert prepared_configs[0]["simulation"]["source"] == "RadarFL"

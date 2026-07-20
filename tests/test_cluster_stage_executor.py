@@ -179,6 +179,49 @@ def test_collect_queries_by_generated_job_directory_and_waits_for_every_dataset_
     assert output["result"]["summary"]["success_count"] == 2
 
 
+def test_collect_archive_failure_does_not_make_cluster_run_terminal(tmp_path: Path, monkeypatch):
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="bydod25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/bydod25/runtime-bundle.zip",
+        profile="default", job_dir=str(tmp_path / "private-job"),
+        config_path=r"\\cluster\jobs\job-demo\Config.cfg",
+        output_location=str(tmp_path / "private-output"),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="1", submit_mode="xmlrpc")
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
+        now_fn=lambda: 10.0,
+        result_catalog=SimpleNamespace(
+            publish=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("source changed"))
+        ),
+    )
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: {
+            "found": True, "state": "finished",
+            "tasks": [{"simulation_state": "finished"}],
+        },
+    )
+    monkeypatch.setattr(
+        "core.cluster.inspect_cluster_job",
+        lambda *_args, **_kwargs: {
+            "state": "finished-success", "file_count": 2,
+            "success_count": 1, "fail_count": 0, "error_summary": [],
+            "output_mf4": [{"relative_path": "output/aout.MF4", "size": 10}],
+            "result_files": [{"relative_path": "output/result.ini"}],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="source changed"):
+        execute_cluster_collect(context, _job(), run.ref, sleep_fn=lambda _seconds: None)
+
+    assert store.get(run.ref, owner="alice").state == "running"
+
+
 def test_public_manifest_contains_refs_but_no_physical_locations(tmp_path: Path):
     store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
     run = store.create_run(
