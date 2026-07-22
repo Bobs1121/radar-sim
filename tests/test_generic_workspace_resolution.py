@@ -62,7 +62,7 @@ def test_unknown_workspace_derives_stable_internal_identity_and_output(tmp_path)
     assert first.adapter_key == "generic:selena-script"
     assert re.fullmatch(r"workspace-[0-9a-f]{24}", first.internal_project)
     assert second.internal_project == first.internal_project
-    assert first.output_dir == str(
+    assert first.output_dir.casefold() == str(
         workspace / "ip_dc" / "build" / "CUSTOM_OD25"
     ).replace("\\", "/").casefold()
 
