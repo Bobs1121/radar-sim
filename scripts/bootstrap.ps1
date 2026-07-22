@@ -68,6 +68,27 @@ function Write-Ok($message) { Write-Host "    OK  $message" -ForegroundColor Gre
 function Write-Warn($message) { Write-Host "    WARN $message" -ForegroundColor Yellow }
 function Fail($message) { Write-Host "    ERR  $message" -ForegroundColor Red; exit 1 }
 
+function Stop-ConnectorProcessTree([int]$RootPid) {
+    # Stop deepest children first.  Stopping only the PowerShell supervisor can
+    # orphan its Python Agent, and a reinstall would then run the same task
+    # twice under the same logical node identity.
+    $snapshot = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $ordered = New-Object System.Collections.Generic.List[int]
+    $pending = New-Object System.Collections.Generic.Stack[int]
+    $pending.Push($RootPid)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        if ($ordered.Contains($current)) { continue }
+        $ordered.Add($current)
+        foreach ($child in $snapshot | Where-Object { [int]$_.ParentProcessId -eq $current }) {
+            $pending.Push([int]$child.ProcessId)
+        }
+    }
+    for ($index = $ordered.Count - 1; $index -ge 0; $index--) {
+        Stop-Process -Id $ordered[$index] -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Set-Location $RepoRoot
 Write-Step "1/5 Check Windows and Python"
 if (-not $IsWindows -and $env:OS -ne "Windows_NT") {
@@ -208,7 +229,7 @@ if ($RegisterStartup) {
         try {
             $connectorPid = [int](Get-Content -Raw -Encoding ASCII $connectorPidPath)
             if ($connectorPid -gt 0 -and $connectorPid -ne $PID) {
-                Stop-Process -Id $connectorPid -Force -ErrorAction SilentlyContinue
+                Stop-ConnectorProcessTree $connectorPid
             }
         } catch { }
         Remove-Item -LiteralPath $connectorPidPath -Force -ErrorAction SilentlyContinue
