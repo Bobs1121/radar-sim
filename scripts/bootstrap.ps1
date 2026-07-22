@@ -87,6 +87,24 @@ function Stop-ConnectorProcessTree([int]$RootPid) {
     for ($index = $ordered.Count - 1; $index -ge 0; $index--) {
         Stop-Process -Id $ordered[$index] -Force -ErrorAction SilentlyContinue
     }
+    # Do not immediately launch the replacement while the previous
+    # supervisor still owns the single-instance mutex.  Scheduled Task would
+    # otherwise exit successfully and leave the PC disconnected until logon.
+    foreach ($processId in $ordered) {
+        Wait-Process -Id $processId -Timeout 10 -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-ConnectorProcessId {
+    $pidPath = Join-Path $InstallRoot "connector.pid"
+    if (-not (Test-Path $pidPath)) { return 0 }
+    try {
+        $connectorPid = [int](Get-Content -Raw -Encoding ASCII $pidPath)
+        if ($connectorPid -gt 0 -and (Get-Process -Id $connectorPid -ErrorAction SilentlyContinue)) {
+            return $connectorPid
+        }
+    } catch { }
+    return 0
 }
 
 Set-Location $RepoRoot
@@ -338,10 +356,31 @@ if ($Mode -eq "light") {
 if ($Start) {
     if ($RegisterStartup -and $installConfig["startup_method"] -eq "scheduled_task") {
         Start-ScheduledTask -TaskName ([string]$installConfig["startup_name"])
-        Write-Ok "The connector startup task is running."
     } else {
         & $StartScript -InstallRoot $InstallRoot -Background -NoBrowser
     }
+    $connectorPid = 0
+    foreach ($attempt in 1..30) {
+        $connectorPid = Get-ConnectorProcessId
+        if ($connectorPid -gt 0) { break }
+        # A just-replaced task can exit once if the old mutex is still being
+        # released.  Retry the same registered task without user action.
+        if (
+            $RegisterStartup -and
+            $installConfig["startup_method"] -eq "scheduled_task" -and
+            ($attempt % 5) -eq 0
+        ) {
+            $task = Get-ScheduledTask -TaskName ([string]$installConfig["startup_name"]) -ErrorAction SilentlyContinue
+            if ($task -and [string]$task.State -ne "Running") {
+                Start-ScheduledTask -TaskName ([string]$installConfig["startup_name"])
+            }
+        }
+        Start-Sleep -Seconds 1
+    }
+    if ($connectorPid -le 0) {
+        Fail "The background connector did not stay running. Re-run this installer or contact the service administrator."
+    }
+    Write-Ok "The connector is running (PID $connectorPid)."
     if (-not $UseLocalControl) {
         $capabilityName = if ($Mode -eq "full") { "windows_full" } else { "windows_light" }
         $connected = $false
