@@ -1,6 +1,6 @@
 # radar-sim v5 Active Handoff
 
-> 最近更新：2026-07-20
+> 最近更新：2026-07-22
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
@@ -73,6 +73,7 @@
 
 | 日期 | 范围 | 证据 |
 |---|---|---|
+| 2026-07-22 | OD25 用户发布指南与编译产物定位收敛 | 新增 `docs/OD25_USER_GUIDE.md` 和 build/existing 两份可导入 YAML；OD25 适配器登记 `apl/byd/tools/builder/cmake_build.bat` 作为软件包依赖/二次识别入口。修复 R2D2 `-B` 仅指向 build base 时遗漏 `full_DSP` 子树的问题；真实本机解析已定位 `D:/bydod25fr/byd/build/full_dsp/dc_tools/selena/core/RelWithDebInfo/selena.exe`（170,395,648 bytes），任意盘符双脚本识别回归已覆盖。Windows bootstrap 读取 health 的 `authentication_required`，当前可信内网无认证服务不再要求伪令牌。 |
 | 2026-07-10 | v5 baseline docs | README 权威顺序、PRD current/target 边界、详细设计现有代码映射、WP0-WP10 可执行计划 |
 | 2026-07-10 | 复用/选型防漂移 | 增加 INV-10、详细设计复用决策、第三方 spike 和回退门禁 |
 | 2026-07-10 | 状态与偏离防护 | Active Handoff 状态表、任务模板、Architecture Conformance Gate |

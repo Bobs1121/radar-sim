@@ -999,7 +999,17 @@ def derive_project_context_from_selena_script(script_path: str) -> dict[str, Any
                 data["build_config"] = build_config_from_r2d2
             build_output_from_script = _extract_r2d2_build_output(text, project_root)
             if build_output_from_script:
-                data["build_output"] = build_output_from_script
+                # R2D2 ``-B`` names the build *base*.  The actual Selena tree
+                # is created below it using the selected config stem (for
+                # example ``build/full_dsp``).  Keeping only the base makes
+                # the Agent look for ``build/dc_tools/.../Selena.exe`` and
+                # breaks OD25 even though the compile itself succeeded.
+                config_value = str(data.get("build_config") or "").strip()
+                config_stem = Path(config_value).stem if config_value else ""
+                output_path = Path(build_output_from_script)
+                if config_stem and output_path.name.casefold() != config_stem.casefold():
+                    output_path /= config_stem
+                data["build_output"] = os.path.normpath(str(output_path))
 
     if data.get("selena_env_path"):
         data.setdefault(

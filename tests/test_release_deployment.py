@@ -62,3 +62,5 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "Visual Studio is user-managed" in bootstrap
     assert "Visual Studio 2015 (v140)" in bootstrap
     assert "visual_studio_detected" in bootstrap
+    assert "authentication_required" in bootstrap
+    assert "no token is stored" in bootstrap

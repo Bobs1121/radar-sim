@@ -121,14 +121,29 @@ if ($UseLocalControl) {
     $AgentToken = ""
 } else {
     if (-not $ServerUrl -and $existing.server_url) { $ServerUrl = [string]$existing.server_url }
+    if (-not $ServerUrl) { Fail "$Mode + linux requires the Linux -ServerUrl." }
+    $ServerUrl = $ServerUrl.TrimEnd('/')
+    $RemoteAuthRequired = $true
+    try {
+        $health = Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/health" -TimeoutSec 5
+        if ($null -ne $health.authentication_required) {
+            $RemoteAuthRequired = [bool]$health.authentication_required
+        }
+    } catch {
+        Write-Warn "Could not inspect Linux authentication mode yet: $($_.Exception.Message)"
+    }
     if (Test-Path $SecretsPath) {
         $oldSecrets = Get-Content -Raw -Encoding UTF8 $SecretsPath | ConvertFrom-Json
         if (-not $AgentToken) { $AgentToken = [string]$oldSecrets.agent_token }
         if (-not $ApiToken) { $ApiToken = [string]$oldSecrets.api_token }
     }
-    if (-not $ServerUrl) { Fail "$Mode + linux requires the Linux -ServerUrl." }
-    if (-not $AgentToken -or -not $ApiToken) {
+    if ($RemoteAuthRequired -and (-not $AgentToken -or -not $ApiToken)) {
         Fail "$Mode + linux requires -AgentToken and -ApiToken from the Linux administrator."
+    }
+    if (-not $RemoteAuthRequired) {
+        $AgentToken = ""
+        $ApiToken = ""
+        Write-Ok "Linux test service currently has authentication disabled; no token is stored."
     }
 }
 
@@ -141,6 +156,7 @@ $installConfig = [ordered]@{
     repo_root = $RepoRoot
     data_root = $DataRoot
     auth_file = ""
+    authentication_required = if ($UseLocalControl) { $false } else { $RemoteAuthRequired }
 }
 $secrets = [ordered]@{ version = 1; agent_token = $AgentToken; api_token = $ApiToken }
 $installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
@@ -207,7 +223,8 @@ if (-not $SkipCheck) {
     } else {
         try {
             Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/health" -TimeoutSec 5 | Out-Null
-            $headers = @{ Authorization = "Bearer $AgentToken" }
+            $headers = @{}
+            if ($AgentToken) { $headers.Authorization = "Bearer $AgentToken" }
             $registration = @{
                 name = "$env:COMPUTERNAME-installer-check"
                 agent_id = $AgentId

@@ -1,0 +1,20 @@
+schema_version: "2.0"
+
+# OD25：编译当前 Windows 工作区，然后上传完整 Selena 产物并在 Cluster 仿真。
+# 软件不会 checkout、reset、clean 或丢弃未提交修改。
+selena:
+  source: build
+  code_path: "D:/bydod25fr/byd"
+  branch: ""  # 可选；只做分支差异提醒
+  selena_build_script: "D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat"
+  package_build_script: "D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat"
+  runtime_xml: "D:/path/to/OD25_Runtime.xml"
+
+# 只填写一个路径；本地路径自动上传，共享路径由 Linux 映射后直读。
+data:
+  path: "D:/path/to/OD25_measurements"
+
+simulation:
+  target: cluster
+  adapter_file: "D:/path/to/OD25_adapter.txt"
+  mat_filter: "D:/path/to/OD25_mat.filter"

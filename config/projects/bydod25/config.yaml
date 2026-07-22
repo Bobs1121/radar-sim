@@ -11,6 +11,10 @@ repos:
 
 build:
   selena_build_script: "D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat"
+  # Software-package entrypoint. The Agent parses it for OD25 build variants,
+  # TCC dependencies and safe generated-source prerequisites; it never runs
+  # the interactive full package build as part of a Selena task.
+  env_build_script: "D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat"
   # Optional: switch inner repo to the expected Selena branch before compile.
   # selena_branch: "develop_evo"
   build_config: "full_dsp"

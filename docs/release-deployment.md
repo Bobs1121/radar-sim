@@ -71,6 +71,15 @@ light 连接 Linux，需管理员分配的 `ServerUrl`、`AgentId`、Agent token
   -Start
 ```
 
+安装器会先读取 Linux `/api/v1/health` 的 `authentication_required`。当前可信内网测试服务关闭认证时，只需 `ServerUrl + AgentId`，安装器不会生成或保存无意义令牌：
+
+```powershell
+.\scripts\bootstrap.ps1 -Mode light `
+  -ServerUrl http://10.190.171.44:8877 `
+  -AgentId alice-laptop `
+  -Start
+```
+
 full 有两种控制面，Agent 能力相同：
 
 - `ControlPlane=linux`（日常推荐）：full Agent 连接 Linux 统一入口，同一 Web/YAML 可选择本地或 Cluster 仿真。
@@ -90,7 +99,7 @@ full 有两种控制面，Agent 能力相同：
   -AgentId alice-full -AgentToken <agent-token> -ApiToken <user-token> -Start
 ```
 
-当前 Sprint 的 `full + local` 仅监听 loopback，不启用登录或访问令牌，打开 Web 即可测试。`full + linux` 和 `light + linux` 仍必须使用管理员分配的用户/Agent token；Linux 对外入口不允许无鉴权启动。
+当前 Sprint 的 `full + local` 仅监听 loopback，不启用登录或访问令牌，打开 Web 即可测试。`full + linux` 和 `light + linux` 是否需要令牌由 Linux 健康接口返回的认证模式决定；当前 `10.190.171.44:8877` 可信内网测试入口无需令牌，正式部署默认需要管理员分配的用户/Agent token。
 
 安装器持久化的是部署模式、服务地址和 Agent 标识；连接 Linux 时另行持久化受限凭证。它不会创建或要求用户理解内部 project。代码路径、Selena 分支/编译脚本、数据路径、Runtime Bundle、Adapter 和 MatFilter 仍通过统一 Web/YAML 配置。远端凭证单独保存在 `%LOCALAPPDATA%\radar-sim` 且 ACL 收紧，不写入用户 YAML。
 

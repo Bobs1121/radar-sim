@@ -7,6 +7,7 @@ repos:
 
 build:
   selena_build_script: "D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat"
+  env_build_script: "D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat"
   # selena_branch: "develop_evo"   # rsim build switches inner repo here before compile
   build_output: "D:/bydod25fr/byd/build/full_dsp"
 

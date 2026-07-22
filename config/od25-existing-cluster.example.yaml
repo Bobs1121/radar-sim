@@ -1,0 +1,16 @@
+schema_version: "2.0"
+
+# OD25：直接使用已有 Selena 文件夹，在 Cluster 仿真。
+# existing_path 选择包含 Selena.exe 及其同目录 DLL 的准确产物文件夹。
+selena:
+  source: existing
+  existing_path: "D:/path/to/OD25_Selena/RelWithDebInfo"
+  runtime_xml: "D:/path/to/OD25_Runtime.xml"
+
+data:
+  path: "//server/share/path/to/OD25_measurements"
+
+simulation:
+  target: cluster
+  adapter_file: "D:/path/to/OD25_adapter.txt"
+  mat_filter: "D:/path/to/OD25_mat.filter"

@@ -99,6 +99,21 @@ def test_configured_output_is_rebased_to_user_checkout(projects):
     assert result.output_dir == "e:/users/alice/byd/build/full_dsp"
 
 
+def test_real_bydod25_adapter_recognizes_both_scripts_on_any_drive():
+    projects = Path(__file__).resolve().parents[1] / "config" / "projects"
+    result = WorkspaceRecognizer(projects).recognize(
+        "E:/users/alice/byd",
+        selena_build_script="E:/users/alice/byd/apl/byd/selena/jenkins_selena_build.bat",
+        package_build_script="E:/users/alice/byd/apl/byd/tools/builder/cmake_build.bat",
+    )
+
+    assert result.status == "resolved"
+    assert result.internal_project == "bydod25"
+    assert result.adapter_key == "recipe:g3n_fvg3_od25"
+    assert result.package_build_script.endswith("/apl/byd/tools/builder/cmake_build.bat")
+    assert result.output_dir == "e:/users/alice/byd/build/full_dsp"
+
+
 def test_missing_adapter_output_is_derived_from_user_selena_script(tmp_path, monkeypatch):
     root = tmp_path / "projects"
     _write_adapter(

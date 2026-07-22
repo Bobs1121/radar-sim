@@ -141,6 +141,37 @@ class TestConfigSystem:
         assert data["r2d2_script"].endswith(r"ip_dc\dc_tools\R2D2.py")
         assert data["build_output"].endswith(r"ip_dc\build\ROS_PER_SIT_RPM_FCT_RECR")
 
+    def test_derive_bydod25_r2d2_output_includes_config_tree(self, tmp_path):
+        from core.config import derive_project_context_from_selena_script
+
+        script = (
+            tmp_path
+            / "bydod25fr"
+            / "byd"
+            / "apl"
+            / "byd"
+            / "selena"
+            / "jenkins_selena_build.bat"
+        )
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(
+            textwrap.dedent(
+                r"""
+                @echo off
+                set buildmode=RelWithDebInfo
+                set selena_config=full_DSP
+                python3 %root_path%/ip_dc/dc_tools/R2D2.py -m %APL_PATH%/selena/config/cmake/!selena_config!.config --clean -B %root_path%/build
+                python3 %root_path%/ip_dc/dc_tools/R2D2.py -m %APL_PATH%/selena/config/cmake/!selena_config!.config -bm !buildmode! -B %root_path%/build
+                """
+            ).strip(),
+            encoding="utf-8",
+        )
+
+        data = derive_project_context_from_selena_script(str(script))
+
+        assert Path(data["build_config"]).name == "full_DSP.config"
+        assert Path(data["build_output"]) == tmp_path / "bydod25fr" / "byd" / "build" / "full_DSP"
+
     def test_merge_cli_overrides(self):
         from core.config import merge_cli_overrides
         cfg = {"a": 1}
@@ -161,6 +192,10 @@ class TestConfigSystem:
         assert cfg["simulation"]["matfilefilter"].endswith("matlabPerSit_OD_gac.filter")
         assert cfg["simulation"]["paramconfig_options"]["distilled-mat"] is True
         assert cfg["build"]["script_args_template"] == []
+        assert cfg["build"]["env_build_script"].replace("\\", "/").endswith(
+            "apl/byd/tools/builder/cmake_build.bat"
+        )
+        assert cfg["build"]["build_output"].replace("\\", "/").endswith("build/full_dsp")
 
     def test_get_default_project(self):
         from core.config import get_default_project
