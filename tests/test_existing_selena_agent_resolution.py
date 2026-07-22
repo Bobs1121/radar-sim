@@ -251,6 +251,7 @@ def test_existing_folder_cluster_handoff_registers_bundle_and_uploads_local_data
     )
     api = ApiV1Service(control_service_factory=lambda _owner: control)
     config, *_ = _existing_config(tmp_path, target="cluster")
+    config["data"]["path"] = "D:/agent-local/data"
 
     job, bound = _complete_existing_resolution(
         control, api, config, agent_id="light-1", mode="light"

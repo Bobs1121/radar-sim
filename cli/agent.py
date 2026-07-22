@@ -1247,7 +1247,7 @@ def _upload_resolution_config_assets(
 ) -> dict[str, str]:
     """Turn Agent-local simulation files into path-free central references."""
     from core.config_assets import is_config_asset_ref
-    from core.datasets import classify_data_path
+    from core.shared_namespace import looks_like_shared_path
 
     uploaded: dict[str, str] = {}
     for kind, field in (("adapter", "adapter_file"), ("mat_filter", "mat_filter")):
@@ -1258,8 +1258,9 @@ def _upload_resolution_config_assets(
             uploaded[field] = value
             continue
         # Shared paths stay as business input and are resolved by the Linux
-        # deployment namespace.  Only this Windows PC's local files are copied.
-        if classify_data_path(value) != "agent":
+        # deployment namespace.  Every regular non-shared file visible to this
+        # Windows process is local to this Agent and must be copied centrally.
+        if looks_like_shared_path(value):
             continue
         try:
             path = Path(value).expanduser().resolve(strict=True)
