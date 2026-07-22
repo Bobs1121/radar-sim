@@ -26,6 +26,8 @@ $secrets = if (Test-Path $secretsPath) {
 }
 $venvPy = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPy)) { throw "Python environment is missing; rerun bootstrap.ps1." }
+$RsimEntry = Join-Path $RepoRoot "rsim.py"
+if (-not (Test-Path $RsimEntry)) { throw "radar-sim entry point is missing; reconnect this PC from Web." }
 
 $env:RSIM_HOME = [string]$config.data_root
 $env:RSIM_AGENT_TOKEN = [string]$secrets.agent_token
@@ -42,7 +44,7 @@ if ([string]$config.mode -eq "light" -and $controlPlane -ne "linux") {
     throw "Light mode requires the Linux control plane. Rerun bootstrap.ps1."
 }
 $agentArgs = @(
-    "rsim.py", "agent", "--server-url", $serverUrl, "--api-url", $serverUrl,
+    $RsimEntry, "agent", "--server-url", $serverUrl, "--api-url", $serverUrl,
     "--agent-id", [string]$config.agent_id, "--windows-mode", [string]$config.mode
 )
 
@@ -54,7 +56,7 @@ if ([string]$config.mode -eq "full" -and $controlPlane -eq "local") {
     $uri = [Uri]$serverUrl
     if (-not $uri.IsLoopback) { throw "Full local control plane requires a loopback ServerUrl." }
     $serverArgs = @(
-        "rsim.py", "server", "serve-v1", "--host", "127.0.0.1",
+        $RsimEntry, "server", "serve-v1", "--host", "127.0.0.1",
         "--port", [string]$uri.Port, "--no-cluster-executor"
     )
     $ready = $false

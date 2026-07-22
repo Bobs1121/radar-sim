@@ -71,6 +71,9 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "-Supervise" in starter
     assert "Threading.Mutex" in starter
     assert "connector.pid" in starter
+    assert '$RsimEntry = Join-Path $RepoRoot "rsim.py"' in starter
+    assert '$RsimEntry, "agent"' in starter
+    assert '"rsim.py", "agent"' not in starter
     assert "Stop-Process" in bootstrap
     assert "NO_PROXY" in starter
     assert "X-Content-SHA256" in (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
