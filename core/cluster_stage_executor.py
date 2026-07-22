@@ -40,6 +40,17 @@ _LOG = logging.getLogger(__name__)
 class ClusterStageExecutionError(RuntimeError):
     """Stable execution refusal without exposing private paths."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "cluster_stage_failed",
+        actions: tuple[dict[str, str], ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.code = str(code or "cluster_stage_failed")
+        self.actions = tuple(dict(item) for item in actions)
+
 
 @dataclass(frozen=True)
 class ClusterStageContext:
@@ -164,11 +175,19 @@ class ClusterStageExecutor:
                 stage_type,
                 int(task.get("attempt_count") or 0),
             )
-            message = str(exc) if isinstance(exc, ClusterStageExecutionError) else "Cluster stage execution failed"
+            expected = isinstance(exc, ClusterStageExecutionError)
+            message = str(exc) if expected else "Cluster stage execution failed"
+            code = exc.code if expected else "cluster_stage_failed"
+            actions = list(exc.actions) if expected else []
             self.control.append_logs(task_id, [f"[executor] {stage_type} failed"], stream="stderr")
             self.control.submit_task_result(
                 task_id, agent_id=agent_id, status="failed", returncode=-1,
-                result={"error": message, "code": "cluster_stage_failed"},
+                result={
+                    "error": message,
+                    "code": code,
+                    "actions": actions,
+                    "error_json": {"code": code, "message": message, "actions": actions},
+                },
             )
 
     def _record_dataset(self, job: dict[str, Any], result: dict[str, Any]) -> None:
@@ -355,8 +374,33 @@ def execute_cluster_submit(context: ClusterStageContext, job: dict[str, Any], ru
 
     submitted = submit_cluster_job(lease.config_path, config, dry_run=False)
     if int(submitted.returncode or 0) != 0:
-        context.run_store.update_state(run_ref, owner=owner, state="failed")
-        raise ClusterStageExecutionError("Cluster submission failed")
+        # A transport or manager refusal happened before we received a durable
+        # external job id.  Keep the private run in ``prepared`` so retrying
+        # this Stage never rebuilds Selena or repackages the job.
+        detail = str(submitted.stderr or submitted.stdout or "").strip()
+        _LOG.error(
+            "Cluster submission did not return a job id: run=%s mode=%s returncode=%s detail=%s",
+            run_ref,
+            str(submitted.mode or ""),
+            int(submitted.returncode or 0),
+            detail or "(empty)",
+        )
+        lowered = detail.casefold()
+        transport_tokens = (
+            "timed out", "timeout", "connection refused", "network is unreachable",
+            "no route to host", "name or service not known", "temporary failure",
+            "urlopen error", "连接超时", "无法访问",
+        )
+        unavailable = any(token in lowered for token in transport_tokens)
+        raise ClusterStageExecutionError(
+            (
+                "Cluster gateway is temporarily unavailable; retry this stage without recompiling"
+                if unavailable
+                else "Cluster rejected the submission; retry this stage after the gateway is available"
+            ),
+            code=("CLUSTER_GATEWAY_UNREACHABLE" if unavailable else "CLUSTER_SUBMISSION_REJECTED"),
+            actions=({"type": "retry_stage", "label": "Retry Cluster submission"},),
+        )
     external = _external_job_id(str(submitted.stdout or ""), run_ref)
     run = context.run_store.mark_submitted(
         run_ref, owner=owner, external_job_id=external, submit_mode=str(submitted.mode or "")

@@ -5,7 +5,13 @@ import time
 import pytest
 
 from core.cluster_runs import ClusterRunStore, ClusterRunStoreError
-from core.cluster_stage_executor import build_public_run_manifest, execute_cluster_collect, resolve_cluster_data
+from core.cluster_stage_executor import (
+    ClusterStageExecutionError,
+    build_public_run_manifest,
+    execute_cluster_collect,
+    execute_cluster_submit,
+    resolve_cluster_data,
+)
 from core.cluster_stage_executor import ClusterStageContext, ClusterStageExecutor
 from core.control_service import ControlService
 from core.api_v1 import ApiV1Service
@@ -55,6 +61,41 @@ def test_collect_cancellation_creates_path_free_terminal_result(tmp_path: Path):
     assert result.state == "cancelled"
     assert result.files == ()
     assert str(tmp_path) not in str(output)
+
+
+def test_submit_transport_failure_is_retryable_without_rebuilding(tmp_path: Path, monkeypatch):
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="bydod25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/bydod25/runtime-bundle.zip",
+        profile="default", job_dir=str(tmp_path / "private-job"),
+        config_path=r"\\cluster\jobs\job-demo\Config.cfg",
+        output_location=str(tmp_path / "private-output"),
+    )
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {}},
+    )
+    monkeypatch.setattr(
+        "core.cluster.submit_cluster_job",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="<urlopen error timed out>",
+            mode="xmlrpc",
+        ),
+    )
+
+    with pytest.raises(ClusterStageExecutionError) as excinfo:
+        execute_cluster_submit(context, _job(), run.ref)
+
+    assert excinfo.value.code == "CLUSTER_GATEWAY_UNREACHABLE"
+    assert excinfo.value.actions == (
+        {"type": "retry_stage", "label": "Retry Cluster submission"},
+    )
+    assert store.get(run.ref, owner="alice").state == "prepared"
 
 
 def test_collect_uses_result_ini_when_official_page_has_no_tasks(tmp_path: Path, monkeypatch):
