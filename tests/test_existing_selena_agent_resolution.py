@@ -1,6 +1,6 @@
 import json
 
-from cli.agent import _resolve_existing_v2_run_config, _run_task
+from cli.agent import _resolve_existing_v2_run_config, _run_task, _upload_resolution_config_assets
 from core.agent_policy import DEFAULT_FULL_CAPABILITIES, DEFAULT_LIGHT_CAPABILITIES
 from core.api_v1 import ApiV1Service
 from core.control_service import ControlService
@@ -74,6 +74,40 @@ def test_existing_cluster_resolve_can_bind_light_agent(tmp_path):
     bound = control.bind_pending_run_config_resolution("light-1")
     assert bound is not None
     assert bound["payload"]["selected_target"] == "cluster"
+    assert bound["payload"]["mat_filter"] == config["simulation"]["mat_filter"]
+    assert bound["payload"]["adapter_file"] == config["simulation"]["adapter_file"]
+
+
+def test_agent_uploads_local_simulation_assets_without_changing_user_config(tmp_path):
+    mat_filter = tmp_path / "signals.filter"
+    adapter = tmp_path / "adapter.txt"
+    mat_filter.write_text("*\n", encoding="utf-8")
+    adapter.write_text("adapter\n", encoding="utf-8")
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def upload_config_asset(self, source, *, kind, owner=""):
+            self.calls.append((source, kind, owner))
+            digest = "a" if kind == "adapter" else "b"
+            return {"uri": "config-asset://sha256/" + digest * 64}
+
+    client = Client()
+    result = _upload_resolution_config_assets(
+        {"adapter_file": str(adapter), "mat_filter": str(mat_filter)},
+        client=client,
+        owner="alice",
+    )
+
+    assert result == {
+        "adapter_file": "config-asset://sha256/" + "a" * 64,
+        "mat_filter": "config-asset://sha256/" + "b" * 64,
+    }
+    assert [(kind, owner) for _path, kind, owner in client.calls] == [
+        ("adapter", "alice"),
+        ("mat_filter", "alice"),
+    ]
 
 
 def test_agent_existing_resolver_creates_path_free_complete_bundle_lease(tmp_path, monkeypatch):
@@ -196,6 +230,9 @@ def _complete_existing_resolution(control, api, config, *, agent_id, mode):
                 "data_binding_id": "data-root:sha256:" + "d" * 24,
                 "confidence": 1.0,
                 "evidence": ["existing_folder_validated"],
+                "config_assets": {
+                    "mat_filter": "config-asset://sha256/" + "e" * 64,
+                },
             }
         },
     )
@@ -227,6 +264,9 @@ def test_existing_folder_cluster_handoff_registers_bundle_and_uploads_local_data
     assert stages["prepare_data"]["assigned_agent_id"] == "light-1"
     assert stages["prepare_data"]["payload"]["dispatch_scope"] == "data_upload"
     assert job["resolved_spec"]["decisions"]["selena"]["status"] == "resolved"
+    assert job["resolved_spec"]["decisions"]["simulation_assets"]["mat_filter"].startswith(
+        "config-asset://sha256/"
+    )
 
 
 def test_existing_folder_local_handoff_reuses_bundle_on_full_agent(tmp_path):

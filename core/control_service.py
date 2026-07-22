@@ -779,6 +779,8 @@ class ControlService:
                                 "existing_path": str(selena.get("existing_path") or ""),
                                 "runtime_xml": str(selena.get("runtime_xml") or ""),
                                 "data_path": str((spec.get("data") or {}).get("path") or ""),
+                                "adapter_file": str((spec.get("simulation") or {}).get("adapter_file") or ""),
+                                "mat_filter": str((spec.get("simulation") or {}).get("mat_filter") or ""),
                                 "selected_target": selected_target,
                                 "auto_configure": True,
                             },
@@ -800,6 +802,8 @@ class ControlService:
                             "package_build_script": str(selena.get("package_build_script") or ""),
                             "runtime_xml": runtime_xml,
                             "data_path": str((spec.get("data") or {}).get("path") or ""),
+                            "adapter_file": str((spec.get("simulation") or {}).get("adapter_file") or ""),
+                            "mat_filter": str((spec.get("simulation") or {}).get("mat_filter") or ""),
                             "auto_configure": auto_configure,
                         },
                     )

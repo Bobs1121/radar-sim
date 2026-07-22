@@ -63,6 +63,7 @@ def bind_run_config_environment(
     binding_id = str(result.get("workspace_binding_id") or "").strip()
     adapter_key = str(result.get("adapter_key") or "").strip()
     asset_bindings = dict(result.get("asset_bindings") or {})
+    config_assets = dict(result.get("config_assets") or {})
     selected_data_binding_id = str(result.get("data_binding_id") or "").strip()
     selena_script_ref = str(result.get("selena_build_script_ref") or "").strip()
     package_script_ref = str(result.get("package_build_script_ref") or "").strip()
@@ -81,6 +82,11 @@ def bind_run_config_environment(
             for value in asset_bindings.values()
         ):
             raise StageBindingError("Runtime XML is not authorized")
+        for field, value in config_assets.items():
+            if field not in {"adapter_file", "mat_filter"} or not str(value).startswith(
+                ("config-asset://sha256/", "config-asset:sha256:")
+            ):
+                raise StageBindingError("Configuration asset result is not trusted")
     spec = dict(job.get("spec") or {})
     selena = dict(spec.get("selena") or {})
     resolved_spec = dict(job.get("resolved_spec") or {})
@@ -92,6 +98,10 @@ def bind_run_config_environment(
         "confidence": float(result.get("confidence") or 0.0),
         "evidence": list(result.get("evidence") or []),
     }
+    if config_assets:
+        decisions["simulation_assets"] = {
+            key: str(value) for key, value in config_assets.items()
+        }
     resolved_spec["decisions"] = decisions
     resolved_spec["status"] = "partial"
     control.update_resolved_spec(job_id, resolved_spec)
@@ -181,6 +191,7 @@ def bind_existing_runtime_resolution(
     ):
         raise StageBindingError("existing Selena resolution has not succeeded")
     recognition = dict((resolution.get("result") or {}).get("recognition") or {})
+    config_assets = dict(recognition.get("config_assets") or {})
     bundle = dict(recognition.get("registered_runtime_bundle") or {})
     lease_ref = str(recognition.get("runtime_bundle_lease_ref") or "")
     project = str(recognition.get("internal_project") or "")
@@ -197,6 +208,11 @@ def bind_existing_runtime_resolution(
         or attempt < 1
     ):
         raise StageBindingError("existing Selena resolution evidence is invalid")
+    for field, value in config_assets.items():
+        if field not in {"adapter_file", "mat_filter"} or not str(value).startswith(
+            ("config-asset://sha256/", "config-asset:sha256:")
+        ):
+            raise StageBindingError("Configuration asset result is not trusted")
 
     resolved_spec = dict(job.get("resolved_spec") or {})
     decisions = dict(resolved_spec.get("decisions") or {})
@@ -212,6 +228,10 @@ def bind_existing_runtime_resolution(
         "runtime_bundle": bundle,
         "evidence": {"reason": "agent_existing_folder_import", "ref": f"{resolution_stage_id}:{attempt}"},
     }
+    if config_assets:
+        decisions["simulation_assets"] = {
+            key: str(value) for key, value in config_assets.items()
+        }
     resolved_spec["decisions"] = decisions
     resolved_spec["status"] = "partial"
     control.update_resolved_spec(job_id, resolved_spec)

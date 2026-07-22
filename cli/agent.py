@@ -234,6 +234,11 @@ def _run_task(
                 if resolution_source == "existing"
                 else _resolve_v2_run_config(dict(task.get("payload") or {}))
             )
+            recognition["config_assets"] = _upload_resolution_config_assets(
+                dict(task.get("payload") or {}),
+                client=client,
+                owner=str(task.get("owner") or ""),
+            )
             if resolution_source == "existing":
                 imported = client.import_existing_runtime_bundle(
                     recognition,
@@ -1234,6 +1239,42 @@ def _materialize_local_config_asset(
     return str(path)
 
 
+def _upload_resolution_config_assets(
+    payload: dict,
+    *,
+    client: "_ControlClient",
+    owner: str,
+) -> dict[str, str]:
+    """Turn Agent-local simulation files into path-free central references."""
+    from core.config_assets import is_config_asset_ref
+    from core.datasets import classify_data_path
+
+    uploaded: dict[str, str] = {}
+    for kind, field in (("adapter", "adapter_file"), ("mat_filter", "mat_filter")):
+        value = str(payload.get(field) or "").strip()
+        if not value:
+            continue
+        if is_config_asset_ref(value):
+            uploaded[field] = value
+            continue
+        # Shared paths stay as business input and are resolved by the Linux
+        # deployment namespace.  Only this Windows PC's local files are copied.
+        if classify_data_path(value) != "agent":
+            continue
+        try:
+            path = Path(value).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise ValueError(f"{field} is unavailable on this Windows computer") from exc
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"{field} must be a regular local file")
+        record = client.upload_config_asset(path, kind=kind, owner=owner)
+        reference = str(record.get("uri") or record.get("id") or "")
+        if not is_config_asset_ref(reference):
+            raise ValueError(f"{field} upload did not return a valid reference")
+        uploaded[field] = reference
+    return uploaded
+
+
 def _execute_v5_local_simulation(task: dict, cancel_requested) -> tuple[dict, int]:
     from core.agent_local_run import AgentLocalRunLeaseStore, execute_local_run
     from core.local_selena_runner import run_local_selena
@@ -1802,6 +1843,26 @@ class _ControlClient:
                 kind=kind,
                 destination=target,
             )
+
+    def upload_config_asset(
+        self,
+        source: Path,
+        *,
+        kind: str,
+        owner: str = "",
+    ) -> dict:
+        """Upload one Agent-local Adapter/MatFilter under the task owner."""
+        if not self._api_url:
+            raise ValueError("Agent v1 api-url is required for configuration asset upload")
+        from core.user import current_user
+        from radar_sim_sdk import RadarSimClient
+
+        with RadarSimClient(
+            self._api_url,
+            user=str(owner or current_user()),
+            token=self._api_token,
+        ) as sdk:
+            return sdk.upload_config_asset(kind, source)
 
     def download_runtime_bundle(
         self,

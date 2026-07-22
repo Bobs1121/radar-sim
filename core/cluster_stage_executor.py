@@ -275,14 +275,25 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         raise ClusterStageExecutionError("Runtime Bundle is incomplete")
 
     simulation = dict((job.get("spec") or {}).get("simulation") or {})
+    resolved_assets = dict(
+        ((job.get("resolved_spec") or {}).get("decisions") or {}).get("simulation_assets") or {}
+    )
     registry = SharedNamespaceRegistry.from_config(config)
-    adapter_value = str(simulation.get("adapter_file") or "").strip()
+    adapter_value = str(
+        resolved_assets.get("adapter_file") or simulation.get("adapter_file") or ""
+    ).strip()
     adapter = (
         _resolve_config_asset(context, registry, owner, "adapter", adapter_value)
         if adapter_value
         else None
     )
-    mat_filter = _resolve_config_asset(context, registry, owner, "mat_filter", simulation.get("mat_filter"))
+    mat_filter = _resolve_config_asset(
+        context,
+        registry,
+        owner,
+        "mat_filter",
+        resolved_assets.get("mat_filter") or simulation.get("mat_filter"),
+    )
     data_location = context.dataset_catalog.resolve_location(dataset.id, owner=owner)
 
     config.setdefault("_meta", {})["project"] = project
