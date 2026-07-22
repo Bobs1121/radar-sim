@@ -41,6 +41,8 @@
 | INV-17 | 必须支持 build/existing × local/cluster 四种组合；auto 只负责在四种组合中自动选择并展示原因。 |
 | INV-18 | 已有 Selena 路径与 data.path 均由系统解析可达性；本地不可达时自动上传/传输，Cluster 就绪后不依赖用户电脑。 |
 | INV-19 | Visual Studio 由 Windows 用户自行安装；Agent 必须检测可用 C++ toolset、最小适配 Selena 脚本并展示结果。软件包脚本是其他依赖与明确代码生成步骤的事实来源，不得要求用户理解内部 toolchain 参数。 |
+| INV-20 | Windows 执行组件是平台内部实现，不是用户配置概念。Web 只提供“连接本机”：从当前 Linux 服务下载同源入口、双击一次、自动绑定、自启和断线重连；业务 YAML 永不出现服务地址、Agent ID、模式或令牌。 |
+| INV-21 | 新代码仓不得要求人工登记项目名。工作区身份由 `code_path + selena_build_script + package_build_script` 内部生成；脚本能唯一推导输出和依赖时直接执行，已知产品 adapter 只能补默认值，不能作为准入白名单。 |
 
 ## 2. WP0-WP10 实时状态
 
@@ -73,6 +75,7 @@
 
 | 日期 | 范围 | 证据 |
 |---|---|---|
+| 2026-07-22 | 一键连接、通用脚本识别与 Xpeng 构建卡死修复 | 本轮针对真实 `job_0be20501b3a8` 收敛：任务最初因 Windows 节点仍绑定 `127.0.0.1:8878` 而停在 10%，随后未登记 Xpeng 又被项目配置白名单阻断；修复为 Web/SDK 结构化 `waiting` 状态和“一键连接本机”，Linux 同源生成 `connect.cmd` 并自动绑定当前地址；未知代码仓改为脚本组合生成不含路径的内部 workspace ID，并由 Selena 脚本推导输出，不再要求 `config/projects/<name>`。真实任务已完成 resolve、环境检查和 32 个共享数据文件解析，编译进一步暴露软件包链路所需 Perl 未进入子进程 PATH、失败脚本末尾 `pause` 导致假卡住；现从用户所选脚本的有界邻域推导 Perl，自动发现本机 TCC Perl，仅向单次构建注入环境，并统一非交互 stdin。最终测试、部署和重试结果在本轮结束前补记。 |
 | 2026-07-22 | OD25 用户发布指南、产物定位与 Linux 部署 | 新增 `docs/OD25_USER_GUIDE.md` 和 build/existing 两份可导入 YAML；OD25 适配器登记 `apl/byd/tools/builder/cmake_build.bat` 作为软件包依赖/二次识别入口。修复 R2D2 `-B` 仅指向 build base 时遗漏 `full_DSP` 子树的问题；真实本机解析已定位 `D:/bydod25fr/byd/build/full_dsp/dc_tools/selena/core/RelWithDebInfo/selena.exe`（170,395,648 bytes），任意盘符双脚本识别回归已覆盖。Windows bootstrap 读取 health 的 `authentication_required`，当前可信内网无认证服务不再要求伪令牌。代码 `3e0e0ae` 已推送 `origin/codex/v1-existing-cluster` 并原子部署到 `10.190.171.44:8877`；切换前 running/queued 均为 0，服务器预检 40 passed，旧目录保留为 `.pre-3e0e0ae`。部署后 systemd enabled/active、外部 health/Web 200、build/existing 两份 OD25 YAML 均校验成功并路由 Cluster；历史 `job_6ba9d83a6cf4`、Manifest 仍为 200，结果 Range 下载仍为 206。 |
 | 2026-07-10 | v5 baseline docs | README 权威顺序、PRD current/target 边界、详细设计现有代码映射、WP0-WP10 可执行计划 |
 | 2026-07-10 | 复用/选型防漂移 | 增加 INV-10、详细设计复用决策、第三方 spike 和回退门禁 |

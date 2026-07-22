@@ -325,6 +325,50 @@ def inspect_selena_build_environment(
                         message=f"{len(dependencies)} dependency hints inspected",
                     )
                 )
+            # The package entry and the Selena entry jointly define the local
+            # process environment.  This step never rewrites the workspace;
+            # the same overlay is derived again immediately before build.
+            from core.windows_build_environment import (
+                WindowsBuildDependencyError,
+                prepare_windows_build_environment,
+            )
+
+            try:
+                dependency_environment = prepare_windows_build_environment(
+                    workspace_root=prepared.authorized.workspace_root,
+                    selena_build_script=getattr(prepared, "build_script_path", None),
+                    package_build_script=package_script,
+                )
+            except WindowsBuildDependencyError as exc:
+                checks_list.append(
+                    EnvironmentCheckResult(
+                        "script_derived_build_dependencies",
+                        "build.dependencies",
+                        "failed",
+                        code="script_derived_build_dependencies_unavailable",
+                        message=str(exc) or "A script-derived build dependency is unavailable.",
+                        action="Install the dependency reported by the selected build scripts, then retry.",
+                    )
+                )
+            else:
+                dependencies = tuple(
+                    getattr(dependency_environment, "dependencies", ()) or ()
+                )
+                if dependencies:
+                    checks_list.append(
+                        EnvironmentCheckResult(
+                            "script_derived_build_dependencies",
+                            "build.dependencies",
+                            "passed",
+                            code="script_derived_build_environment_prepared",
+                            message=f"Prepared process-local environment for: {', '.join(dependencies)}.",
+                        )
+                    )
+
+            # Keep the existing safe generated-source contract as a second,
+            # independent step.  Some BYD workspaces need missing PAD headers
+            # generated after a clean; the preparer only runs a recognized
+            # workspace-local generator and does not alter build scripts.
             prepare_generated = generated_dependency_preparer or prepare_package_generated_dependencies
             try:
                 generated = prepare_generated(package_script, prepared.authorized.workspace_root)

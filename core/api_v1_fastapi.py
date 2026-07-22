@@ -8,6 +8,7 @@ errors, request IDs, and SSE transport to the framework-agnostic
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -28,6 +29,12 @@ from core.http_auth import AuthPrincipal, HttpAuthError, HttpTokenAuthenticator
 from core.spec import SimulationSpec
 from core.user_config import UserRunConfig
 from core.user import USER_HEADER, current_user, normalize_user
+from core.windows_connector import (
+    WindowsConnectorError,
+    public_server_url,
+    render_installer,
+    render_launcher,
+)
 
 
 class SubmitJobRequest(BaseModel):
@@ -160,6 +167,7 @@ def create_app(
     api_service: ApiV1Service | None = None,
     web_root: str | Path | None = None,
     authenticator: HttpTokenAuthenticator | None = None,
+    windows_connector_bundle: str | Path | None = None,
 ) -> FastAPI:
     """Create the FastAPI app for v5 `/api/v1` routes."""
     service = api_service or ApiV1Service(control_service_factory=control_service_factory)
@@ -295,6 +303,102 @@ def create_app(
     @app.get("/api/v1/health")
     def health():
         return {**service.health(), "authentication_required": authenticator is not None}
+
+    @app.get("/api/v1/windows-connector/install.ps1", include_in_schema=False)
+    def download_windows_connector_installer(
+        request: Request,
+        mode: str = Query(default="light", pattern=r"^(light|full)$"),
+    ):
+        # Never embed long-lived credentials in a downloadable script.  The
+        # current no-auth sprint is supported now; authenticated deployments
+        # must add a short-lived pairing exchange before enabling this route.
+        if authenticator is not None:
+            raise ApiV1Error(
+                "connector_pairing_required",
+                "One-click Windows pairing is not enabled on this authenticated service",
+                status_code=409,
+                actions=[{"type": "contact_operator", "label": "Contact the service administrator"}],
+            )
+        root = Path(__file__).resolve().parent.parent
+        try:
+            server_url = public_server_url(str(request.base_url))
+            script = render_installer(
+                template=root / "scripts" / "install_windows_connector.ps1.in",
+                server_url=server_url,
+                mode=mode,
+            )
+        except WindowsConnectorError as exc:
+            raise ApiV1Error(
+                "connector_unavailable", str(exc), status_code=503,
+                actions=[{"type": "contact_operator", "label": "Contact the service administrator"}],
+            ) from exc
+        return Response(
+            content=script,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="connect-radar-sim.ps1"'},
+        )
+
+    @app.get("/api/v1/windows-connector/connect.cmd", include_in_schema=False)
+    def download_windows_connector_launcher(
+        request: Request,
+        mode: str = Query(default="light", pattern=r"^(light|full)$"),
+    ):
+        if authenticator is not None:
+            raise ApiV1Error(
+                "connector_pairing_required",
+                "One-click Windows pairing is not enabled on this authenticated service",
+                status_code=409,
+                actions=[{"type": "contact_operator", "label": "Contact the service administrator"}],
+            )
+        root = Path(__file__).resolve().parent.parent
+        try:
+            server_url = public_server_url(str(request.base_url))
+            launcher = render_launcher(
+                template=root / "scripts" / "connect_windows.cmd.in",
+                server_url=server_url,
+                mode=mode,
+            )
+        except WindowsConnectorError as exc:
+            raise ApiV1Error(
+                "connector_unavailable", str(exc), status_code=503,
+                actions=[{"type": "contact_operator", "label": "Contact the service administrator"}],
+            ) from exc
+        return Response(
+            content=launcher,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": (
+                    "attachment; filename=RadarSim-Connect-Windows.cmd; "
+                    "filename*=UTF-8''RadarSim-%E8%BF%9E%E6%8E%A5%E6%9C%AC%E6%9C%BA.cmd"
+                ),
+            },
+        )
+
+    @app.get("/api/v1/windows-connector/package.zip", include_in_schema=False)
+    def download_windows_connector_package():
+        if authenticator is not None:
+            raise ApiV1Error(
+                "connector_pairing_required",
+                "One-click Windows pairing is not enabled on this authenticated service",
+                status_code=409,
+            )
+        bundle = Path(windows_connector_bundle).resolve() if windows_connector_bundle else (
+            Path(__file__).resolve().parent.parent / "dist" / "rsim-windows-connector.zip"
+        ).resolve()
+        if not bundle.is_file():
+            raise ApiV1Error(
+                "connector_package_unavailable",
+                "Windows connector package has not been built on this service",
+                status_code=503,
+                actions=[{"type": "contact_operator", "label": "Contact the service administrator"}],
+            )
+        checksum = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
+        return FileResponse(
+            bundle,
+            media_type="application/zip",
+            filename="rsim-windows-connector.zip",
+            headers={"X-Content-SHA256": checksum, "X-Rsim-Connector-Version": "1"},
+        )
 
     # Windows full/light Agent endpoints share this process and ControlService
     # with /api/v1, so Stage handoffs cannot drift across two SQLite databases.

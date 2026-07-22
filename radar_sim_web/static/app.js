@@ -9,6 +9,9 @@ const state = {
   eventsByJob: new Map(),
   pollTimer: null,
   jobsRequestInFlight: false,
+  capabilitiesRequestInFlight: false,
+  capabilities: null,
+  connectorAwait: null,
   accessToken: sessionStorage.getItem("rsimAccessToken") || "",
   authenticationRequired: false,
   dataFolderFiles: [],
@@ -59,12 +62,36 @@ async function saveAccessToken() {
   if (state.accessToken) sessionStorage.setItem("rsimAccessToken", state.accessToken);
   else sessionStorage.removeItem("rsimAccessToken");
   try {
-    await api("/capabilities");
+    await refreshCapabilities();
     byId("apiState").textContent = "服务已连接";
     byId("apiState").className = "api-state ok";
     if (state.view === "tasks") await loadJobs();
   } catch (error) {
     showAuthenticationEntry(error.message || "连接失败");
+  }
+}
+
+function hasWindowsCapability(mode, capabilities = state.capabilities) {
+  const snapshot = capabilities?.capabilities || capabilities || {};
+  if (mode === "full") return Boolean(snapshot.windows_full?.available);
+  return Boolean(snapshot.windows_light?.available || snapshot.windows_full?.available);
+}
+
+async function refreshCapabilities() {
+  if (state.capabilitiesRequestInFlight) return state.capabilities;
+  state.capabilitiesRequestInFlight = true;
+  try {
+    const previous = state.capabilities;
+    const current = await api("/capabilities");
+    state.capabilities = current;
+    const waiting = state.connectorAwait;
+    if (waiting && !hasWindowsCapability(waiting.mode, previous) && hasWindowsCapability(waiting.mode, current)) {
+      state.connectorAwait = null;
+      showToast("本机已连接，等待中的任务将自动继续", 5000);
+    }
+    return current;
+  } finally {
+    state.capabilitiesRequestInFlight = false;
   }
 }
 
@@ -392,6 +419,7 @@ async function loadJobs() {
   const list = byId("jobList");
   if (!state.jobs.length) list.innerHTML = '<div class="empty-state">正在加载任务</div>';
   try {
+    await refreshCapabilities().catch(() => state.capabilities);
     const filter = byId("statusFilter").value;
     const page = await api(`/jobs?limit=100${filter ? `&status=${encodeURIComponent(filter)}` : ""}`);
     const jobs = page.jobs || [];
@@ -443,8 +471,9 @@ function renderJobs() {
     const meta = document.createElement("div");
     meta.className = "job-row-meta";
     const stage = document.createElement("span");
+    const waiting = windowsWaitState(job);
     const currentStage = stageName(job.current_stage);
-    stage.textContent = currentStage || (
+    stage.textContent = waiting ? `等待连接本机 · ${waiting.shortCapability}` : currentStage || (
       ["failed", "cancelled", "succeeded"].includes(job.status)
         ? statusName(job.status)
         : "等待调度"
@@ -455,6 +484,93 @@ function renderJobs() {
     row.append(header, code, progress, meta);
     list.append(row);
   });
+}
+
+function isWindowsLocalPath(value) {
+  const path = String(value || "").trim();
+  return /^[a-z]:[\\/]/i.test(path) || /^file:\/\/[a-z]:/i.test(path);
+}
+
+function selectedExecutionTarget(job) {
+  return job.resolved_spec?.decisions?.execution?.selected_target
+    || job.resolved_spec?.execution?.selected_target
+    || job.spec?.simulation?.target
+    || "auto";
+}
+
+function windowsWaitState(job, candidateStage = null) {
+  if (!job || job.cancel_requested || ["failed", "cancelled", "cancelling", "succeeded"].includes(job.status)) return null;
+  if (candidateStage && (candidateStage.stage_type || candidateStage.task_type) !== job.current_stage) return null;
+  const stage = candidateStage || (job.stages || []).find((item) =>
+    (item.stage_type || item.task_type) === job.current_stage
+    && ["queued", "blocked"].includes(item.status)
+  );
+  if (!stage || !["queued", "blocked"].includes(stage.status)) return null;
+
+  const stageType = stage.stage_type || stage.task_type || "";
+  const spec = job.spec || {};
+  const source = spec.selena?.source || spec.selena?.mode || "auto";
+  const target = selectedExecutionTarget(job);
+  const serverWaiting = job.waiting?.reason === "windows_connection_required" ? job.waiting : null;
+  if (serverWaiting && !hasWindowsCapability(serverWaiting.mode)) {
+    const full = serverWaiting.mode === "full";
+    const build = !full && source === "build";
+    return {
+      mode: serverWaiting.mode,
+      title: "任务正在等待连接本机",
+      capability: full
+        ? "缺少本地仿真能力"
+        : build ? "缺少本机编译和文件访问能力" : "缺少本机文件访问和上传能力",
+      shortCapability: full ? "本地仿真能力" : build ? "本机编译能力" : "本机文件访问能力",
+      reason: full
+        ? "你选择了本地仿真，运行 Selena 和收集结果需要由这台 Windows 电脑完成。"
+        : build
+          ? "任务会编译当前代码工作区，再把 Selena 产物交给 Cluster；代码和编译脚本只在你的 Windows 电脑上可访问。"
+          : "配置中包含 Windows 本地路径，需要由这台电脑准备 Selena、Runtime 或数据，再交给 Cluster。",
+    };
+  }
+  const paths = [
+    spec.data?.path,
+    spec.selena?.code_path,
+    spec.selena?.selena_build_script,
+    spec.selena?.package_build_script,
+    spec.selena?.existing_path,
+    spec.selena?.runtime_xml,
+    spec.simulation?.adapter_file,
+    spec.simulation?.mat_filter,
+  ];
+  const usesWindowsLocalPath = paths.some(isWindowsLocalPath);
+  const buildStages = new Set(["resolve_spec", "environment_check", "prepare_source", "build_selena", "register_artifact"]);
+  const localStages = new Set(["resolve_spec", "environment_check", "prepare_selena", "prepare_data", "preflight", "run_simulation", "collect_results", "finalize_manifest"]);
+
+  if (target === "local" && !hasWindowsCapability("full")) {
+    return {
+      mode: "full",
+      title: "任务正在等待连接本机",
+      capability: "缺少本地仿真能力",
+      shortCapability: "本地仿真能力",
+      reason: "你选择了本地仿真，运行 Selena 和收集结果需要由这台 Windows 电脑完成。",
+    };
+  }
+  if (source === "build" && buildStages.has(stageType) && !hasWindowsCapability("light")) {
+    return {
+      mode: "light",
+      title: "任务正在等待连接本机",
+      capability: "缺少本机编译和文件访问能力",
+      shortCapability: "本机编译能力",
+      reason: "任务会编译当前代码工作区，再把 Selena 产物交给 Cluster；代码和编译脚本只在你的 Windows 电脑上可访问。",
+    };
+  }
+  if (target !== "local" && usesWindowsLocalPath && localStages.has(stageType) && !hasWindowsCapability("light")) {
+    return {
+      mode: "light",
+      title: "任务正在等待连接本机",
+      capability: "缺少本机文件访问和上传能力",
+      shortCapability: "本机文件访问能力",
+      reason: "配置中包含 Windows 本地路径，需要由这台电脑准备 Selena、Runtime 或数据，再交给 Cluster。",
+    };
+  }
+  return null;
 }
 
 async function loadJobDetail(jobId, resetEvents) {
@@ -507,6 +623,10 @@ function renderJobDetail(job, events, manifest) {
     actions.append(actionButton("下载结果 ZIP", "primary", () => downloadResult(manifest.result_ref)));
   }
   header.append(heading, actions);
+
+  const windowsWaiting = windowsWaitState(job);
+  const connectorPanel = windowsWaiting ? renderWindowsConnectionCallout(job, windowsWaiting) : null;
+  if (windowsWaiting) state.connectorAwait = { jobId: job.id, mode: windowsWaiting.mode };
 
   const grid = document.createElement("div");
   grid.className = "detail-grid";
@@ -582,11 +702,80 @@ function renderJobDetail(job, events, manifest) {
     text.textContent = friendlyEvent(event);
     line.append(time, text); log.append(line);
   });
-  root.append(header, grid);
+  root.append(header);
+  if (connectorPanel) root.append(connectorPanel);
+  root.append(grid);
   if (failure.childElementCount) root.append(failure);
   root.append(log);
   root.scrollTop = previousRootTop;
   log.scrollTop = followedLogTail ? log.scrollHeight : Math.min(previousLogTop, log.scrollHeight);
+}
+
+function renderWindowsConnectionCallout(job, waiting) {
+  const panel = document.createElement("section");
+  panel.className = "windows-connect-callout";
+  panel.setAttribute("role", "status");
+
+  const copy = document.createElement("div");
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "callout-eyebrow";
+  eyebrow.textContent = "等待用户操作";
+  const title = document.createElement("h3");
+  title.textContent = waiting.title;
+  const capability = document.createElement("strong");
+  capability.textContent = waiting.capability;
+  const reason = document.createElement("p");
+  reason.textContent = waiting.reason;
+  const reassurance = document.createElement("p");
+  reassurance.className = "callout-reassurance";
+  reassurance.textContent = "任务没有失败，也不需要重新提交。连接成功后，调度会自动继续。";
+  copy.append(eyebrow, title, capability, reason, reassurance);
+
+  const controls = document.createElement("div");
+  controls.className = "windows-connect-actions";
+  const status = document.createElement("small");
+  status.textContent = "安装一次，后续自动连接";
+  const button = actionButton("一键连接本机", "primary", () =>
+    downloadWindowsConnector(job.id, waiting.mode, button, status)
+  );
+  controls.append(button, status);
+  panel.append(copy, controls);
+  return panel;
+}
+
+async function downloadWindowsConnector(jobId, mode, button, status) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "正在准备";
+  status.textContent = "正在生成与当前服务匹配的安装程序…";
+  try {
+    const headers = new Headers();
+    if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
+    const response = await fetch(`${API}/windows-connector/connect.cmd?mode=${encodeURIComponent(mode)}`, { headers });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 404) throw new Error("一键连接包暂未就绪，请刷新页面后重试");
+      throw new ApiError(response.status, payload);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "RadarSim-连接本机.cmd";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    state.connectorAwait = { jobId, mode };
+    button.textContent = "重新下载";
+    status.textContent = "请双击运行已下载的文件；本页会自动检测连接并继续任务";
+    showToast("连接程序已下载，双击运行后无需重新提交任务", 5000);
+  } catch (error) {
+    button.textContent = original;
+    status.textContent = error.message || "连接程序准备失败，请稍后重试";
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function downloadResult(resultRef) {
@@ -619,7 +808,8 @@ function renderStage(job, stage) {
   const title = document.createElement("strong");
   title.textContent = stageName(stage.stage_type || stage.task_type);
   const detail = document.createElement("small");
-  detail.textContent = friendlyStageDetail(stage);
+  const waiting = windowsWaitState(job, stage);
+  detail.textContent = waiting ? `等待连接本机：${waiting.capability}` : friendlyStageDetail(stage);
   copy.append(title, detail);
   const actions = document.createElement("div");
   actions.className = "stage-actions";
@@ -677,7 +867,7 @@ function statusName(value) {
   return {
     queued: "排队中", running: "运行中", needs_input: "需要处理",
     succeeded: "已完成", failed: "失败", cancelled: "已取消",
-    blocked: "已阻塞", skipped: "已跳过", cancel_requested: "取消中",
+    blocked: "已阻塞", skipped: "已跳过", cancel_requested: "取消中", cancelling: "取消中",
   }[value] || value || "未知";
 }
 

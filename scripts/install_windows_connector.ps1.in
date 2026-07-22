@@ -1,0 +1,102 @@
+<# radar-sim: connect this Windows PC to the Linux simulation service. #>
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = "Stop"
+$ServerUrl = [Text.Encoding]::UTF8.GetString(
+    [Convert]::FromBase64String("__RSIM_SERVER_URL_BASE64__")
+).TrimEnd('/')
+$Mode = "__RSIM_WINDOWS_MODE__"
+$Base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME "AppData\Local" }
+$InstallRoot = Join-Path $Base "radar-sim"
+$AppRoot = Join-Path $InstallRoot "app"
+$WorkRoot = Join-Path $env:TEMP ("radar-sim-connect-" + [Guid]::NewGuid().ToString("N"))
+$Archive = Join-Path $WorkRoot "package.zip"
+$Expanded = Join-Path $WorkRoot "package"
+
+function Step([string]$message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
+function Fail([string]$message) { Write-Host "`nConnection failed: $message" -ForegroundColor Red; exit 1 }
+
+function Find-Python310 {
+    foreach ($candidate in @("python", "py")) {
+        try {
+            $version = & $candidate -c "import sys; print('.'.join(map(str, sys.version_info[:3]))); raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
+            if ($LASTEXITCODE -eq 0) { return "$candidate $version" }
+        } catch { }
+    }
+    return $null
+}
+
+function Refresh-ProcessPath {
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $knownPython = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312"
+    # Put the freshly installed per-user runtime first; an older corporate
+    # Python earlier in Machine PATH must not make bootstrap fail incorrectly.
+    $env:Path = @($knownPython, (Join-Path $knownPython "Scripts"), $machinePath, $userPath) -join ';'
+}
+
+if ($env:OS -ne "Windows_NT") { Fail "Run this file on the Windows PC that needs to be connected." }
+
+try {
+    $serverHost = ([Uri]$ServerUrl).Host
+    $bypass = @($env:NO_PROXY -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($bypass -notcontains $serverHost) { $bypass += $serverHost }
+    $env:NO_PROXY = ($bypass -join ',')
+    $env:no_proxy = $env:NO_PROXY
+
+    Step "Check the simulation service"
+    $health = Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/health" -TimeoutSec 10
+    if ($health.authentication_required) {
+        Fail "This service requires authenticated pairing. Contact the service administrator."
+    }
+
+    Step "Check the local runtime"
+    $python = Find-Python310
+    if (-not $python) {
+        $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+        if ($winget) {
+            Write-Host "Python 3.10+ is missing. Installing Python 3.12 for the current user..."
+            & $winget.Source install --id Python.Python.3.12 --exact --silent --scope user `
+                --accept-package-agreements --accept-source-agreements --disable-interactivity
+            Refresh-ProcessPath
+            $python = Find-Python310
+        }
+        if (-not $python) {
+            Fail "Python 3.10+ is required and automatic installation was unavailable or blocked. Install Python 3.12 from your company Software Center, or https://www.python.org/downloads/windows/, then run this file again."
+        }
+    }
+    Write-Host "Python ready: $python" -ForegroundColor Green
+
+    Step "Download the matching Windows component"
+    New-Item -ItemType Directory -Force -Path $WorkRoot, $Expanded | Out-Null
+    $download = Invoke-WebRequest -UseBasicParsing `
+        -Uri "$ServerUrl/api/v1/windows-connector/package.zip" `
+        -OutFile $Archive -PassThru -TimeoutSec 120
+    $expectedHash = [string]$download.Headers["X-Content-SHA256"]
+    if ($expectedHash -notmatch '^sha256:[0-9a-f]{64}$') {
+        Fail "The service did not provide a valid package checksum."
+    }
+    $actualHash = "sha256:" + (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
+        Fail "The downloaded package checksum does not match the service."
+    }
+    Expand-Archive -LiteralPath $Archive -DestinationPath $Expanded -Force
+    if (-not (Test-Path (Join-Path $Expanded "scripts\bootstrap.ps1"))) {
+        Fail "The downloaded package is incomplete."
+    }
+
+    Step "Install and connect this PC"
+    New-Item -ItemType Directory -Force -Path $AppRoot | Out-Null
+    Copy-Item -Path (Join-Path $Expanded '*') -Destination $AppRoot -Recurse -Force
+    & (Join-Path $AppRoot "scripts\bootstrap.ps1") -Mode $Mode -ControlPlane linux `
+        -ServerUrl $ServerUrl -InstallRoot $InstallRoot -RegisterStartup -Start
+    if ($LASTEXITCODE -ne 0) { Fail "The local component installation did not complete." }
+
+    Write-Host "`nThis PC is connected. Return to the Web page and continue the task." -ForegroundColor Green
+    Write-Host "Visual Studio is user-managed. The connector checks it and reports a clear build prerequisite if missing."
+} catch {
+    Fail $_.Exception.Message
+} finally {
+    Remove-Item -LiteralPath $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
+}

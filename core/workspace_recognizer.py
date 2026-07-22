@@ -8,6 +8,7 @@ It is pure discovery: it never changes Git state or runs a build.
 
 from __future__ import annotations
 
+import hashlib
 import ntpath
 import os
 import posixpath
@@ -132,11 +133,16 @@ class WorkspaceRecognizer:
                     if (item := _score_adapter(adapter, root, discovered, explicit_package)) is not None
                 ]
         if not candidates and (explicit_selena or explicit_package or discovered):
+            generic_selena = explicit_selena or discovered
             generic = _Adapter(
                 key="generic:selena-script",
-                project="",
+                # ``project`` is a local authorization namespace, not a
+                # business-project choice.  Unknown products still need a
+                # stable, path-free token so the Agent can bind the workspace
+                # and later stages can refer to the resulting artifacts.
+                project=_generic_internal_project(root, generic_selena, explicit_package),
                 workspace_roots=(root,),
-                build_script=explicit_selena or discovered,
+                build_script=generic_selena,
                 package_build_script=explicit_package,
                 output_dir="",
             )
@@ -182,13 +188,13 @@ class WorkspaceRecognizer:
         # another checkout.  This is especially important for ovrs25, whose
         # adapter intentionally has no static build_output.
         derived_output = ""
-        if explicit_selena:
+        if script:
             try:
                 from core.config import derive_project_context_from_selena_script
 
                 derived_output = _normalize_path(
                     str(
-                        derive_project_context_from_selena_script(explicit_selena).get(
+                        derive_project_context_from_selena_script(script).get(
                             "build_output"
                         )
                         or ""
@@ -368,6 +374,25 @@ def _relative_suffix(left: str, right: str) -> int:
             break
         count += 1
     return count
+
+
+def _generic_internal_project(root: str, selena_script: str, package_script: str) -> str:
+    """Return a stable logical namespace for an unregistered workspace.
+
+    The value is deliberately opaque and path-free.  All inputs are already
+    canonicalized by the recognizer, so equivalent Windows path spellings
+    produce the same identity while a different checkout or script pair gets
+    an independent authorization namespace.
+    """
+    payload = "\0".join(
+        (
+            _normalize_path(root),
+            _normalize_path(selena_script),
+            _normalize_path(package_script),
+        )
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    return f"workspace-{digest}"
 
 
 def _rebase_to_workspace(path: str, configured_roots: tuple[str, ...], actual_root: str) -> str:

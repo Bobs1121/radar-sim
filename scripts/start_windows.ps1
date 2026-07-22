@@ -3,7 +3,8 @@
 param(
     [string]$InstallRoot = "",
     [switch]$Background,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$Supervise
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +31,11 @@ $env:RSIM_HOME = [string]$config.data_root
 $env:RSIM_AGENT_TOKEN = [string]$secrets.agent_token
 $env:RSIM_API_TOKEN = [string]$secrets.api_token
 $serverUrl = ([string]$config.server_url).TrimEnd('/')
+$serverHost = ([Uri]$serverUrl).Host
+$bypass = @($env:NO_PROXY -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($bypass -notcontains $serverHost) { $bypass += $serverHost }
+$env:NO_PROXY = ($bypass -join ',')
+$env:no_proxy = $env:NO_PROXY
 $controlPlane = if ($config.control_plane) { [string]$config.control_plane }
     elseif ([string]$config.mode -eq "full") { "local" } else { "linux" }
 if ([string]$config.mode -eq "light" -and $controlPlane -ne "linux") {
@@ -83,10 +89,48 @@ if ([string]$config.mode -eq "full" -and $controlPlane -eq "local") {
 }
 
 if ($Background) {
-    $agentArgumentLine = ($agentArgs | ForEach-Object { Quote-ProcessArgument ([string]$_) }) -join ' '
-    $agent = Start-Process -FilePath $venvPy -ArgumentList $agentArgumentLine -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
-    Write-Host "$($config.mode) Agent started in background (PID $($agent.Id))." -ForegroundColor Green
+    $self = $MyInvocation.MyCommand.Path
+    $supervisorArgs = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $self,
+        "-InstallRoot", $InstallRoot, "-Supervise", "-NoBrowser"
+    )
+    $supervisorArgumentLine = ($supervisorArgs | ForEach-Object { Quote-ProcessArgument ([string]$_) }) -join ' '
+    $supervisor = Start-Process -FilePath "powershell.exe" -ArgumentList $supervisorArgumentLine `
+        -WorkingDirectory $RepoRoot -WindowStyle Hidden -PassThru
+    Write-Host "This PC is connecting in the background (PID $($supervisor.Id))." -ForegroundColor Green
     return
+}
+
+if ($Supervise) {
+    $created = $false
+    $mutexName = "Local\RadarSimConnector-" + ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+    $mutex = New-Object Threading.Mutex($true, $mutexName, [ref]$created)
+    if (-not $created) {
+        Write-Host "This PC is already connected." -ForegroundColor Green
+        return
+    }
+    $connectorPidPath = Join-Path $InstallRoot "connector.pid"
+    Set-Content -LiteralPath $connectorPidPath -Value ([string]$PID) -Encoding ASCII
+    try {
+        while ($true) {
+            try {
+                & $venvPy @agentArgs
+                $exitCode = $LASTEXITCODE
+                Write-Warning "The connector stopped (exit $exitCode); reconnecting in 5 seconds."
+            } catch {
+                Write-Warning "The connector could not start: $($_.Exception.Message); reconnecting in 5 seconds."
+            }
+            Start-Sleep -Seconds 5
+        }
+    } finally {
+        try {
+            if ((Get-Content -Raw -Encoding ASCII $connectorPidPath -ErrorAction SilentlyContinue).Trim() -eq [string]$PID) {
+                Remove-Item -LiteralPath $connectorPidPath -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        $mutex.ReleaseMutex()
+        $mutex.Dispose()
+    }
 }
 
 Write-Host "$($config.mode) Agent is running; press Ctrl+C to stop." -ForegroundColor Cyan

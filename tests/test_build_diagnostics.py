@@ -65,6 +65,18 @@ def test_missing_generated_header_points_to_package_generation_step():
     assert "code-generation" in diagnostic.action
 
 
+def test_perl_generator_failure_is_specific_and_actionable():
+    diagnostic = classify_build_failure(
+        [
+            "generate_PAD_params.bat: PERL not found. PAD files will not be re-generated.",
+            "PAD parameter generation failed!!",
+        ]
+    )
+    assert diagnostic.code == "PERL_BUILD_DEPENDENCY_UNAVAILABLE"
+    assert diagnostic.category == "environment"
+    assert "Windows Agent" in diagnostic.action
+
+
 def _try_lock(path, queue):
     try:
         with WorkspaceBuildLock(path):

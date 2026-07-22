@@ -9,7 +9,8 @@ from typing import Iterable
 
 _STRONG_ERROR = re.compile(
     r"(?:fatal error|\berror\s+(?:C|LNK|MSB)\d+\b|\bFAILED:|undefined reference|"
-    r"cannot open (?:file|include)|no such file|could not find any instance of\s+Visual Studio)",
+    r"cannot open (?:file|include)|no such file|could not find any instance of\s+Visual Studio|"
+    r"\bPERL not found\b|PAD parameter generation failed)",
     re.IGNORECASE,
 )
 _GENERIC_ERROR = re.compile(r"(?:\bR2D2 execution failed\b|\bFailed to run (?:make|cmake)\b)", re.IGNORECASE)
@@ -33,6 +34,7 @@ _GENERATED_HEADER = re.compile(
     r"(?:cannot open include file|no such file).*?(?:_gen|_generated)\.h\b",
     re.IGNORECASE,
 )
+_PERL = re.compile(r"(?:\bPERL not found\b|PAD parameter generation failed)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,14 @@ def classify_build_failure(lines: Iterable[str]) -> BuildDiagnostic:
             category="environment",
             summary="The Selena build script selected a Visual Studio version that is not installed",
             action="Let the Windows Agent adapt the Selena script to the installed Visual Studio version, then retry",
+            detail=detail,
+        )
+    if _PERL.search(detail):
+        return BuildDiagnostic(
+            code="PERL_BUILD_DEPENDENCY_UNAVAILABLE",
+            category="environment",
+            summary="The selected build scripts require Perl, but the build process could not find it",
+            action="Let the Windows Agent prepare the script-derived Perl environment, then retry",
             detail=detail,
         )
     if _SOURCE_EXCEPTION_SPEC.search(detail):

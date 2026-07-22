@@ -782,7 +782,14 @@ class ApiV1Service:
             status="",
             job_type_prefix="simulation.",
         )
-        jobs = [self._job_response(control.get_job(item["job_id"])) for item in summaries]
+        capabilities = self.execution_capabilities(owner)["capabilities"]
+        jobs = [
+            self._job_response(
+                control.get_job(item["job_id"]),
+                execution_capabilities=capabilities,
+            )
+            for item in summaries
+        ]
         if requested_status:
             jobs = [item for item in jobs if item["status"] == requested_status]
         jobs = jobs[:safe_limit]
@@ -1295,12 +1302,17 @@ class ApiV1Service:
             )
         return job
 
-    def _job_response(self, job: dict[str, Any]) -> dict[str, Any]:
+    def _job_response(
+        self,
+        job: dict[str, Any],
+        *,
+        execution_capabilities: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raw_stages = list(job.get("stages") or job.get("tasks") or [])
         is_run_config = str((job.get("metadata") or {}).get("contract") or "") == "user-run-config/2.0"
         stages = [self._public_run_stage(item) for item in raw_stages] if is_run_config else raw_stages
         status = self._v1_status(job)
-        return {
+        response = {
             "id": job["job_id"],
             "job_id": job["job_id"],
             "type": job["job_type"],
@@ -1321,6 +1333,100 @@ class ApiV1Service:
             "stages": stages,
             "tasks": stages if is_run_config else list(job.get("tasks") or []),
             "metadata": dict(job.get("metadata") or {}),
+        }
+        response["waiting"] = self._windows_waiting(
+            job,
+            raw_stages,
+            status,
+            execution_capabilities=execution_capabilities,
+        ) if is_run_config else None
+        return response
+
+    def _windows_waiting(
+        self,
+        job: dict[str, Any],
+        stages: list[dict[str, Any]],
+        status: str,
+        *,
+        execution_capabilities: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Describe a path-free Windows connection wait for Web and SDK clients."""
+        if status in TERMINAL_STATUSES or status == "cancelling":
+            return None
+        current = next(
+            (
+                stage for stage in stages
+                if str(stage.get("status") or "") == "queued"
+                and str(stage.get("stage_type") or stage.get("task_type") or "")
+                == self._current_stage(stages)
+            ),
+            None,
+        )
+        if current is None:
+            return None
+
+        stage_type = str(current.get("stage_type") or current.get("task_type") or "")
+        spec = dict(job.get("spec") or (job.get("payload") or {}).get("spec") or {})
+        selena = dict(spec.get("selena") or {})
+        simulation = dict(spec.get("simulation") or {})
+        data = dict(spec.get("data") or {})
+        resolved = dict(job.get("resolved_spec") or {})
+        decisions = dict(resolved.get("decisions") or {})
+        execution = dict(decisions.get("execution") or {})
+        target = str(execution.get("selected_target") or simulation.get("target") or "auto")
+        source = str(selena.get("source") or selena.get("mode") or "auto")
+        capabilities = execution_capabilities or self.execution_capabilities(
+            str(job.get("owner") or (job.get("metadata") or {}).get("owner") or "")
+        )["capabilities"]
+
+        mode = ""
+        message = ""
+        if target == "local" and not capabilities["windows_full"]["available"]:
+            mode = "full"
+            message = "This task is waiting for a connected Windows computer with local simulation capability."
+        elif (
+            source == "build"
+            and stage_type in {"resolve_spec", "environment_check", "prepare_source", "build_selena", "register_artifact"}
+            and not (
+                capabilities["windows_light"]["available"]
+                or capabilities["windows_full"]["available"]
+            )
+        ):
+            mode = "light"
+            message = "This task is waiting for a connected Windows computer with build capability."
+        elif (
+            target != "local"
+            and stage_type in {"resolve_spec", "environment_check", "prepare_data", "register_artifact"}
+            and any(
+                classify_data_path(str(value or "")) == "agent"
+                for value in (
+                    data.get("path"),
+                    selena.get("existing_path"),
+                    selena.get("runtime_xml"),
+                    simulation.get("adapter_file"),
+                    simulation.get("mat_filter"),
+                )
+            )
+            and not (
+                capabilities["windows_light"]["available"]
+                or capabilities["windows_full"]["available"]
+            )
+        ):
+            mode = "light"
+            message = "This task is waiting for a connected Windows computer that can access local files."
+        if not mode:
+            return None
+        return {
+            "reason": "windows_connection_required",
+            "mode": mode,
+            "stage": stage_type,
+            "missing_capability": "windows_full" if mode == "full" else "windows_light",
+            "message": message,
+            "action": {
+                "type": "connect_windows",
+                "label": "Connect this Windows computer",
+                "mode": mode,
+            },
         }
 
     @staticmethod

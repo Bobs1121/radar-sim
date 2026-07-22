@@ -51,6 +51,9 @@ def test_sdk_and_web_share_project_free_run_config_contract(tmp_path):
     assert job.spec_hash == config.fingerprint()
     assert job.type == "simulation.run_config.v2"
     assert "project" not in job.spec
+    assert job.waiting["reason"] == "windows_connection_required"
+    assert job.waiting["mode"] == "light"
+    assert job.waiting["action"]["type"] == "connect_windows"
 
 
 def test_sdk_submit_yaml_accepts_every_user_run_combination(tmp_path):

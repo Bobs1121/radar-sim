@@ -277,6 +277,45 @@ def _rebase_branch_config(
 # Public API
 # ---------------------------------------------------------------------------
 
+
+def _generic_build_config(project: str, binding: Any) -> dict[str, Any]:
+    """Build the minimal local config for a script-recognized workspace.
+
+    Absolute paths remain Agent-local.  The caller replaces the script fields
+    from authorized relative references before any command is constructed.
+    No product catalog or ``config/projects`` entry is consulted.
+    """
+    workspace = str(binding.workspace_root)
+    output = str(binding.output_roots[0])
+    return {
+        "_meta": {"project": project},
+        "project": {"name": project, "platform": "gen5_selena"},
+        "machine": {"platform": "gen5_selena", "project_root": workspace},
+        "project_root": workspace,
+        "repos": {
+            "inner_repo_root": workspace,
+            "outer_repo_root": workspace,
+        },
+        "build": {
+            "build_output": output,
+            # The script is user-selected and owns its arguments/config.  Do
+            # not guess a product-specific positional CLI contract.
+            "script_args_template": [],
+        },
+        "paths": {
+            "project_root": workspace,
+            "source_root": workspace,
+            "build_output": output,
+        },
+        "selena": {
+            "executable_name": "selena.exe",
+            "exe_pattern": "dc_tools/selena/core/{build_mode}",
+        },
+        "simulation": {},
+        "assets": {},
+        "cluster": {},
+    }
+
 def prepare_selena_build(
     payload: Mapping[str, Any],
     binding_store: AgentBindingStore,
@@ -349,13 +388,19 @@ def prepare_selena_build(
     except AgentBindingError as exc:
         raise AgentBuildStageError(str(exc)) from exc
 
-    # Load config.
-    try:
-        config = config_loader(project)
-    except (FileNotFoundError, ValueError) as exc:
-        raise AgentBuildStageError("config loading failed") from exc
-    except Exception as exc:
-        raise AgentBuildStageError("config loading failed") from exc
+    # Registered adapters retain their layered project config.  A generic
+    # workspace deliberately has no config/projects/<name> entry: its local
+    # authorization binding and the script references supplied by resolve_spec
+    # are the complete build contract.
+    if contract == "user-run-config/2.0" and adapter_key == "generic:selena-script":
+        config = _generic_build_config(project, binding)
+    else:
+        try:
+            config = config_loader(project)
+        except (FileNotFoundError, ValueError) as exc:
+            raise AgentBuildStageError("config loading failed") from exc
+        except Exception as exc:
+            raise AgentBuildStageError("config loading failed") from exc
     config = copy.deepcopy(config)
     if contract == "user-run-config/2.0":
         repos = config.setdefault("repos", {})

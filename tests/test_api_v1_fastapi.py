@@ -228,6 +228,47 @@ def test_serve_v1_exposes_agent_control_endpoints_on_same_database(tmp_path):
     assert control.get_job(job["job_id"])["status"] == "succeeded"
 
 
+def test_one_click_windows_connector_is_bound_to_current_linux_service(tmp_path):
+    bundle = tmp_path / "rsim-windows-connector.zip"
+    bundle.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+    client = TestClient(create_app(windows_connector_bundle=bundle))
+
+    installer = client.get("/api/v1/windows-connector/install.ps1?mode=full")
+    assert installer.status_code == 200
+    assert "attachment" in installer.headers["content-disposition"]
+    assert "__RSIM_SERVER_URL_BASE64__" not in installer.text
+    assert "__RSIM_WINDOWS_MODE__" not in installer.text
+    assert "aHR0cDovL3Rlc3RzZXJ2ZXI=" in installer.text
+    assert '$Mode = "full"' in installer.text
+    assert "/api/v1/windows-connector/package.zip" in installer.text
+    assert "AgentToken" not in installer.text
+    assert "ApiToken" not in installer.text
+
+    launcher = client.get("/api/v1/windows-connector/connect.cmd?mode=light")
+    assert launcher.status_code == 200
+    assert "RadarSim-%E8%BF%9E%E6%8E%A5%E6%9C%AC%E6%9C%BA.cmd" in launcher.headers["content-disposition"]
+    assert "__RSIM_SERVER_URL_BASE64__" not in launcher.text
+    assert "__RSIM_WINDOWS_MODE__" not in launcher.text
+    assert "aHR0cDovL3Rlc3RzZXJ2ZXI=" in launcher.text
+    assert "install.ps1?mode=" in launcher.text
+    assert "AgentToken" not in launcher.text
+    assert "ApiToken" not in launcher.text
+
+    package = client.get("/api/v1/windows-connector/package.zip")
+    assert package.status_code == 200
+    assert package.content == bundle.read_bytes()
+    assert package.headers["X-Content-SHA256"].startswith("sha256:")
+    assert len(package.headers["X-Content-SHA256"]) == 71
+
+
+def test_one_click_windows_connector_never_embeds_long_lived_auth_tokens(tmp_path):
+    client = TestClient(create_app(authenticator=make_authenticator()))
+    installer = client.get("/api/v1/windows-connector/install.ps1?mode=light")
+    assert installer.status_code == 409
+    assert installer.json()["code"] == "connector_pairing_required"
+    assert client.get("/api/v1/windows-connector/connect.cmd?mode=light").status_code == 409
+
+
 def test_project_free_run_config_routes_share_one_contract(tmp_path):
     client, _ = make_client(tmp_path)
     schema = client.get("/api/v1/schema/run-config").json()
@@ -245,6 +286,10 @@ def test_project_free_run_config_routes_share_one_contract(tmp_path):
     assert created.status_code == 201
     assert created.json()["spec_hash"] == validated.json()["fingerprint"]
     assert "project" not in created.json()["spec"]
+    assert created.json()["waiting"]["reason"] == "windows_connection_required"
+    assert created.json()["waiting"]["mode"] == "light"
+    assert created.json()["waiting"]["action"]["type"] == "connect_windows"
+    assert "D:/" not in str(created.json()["waiting"])
 
     exported = client.post("/api/v1/run-configs/export", json={"config": config})
     imported = client.post(
@@ -351,7 +396,16 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert "stage.error?.diagnostic?.action" in app_js.text
     assert "校验期望分支并编译当前工作区" in app_js.text
     assert "隔离切换分支并编译 Selena" not in app_js.text
-    assert client.get("/console/styles.css").status_code == 200
+    assert "windowsWaitState" in app_js.text
+    assert "等待连接本机" in app_js.text
+    assert "一键连接本机" in app_js.text
+    assert "/windows-connector/connect.cmd?mode=" in app_js.text
+    assert "RadarSim-连接本机.cmd" in app_js.text
+    assert "请双击运行已下载的文件" in app_js.text
+    assert "本机已连接，等待中的任务将自动继续" in app_js.text
+    styles = client.get("/console/styles.css")
+    assert styles.status_code == 200
+    assert ".windows-connect-callout" in styles.text
     assert client.get("/api/v1/health").status_code == 200
     assert client.get("/api/config").status_code == 404
 

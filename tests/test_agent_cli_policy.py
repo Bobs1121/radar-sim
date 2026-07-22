@@ -177,6 +177,7 @@ def test_light_forbidden_explicit_capability_fails_before_http(monkeypatch):
 def test_node_local_project_free_resolution_requires_authorized_binding(tmp_path, monkeypatch):
     from core.agent_bindings import AgentBindingStore
     from core.agent_asset_bindings import AgentAssetBindingStore
+    from core.workspace_recognizer import WorkspaceRecognizer
     import core.agent_bindings as bindings_module
     import core.agent_asset_bindings as asset_bindings_module
 
@@ -189,7 +190,10 @@ def test_node_local_project_free_resolution_requires_authorized_binding(tmp_path
     db = tmp_path / "bindings.db"
     monkeypatch.setattr(bindings_module, "default_agent_binding_db_path", lambda: db)
     monkeypatch.setattr(asset_bindings_module, "default_agent_binding_db_path", lambda: db)
-    binding = AgentBindingStore().register("internal-demo", workspace, (output,))
+    internal_project = WorkspaceRecognizer().recognize(
+        str(workspace), str(script)
+    ).internal_project
+    binding = AgentBindingStore().register(internal_project, workspace, (output,))
     assets = tmp_path / "assets"
     assets.mkdir()
     runtime = assets / "Runtime.xml"
@@ -204,7 +208,7 @@ def test_node_local_project_free_resolution_requires_authorized_binding(tmp_path
         {"code_path": str(workspace), "build_script": str(script)}
     )
     assert result["status"] == "resolved"
-    assert result["internal_project"] == "internal-demo"
+    assert result["internal_project"] == internal_project
     assert result["workspace_binding_id"] == binding.binding_id
     assert result["adapter_key"] == "generic:selena-script"
 

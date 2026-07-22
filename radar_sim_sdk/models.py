@@ -41,6 +41,7 @@ class Job:
     cancel_requested: bool = False
     progress: float = 0.0
     current_stage: str = ""
+    waiting: dict[str, Any] = field(default_factory=dict)
     available_actions: list[dict[str, Any]] = field(default_factory=list)
     spec: dict[str, Any] = field(default_factory=dict)
     resolved_spec: dict[str, Any] = field(default_factory=dict)
@@ -64,6 +65,7 @@ class Job:
             cancel_requested=bool(data.get("cancel_requested", False)),
             progress=float(data.get("progress") or 0.0),
             current_stage=str(data.get("current_stage") or ""),
+            waiting=dict(data.get("waiting") or {}),
             available_actions=list(data.get("available_actions") or []),
             spec=dict(data.get("spec") or {}),
             resolved_spec=dict(data.get("resolved_spec") or {}),

@@ -39,6 +39,8 @@ def test_linux_and_docker_release_entry_is_unified_serve_v1():
 
     assert "rsim.py server serve-v1" in deploy
     assert "--auth-file" in deploy
+    assert "RSIM_INSECURE_NO_AUTH" in deploy
+    assert "--insecure-no-auth" in deploy
     assert "rsim web" not in deploy
     assert 'CMD ["sh", "-c", "exec rsim server serve-v1' in dockerfile
     assert "EXPOSE 8878" in dockerfile
@@ -64,3 +66,24 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "visual_studio_detected" in bootstrap
     assert "authentication_required" in bootstrap
     assert "no token is stored" in bootstrap
+    assert "RegisterStartup" in bootstrap
+    assert "New-ScheduledTaskAction" in bootstrap
+    assert "-Supervise" in starter
+    assert "Threading.Mutex" in starter
+    assert "connector.pid" in starter
+    assert "Stop-Process" in bootstrap
+    assert "NO_PROXY" in starter
+    assert "X-Content-SHA256" in (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
+    assert "Get-FileHash" in (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
+    assert "/api/v1/capabilities" in bootstrap
+    connector = (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
+    assert "Python.Python.3.12" in connector
+    assert "--silent" in connector
+    assert "--disable-interactivity" in connector
+    assert "Software Center" in connector
+
+
+def test_linux_release_builds_same_origin_windows_connector_bundle():
+    deploy = (ROOT / "scripts" / "linux_deploy.sh").read_text(encoding="utf-8")
+    assert "build_windows_connector_bundle.py" in deploy
+    assert "rsim-windows-connector.zip" in deploy

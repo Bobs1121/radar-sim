@@ -222,6 +222,7 @@ def _run_task(
         and str((task.get("payload") or {}).get("dispatch_scope") or "") == "local_simulation"
     )
     prepared_build = None
+    prepared_build_environment = None
     command_cwd = ROOT
     try:
         if not may_claim_task(node_kind, task.get("task_type"), task.get("stage_type")):
@@ -340,6 +341,16 @@ def _run_task(
             prepared_build = _prepare_v5_selena_build(dict(task.get("payload") or {}))
             command = list(prepared_build.command)
             command_cwd = prepared_build.cwd
+            authorized = getattr(prepared_build, "authorized", None)
+            workspace_root = getattr(authorized, "workspace_root", None)
+            if workspace_root is not None:
+                from core.windows_build_environment import prepare_windows_build_environment
+
+                prepared_build_environment = prepare_windows_build_environment(
+                    workspace_root=workspace_root,
+                    selena_build_script=getattr(prepared_build, "build_script_path", None),
+                    package_build_script=getattr(prepared_build, "package_build_script_path", None),
+                )
         else:
             command = _build_task_command(task)
     except (KeyError, TypeError, ValueError, FileNotFoundError, OSError) as exc:
@@ -369,6 +380,14 @@ def _run_task(
     start_logs = [f"[agent] starting {task['task_type']}"]
     if is_v5_build:
         start_logs.append("[agent] authorized Selena build command prepared")
+        dependencies = tuple(
+            getattr(prepared_build_environment, "dependencies", ()) or ()
+        )
+        if dependencies:
+            start_logs.append(
+                "[agent] script-derived build environment prepared: "
+                + ", ".join(dependencies)
+            )
         build_payload = dict(task.get("payload") or {})
         if build_payload.get("branch_mismatch") is True:
             start_logs.append(
@@ -410,6 +429,10 @@ def _run_task(
         proc = subprocess.Popen(
             command,
             cwd=str(command_cwd),
+            # User-selected build wrappers are non-interactive Agent jobs.
+            # DEVNULL makes an accidental `pause` reach EOF immediately instead
+            # of leaving the Stage running forever after success or failure.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -420,7 +443,9 @@ def _run_task(
             # Chinese-Windows cp936/gbk compiler output doesn't get garbled when
             # we decode it as utf-8 above. Cross-machine: logs land on the Linux
             # server, so a stable encoding matters.
-            env=_child_env_utf8(),
+            env=_child_env_utf8(
+                getattr(prepared_build_environment, "environment", None)
+            ),
         )
         client.heartbeat(agent_id, status="busy", current_task_id=task_id)
         assert proc.stdout is not None
@@ -1304,12 +1329,12 @@ def _resolve_v2_run_config(payload: dict) -> dict:
     if not requested_path_id:
         raise ValueError("workspace path is unavailable")
     binding_store = AgentBindingStore()
-    bindings = [
+    path_bindings = [
         binding
         for binding in binding_store.list()
         if make_workspace_path_id(str(binding.workspace_root)) == requested_path_id
     ]
-    if not bindings and payload.get("auto_configure") is not True:
+    if not path_bindings and payload.get("auto_configure") is not True:
         raise ValueError("workspace is not uniquely authorized on this Agent")
     outcome = WorkspaceRecognizer().recognize(
         code_path,
@@ -1319,12 +1344,13 @@ def _resolve_v2_run_config(payload: dict) -> dict:
     )
     if outcome.status != "resolved" or not outcome.adapter_key:
         raise ValueError("workspace adapter could not be recognized")
+    project = str(outcome.internal_project or "").strip()
+    bindings = [binding for binding in path_bindings if binding.project == project]
     if len(bindings) > 1:
         raise ValueError("workspace is not uniquely authorized on this Agent")
     if bindings:
         binding = bindings[0]
     elif payload.get("auto_configure") is True:
-        project = str(outcome.internal_project or "").strip()
         output_text = str(outcome.output_dir or "").strip()
         workspace = Path(code_path).expanduser().resolve(strict=True)
         if not project or not output_text:
@@ -1580,7 +1606,7 @@ def _quote_command(command: list[str]) -> str:
     return " ".join(parts)
 
 
-def _child_env_utf8() -> dict[str, str]:
+def _child_env_utf8(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """Return os.environ copy with UTF-8 IO encoding forced for the child.
 
     The agent decodes child stdout as utf-8 (above), so the child must emit
@@ -1590,7 +1616,7 @@ def _child_env_utf8() -> dict[str, str]:
     respect it.
     """
     import os
-    env = dict(os.environ)
+    env = dict(os.environ if base_env is None else base_env)
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     return env

@@ -162,6 +162,13 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
 .detail-header h2 { margin: 4px 0; font-size: 22px; }
 .detail-header p { margin: 0; color: var(--muted); }
 .detail-actions { display: flex; gap: 8px; }
+.windows-connect-callout { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 24px; margin-top: 18px; padding: 18px 20px; color: #61420d; background: #fff8e8; border: 1px solid #e4bf71; border-left: 4px solid #c58414; border-radius: var(--radius); }
+.windows-connect-callout h3 { margin: 3px 0 6px; color: #4f350b; font-size: 17px; }
+.windows-connect-callout p { max-width: 72ch; margin: 5px 0 0; }
+.windows-connect-callout .callout-eyebrow { color: #7b5511; font-size: 11px; font-weight: 750; letter-spacing: .06em; }
+.windows-connect-callout .callout-reassurance { color: #765b2a; font-size: 12px; }
+.windows-connect-actions { display: grid; justify-items: end; gap: 7px; }
+.windows-connect-actions small { max-width: 230px; color: #765b2a; text-align: right; }
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 24px; margin-top: 22px; }
 .detail-section h3 { margin: 0 0 12px; font-size: 15px; }
 .stage-list { display: grid; gap: 8px; }
@@ -222,6 +229,9 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
   .stage-copy { grid-column: 1; }
   .stage-actions { grid-column: 2; grid-row: 1 / span 2; }
   .detail-header { flex-direction: column; }
+  .windows-connect-callout { grid-template-columns: 1fr; }
+  .windows-connect-actions { justify-items: stretch; }
+  .windows-connect-actions small { max-width: none; text-align: left; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -258,4 +268,7 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
   .status.running { color: #a9dce9; background: #254651; }
   .status.needs_input { color: #f2ca82; background: #49391f; }
   .status.succeeded { color: #a8ddbd; background: #244633; }
+  .windows-connect-callout { color: #f0d59d; background: #3a301d; border-color: #7d6432; border-left-color: #d29a35; }
+  .windows-connect-callout h3 { color: #f6deb0; }
+  .windows-connect-callout .callout-eyebrow, .windows-connect-callout .callout-reassurance, .windows-connect-actions small { color: #d8bc85; }
 }

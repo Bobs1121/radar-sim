@@ -249,6 +249,64 @@ def test_project_free_run_config_validate_and_submit_waits_for_node_recognition(
     assert api.list_jobs("alice")["count"] == 1
 
 
+def test_run_config_job_reports_path_free_windows_connection_wait(tmp_path):
+    api, services = make_api(tmp_path)
+    job = api.submit_user_run("alice", config_payload=run_config_dict())
+
+    assert job["waiting"] == {
+        "reason": "windows_connection_required",
+        "mode": "light",
+        "stage": "resolve_spec",
+        "missing_capability": "windows_light",
+        "message": "This task is waiting for a connected Windows computer with build capability.",
+        "action": {
+            "type": "connect_windows",
+            "label": "Connect this Windows computer",
+            "mode": "light",
+        },
+    }
+    assert "D:/" not in json.dumps(job["waiting"])
+    assert "agent_id" not in json.dumps(job["waiting"])
+
+    services["alice"].register_agent(
+        "light",
+        agent_id="light-1",
+        capabilities=["build.selena"],
+        metadata={"node_kind": "windows_agent"},
+    )
+    assert api.get_job("alice", job["id"])["waiting"] is None
+
+
+def test_local_target_requires_full_connection_and_shared_cluster_does_not(tmp_path):
+    api, services = make_api(tmp_path)
+    services.setdefault("alice", ControlService(tmp_path / "alice.db")).register_agent(
+        "light",
+        agent_id="light-1",
+        capabilities=["build.selena"],
+        metadata={"node_kind": "windows_agent"},
+    )
+    local_config = run_config_dict()
+    local_config["simulation"] = {**local_config["simulation"], "target": "local"}
+    local = api.submit_user_run("alice", config_payload=local_config)
+    assert local["waiting"]["mode"] == "full"
+    assert local["waiting"]["missing_capability"] == "windows_full"
+
+    shared_config = run_config_dict()
+    shared_config["selena"] = {
+        "source": "existing",
+        "existing_path": "//shared/selena",
+        "runtime_xml": "//shared/runtime/Runtime.xml",
+    }
+    shared_config["data"] = {"path": "//shared/data"}
+    shared_config["simulation"] = {
+        "target": "cluster",
+        "adapter_file": "",
+        "mat_filter": "//shared/config/signals.filter",
+    }
+    shared = api.submit_user_run("alice", config_payload=shared_config)
+    assert shared["waiting"] is None
+
+
 def test_project_free_dry_run_is_plan_only_and_claims_no_stage(tmp_path):
     control = ControlService(tmp_path / "control.db")
     api = ApiV1Service(control_service_factory=lambda _owner: control)

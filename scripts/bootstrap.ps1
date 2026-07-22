@@ -44,6 +44,7 @@ param(
     [string]$InstallRoot = "",
     [switch]$SkipDeps,
     [switch]$SkipCheck,
+    [switch]$RegisterStartup,
     [switch]$Start
 )
 
@@ -60,6 +61,7 @@ $AuthPath = Join-Path $InstallRoot "http-auth.json"
 $DataRoot = Join-Path $InstallRoot "data"
 $VenvDir = Join-Path $RepoRoot ".venv"
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
+$StartScript = Join-Path $PSScriptRoot "start_windows.ps1"
 
 function Write-Step($message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
 function Write-Ok($message) { Write-Host "    OK  $message" -ForegroundColor Green }
@@ -192,6 +194,48 @@ if ($vsCompilers.Count -eq 0) {
 $installConfig["visual_studio_detected"] = ($vsCompilers.Count -gt 0)
 $installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
 
+if ($RegisterStartup) {
+    Write-Step "Register automatic startup and reconnect"
+    $taskName = "RadarSimConnector-$env:USERNAME"
+    $taskArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" -InstallRoot `"$InstallRoot`" -Supervise -NoBrowser"
+    # A reinstall must replace the running code, not leave the previous
+    # supervisor holding the single-instance mutex until the next logon.
+    if ($existing -and [string]$existing.startup_method -eq "scheduled_task" -and $existing.startup_name) {
+        Stop-ScheduledTask -TaskName ([string]$existing.startup_name) -ErrorAction SilentlyContinue
+    }
+    $connectorPidPath = Join-Path $InstallRoot "connector.pid"
+    if (Test-Path $connectorPidPath) {
+        try {
+            $connectorPid = [int](Get-Content -Raw -Encoding ASCII $connectorPidPath)
+            if ($connectorPid -gt 0 -and $connectorPid -ne $PID) {
+                Stop-Process -Id $connectorPid -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        Remove-Item -LiteralPath $connectorPidPath -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
+        $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+            -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
+            -ExecutionTimeLimit ([TimeSpan]::Zero)
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+            -Settings $settings -Description "radar-sim Windows connector" -Force | Out-Null
+        $installConfig["startup_method"] = "scheduled_task"
+        $installConfig["startup_name"] = $taskName
+        Write-Ok "This PC will reconnect automatically after sign-in or a process failure."
+    } catch {
+        $startupDir = [Environment]::GetFolderPath("Startup")
+        $startupFile = Join-Path $startupDir "RadarSimConnector.cmd"
+        $command = "@echo off`r`npowershell.exe $taskArgs`r`n"
+        Set-Content -LiteralPath $startupFile -Value $command -Encoding ASCII
+        $installConfig["startup_method"] = "startup_folder"
+        $installConfig["startup_name"] = $startupFile
+        Write-Warn "Scheduled Task is blocked; registered the current-user Startup fallback."
+    }
+    $installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
+}
+
 $policyCheck = @'
 from core.agent_policy import default_capabilities_for_mode
 import sys
@@ -230,7 +274,10 @@ if (-not $SkipCheck) {
                 agent_id = $AgentId
                 hostname = $env:COMPUTERNAME
                 platform = "Windows"
-                capabilities = @($capabilities -split ',' | Where-Object { $_ })
+                # This is only an endpoint/identity probe.  Empty capabilities
+                # prevent it from appearing as an online execution node before
+                # the persistent connector process has really started.
+                capabilities = @()
                 metadata = @{
                     node_kind = if ($Mode -eq "full") { "windows_full" } else { "windows_agent" }
                     windows_mode = $Mode
@@ -268,5 +315,28 @@ if ($Mode -eq "light") {
     Write-Host "Local loopback Web does not require an access token in this sprint."
 }
 if ($Start) {
-    & (Join-Path $PSScriptRoot "start_windows.ps1") -InstallRoot $InstallRoot -Background
+    if ($RegisterStartup -and $installConfig["startup_method"] -eq "scheduled_task") {
+        Start-ScheduledTask -TaskName ([string]$installConfig["startup_name"])
+        Write-Ok "The connector startup task is running."
+    } else {
+        & $StartScript -InstallRoot $InstallRoot -Background -NoBrowser
+    }
+    if (-not $UseLocalControl) {
+        $capabilityName = if ($Mode -eq "full") { "windows_full" } else { "windows_light" }
+        $connected = $false
+        foreach ($attempt in 1..30) {
+            try {
+                $snapshot = Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/capabilities" -TimeoutSec 5
+                if ([bool]$snapshot.capabilities.$capabilityName.available) {
+                    $connected = $true
+                    break
+                }
+            } catch { }
+            Start-Sleep -Seconds 1
+        }
+        if (-not $connected) {
+            Fail "The background connector did not become available within 30 seconds."
+        }
+        Write-Ok "Linux confirmed this PC is available for task scheduling."
+    }
 }

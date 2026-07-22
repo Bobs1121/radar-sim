@@ -1,6 +1,8 @@
 """Focused tests for control-plane agent command mapping."""
 
 import sys
+import io
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -234,6 +236,72 @@ def test_run_v5_build_stage_uses_adapter_and_returns_redacted_evidence(monkeypat
     assert evidence["artifact_lease_ref"].startswith("artifact-lease:sha256:")
     assert "command" not in client.results[-1]["result"]
     assert str(tmp_path) not in str(client.results[-1]["result"])
+
+
+def test_run_v5_build_is_non_interactive_and_uses_script_derived_environment(monkeypatch, tmp_path):
+    prepared = SimpleNamespace(
+        command=("cmd", "/c", "build.bat"),
+        cwd=tmp_path,
+        authorized=SimpleNamespace(workspace_root=tmp_path),
+        build_script_path=tmp_path / "build.bat",
+        package_build_script_path=tmp_path / "package.bat",
+    )
+    captured = {}
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, _command, **kwargs):
+            captured.update(kwargs)
+            self.stdout = io.StringIO("")
+
+        def poll(self):
+            return 0
+
+        def wait(self, **_kwargs):
+            return 0
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr("cli.agent._prepare_v5_selena_build", lambda _payload: prepared)
+    monkeypatch.setattr("cli.agent._verify_v5_selena_build", lambda _prepared: None)
+    monkeypatch.setattr(
+        "core.windows_build_environment.prepare_windows_build_environment",
+        lambda **_kwargs: SimpleNamespace(
+            dependencies=("perl",),
+            environment={"PATH": "prepared-path", "RSIM_DEPENDENCY_TEST": "ready"},
+        ),
+    )
+    monkeypatch.setattr("cli.agent.subprocess.Popen", Process)
+    monkeypatch.setattr(
+        "cli.agent._finish_v5_selena_build",
+        lambda _prepared, **_kwargs: {
+            "artifact": {"logical_path": "selena.exe", "checksum": "sha256:" + "b" * 64, "size": 1}
+        },
+    )
+    monkeypatch.setattr(
+        "cli.agent._create_v5_artifact_lease",
+        lambda *_args, **_kwargs: {"lease_id": "artifact-lease:sha256:" + "c" * 64},
+    )
+
+    client = _V5Client()
+    result = _run_task(
+        client,
+        "light-a",
+        {"task_id": "stage-build", "task_type": "build_selena", "attempt_count": 1, "payload": {}},
+        heartbeat_interval=1,
+        node_kind="windows_agent",
+    )
+
+    assert result == 0
+    assert captured["stdin"] is subprocess.DEVNULL
+    assert captured["env"]["RSIM_DEPENDENCY_TEST"] == "ready"
+    assert captured["env"]["PYTHONUTF8"] == "1"
+    assert any("script-derived build environment prepared: perl" in line for line in client.logs)
 
 
 def test_run_v5_build_setup_failure_does_not_spawn_or_return_local_cwd(monkeypatch):

@@ -12,7 +12,7 @@
 #
 # Optional environment overrides:
 #   RSIM_INSTALL_DIR, RSIM_HOME, RSIM_PORT, RSIM_OWNER, RSIM_AGENT_ID,
-#   RSIM_REPO_URL, RSIM_AUTH_FILE
+#   RSIM_REPO_URL, RSIM_AUTH_FILE, RSIM_INSECURE_NO_AUTH
 
 set -eu
 
@@ -23,6 +23,10 @@ PORT="${RSIM_PORT:-8878}"
 OWNER="${RSIM_OWNER:-admin}"
 AGENT_ID="${RSIM_AGENT_ID:-windows-agent}"
 AUTH_FILE="${RSIM_AUTH_FILE:-${DATA_DIR}/http-auth.json}"
+# Current product sprint intentionally has no user login.  Set to 0 when the
+# authenticated pairing sprint is released; never expose this mode to an
+# untrusted network.
+INSECURE_NO_AUTH="${RSIM_INSECURE_NO_AUTH:-1}"
 PID_FILE="${DATA_DIR}/serve-v1.pid"
 LOG_FILE="${DATA_DIR}/serve-v1.log"
 VENV_DIR="${INSTALL_DIR}/.venv"
@@ -70,11 +74,18 @@ install_runtime() {
         cd "$INSTALL_DIR"
         "$VENV_PY" -m pip install --quiet -e ".[v5-server]"
     ) || die "安装 serve-v1 依赖失败"
+    "$VENV_PY" "$INSTALL_DIR/scripts/build_windows_connector_bundle.py" \
+        --out "$INSTALL_DIR/dist/rsim-windows-connector.zip" \
+        || die "构建 Windows 一键连接包失败"
     c_green "serve-v1 运行环境就绪"
 }
 
 ensure_auth() {
     mkdir -p "$DATA_DIR"
+    if [ "$INSECURE_NO_AUTH" = "1" ]; then
+        c_yellow "当前 Sprint 未启用登录；Windows 一键连接不保存令牌。仅限受信内网使用。"
+        return
+    fi
     if [ -f "$AUTH_FILE" ]; then
         "$VENV_PY" -c 'from core.http_auth import load_http_auth; import sys; load_http_auth(sys.argv[1])' "$AUTH_FILE" \
             || die "认证文件无效：${AUTH_FILE}"
@@ -99,9 +110,15 @@ start_server() {
     c_cyan "==> 启动统一控制面 :${PORT}"
     (
         cd "$INSTALL_DIR"
-        RSIM_HOME="$DATA_DIR" nohup "$VENV_PY" rsim.py server serve-v1 \
-            --host 0.0.0.0 --port "$PORT" --auth-file "$AUTH_FILE" \
-            > "$LOG_FILE" 2>&1 &
+        if [ "$INSECURE_NO_AUTH" = "1" ]; then
+            RSIM_HOME="$DATA_DIR" nohup "$VENV_PY" rsim.py server serve-v1 \
+                --host 0.0.0.0 --port "$PORT" --insecure-no-auth \
+                > "$LOG_FILE" 2>&1 &
+        else
+            RSIM_HOME="$DATA_DIR" nohup "$VENV_PY" rsim.py server serve-v1 \
+                --host 0.0.0.0 --port "$PORT" --auth-file "$AUTH_FILE" \
+                > "$LOG_FILE" 2>&1 &
+        fi
         echo $! > "$PID_FILE"
     )
     i=0
@@ -146,6 +163,12 @@ show_status() {
 selftest() {
     curl -fsS "http://127.0.0.1:${PORT}/api/v1/health" >/dev/null \
         || die "health 失败"
+    if [ "$INSECURE_NO_AUTH" = "1" ]; then
+        curl -fsS "http://127.0.0.1:${PORT}/api/v1/capabilities" >/dev/null \
+            || die "统一 v1 API 自检失败"
+        c_green "health + 无登录模式 + 统一 v1 API 自检通过"
+        return
+    fi
     token=$("$VENV_PY" - "$AUTH_FILE" "$OWNER" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -161,6 +184,7 @@ PY
 }
 
 show_credentials() {
+    [ "$INSECURE_NO_AUTH" != "1" ] || die "当前 Sprint 登录已关闭，没有用户令牌或 Agent 令牌"
     [ -f "$AUTH_FILE" ] || die "认证文件不存在；请先执行部署"
     c_yellow "以下是敏感凭证，仅在受信终端使用；不要粘贴到工单或日志。"
     "$VENV_PY" - "$AUTH_FILE" "$OWNER" "$AGENT_ID" <<'PY'
@@ -205,7 +229,11 @@ main() {
     printf '\n'
     show_status
     c_green "部署完成。Web 与 SDK 使用同一个 serve-v1 入口。"
-    printf "Windows Agent 凭证（显式查看）: bash scripts/linux_deploy.sh credentials\n"
+    if [ "$INSECURE_NO_AUTH" = "1" ]; then
+        printf "Windows 一键连接: Web 页面下载后双击运行（无需令牌）\n"
+    else
+        printf "Windows Agent 凭证（显式查看）: bash scripts/linux_deploy.sh credentials\n"
+    fi
     printf "日志: %s\n" "$LOG_FILE"
 }
 
