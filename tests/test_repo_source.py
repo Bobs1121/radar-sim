@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+import core.repo as repo_module
 
 from core.repo import (
     DetachedWorktreeHandle,
@@ -86,6 +87,29 @@ def test_inspect_workspace_fingerprint_tracks_dirty_inputs_without_abs_paths(tmp
     assert evidence["new.txt"].sha256 == hashlib.sha256((repo / "new.txt").read_bytes()).hexdigest()
     assert inspect_workspace(repo).sha256 == untracked.sha256
     assert str(repo) not in repr(untracked.to_dict())
+
+
+def test_inspect_workspace_allows_cold_large_repository_scans(tmp_path, monkeypatch):
+    text_calls = []
+    bytes_calls = []
+    monkeypatch.setattr(repo_module, "_repo_root", lambda _repo: tmp_path)
+
+    def fake_text(repo, args, *, timeout=10):
+        text_calls.append((tuple(args), timeout))
+        return "main" if args[0] == "branch" else "a" * 40
+
+    def fake_bytes(repo, args, *, timeout=10):
+        bytes_calls.append((tuple(args), timeout))
+        return b""
+
+    monkeypatch.setattr(repo_module, "_git_text_checked", fake_text)
+    monkeypatch.setattr(repo_module, "_git_bytes_checked", fake_bytes)
+
+    snapshot = inspect_workspace(tmp_path)
+
+    assert snapshot.branch == "main"
+    assert all(timeout == 60 for _args, timeout in text_calls)
+    assert [timeout for _args, timeout in bytes_calls] == [180, 180, 180]
 
 
 def test_inspect_workspace_hashes_untracked_symlink_without_following_target(tmp_path):

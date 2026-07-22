@@ -102,6 +102,9 @@ _SEGMENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _WORKTREE_REGISTRY: dict[str, tuple[Path, Path]] = {}
 _CONTROLLED_WORKTREE_ROOTS: set[Path] = set()
 _WORKTREE_LOCK = threading.Lock()
+_WORKSPACE_METADATA_TIMEOUT = 60
+_WORKSPACE_DIFF_TIMEOUT = 180
+_WORKSPACE_STATUS_TIMEOUT = 180
 
 
 def _git(repo: str, args: list[str], *, timeout: int = 10) -> subprocess.CompletedProcess:
@@ -144,7 +147,9 @@ def _git_bytes_checked(repo: str, args: list[str], *, timeout: int = 10) -> byte
 
 
 def _repo_root(repo: str | Path) -> Path:
-    root = _git_text_checked(str(repo), ["rev-parse", "--show-toplevel"])
+    root = _git_text_checked(
+        str(repo), ["rev-parse", "--show-toplevel"], timeout=_WORKSPACE_METADATA_TIMEOUT,
+    )
     return Path(root).resolve()
 
 
@@ -204,14 +209,24 @@ def inspect_workspace(repo: str | Path) -> WorkspaceFingerprint:
     """Read-only fingerprint of HEAD plus staged/unstaged/untracked content."""
     repo_root = _repo_root(repo)
     repo_s = str(repo_root)
-    branch = _git_text_checked(repo_s, ["branch", "--show-current"]) or "HEAD"
-    commit = _git_text_checked(repo_s, ["rev-parse", "HEAD"])
-    staged_diff = _git_bytes_checked(repo_s, ["diff", "--binary", "--cached", "--no-ext-diff"], timeout=60)
-    unstaged_diff = _git_bytes_checked(repo_s, ["diff", "--binary", "--no-ext-diff"], timeout=60)
+    branch = _git_text_checked(
+        repo_s, ["branch", "--show-current"], timeout=_WORKSPACE_METADATA_TIMEOUT,
+    ) or "HEAD"
+    commit = _git_text_checked(
+        repo_s, ["rev-parse", "HEAD"], timeout=_WORKSPACE_METADATA_TIMEOUT,
+    )
+    staged_diff = _git_bytes_checked(
+        repo_s, ["diff", "--binary", "--cached", "--no-ext-diff"],
+        timeout=_WORKSPACE_DIFF_TIMEOUT,
+    )
+    unstaged_diff = _git_bytes_checked(
+        repo_s, ["diff", "--binary", "--no-ext-diff"],
+        timeout=_WORKSPACE_DIFF_TIMEOUT,
+    )
     status = _git_bytes_checked(
         repo_s,
         ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-        timeout=30,
+        timeout=_WORKSPACE_STATUS_TIMEOUT,
     )
 
     untracked: list[UntrackedFileEvidence] = []
