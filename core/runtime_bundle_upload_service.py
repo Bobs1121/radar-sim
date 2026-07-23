@@ -289,6 +289,19 @@ class RuntimeBundleUploadService:
                         "reused": True,
                     }
                 raise
+            # When finalize reuses an existing artifact (same path + checksum),
+            # the catalog may already have a record for this bundle identity.
+            # Re-registering would fail because owner/created_by/checksum may
+            # differ from the original import.  Short-circuit to reuse.
+            if published.get("reused"):
+                try:
+                    existing_record = self._catalog.get(manifest.id)
+                    return {
+                        "runtime_bundle": existing_record.public_dict,
+                        "reused": True,
+                    }
+                except RuntimeBundleCatalogError:
+                    pass  # Not yet in catalog; proceed with registration below.
             location = self._store.resolve_location(str(published["storage_ref"]))
             temporary = Path(tempfile.mkdtemp(prefix="rsim-existing-verify-"))
             try:
@@ -305,8 +318,8 @@ class RuntimeBundleUploadService:
                     manifest=manifest,
                     internal_project=project,
                     storage_ref=str(published["storage_ref"]),
-                    archive_checksum=checksum,
-                    archive_size=expected_size,
+                    archive_checksum=str(published.get("checksum") or checksum),
+                    archive_size=int(published.get("size") or expected_size),
                     owner=owner,
                     created_by="sdk-existing-import",
                 )
