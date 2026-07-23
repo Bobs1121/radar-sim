@@ -141,6 +141,65 @@ def test_collect_uses_result_ini_when_official_page_has_no_tasks(tmp_path: Path,
     assert output["result_ref"] == ""
 
 
+def test_collect_overrides_web_succeeded_when_result_ini_reports_failure(tmp_path: Path, monkeypatch):
+    """Cluster manager may report all tasks as 'finished' even when Selena
+    returned a non-zero exit code.  The collect stage must trust the
+    authoritative result.ini-based inspection over the coarse web-status."""
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="ovrs25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/ovrs25/runtime-bundle.zip",
+        profile="default", job_dir=str(tmp_path / "private-job"),
+        config_path="//cluster/job/Config.cfg", output_location=str(tmp_path / "private-output"),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="32", submit_mode="xmlrpc")
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
+        now_fn=lambda: 10.0,
+        result_catalog=None,
+    )
+    # Web status says all 32 tasks are "finished" — this is what caused
+    # _terminal_state() to return "succeeded" in the real failure.
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: {
+            "found": True, "job_id": "32",
+            "tasks": [{"simulation_state": "finished"} for _ in range(32)],
+        },
+    )
+    # But result.ini shows all 32 tasks actually failed (Selena return -1).
+    monkeypatch.setattr(
+        "core.cluster.inspect_cluster_job",
+        lambda *_args, **_kwargs: {
+            "state": "finished-failed", "file_count": 80,
+            "success_count": 0, "fail_count": 32,
+            "error_summary": ["no signal found in channel cache"],
+            "output_mf4": [
+                {"relative_path": f"OUT/gen5_{i}out.MF4", "size": 12_497_000}
+                for i in range(32)
+            ],
+            "result_files": [{"relative_path": f"OUT/gen5_{i}/result.ini"} for i in range(32)],
+        },
+    )
+
+    output = execute_cluster_collect(
+        context, _job(), run.ref,
+        cancelled=lambda: False,
+        sleep_fn=lambda _seconds: (_ for _ in ()).throw(AssertionError("must not wait")),
+    )
+
+    result = store.get_result(output["cluster_result_ref"], owner="alice")
+    # Must be failed despite web status saying "finished" and MF4 files having size > 0.
+    assert result.state == "failed"
+    assert result.summary["success_count"] == 0
+    assert result.summary["fail_count"] == 32
+    # No public result should be published for failed simulations.
+    assert output.get("result_ref") == ""
+
+
 def test_collect_queries_by_generated_job_directory_and_waits_for_every_dataset_file(
     tmp_path: Path, monkeypatch
 ):

@@ -450,7 +450,14 @@ def execute_cluster_collect(
         # page may already have removed the task row by the next poll.  The
         # controlled job directory is still authoritative: result.ini is
         # written only after the worker finishes its task.
-        if state == "running" and not list(info.get("tasks") or []):
+        # Always probe the controlled job directory when the web status looks
+        # terminal *or* when it has no task rows.  The Cluster manager may
+        # report all tasks as "finished" even when Selena returned a non-zero
+        # exit code; result.ini is the authoritative success indicator.
+        should_probe = (
+            state == "running" and not list(info.get("tasks") or [])
+        ) or state == "succeeded"
+        if should_probe:
             inspected_probe = inspect_cluster_job(lease.job_dir)
             inspected_state = str(inspected_probe.get("state") or "")
             finished_probe = int(inspected_probe.get("success_count") or 0) + int(
@@ -460,6 +467,9 @@ def execute_cluster_collect(
             if inspected_state == "finished-success" and complete_probe:
                 state = "succeeded"
             elif inspected_state == "finished-failed" and complete_probe:
+                state = "failed"
+            elif state == "succeeded" and inspected_state == "finished-failed":
+                # Web status said succeeded but result.ini says failed.
                 state = "failed"
             if state in {"succeeded", "failed"}:
                 summary = {
@@ -498,6 +508,21 @@ def execute_cluster_collect(
     if state == "succeeded" and not output_files:
         state = "failed"
         message = "Cluster worker produced no simulation output MF4"
+        if message not in errors:
+            errors.append(message)
+    # The Cluster manager may report all tasks as "finished" even when Selena
+    # itself returned a non-zero exit code (e.g. signal-not-found errors that
+    # still produce a partial MF4).  Trust the authoritative result.ini-based
+    # inspection over the coarse web-status polling verdict.
+    inspected_state = str(inspected.get("state") or "")
+    if state == "succeeded" and inspected_state == "finished-failed":
+        state = "failed"
+        success_count = int(inspected.get("success_count") or 0)
+        fail_count = int(inspected.get("fail_count") or 0)
+        message = (
+            f"Cluster workers finished but {fail_count} of "
+            f"{success_count + fail_count} tasks reported simulation failure"
+        )
         if message not in errors:
             errors.append(message)
     public_result_ref = ""
