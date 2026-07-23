@@ -1,6 +1,7 @@
 import ast
 import concurrent.futures
 import json
+from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 import subprocess
@@ -1296,7 +1297,7 @@ print("ok")
 """
     result = subprocess.run(
         [sys.executable, "-c", script],
-        cwd="D:\\RamboStar\\idea\\radar-sim",
+        cwd=Path(__file__).resolve().parents[1],
         text=True,
         capture_output=True,
         check=True,

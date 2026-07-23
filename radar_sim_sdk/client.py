@@ -172,8 +172,11 @@ class RadarSimClient:
         data_kind = classify_data_path(config.data.path)
         if (
             config.simulation.target in {"auto", "cluster"}
-            and data_kind not in {"shared", "central"}
-            and data_path.exists()
+            and _should_upload_client_data(
+                config.data.path,
+                data_path,
+                data_kind=data_kind,
+            )
         ):
             uploaded_data = self.upload_run_data(data_path)
             payload["data"] = {"path": uploaded_data.data_path}
@@ -724,6 +727,53 @@ class RadarSimClient:
             return UserRunConfig.from_dict(payload).to_dict()
         except Exception:
             return payload
+
+
+def _should_upload_client_data(
+    raw_path: str,
+    local_path: Path,
+    *,
+    data_kind: str,
+) -> bool:
+    """Identify caller-local data without copying shared Cluster namespaces.
+
+    The syntax-only classifier treats POSIX absolute paths as ``central``
+    because the Linux control plane may receive deployment mount paths.  The
+    SDK also runs on ordinary Linux callers, where a readable absolute path is
+    local input. A separate filesystem mount remains central/shared; a path on
+    the caller's root filesystem is uploaded.
+    """
+    text = str(raw_path or "").strip()
+    if (
+        not text
+        or text.lower().startswith("dataset://")
+        or data_kind == "shared"
+        or not local_path.exists()
+    ):
+        return False
+    if data_kind != "central":
+        return True
+    return not _is_separate_mount(local_path)
+
+
+def _is_separate_mount(path: Path) -> bool:
+    """Return whether ``path`` lives below a non-root mount point."""
+    try:
+        probe = path.resolve(strict=True)
+    except (OSError, ValueError):
+        probe = path.absolute()
+    if probe.is_file():
+        probe = probe.parent
+    anchor = Path(probe.anchor)
+    while probe != probe.parent:
+        if probe != anchor:
+            try:
+                if probe.is_mount():
+                    return True
+            except OSError:
+                return False
+        probe = probe.parent
+    return False
 
 
 def _sha256_path(path: Path) -> str:

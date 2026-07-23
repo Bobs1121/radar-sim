@@ -92,6 +92,61 @@ def test_sdk_submit_run_transparently_uploads_linux_local_data_path(tmp_path, mo
     assert "project" not in job.spec
 
 
+def test_sdk_uploads_readable_local_path_even_when_posix_syntax_is_central(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    data = tmp_path / "linux-local"
+    data.mkdir()
+    (data / "one.MF4").write_bytes(b"mf4")
+    config = run_config_dict()
+    config["data"] = {"path": data.as_posix()}
+    config["simulation"]["target"] = "cluster"
+    uploaded_path = "dataset://sha256/" + "d" * 64
+    monkeypatch.setattr(
+        "radar_sim_sdk.client.classify_data_path",
+        lambda _path: "central",
+    )
+    monkeypatch.setattr(
+        "radar_sim_sdk.client._is_separate_mount",
+        lambda _path: False,
+    )
+    monkeypatch.setattr(
+        sdk,
+        "upload_run_data",
+        lambda _source: SimpleNamespace(data_path=uploaded_path),
+    )
+
+    job = sdk.submit_run(config)
+
+    assert job.spec["data"]["path"] == uploaded_path
+
+
+def test_sdk_keeps_readable_cluster_mount_without_upload(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    mounted_share = tmp_path / "cluster-mount"
+    mounted_share.mkdir()
+    (mounted_share / "one.MF4").write_bytes(b"mf4")
+    config = run_config_dict()
+    config["data"] = {"path": mounted_share.as_posix()}
+    config["simulation"]["target"] = "cluster"
+    monkeypatch.setattr(
+        "radar_sim_sdk.client.classify_data_path",
+        lambda _path: "central",
+    )
+    monkeypatch.setattr(
+        "radar_sim_sdk.client._is_separate_mount",
+        lambda _path: True,
+    )
+    monkeypatch.setattr(
+        sdk,
+        "upload_run_data",
+        lambda _source: pytest.fail("Cluster mount must remain a direct path"),
+    )
+
+    job = sdk.submit_run(config)
+
+    assert job.spec["data"]["path"] == mounted_share.as_posix()
+
+
 def test_sdk_submit_run_keeps_shared_data_even_when_caller_can_read_it(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     readable_share = tmp_path / "mounted-share"
