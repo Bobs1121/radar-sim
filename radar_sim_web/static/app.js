@@ -181,10 +181,10 @@ function runConfigFromForm() {
     schema_version: "2.0",
     selena: {
       source,
-      code_path: source === "build" ? codePath : "",
-      branch: source === "build" ? branch : "",
-      selena_build_script: source === "build" ? selenaBuildScript : "",
-      package_build_script: source === "build" ? packageBuildScript : "",
+      code_path: codePath,
+      branch,
+      selena_build_script: selenaBuildScript,
+      package_build_script: packageBuildScript,
       existing_path: source === "existing" ? existingPath : "",
       runtime_xml: runtimeXml,
     },
@@ -288,8 +288,14 @@ async function ensureSelectedDataUploaded() {
 
 function updateConditionalFields() {
   const source = byId("selenaSource").value;
-  byId("buildFields").hidden = source !== "build";
+  byId("buildFields").hidden = false;
   byId("existingFields").hidden = source !== "existing";
+  for (const id of ["codePath", "selenaBuildScript", "packageBuildScript"]) {
+    byId(id).required = source === "build";
+  }
+  byId("workspaceEvidenceHint").textContent = source === "build"
+    ? "本地编译需要代码仓和两个脚本；系统据此识别产品并检查依赖。"
+    : "以下代码仓和脚本为可选识别证据；填写后系统会与 Selena/Runtime 交叉校验，不一致时阻止任务。";
 }
 
 function updateRouteSummary() {

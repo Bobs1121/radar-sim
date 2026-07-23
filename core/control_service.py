@@ -16,6 +16,38 @@ SUCCESS_TASK_STATUSES = {"succeeded", "skipped"}
 INITIAL_TASK_STATUSES = {"queued", "skipped", "blocked"}
 INTERNAL_V1_SCHEDULER_AGENT_ID = "__v1_scheduler__"
 RESERVED_INTERNAL_AGENT_IDS = {INTERNAL_V1_SCHEDULER_AGENT_ID}
+_FAILED_MANIFEST_STATUSES = {"failed", "failure", "partial"}
+_NON_SUCCESS_MANIFEST_STATUSES = {
+    *_FAILED_MANIFEST_STATUSES,
+    "cancelled",
+    "canceled",
+}
+
+
+def _normalize_manifest_outcome(manifest: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Normalize a manifest using only explicit status/count evidence.
+
+    Human-readable errors are deliberately not outcome evidence: successful
+    runs may retain warning text.  A positive structured failure count is safe
+    evidence that an old ``status: succeeded`` manifest was contradictory.
+    """
+    normalized = dict(manifest or {})
+    summary = normalized.get("summary") if isinstance(normalized.get("summary"), dict) else {}
+    summary_failed = False
+    for key in ("fail_count", "failed_count"):
+        try:
+            if int(summary.get(key)) > 0:
+                summary_failed = True
+        except (TypeError, ValueError):
+            continue
+    status = str(normalized.get("status") or "").strip().lower()
+    if summary_failed:
+        normalized["status"] = "failed"
+        status = "failed"
+    elif status == "failure":
+        normalized["status"] = "failed"
+        status = "failed"
+    return normalized, status in _NON_SUCCESS_MANIFEST_STATUSES
 
 
 def _apply_node_policy(
@@ -317,21 +349,67 @@ class ControlService:
         conn.execute("UPDATE tasks SET initial_status=status WHERE initial_status=''")
 
     def _reconcile_failed_manifest_jobs_locked(self, conn: sqlite3.Connection) -> None:
-        """Correct historical jobs finalized before manifest status was authoritative."""
+        """Safely normalize historical public manifests and failed Jobs."""
         rows = conn.execute(
-            "SELECT job_id, result_json FROM jobs WHERE status='succeeded' AND result_json <> '{}'"
+            "SELECT job_id, status, result_json FROM jobs WHERE result_json <> '{}'"
         ).fetchall()
         for row in rows:
             result = self._loads(row["result_json"])
+            original_result = dict(result)
             manifest = result.get("manifest") if isinstance(result.get("manifest"), dict) else {}
-            manifest_status = str(manifest.get("status") or "").strip().lower()
-            if manifest_status not in {"failed", "failure", "cancelled", "canceled", "partial"}:
+            normalized_manifest, manifest_failed = _normalize_manifest_outcome(manifest)
+            if normalized_manifest != manifest:
+                result["manifest"] = normalized_manifest
+            if manifest_failed:
+                summary = (
+                    normalized_manifest.get("summary")
+                    if isinstance(normalized_manifest.get("summary"), dict)
+                    else {}
+                )
+                errors = summary.get("errors") if isinstance(summary.get("errors"), list) else []
+                result.setdefault("code", "simulation_failed")
+                result.setdefault(
+                    "message",
+                    str(errors[0]) if errors else "simulation result reported failure",
+                )
+            if result != original_result:
+                conn.execute(
+                    "UPDATE jobs SET result_json=? WHERE job_id=?",
+                    (self._dumps(result), row["job_id"]),
+                )
+
+            # Keep the public finalize-stage result aligned with the Job result.
+            # Attempt rows remain untouched as an immutable audit trail.
+            if normalized_manifest != manifest:
+                task_rows = conn.execute(
+                    """
+                    SELECT task_id, result_json FROM tasks
+                    WHERE job_id=? AND stage_type='finalize_manifest'
+                    """,
+                    (row["job_id"],),
+                ).fetchall()
+                for task_row in task_rows:
+                    task_result = self._loads(task_row["result_json"])
+                    task_manifest = (
+                        task_result.get("manifest")
+                        if isinstance(task_result.get("manifest"), dict)
+                        else {}
+                    )
+                    if task_manifest and normalized_manifest != task_manifest:
+                        task_result["manifest"] = normalized_manifest
+                        conn.execute(
+                            "UPDATE tasks SET result_json=? WHERE task_id=?",
+                            (self._dumps(task_result), task_row["task_id"]),
+                        )
+
+            if not manifest_failed:
                 continue
             error_json = self._dumps({
                 "code": "simulation_failed",
                 "message": "simulation result reported failure",
             })
-            conn.execute("UPDATE jobs SET status='failed' WHERE job_id=?", (row["job_id"],))
+            if str(row["status"]) == "succeeded":
+                conn.execute("UPDATE jobs SET status='failed' WHERE job_id=?", (row["job_id"],))
             conn.execute(
                 """
                 UPDATE tasks
@@ -778,6 +856,14 @@ class ControlService:
                                 "source": "existing",
                                 "existing_path": str(selena.get("existing_path") or ""),
                                 "runtime_xml": str(selena.get("runtime_xml") or ""),
+                                "code_path": str(selena.get("code_path") or ""),
+                                "branch": str(selena.get("branch") or ""),
+                                "selena_build_script": str(
+                                    selena.get("selena_build_script") or ""
+                                ),
+                                "package_build_script": str(
+                                    selena.get("package_build_script") or ""
+                                ),
                                 "data_path": str((spec.get("data") or {}).get("path") or ""),
                                 "adapter_file": str((spec.get("simulation") or {}).get("adapter_file") or ""),
                                 "mat_filter": str((spec.get("simulation") or {}).get("mat_filter") or ""),
@@ -785,6 +871,13 @@ class ControlService:
                                 "auto_configure": True,
                             },
                         )
+                        code_path = str(selena.get("code_path") or "").strip()
+                        if (
+                            code_path
+                            and make_workspace_path_id(code_path) in path_ids
+                        ):
+                            matched = payload
+                            break
                         if fallback is None:
                             fallback = payload
                         continue
@@ -1495,10 +1588,12 @@ class ControlService:
                 task = self._get_task_locked(conn, task_id)
                 final_status = self._resolve_task_result_status(task, status=status, returncode=returncode)
                 manifest = result.get("manifest") if isinstance(result.get("manifest"), dict) else {}
-                manifest_status = str(manifest.get("status") or "").strip().lower()
+                manifest, manifest_failed = _normalize_manifest_outcome(manifest)
+                if manifest:
+                    result["manifest"] = manifest
                 if (
                     str(task.get("stage_type") or "") == "finalize_manifest"
-                    and manifest_status in {"failed", "failure", "cancelled", "canceled", "partial"}
+                    and manifest_failed
                 ):
                     # A successfully executed finalizer does not mean that the
                     # simulation itself succeeded. Keep the manifest available,

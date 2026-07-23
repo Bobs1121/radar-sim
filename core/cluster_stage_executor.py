@@ -515,30 +515,32 @@ def execute_cluster_collect(
     # still produce a partial MF4).  Trust the authoritative result.ini-based
     # inspection over the coarse web-status polling verdict.
     inspected_state = str(inspected.get("state") or "")
-    if state == "succeeded" and inspected_state == "finished-failed":
+    inspected_fail_count = int(inspected.get("fail_count") or 0)
+    if state == "succeeded" and (
+        inspected_state == "finished-failed" or inspected_fail_count > 0
+    ):
         state = "failed"
         success_count = int(inspected.get("success_count") or 0)
-        fail_count = int(inspected.get("fail_count") or 0)
         message = (
-            f"Cluster workers finished but {fail_count} of "
-            f"{success_count + fail_count} tasks reported simulation failure"
+            f"Cluster workers finished but {inspected_fail_count} of "
+            f"{success_count + inspected_fail_count} tasks reported simulation failure"
         )
         if message not in errors:
             errors.append(message)
     public_result_ref = ""
-    if state == "succeeded":
-        # Publish the immutable archive before making the Cluster run terminal.
-        # A source file can still change while workers are finishing.  If
-        # publishing detects that race, the Stage remains retryable instead of
-        # leaving a terminal run with no downloadable result.
-        if context.result_catalog is not None:
-            published = context.result_catalog.publish(
-                owner=owner,
-                run_ref=run_ref,
-                source_root=lease.job_dir,
-                files=[item for item in files if item],
-            )
-            public_result_ref = published.ref
+    if state in {"succeeded", "failed"} and context.result_catalog is not None and files:
+        # Publish diagnostics for both successful and failed simulations before
+        # making the Cluster run terminal.  A failed archive intentionally
+        # contains result.ini/log/partial output so users can diagnose the
+        # failure without exposing the private Cluster workspace.  If a source
+        # file changes while archiving, the Stage remains retryable.
+        published = context.result_catalog.publish(
+            owner=owner,
+            run_ref=run_ref,
+            source_root=lease.job_dir,
+            files=[item for item in files if item],
+        )
+        public_result_ref = published.ref
     result = context.run_store.finalize_result(
         run_ref,
         owner=owner,
@@ -641,10 +643,16 @@ def build_public_run_manifest(
         raise ClusterStageExecutionError("DatasetRef is unavailable for manifest")
     if not str(bundle.get("id") or "").startswith("selena-bundle:sha256:"):
         raise ClusterStageExecutionError("Runtime Bundle reference is unavailable for manifest")
+    status = result.state
+    if status == "succeeded" and _summary_reports_failure(result.summary):
+        # Historical ClusterResult rows are immutable.  If an older collector
+        # persisted a contradictory state, the public manifest must still tell
+        # the truth using the structured worker counts.
+        status = "failed"
     return {
         "schema_version": "radar-sim.run-manifest/2.0",
         "job_id": str(job.get("job_id") or ""),
-        "status": result.state,
+        "status": status,
         "config_fingerprint": str((job.get("payload") or {}).get("spec_hash") or ""),
         "runtime_bundle_id": str(bundle["id"]),
         "dataset_id": str(dataset["id"]),
@@ -654,6 +662,18 @@ def build_public_run_manifest(
         "summary": dict(result.summary),
         "created_at": result.created_at,
     }
+
+
+def _summary_reports_failure(summary: dict[str, Any]) -> bool:
+    """Return true only for explicit positive structured failure counts."""
+    for key in ("fail_count", "failed_count"):
+        value = summary.get(key)
+        try:
+            if int(value) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _owner(job: dict[str, Any]) -> str:

@@ -1485,6 +1485,9 @@ def _resolve_existing_v2_run_config(task: dict) -> dict:
     imported = import_existing_selena(
         str(payload.get("existing_path") or ""),
         str(payload.get("runtime_xml") or ""),
+        code_path=str(payload.get("code_path") or ""),
+        selena_build_script=str(payload.get("selena_build_script") or ""),
+        package_build_script=str(payload.get("package_build_script") or ""),
     )
     private_binding_id = "existing-path:sha256:" + hashlib.sha256(
         str(imported.exe_path.parent).casefold().encode("utf-8")

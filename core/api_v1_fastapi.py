@@ -591,6 +591,10 @@ def create_app(
     def manifest(request: Request, job_id: str):
         return service.manifest(owner(request), job_id)
 
+    @app.get("/api/v1/jobs/{job_id}/diagnosis")
+    def diagnosis(request: Request, job_id: str):
+        return service.diagnosis(owner(request), job_id)
+
     @app.post("/api/v1/artifact-uploads", status_code=201)
     def create_artifact_upload(request: Request, body: CreateArtifactUploadRequest):
         return service.create_artifact_upload(

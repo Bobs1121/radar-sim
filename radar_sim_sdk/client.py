@@ -29,6 +29,7 @@ from radar_sim_sdk.models import (
     Event,
     EventsPage,
     Job,
+    JobDiagnosis,
     ManifestResponse,
     RunConfigValidationResult,
     ValidationResult,
@@ -159,7 +160,13 @@ class RadarSimClient:
             and existing.is_dir()
             and runtime.is_file()
         ):
-            prepared_bundle_id = self._upload_existing_selena(existing, runtime)
+            prepared_bundle_id = self._upload_existing_selena(
+                existing,
+                runtime,
+                code_path=config.selena.code_path,
+                selena_build_script=config.selena.selena_build_script,
+                package_build_script=config.selena.package_build_script,
+            )
 
         data_path = Path(config.data.path).expanduser()
         data_kind = classify_data_path(config.data.path)
@@ -187,13 +194,24 @@ class RadarSimClient:
         payload["simulation"] = simulation
         return UserRunConfig.from_dict(payload).to_dict(), prepared_bundle_id
 
-    def _upload_existing_selena(self, existing: Path, runtime: Path) -> str:
+    def _upload_existing_selena(
+        self,
+        existing: Path,
+        runtime: Path,
+        *,
+        code_path: str = "",
+        selena_build_script: str = "",
+        package_build_script: str = "",
+    ) -> str:
         from core.existing_selena import import_existing_selena
 
         with tempfile.TemporaryDirectory(prefix="rsim-sdk-existing-") as temporary:
             imported = import_existing_selena(
                 existing,
                 runtime,
+                code_path=code_path,
+                selena_build_script=selena_build_script,
+                package_build_script=package_build_script,
                 staging_root=Path(temporary) / "staging",
                 # Existing runtime identity and archive must be stable across
                 # retries; wall-clock time is not source evidence.
@@ -338,6 +356,12 @@ class RadarSimClient:
 
     def manifest(self, job_id: str) -> ManifestResponse:
         return ManifestResponse.from_dict(self._request("GET", f"/api/v1/jobs/{job_id}/manifest"))
+
+    def diagnosis(self, job_id: str) -> JobDiagnosis:
+        """Return the shared path-free diagnosis used by Web and AI adapters."""
+        return JobDiagnosis.from_dict(
+            self._request("GET", f"/api/v1/jobs/{job_id}/diagnosis")
+        )
 
     def list_results(self) -> list[dict[str, Any]]:
         payload = self._request("GET", "/api/v1/results")

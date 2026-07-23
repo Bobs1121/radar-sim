@@ -1,0 +1,81 @@
+"""Public existing-Selena evidence stays optional and never triggers a build."""
+
+from pathlib import Path
+
+from core.stages import plan_user_run_stages
+from core.user_config import UserRunConfig
+from radar_sim_sdk import RadarSimClient
+from tests.test_api_v1_service import run_config_dict
+
+
+def _existing_with_evidence() -> dict:
+    config = run_config_dict()
+    config["selena"] = {
+        "source": "existing",
+        "existing_path": "D:/runtime/Selena",
+        "runtime_xml": "D:/runtime/Runtime.xml",
+        "code_path": "D:/workspace",
+        "branch": "release/od25",
+        "selena_build_script": "D:/workspace/tools/build_selena.bat",
+        "package_build_script": "D:/workspace/tools/build_package.bat",
+    }
+    return config
+
+
+def test_existing_evidence_roundtrips_without_enabling_build_stages():
+    config = UserRunConfig.from_dict(_existing_with_evidence())
+    roundtrip = UserRunConfig.from_yaml(config.to_yaml())
+    assert roundtrip == config
+    assert roundtrip.selena.source == "existing"
+
+    stages = {
+        stage.stage_type: stage
+        for stage in plan_user_run_stages(roundtrip).stages
+    }
+    assert stages["prepare_source"].initial_status == "skipped"
+    assert stages["build_selena"].initial_status == "skipped"
+
+
+def test_web_keeps_optional_existing_workspace_evidence():
+    root = Path(__file__).parents[1] / "radar_sim_web" / "static"
+    app = (root / "app.js").read_text(encoding="utf-8")
+    html = (root / "index.html").read_text(encoding="utf-8")
+    assert "code_path: codePath" in app
+    assert "selena_build_script: selenaBuildScript" in app
+    assert "buildFields\").hidden = false" in app
+    assert "以下代码仓和脚本为可选识别证据" in app
+    assert "使用已有 Selena 时可选" in html
+
+
+def test_sdk_passes_existing_workspace_evidence_to_local_import(tmp_path, monkeypatch):
+    existing = tmp_path / "Selena"
+    existing.mkdir()
+    runtime = tmp_path / "Runtime.xml"
+    runtime.write_text("<runtime/>", encoding="utf-8")
+    raw = _existing_with_evidence()
+    raw["selena"]["existing_path"] = str(existing)
+    raw["selena"]["runtime_xml"] = str(runtime)
+    raw["data"]["path"] = "//shared/data"
+    raw["simulation"]["mat_filter"] = "//shared/signals.filter"
+    config = UserRunConfig.from_dict(raw)
+    captured = {}
+    client = RadarSimClient("http://127.0.0.1:1")
+
+    def upload(folder, runtime_path, **evidence):
+        captured.update(
+            {
+                "folder": folder,
+                "runtime": runtime_path,
+                **evidence,
+            }
+        )
+        return "selena-bundle:sha256:" + "a" * 64
+
+    monkeypatch.setattr(client, "_upload_existing_selena", upload)
+    payload, bundle_id = client._prepare_user_run(config, dry_run=False)
+
+    assert bundle_id.endswith("a" * 64)
+    assert captured["code_path"] == "D:/workspace"
+    assert captured["selena_build_script"].endswith("build_selena.bat")
+    assert captured["package_build_script"].endswith("build_package.bat")
+    assert payload["selena"]["source"] == "existing"

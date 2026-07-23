@@ -68,6 +68,18 @@ def test_existing_cluster_resolve_can_bind_light_agent(tmp_path):
     control = ControlService(tmp_path / "control.db")
     api = ApiV1Service(control_service_factory=lambda _owner: control)
     config, _binary, _runtime, _data = _existing_config(tmp_path, target="cluster")
+    config["selena"].update(
+        {
+            "code_path": "C:/BYD_OVS_CB",
+            "selena_build_script": (
+                "C:/BYD_OVS_CB/apl/byd/bindings/ovrs25/selena/"
+                "jenkins_selena_build.bat"
+            ),
+            "package_build_script": (
+                "C:/BYD_OVS_CB/apl/byd/bindings/ovrs25/buildscripts/package.bat"
+            ),
+        }
+    )
     _register(control, agent_id="light-1", mode="light")
     api.submit_user_run("alice", config_payload=config)
 
@@ -76,6 +88,11 @@ def test_existing_cluster_resolve_can_bind_light_agent(tmp_path):
     assert bound["payload"]["selected_target"] == "cluster"
     assert bound["payload"]["mat_filter"] == config["simulation"]["mat_filter"]
     assert bound["payload"]["adapter_file"] == config["simulation"]["adapter_file"]
+    assert bound["payload"]["code_path"] == "C:/BYD_OVS_CB"
+    assert bound["payload"]["selena_build_script"].endswith(
+        "jenkins_selena_build.bat"
+    )
+    assert bound["payload"]["package_build_script"].endswith("package.bat")
 
 
 def test_agent_uploads_local_simulation_assets_without_changing_user_config(tmp_path):

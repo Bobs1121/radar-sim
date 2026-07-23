@@ -1,6 +1,7 @@
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 import time
+import zipfile
 
 import pytest
 
@@ -196,8 +197,77 @@ def test_collect_overrides_web_succeeded_when_result_ini_reports_failure(tmp_pat
     assert result.state == "failed"
     assert result.summary["success_count"] == 0
     assert result.summary["fail_count"] == 32
-    # No public result should be published for failed simulations.
+    # This context intentionally has no public ResultCatalog.
     assert output.get("result_ref") == ""
+
+
+def test_failed_cluster_result_publishes_downloadable_diagnostics(tmp_path: Path, monkeypatch):
+    private_job = tmp_path / "private-job"
+    output_dir = private_job / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "result.ini").write_text(
+        "successfull=0\nerror=missing signal\n", encoding="utf-8"
+    )
+    (output_dir / "simulation.log").write_text("Selena returned -1\n", encoding="utf-8")
+    (output_dir / "partial.MF4").write_bytes(b"partial-output")
+
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="ovrs25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/ovrs25/runtime-bundle.zip",
+        profile="default", job_dir=str(private_job),
+        config_path="//cluster/job/Config.cfg", output_location=str(output_dir),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="1", submit_mode="xmlrpc")
+    catalog = ResultCatalog(
+        tmp_path / "result-archives",
+        tmp_path / "results.db",
+        allowed_source_root=tmp_path,
+        now_fn=lambda: 10.0,
+    )
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
+        now_fn=lambda: 10.0,
+        result_catalog=catalog,
+    )
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: {
+            "found": True,
+            "tasks": [{"simulation_state": "finished"}],
+        },
+    )
+    inspected = {
+        "state": "finished-failed", "file_count": 3,
+        "success_count": 0, "fail_count": 1,
+        "error_summary": ["missing signal"],
+        "files": [
+            {"relative_path": "output/result.ini"},
+            {"relative_path": "output/simulation.log"},
+            {"relative_path": "output/partial.MF4"},
+        ],
+        "output_mf4": [{"relative_path": "output/partial.MF4", "size": 14}],
+        "result_files": [{"relative_path": "output/result.ini"}],
+        "logs": [{"relative_path": "output/simulation.log"}],
+    }
+    monkeypatch.setattr("core.cluster.inspect_cluster_job", lambda *_args, **_kwargs: inspected)
+
+    output = execute_cluster_collect(
+        context, _job(), run.ref, cancelled=lambda: False, sleep_fn=lambda _seconds: None
+    )
+
+    assert output["result"]["state"] == "failed"
+    assert output["result_ref"].startswith("result:sha256:")
+    archive = catalog.resolve_archive(output["result_ref"], owner="alice")
+    with zipfile.ZipFile(archive) as payload:
+        assert set(payload.namelist()) == {
+            "output/result.ini",
+            "output/simulation.log",
+            "output/partial.MF4",
+        }
 
 
 def test_collect_queries_by_generated_job_directory_and_waits_for_every_dataset_file(
@@ -356,6 +426,36 @@ def test_public_manifest_contains_refs_but_no_physical_locations(tmp_path: Path)
     assert manifest["result_ref"].startswith("result:sha256:")
     assert "D:/secret" not in str(manifest)
     assert "private_path" not in str(manifest)
+
+
+def test_public_manifest_normalizes_structured_historical_failure(tmp_path: Path):
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="bydod25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/bydod25/runtime-bundle.zip",
+        profile="default", job_dir="//private/job", config_path="//private/job/Config.cfg",
+        output_location="//private/job/output",
+    )
+    contradictory = store.finalize_result(
+        run.ref,
+        owner="alice",
+        state="succeeded",
+        files=("output/result.ini",),
+        summary={
+            "success_count": 0,
+            "fail_count": 32,
+            "errors": ["worker diagnostics retained"],
+        },
+        physical_root="//private/job",
+    )
+
+    manifest = build_public_run_manifest(_job(), contradictory)
+
+    assert contradictory.state == "succeeded"
+    assert manifest["status"] == "failed"
+    assert manifest["summary"]["fail_count"] == 32
 
 
 def test_shared_data_uses_trusted_recognition_while_runtime_is_still_building(monkeypatch):

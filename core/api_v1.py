@@ -232,6 +232,9 @@ class ApiV1Service:
                         imported = import_existing_selena(
                             existing_path,
                             runtime_path,
+                            code_path=config.selena.code_path,
+                            selena_build_script=config.selena.selena_build_script,
+                            package_build_script=config.selena.package_build_script,
                             staging_root=Path(temporary) / "staging",
                             created_at=0.0,
                         )
@@ -828,6 +831,149 @@ class ApiV1Service:
             "available": manifest is not None,
             "manifest": manifest,
         }
+
+    def diagnosis(self, owner: str, job_id: str) -> dict[str, Any]:
+        """Return a stable, path-free diagnosis for Web, SDK and AI adapters.
+
+        The Job is authoritative for orchestration failures while an explicit
+        failed Manifest is authoritative for the simulation business outcome.
+        This distinction intentionally allows a failed simulation to retain
+        downloadable artifacts.
+        """
+        owner = self._owner(owner)
+        job = self._get_owned_job(owner, job_id)
+        status = self._v1_status(job)
+        manifest_payload = self.manifest(owner, job_id)
+        manifest = (
+            dict(manifest_payload["manifest"])
+            if isinstance(manifest_payload.get("manifest"), dict)
+            else {}
+        )
+        manifest_status = _normalize_manifest_status(manifest.get("status"))
+        result_ref = _public_result_ref(manifest.get("result_ref"))
+        artifacts_available = self._result_is_available(owner, result_ref)
+
+        stages = list(job.get("stages") or job.get("tasks") or [])
+        failed_stage = next(
+            (stage for stage in stages if str(stage.get("status") or "") == "failed"),
+            None,
+        )
+        blocked_stage = next(
+            (stage for stage in stages if str(stage.get("status") or "") == "blocked"),
+            None,
+        )
+        problem_stage = failed_stage or blocked_stage
+        error = dict((problem_stage or {}).get("error") or {})
+        job_result = dict(job.get("result") or {})
+        source_code = _safe_diagnostic_code(
+            error.get("code") or job_result.get("code")
+        )
+        stage_type = _safe_diagnostic_code(
+            (problem_stage or {}).get("stage_type")
+            or (problem_stage or {}).get("task_type")
+        )
+        stage_id = str(
+            (problem_stage or {}).get("stage_id")
+            or (problem_stage or {}).get("task_id")
+            or ""
+        )
+
+        warnings: list[str] = []
+        manifest_failed = manifest_status == "failed"
+        manifest_succeeded = manifest_status == "succeeded"
+        if (
+            (status == "succeeded" and manifest_failed)
+            or (status == "failed" and manifest_succeeded)
+        ):
+            warnings.append("job_manifest_outcome_mismatch")
+        if result_ref and not artifacts_available:
+            warnings.append("result_reference_unavailable")
+
+        if manifest_failed:
+            outcome = "failed"
+            code = "simulation_failed"
+            category = "simulation"
+            summary = (
+                "Simulation completed with a failed outcome; result artifacts "
+                "may still be available."
+            )
+        elif status == "failed":
+            outcome = "failed"
+            category = _diagnostic_category(source_code, stage_type)
+            code = f"{category}_failed"
+            summary = _failure_summary(category, stage_type)
+        elif status == "succeeded":
+            outcome = "succeeded"
+            code = "job_succeeded"
+            category = "none"
+            summary = "Simulation completed successfully."
+        elif status == "cancelled":
+            outcome = "cancelled"
+            code = "job_cancelled"
+            category = "none"
+            summary = "The task was cancelled."
+        elif status == "needs_input":
+            outcome = "needs_input"
+            code = "job_needs_input"
+            category = "configuration"
+            summary = (
+                "The task needs configuration or a connected execution "
+                "resource before it can continue."
+            )
+        else:
+            outcome = "pending"
+            code = "job_running" if status in {"running", "cancelling"} else "job_queued"
+            category = "none"
+            summary = "The task is still running." if status == "running" else "The task is waiting to run."
+
+        action = _diagnostic_action(
+            outcome=outcome,
+            category=category,
+            job_id=str(job["job_id"]),
+            stage_id=stage_id,
+            result_ref=result_ref if artifacts_available else "",
+            available_actions=self._available_actions(str(job["job_id"]), status, stages),
+        )
+        return {
+            "schema_version": "radar-sim.job-diagnosis/1.0",
+            "job_id": str(job["job_id"]),
+            "status": status,
+            "terminal": status in TERMINAL_STATUSES,
+            "outcome": outcome,
+            "code": code,
+            "category": category,
+            "summary": summary,
+            "action": action,
+            "artifacts_available": artifacts_available,
+            "result_ref": result_ref,
+            "evidence": {
+                "job_status": status,
+                "manifest_available": bool(manifest_payload["available"]),
+                "manifest_status": manifest_status,
+                "failed_stage": (
+                    {
+                        "stage_type": stage_type,
+                        "stage_id": stage_id,
+                        "source_code": source_code,
+                    }
+                    if problem_stage is not None
+                    else None
+                ),
+            },
+            "consistency": {
+                "state": "warning" if warnings else "consistent",
+                "warnings": warnings,
+            },
+        }
+
+    def _result_is_available(self, owner: str, result_ref: str) -> bool:
+        if not result_ref or self.result_catalog is None:
+            return False
+        try:
+            self.result_catalog.get(result_ref, owner=owner)
+            return True
+        except ResultCatalogError:
+            return False
 
     def events(
         self,
@@ -1898,6 +2044,126 @@ def _apply_data_resolution_to_task_specs(
             )
             task["payload"] = payload
     return tasks
+
+
+def _normalize_manifest_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"succeeded", "success", "successful", "completed"}:
+        return "succeeded"
+    if status in {"failed", "failure", "cancelled", "canceled", "partial"}:
+        return "failed"
+    return "unknown" if status else ""
+
+
+def _public_result_ref(value: Any) -> str:
+    result_ref = str(value or "").strip().lower()
+    prefix = "result:sha256:"
+    digest = result_ref.removeprefix(prefix)
+    if result_ref.startswith(prefix) and len(digest) == 64 and all(
+        char in "0123456789abcdef" for char in digest
+    ):
+        return result_ref
+    return ""
+
+
+def _safe_diagnostic_code(value: Any) -> str:
+    code = str(value or "").strip().lower()
+    if not code or len(code) > 100:
+        return ""
+    if all(char.isalnum() or char in "._-" for char in code):
+        return code
+    return ""
+
+
+def _diagnostic_category(source_code: str, stage_type: str) -> str:
+    if source_code == "simulation_failed":
+        return "simulation"
+    if any(
+        token in source_code
+        for token in (
+            "gateway",
+            "network",
+            "transport",
+            "connection",
+            "offline",
+            "unavailable",
+            "timeout",
+            "storage",
+            "service",
+            "agent_lost",
+        )
+    ):
+        return "infrastructure"
+    if (
+        any(
+            token in source_code
+            for token in (
+                "invalid",
+                "missing",
+                "required",
+                "unsupported",
+                "needs_input",
+                "not_configured",
+                "workspace_snapshot_pending",
+            )
+        )
+        or stage_type in {"resolve_spec", "environment_check", "prepare_source", "prepare_data"}
+    ):
+        return "configuration"
+    return "system"
+
+
+def _failure_summary(category: str, stage_type: str) -> str:
+    if category == "infrastructure":
+        return (
+            "The simulation service could not complete because an execution "
+            "dependency was unavailable."
+        )
+    if category == "configuration":
+        return "The task failed because required configuration or environment input was not ready."
+    if category == "simulation":
+        return "Simulation completed with a failed outcome."
+    return f"The task failed in stage {stage_type}." if stage_type else "The task failed."
+
+
+def _diagnostic_action(
+    *,
+    outcome: str,
+    category: str,
+    job_id: str,
+    stage_id: str,
+    result_ref: str,
+    available_actions: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if result_ref and outcome in {"succeeded", "failed"}:
+        return {
+            "type": "download_result",
+            "label": "Download result artifacts",
+            "result_ref": result_ref,
+        }
+    if outcome == "failed" and stage_id:
+        return {
+            "type": "retry_stage",
+            "label": "Retry failed stage",
+            "job_id": job_id,
+            "stage_id": stage_id,
+        }
+    if outcome == "needs_input":
+        allowed = {
+            "connect_windows": "Connect this Windows computer",
+            "upload_data": "Provide accessible simulation data",
+            "resolve_source": "Resolve the Selena source",
+        }
+        for candidate in available_actions:
+            action_type = str(candidate.get("type") or "")
+            if action_type in allowed:
+                return {"type": action_type, "label": allowed[action_type]}
+        return {"type": "review_configuration", "label": "Review task configuration"}
+    if outcome == "pending":
+        return {"type": "wait_job", "label": "Wait for task completion", "job_id": job_id}
+    if outcome == "failed" and category == "infrastructure":
+        return {"type": "inspect_events", "label": "Inspect task events", "job_id": job_id}
+    return None
 
 
 __all__ = [

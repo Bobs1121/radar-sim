@@ -85,10 +85,12 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "Get-FileHash" in (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
     assert "/api/v1/capabilities" in bootstrap
     connector = (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
+    launcher = (ROOT / "scripts" / "connect_windows.cmd.in").read_text(encoding="utf-8")
     assert "Python.Python.3.12" in connector
     assert "--silent" in connector
     assert "--disable-interactivity" in connector
     assert "Software Center" in connector
+    assert "timeout /t" not in launcher
 
 
 def test_linux_release_builds_same_origin_windows_connector_bundle():

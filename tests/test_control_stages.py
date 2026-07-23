@@ -481,6 +481,70 @@ def test_failed_manifest_marks_job_failed_but_remains_available(tmp_path):
     }
 
 
+def test_structured_failure_count_overrides_succeeded_manifest_status(tmp_path):
+    service = ControlService(tmp_path / "control.db")
+    service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "finalize_manifest", "stage_type": "finalize_manifest"}],
+    )
+    service.register_agent("finalizer", agent_id="finalizer", capabilities=["*"])
+    task = service.claim_next_task("finalizer")
+    result_ref = "result:sha256:" + "c" * 64
+    completed = service.submit_task_result(
+        task["stage_id"],
+        agent_id="finalizer",
+        status="succeeded",
+        returncode=0,
+        result={
+            "manifest": {
+                "status": "succeeded",
+                "result_ref": result_ref,
+                "summary": {
+                    "success_count": 0,
+                    "fail_count": 32,
+                    "errors": ["32 workers reported failure"],
+                },
+            }
+        },
+    )
+
+    assert completed["status"] == "failed"
+    assert completed["result"]["manifest"]["status"] == "failed"
+    assert completed["result"]["manifest"]["result_ref"] == result_ref
+    assert completed["result"]["code"] == "simulation_failed"
+
+
+def test_diagnostic_errors_without_failure_count_do_not_override_success(tmp_path):
+    service = ControlService(tmp_path / "control.db")
+    service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "finalize_manifest", "stage_type": "finalize_manifest"}],
+    )
+    service.register_agent("finalizer", agent_id="finalizer", capabilities=["*"])
+    task = service.claim_next_task("finalizer")
+    completed = service.submit_task_result(
+        task["stage_id"],
+        agent_id="finalizer",
+        status="succeeded",
+        returncode=0,
+        result={
+            "manifest": {
+                "status": "succeeded",
+                "summary": {
+                    "success_count": 12,
+                    "fail_count": 0,
+                    "errors": ["non-fatal diagnostic retained for troubleshooting"],
+                },
+            }
+        },
+    )
+
+    assert completed["status"] == "succeeded"
+    assert completed["result"]["manifest"]["status"] == "succeeded"
+
+
 def test_startup_reconciles_historical_success_with_failed_manifest(tmp_path):
     db_path = tmp_path / "control.db"
     service = ControlService(db_path)
@@ -511,6 +575,61 @@ def test_startup_reconciles_historical_success_with_failed_manifest(tmp_path):
 
     reconciled = ControlService(db_path).get_job(job["job_id"])
     assert reconciled["status"] == "failed"
+    assert reconciled["result"]["manifest"]["status"] == "failed"
     final = {stage["stage_type"]: stage for stage in reconciled["stages"]}["finalize_manifest"]
     assert final["status"] == "failed"
     assert final["error"]["code"] == "simulation_failed"
+
+
+def test_startup_normalizes_failed_job_with_contradictory_historical_summary(tmp_path):
+    db_path = tmp_path / "control.db"
+    service = ControlService(db_path)
+    job = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "finalize_manifest", "stage_type": "finalize_manifest"}],
+    )
+    service.register_agent("finalizer", agent_id="finalizer", capabilities=["*"])
+    task = service.claim_next_task("finalizer")
+    service.submit_task_result(
+        task["stage_id"],
+        agent_id="finalizer",
+        status="succeeded",
+        returncode=0,
+        result={"manifest": {"status": "succeeded"}},
+    )
+
+    historical = {
+        "manifest": {
+            "status": "succeeded",
+            "result_ref": "result:sha256:" + "d" * 64,
+            "summary": {
+                "success_count": 0,
+                "fail_count": 32,
+                "errors": ["all workers failed"],
+            },
+        }
+    }
+    import json
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE jobs SET status='failed', result_json=? WHERE job_id=?",
+            (json.dumps(historical), job["job_id"]),
+        )
+        conn.execute(
+            """
+            UPDATE tasks
+            SET status='failed', returncode=-1, result_json=?, error_json='{}'
+            WHERE task_id=?
+            """,
+            (json.dumps(historical), task["stage_id"]),
+        )
+
+    reconciled = ControlService(db_path).get_job(job["job_id"])
+
+    assert reconciled["status"] == "failed"
+    assert reconciled["result"]["manifest"]["status"] == "failed"
+    assert reconciled["result"]["manifest"]["result_ref"].endswith("d" * 64)
+    final = {stage["stage_type"]: stage for stage in reconciled["stages"]}["finalize_manifest"]
+    assert final["result"]["manifest"]["status"] == "failed"

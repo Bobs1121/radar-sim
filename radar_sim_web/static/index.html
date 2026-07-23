@@ -100,10 +100,11 @@
               </select>
             </label>
             <div id="buildFields" class="field-grid two">
+              <small id="workspaceEvidenceHint" class="full">本地编译需要代码仓和两个脚本；系统据此识别产品并检查依赖。</small>
               <label class="field full">
                 <span>代码路径</span>
-                <input id="codePath" name="codePath" placeholder="D:/workspace/selena" required>
-                <small>软件在 Windows 节点内部识别构建适配方式，不需要选择项目。</small>
+                <input id="codePath" name="codePath" placeholder="D:/workspace/selena">
+                <small>本地编译时必填；使用已有 Selena 时可选，用于自动识别并交叉校验产品。</small>
               </label>
               <label class="field">
                 <span>期望 Selena 分支</span>
@@ -112,13 +113,13 @@
               </label>
               <label class="field full">
                 <span>Selena 编译脚本</span>
-                <input id="selenaBuildScript" name="selenaBuildScript" placeholder="代码路径内的 jenkins_selena_build.bat" required>
-                <small>编译 Selena 主产物的脚本，必填。</small>
+                <input id="selenaBuildScript" name="selenaBuildScript" placeholder="代码路径内的 jenkins_selena_build.bat">
+                <small>本地编译时必填；使用已有 Selena 时可作为产品识别证据。</small>
               </label>
               <label class="field full">
                 <span>软件包编译脚本</span>
-                <input id="packageBuildScript" name="packageBuildScript" placeholder="代码仓内的软件包编译脚本" required>
-                <small>用于识别代码适配并检查/修复构建依赖，必填。</small>
+                <input id="packageBuildScript" name="packageBuildScript" placeholder="代码仓内的软件包编译脚本">
+                <small>本地编译时必填；使用已有 Selena 时可用于交叉识别产品。</small>
               </label>
             </div>
             <div id="existingFields" hidden>

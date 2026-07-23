@@ -147,6 +147,42 @@ class ManifestResponse:
 
 
 @dataclass(frozen=True)
+class JobDiagnosis:
+    schema_version: str
+    job_id: str
+    status: str
+    terminal: bool
+    outcome: str
+    code: str
+    category: str
+    summary: str
+    action: dict[str, Any] | None
+    artifacts_available: bool
+    result_ref: str
+    evidence: dict[str, Any] = field(default_factory=dict)
+    consistency: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "JobDiagnosis":
+        action = data.get("action")
+        return cls(
+            schema_version=str(data.get("schema_version") or ""),
+            job_id=str(data.get("job_id") or ""),
+            status=str(data.get("status") or ""),
+            terminal=bool(data.get("terminal", False)),
+            outcome=str(data.get("outcome") or ""),
+            code=str(data.get("code") or ""),
+            category=str(data.get("category") or ""),
+            summary=str(data.get("summary") or ""),
+            action=dict(action) if isinstance(action, dict) else None,
+            artifacts_available=bool(data.get("artifacts_available", False)),
+            result_ref=str(data.get("result_ref") or ""),
+            evidence=dict(data.get("evidence") or {}),
+            consistency=dict(data.get("consistency") or {}),
+        )
+
+
+@dataclass(frozen=True)
 class RunConfigValidationResult:
     valid: bool
     config: UserRunConfig

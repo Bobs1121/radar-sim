@@ -317,6 +317,11 @@ def test_sdk_minimal_spec_and_task_center_list(tmp_path):
     assert jobs[0].current_stage == "resolve_spec"
     assert jobs[0].progress == 0.0
     assert jobs[0].available_actions[0]["type"] == "cancel_job"
+    diagnosis = sdk.diagnosis(job.id)
+    assert diagnosis.job_id == job.id
+    assert diagnosis.outcome == "pending"
+    assert diagnosis.code == "job_queued"
+    assert diagnosis.action["type"] == "wait_job"
 
 
 def test_sdk_error_mapping_uses_api_envelope(tmp_path):

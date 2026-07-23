@@ -177,15 +177,35 @@ def test_legacy_build_fields_never_exported():
     assert raw["selena"]["selena_build_script"] == "D:/bydod25fr/build_selena.bat"
 
 
-def test_existing_source_rejects_build_fields():
+def test_existing_source_preserves_optional_workspace_evidence():
     config = _build_config()
     config["selena"] = {
         "source": "existing",
         "existing_path": r"D:\Selena",
         "runtime_xml": r"D:\Selena\Runtime.xml",
-        "selena_build_script": r"D:\x\build.bat",
+        "code_path": r"D:\workspace",
+        "branch": "release/od25",
+        "selena_build_script": r"D:\workspace\build_selena.bat",
+        "package_build_script": r"D:\workspace\build_package.bat",
     }
-    with pytest.raises(ValidationError, match="build workspace fields"):
+    parsed = UserRunConfig.from_dict(config)
+    assert parsed.selena.source == "existing"
+    assert parsed.selena.code_path == "D:/workspace"
+    assert parsed.to_dict()["selena"]["selena_build_script"].endswith("build_selena.bat")
+    exported = parsed.to_yaml()
+    assert "code_path:" in exported
+    assert "package_build_script:" in exported
+
+
+def test_existing_build_script_evidence_requires_code_path():
+    config = _build_config()
+    config["selena"] = {
+        "source": "existing",
+        "existing_path": r"D:\Selena",
+        "runtime_xml": r"D:\Selena\Runtime.xml",
+        "selena_build_script": r"D:\workspace\build_selena.bat",
+    }
+    with pytest.raises(ValidationError, match="code_path"):
         UserRunConfig.from_dict(config)
 
 

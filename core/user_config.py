@@ -72,14 +72,15 @@ class UserSelenaConfig(_Frozen):
                 raise ValueError("selena.existing_path is required for existing Selena")
             if not self.runtime_xml:
                 raise ValueError("selena.runtime_xml is required for existing Selena")
-            build_fields = (
-                self.code_path,
-                self.branch,
-                self.selena_build_script,
-                self.package_build_script,
-            )
-            if any(build_fields):
-                raise ValueError("existing Selena must not contain build workspace fields")
+            if (
+                self.branch
+                or self.selena_build_script
+                or self.package_build_script
+            ) and not self.code_path:
+                raise ValueError(
+                    "selena.code_path is required when existing Selena includes "
+                    "repository or build-script evidence"
+                )
         return self
 
 
@@ -183,6 +184,19 @@ class UserRunConfig(_Frozen):
                 "existing_path": self.selena.existing_path,
                 "runtime_xml": self.selena.runtime_xml,
             }
+            optional_evidence = {
+                "code_path": self.selena.code_path,
+                "branch": self.selena.branch,
+                "selena_build_script": self.selena.selena_build_script,
+                "package_build_script": self.selena.package_build_script,
+            }
+            selena.update(
+                {
+                    key: value
+                    for key, value in optional_evidence.items()
+                    if value
+                }
+            )
         return {
             "schema_version": self.schema_version,
             "selena": selena,

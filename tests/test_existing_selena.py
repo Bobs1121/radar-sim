@@ -1,5 +1,6 @@
 """Tests for core/existing_selena.py."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -181,3 +182,86 @@ def test_internal_project_and_key_match(tmp_path):
     assert r.internal_project
     assert r.adapter_key
     assert r.bundle.manifest.source.adapter_key == r.adapter_key
+
+
+def test_unknown_product_uses_opaque_generic_namespace(tmp_path):
+    ex, rx = _mk(tmp_path, name="pl-xpeng_workspace", nested=True)
+    r = import_existing_selena(ex, rx, created_at=_now())
+    assert re.fullmatch(r"workspace-[0-9a-f]{24}", r.internal_project)
+    assert r.adapter_key == "generic:existing-selena"
+    assert "xpeng" not in r.internal_project
+
+
+def test_generic_namespace_is_stable_when_bundle_is_relocated(tmp_path):
+    first, first_runtime = _mk(tmp_path, name="pl-xpeng_workspace", nested=True)
+    second, second_runtime = _mk(tmp_path, name="gac_od25_project", nested=True)
+    a = import_existing_selena(first, first_runtime, created_at=_now())
+    b = import_existing_selena(second, second_runtime, created_at=_now())
+    assert a.internal_project == b.internal_project
+    assert a.adapter_key == b.adapter_key == "generic:existing-selena"
+
+
+def test_generic_namespace_changes_with_bundle_content(tmp_path):
+    first, first_runtime = _mk(tmp_path, name="unknown_a", nested=True)
+    second, second_runtime = _mk(
+        tmp_path,
+        name="unknown_b",
+        nested=True,
+        xml='<?xml version="1.0"?><runtime><selena version="2"/></runtime>',
+    )
+    a = import_existing_selena(first, first_runtime, created_at=_now())
+    b = import_existing_selena(second, second_runtime, created_at=_now())
+    assert a.internal_project != b.internal_project
+
+
+def test_generic_od25_path_does_not_impersonate_byd_adapter(tmp_path):
+    ex, rx = _mk(tmp_path, name="xpeng_od25_workspace", nested=True)
+    r = import_existing_selena(ex, rx, created_at=_now())
+    assert r.internal_project.startswith("workspace-")
+    assert r.adapter_key == "generic:existing-selena"
+
+
+def test_product_marker_must_not_match_inside_another_word(tmp_path):
+    ex, rx = _mk(tmp_path, name="covrsion_workspace", nested=True)
+    r = import_existing_selena(ex, rx, created_at=_now())
+    assert r.internal_project.startswith("workspace-")
+    assert r.adapter_key == "generic:existing-selena"
+
+
+def test_existing_selena_uses_workspace_scripts_as_product_evidence(tmp_path):
+    ex, rx = _mk(tmp_path, name="neutral_runtime", nested=True)
+    r = import_existing_selena(
+        ex,
+        rx,
+        code_path="D:/bydod25fr/byd",
+        selena_build_script="D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat",
+        package_build_script="D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat",
+        created_at=_now(),
+    )
+    assert r.internal_project == "bydod25"
+    assert r.adapter_key == "recipe:g3n_fvg3_od25"
+
+
+def test_existing_selena_rejects_conflicting_artifact_and_workspace_evidence(tmp_path):
+    ex, rx = _mk(tmp_path, name="ovrs25_runtime", nested=True)
+    with pytest.raises(ExistingSelenaError, match="evidence conflicts"):
+        import_existing_selena(
+            ex,
+            rx,
+            code_path="D:/bydod25fr/byd",
+            selena_build_script="D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat",
+            package_build_script="D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat",
+            created_at=_now(),
+        )
+
+
+def test_existing_selena_rejects_script_outside_evidence_workspace(tmp_path):
+    ex, rx = _mk(tmp_path, name="neutral_runtime", nested=True)
+    with pytest.raises(ExistingSelenaError, match="inside that repository"):
+        import_existing_selena(
+            ex,
+            rx,
+            code_path="D:/workspace",
+            selena_build_script="E:/other/build_selena.bat",
+            created_at=_now(),
+        )

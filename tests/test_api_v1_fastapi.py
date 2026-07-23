@@ -190,6 +190,10 @@ def test_health_schema_validate_submit_get_cancel_manifest(tmp_path):
     fetched = client.get(f"/api/v1/jobs/{job['id']}").json()
     assert fetched["id"] == job["id"]
     assert client.get(f"/api/v1/jobs/{job['id']}/manifest").json()["available"] is False
+    diagnosis = client.get(f"/api/v1/jobs/{job['id']}/diagnosis").json()
+    assert diagnosis["job_id"] == job["id"]
+    assert diagnosis["outcome"] == "pending"
+    assert diagnosis["action"]["type"] == "wait_job"
 
     cancelled = client.post(f"/api/v1/jobs/{job['id']}/cancel").json()
     assert cancelled["status"] == "cancelled"

@@ -19,6 +19,7 @@ from core.api_v1 import (
 )
 from core.artifacts import SelenaArtifact
 from core.control_service import ControlService
+from core.local_results import ResultCatalog
 from core.selena_resolver import SourceResolutionContext
 from core.spec import ProjectCatalog, ProjectProfile, UserBindings
 from core.spec import SimulationSpec
@@ -131,6 +132,148 @@ def test_v1_task_center_lists_only_owner_v1_jobs_with_progress_and_filter(tmp_pa
 
     cancelled = api.list_jobs("alice", status="cancelled")
     assert [item["id"] for item in cancelled["jobs"]] == [first["id"]]
+
+
+def test_diagnosis_reports_pending_job_without_exposing_user_paths(tmp_path):
+    api, _ = make_api(tmp_path)
+    job = api.submit_job("alice", spec_payload=spec_dict())
+
+    diagnosis = api.diagnosis("alice", job["id"])
+
+    assert diagnosis["schema_version"] == "radar-sim.job-diagnosis/1.0"
+    assert diagnosis["outcome"] == "pending"
+    assert diagnosis["code"] == "job_queued"
+    assert diagnosis["category"] == "none"
+    assert diagnosis["terminal"] is False
+    assert diagnosis["artifacts_available"] is False
+    assert diagnosis["action"]["type"] == "wait_job"
+    assert "D:\\measurement" not in json.dumps(diagnosis)
+
+
+def test_diagnosis_keeps_failed_simulation_artifacts_downloadable(tmp_path):
+    controlled = tmp_path / "runs"
+    source = controlled / "failed-run"
+    source.mkdir(parents=True)
+    (source / "result.ini").write_text("successfull=0\n", encoding="utf-8")
+    catalog = ResultCatalog(
+        tmp_path / "result-store",
+        tmp_path / "results.db",
+        allowed_source_root=controlled,
+    )
+    published = catalog.publish(
+        owner="alice",
+        run_ref="cluster-run:failed",
+        source_root=source,
+        files=["result.ini"],
+        retain_until=10_000_000_000,
+    )
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(
+        control_service_factory=lambda _owner: control,
+        result_catalog=catalog,
+    )
+    job = control.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "finalize_manifest", "stage_type": "finalize_manifest"}],
+    )
+    control.register_agent("finalizer", agent_id="finalizer", capabilities=["*"])
+    stage = control.claim_next_task("finalizer")
+    control.submit_task_result(
+        stage["stage_id"],
+        agent_id="finalizer",
+        status="succeeded",
+        returncode=0,
+        result={
+            "manifest": {
+                "schema_version": "radar-sim.run-manifest/2.0",
+                "status": "failed",
+                "result_ref": published.ref,
+                "summary": {"errors": [str(tmp_path / "private" / "failure.log")]},
+            }
+        },
+    )
+
+    diagnosis = api.diagnosis("alice", job["job_id"])
+
+    assert diagnosis["status"] == "failed"
+    assert diagnosis["outcome"] == "failed"
+    assert diagnosis["code"] == "simulation_failed"
+    assert diagnosis["category"] == "simulation"
+    assert diagnosis["artifacts_available"] is True
+    assert diagnosis["result_ref"] == published.ref
+    assert diagnosis["action"] == {
+        "type": "download_result",
+        "label": "Download result artifacts",
+        "result_ref": published.ref,
+    }
+    assert diagnosis["consistency"] == {"state": "consistent", "warnings": []}
+    assert str(tmp_path) not in json.dumps(diagnosis)
+
+
+def test_diagnosis_normalizes_historical_manifest_mismatch_and_infrastructure_failure(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    job = control.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "run_simulation", "stage_type": "run_simulation"}],
+    )
+    control.register_agent("gateway", agent_id="gateway", capabilities=["*"])
+    stage = control.claim_next_task("gateway")
+    control.submit_task_result(
+        stage["stage_id"],
+        agent_id="gateway",
+        status="failed",
+        returncode=1,
+        result={
+            "code": "cluster_gateway_unavailable",
+            "message": str(tmp_path / "gateway-secret.log"),
+        },
+    )
+
+    infrastructure = api.diagnosis("alice", job["job_id"])
+    assert infrastructure["outcome"] == "failed"
+    assert infrastructure["code"] == "infrastructure_failed"
+    assert infrastructure["category"] == "infrastructure"
+    assert infrastructure["action"]["type"] == "retry_stage"
+    assert infrastructure["evidence"]["failed_stage"]["source_code"] == "cluster_gateway_unavailable"
+    assert str(tmp_path) not in json.dumps(infrastructure)
+
+    historical = control.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "finalize_manifest", "stage_type": "finalize_manifest"}],
+    )
+    final_stage = historical["stages"][0]
+    failed_manifest = {
+        "manifest": {
+            "status": "failed",
+            "result_ref": "result:sha256:" + "f" * 64,
+        }
+    }
+    with sqlite3.connect(tmp_path / "control.db") as conn:
+        conn.execute(
+            "UPDATE jobs SET status='succeeded', result_json=? WHERE job_id=?",
+            (json.dumps(failed_manifest), historical["job_id"]),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='succeeded' WHERE task_id=?",
+            (final_stage["stage_id"],),
+        )
+
+    mismatch = api.diagnosis("alice", historical["job_id"])
+    assert mismatch["status"] == "succeeded"
+    assert mismatch["outcome"] == "failed"
+    assert mismatch["code"] == "simulation_failed"
+    assert mismatch["artifacts_available"] is False
+    assert mismatch["consistency"] == {
+        "state": "warning",
+        "warnings": [
+            "job_manifest_outcome_mismatch",
+            "result_reference_unavailable",
+        ],
+    }
 
 
 def project_catalog(project: str = "bydod25") -> ProjectCatalog:

@@ -6,6 +6,10 @@ selena:
   source: existing
   existing_path: "D:/path/to/OD25_Selena/RelWithDebInfo"
   runtime_xml: "D:/path/to/OD25_Runtime.xml"
+  # 以下三项不触发编译；建议填写，系统会复用本地编译识别规则交叉确认产品。
+  code_path: "D:/path/to/OD25_code"
+  selena_build_script: "D:/path/to/OD25_code/apl/product/selena/jenkins_selena_build.bat"
+  package_build_script: "D:/path/to/OD25_code/apl/product/tools/builder/cmake_build.bat"
 
 data:
   path: "//server/share/path/to/OD25_measurements"
