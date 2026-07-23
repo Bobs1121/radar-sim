@@ -72,6 +72,10 @@ class RadarSimClient:
                 trust_env=trust_env,
             )
 
+    def health(self) -> dict[str, Any]:
+        """Check server health and API version."""
+        return dict(self._request("GET", "/api/v1/health"))
+
     def validate(self, spec: SimulationSpec | dict[str, Any]) -> ValidationResult:
         return ValidationResult.from_dict(self._request("POST", "/api/v1/validate", json=self._spec_payload(spec)))
 

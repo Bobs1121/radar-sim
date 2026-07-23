@@ -270,7 +270,25 @@ class RuntimeBundleUploadService:
                     archive_bytes[session.received_bytes:],
                     owner=owner,
                 )
-            published = self._store.finalize_upload(session.session_id, owner=owner)
+            try:
+                published = self._store.finalize_upload(session.session_id, owner=owner)
+            except ArtifactConflictError:
+                # The same logical path already exists with a different
+                # archive checksum.  This happens when the same Selena folder
+                # is re-imported and the zip binary differs (timestamps,
+                # compression) even though the file contents are identical.
+                # Check whether the catalog already has this bundle identity;
+                # if so, reuse the existing record instead of failing.
+                try:
+                    existing_record = self._catalog.get(manifest.id)
+                except RuntimeBundleCatalogError:
+                    existing_record = None
+                if existing_record is not None:
+                    return {
+                        "runtime_bundle": existing_record.public_dict,
+                        "reused": True,
+                    }
+                raise
             location = self._store.resolve_location(str(published["storage_ref"]))
             temporary = Path(tempfile.mkdtemp(prefix="rsim-existing-verify-"))
             try:
