@@ -337,6 +337,75 @@ def test_reclaim_stale_cancel_requested_finishes_cancelled_without_requeue(tmp_p
     assert any(event["event"] == "stage.cancelled" and event["code"] == "AGENT_STALE" for event in service.list_events(job["job_id"])["events"])
 
 
+def test_cancelled_job_with_succeeded_upstream_is_not_reported_failed(tmp_path):
+    service = make_service(tmp_path)
+    job = service.create_job(
+        "simulation.v1",
+        tasks=[
+            {"task_type": "resolve_spec", "stage_type": "resolve_spec"},
+            {
+                "task_type": "prepare_data",
+                "stage_type": "prepare_data",
+                "dependencies": ["resolve_spec"],
+            },
+        ],
+    )
+    service.register_agent("runner", agent_id="runner", capabilities=["*"])
+    first = service.claim_next_task("runner")
+    service.submit_task_result(
+        first["stage_id"], agent_id="runner", status="succeeded", returncode=0
+    )
+    second = service.claim_next_task("runner")
+    service.cancel_job(job["job_id"])
+
+    service.submit_task_result(
+        second["stage_id"], agent_id="runner", status="cancelled", returncode=130
+    )
+
+    current = service.get_job(job["job_id"])
+    assert current["status"] == "cancelled"
+    assert [stage["status"] for stage in current["stages"]] == ["succeeded", "cancelled"]
+
+
+def test_cancel_request_does_not_hide_a_real_failed_stage(tmp_path):
+    service = make_service(tmp_path)
+    job = service.create_job(
+        "simulation.v1",
+        tasks=[
+            {"task_type": "resolve_spec", "stage_type": "resolve_spec"},
+            {"task_type": "prepare_data", "stage_type": "prepare_data"},
+        ],
+    )
+    # Model the narrow race where a genuine failure is persisted while a
+    # concurrent user cancellation marks the job and another Stage cancelled.
+    with service._lock:
+        conn = service._conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            stages = conn.execute(
+                "SELECT task_id FROM tasks WHERE job_id=? ORDER BY order_index",
+                (job["job_id"],),
+            ).fetchall()
+            conn.execute(
+                "UPDATE jobs SET cancel_requested=1 WHERE job_id=?",
+                (job["job_id"],),
+            )
+            conn.execute(
+                "UPDATE tasks SET status='failed', completed_at=1 WHERE task_id=?",
+                (stages[0]["task_id"],),
+            )
+            conn.execute(
+                "UPDATE tasks SET status='cancelled', cancel_requested=1, completed_at=2 WHERE task_id=?",
+                (stages[1]["task_id"],),
+            )
+            service._refresh_job_status_locked(conn, job["job_id"], 2)
+            conn.commit()
+        finally:
+            conn.close()
+
+    assert service.get_job(job["job_id"])["status"] == "failed"
+
+
 def test_direct_submit_queued_task_creates_synthetic_attempt(tmp_path):
     service = make_service(tmp_path)
     job = service.create_job("local.check")

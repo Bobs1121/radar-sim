@@ -2301,6 +2301,17 @@ class ControlService:
         elif statuses and all(status in SUCCESS_TASK_STATUSES for status in statuses):
             next_status = "succeeded"
             completed_at = max_completed_at or now
+        elif (
+            job_cancel_requested
+            and statuses
+            and "failed" not in statuses
+            and all(status in TERMINAL_TASK_STATUSES for status in statuses)
+        ):
+            # A user cancellation may arrive after earlier stages succeeded.
+            # Once every remaining stage is terminal, that is still a cancelled
+            # job; only a real failed Stage may override the user's intent.
+            next_status = "cancelled"
+            completed_at = max_completed_at or now
         elif statuses and all(status in {"cancelled", "skipped"} for status in statuses):
             next_status = "cancelled"
             completed_at = max_completed_at or now

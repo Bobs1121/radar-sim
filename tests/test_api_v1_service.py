@@ -91,7 +91,12 @@ def test_execution_capabilities_require_both_cluster_roles_and_hide_agent_detail
     )
 
     partial = api.execution_capabilities("alice")
-    assert partial["capabilities"]["windows_light"] == {"available": True, "count": 1}
+    assert partial["capabilities"]["windows_light"] == {
+        "available": True,
+        "count": 1,
+        "configured_count": 1,
+        "reconnecting": False,
+    }
     assert partial["capabilities"]["cluster"] == {
         "available": False,
         "count": 0,
@@ -109,6 +114,32 @@ def test_execution_capabilities_require_both_cluster_roles_and_hide_agent_detail
     ready = api.execution_capabilities("alice")
     assert ready["capabilities"]["cluster"]["available"] is True
     assert ready["capabilities"]["cluster"]["count"] == 1
+
+
+def test_execution_capabilities_reports_configured_windows_reconnecting(tmp_path):
+    control = ControlService(tmp_path / "capabilities.db", now_fn=lambda: 100)
+    api = ApiV1Service(control_service_factory=lambda owner: control, now_fn=lambda: 300)
+    control.register_agent(
+        "full-a",
+        agent_id="full-a",
+        capabilities=["simulation.local"],
+        metadata={"node_kind": "windows_full"},
+    )
+
+    full = api.execution_capabilities("alice")["capabilities"]["windows_full"]
+    assert full == {
+        "available": False,
+        "count": 0,
+        "configured_count": 1,
+        "reconnecting": True,
+    }
+    waiting = api.submit_user_run("alice", config_payload=run_config_dict())["waiting"]
+    assert waiting["connection_state"] == "reconnecting"
+    assert waiting["action"] == {
+        "type": "wait_windows_reconnect",
+        "label": "Wait for automatic reconnection",
+        "mode": "light",
+    }
 
 
 def test_v1_task_center_lists_only_owner_v1_jobs_with_progress_and_filter(tmp_path):
@@ -402,6 +433,7 @@ def test_run_config_job_reports_path_free_windows_connection_wait(tmp_path):
         "mode": "light",
         "stage": "resolve_spec",
         "missing_capability": "windows_light",
+        "connection_state": "not_configured",
         "message": "This task is waiting for a connected Windows computer with build capability.",
         "action": {
             "type": "connect_windows",

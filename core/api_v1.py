@@ -528,8 +528,18 @@ class ApiV1Service:
         owner = self._owner(owner)
         now = float(self.now_fn())
         summary = {
-            "windows_full": {"available": False, "count": 0},
-            "windows_light": {"available": False, "count": 0},
+            "windows_full": {
+                "available": False,
+                "count": 0,
+                "configured_count": 0,
+                "reconnecting": False,
+            },
+            "windows_light": {
+                "available": False,
+                "count": 0,
+                "configured_count": 0,
+                "reconnecting": False,
+            },
             "cluster": {
                 "available": False,
                 "count": 0,
@@ -538,9 +548,6 @@ class ApiV1Service:
             },
         }
         for agent in self._control(owner).list_agents():
-            last = float(agent.get("last_heartbeat") or 0.0)
-            if last <= 0 or now - last > 120 or str(agent.get("status") or "") == "offline":
-                continue
             metadata = dict(agent.get("metadata") or {})
             node_kind = str(metadata.get("node_kind") or metadata.get("node.kind") or "")
             key = ""
@@ -548,13 +555,22 @@ class ApiV1Service:
                 key = "windows_full"
             elif node_kind == "windows_agent":
                 key = "windows_light"
-            elif node_kind == "linux_executor":
+            if key:
+                summary[key]["configured_count"] += 1
+            last = float(agent.get("last_heartbeat") or 0.0)
+            if last <= 0 or now - last > 120 or str(agent.get("status") or "") == "offline":
+                continue
+            if node_kind == "linux_executor":
                 summary["cluster"]["linux_executor_count"] += 1
             elif node_kind == "platform_gateway":
                 summary["cluster"]["platform_gateway_count"] += 1
             if key:
                 summary[key]["count"] += 1
                 summary[key]["available"] = True
+        for key in ("windows_full", "windows_light"):
+            summary[key]["reconnecting"] = (
+                summary[key]["configured_count"] > 0 and not summary[key]["available"]
+            )
         summary["cluster"]["count"] = min(
             summary["cluster"]["linux_executor_count"],
             summary["cluster"]["platform_gateway_count"],
@@ -1562,15 +1578,27 @@ class ApiV1Service:
             message = "This task is waiting for a connected Windows computer that can access local files."
         if not mode:
             return None
+        if mode == "full":
+            reconnecting = bool(capabilities["windows_full"].get("configured_count"))
+        else:
+            reconnecting = bool(
+                capabilities["windows_light"].get("configured_count")
+                or capabilities["windows_full"].get("configured_count")
+            )
         return {
             "reason": "windows_connection_required",
             "mode": mode,
             "stage": stage_type,
             "missing_capability": "windows_full" if mode == "full" else "windows_light",
-            "message": message,
+            "connection_state": "reconnecting" if reconnecting else "not_configured",
+            "message": (
+                "This configured Windows computer is temporarily offline and should reconnect automatically."
+                if reconnecting
+                else message
+            ),
             "action": {
-                "type": "connect_windows",
-                "label": "Connect this Windows computer",
+                "type": "wait_windows_reconnect" if reconnecting else "connect_windows",
+                "label": "Wait for automatic reconnection" if reconnecting else "Connect this Windows computer",
                 "mode": mode,
             },
         }

@@ -257,7 +257,8 @@ if ($RegisterStartup) {
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
         $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
             -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
-            -ExecutionTimeLimit ([TimeSpan]::Zero)
+            -ExecutionTimeLimit ([TimeSpan]::Zero) `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
             -Settings $settings -Description "radar-sim Windows connector" -Force | Out-Null
         $installConfig["startup_method"] = "scheduled_task"

@@ -28,6 +28,10 @@ class DatasetError(ValueError):
     """Stable dataset contract or catalog error."""
 
 
+class DatasetDiscoveryCancelled(DatasetError):
+    """Raised when a caller cooperatively cancels discovery or hashing."""
+
+
 _CHECKSUM_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ID_RE = re.compile(r"^dataset:sha256:[0-9a-f]{64}$")
 _DATASET_URI_RE = re.compile(r"^dataset://sha256/([0-9a-f]{64})$")
@@ -248,15 +252,19 @@ def discover_dataset_files(
     limit: int = 0,
     max_read_mb: int = 8,
     checksum: bool = False,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> tuple[DatasetFileRef, ...]:
     """Recursively discover MF4s at any nesting level using ``core.data``."""
     source = Path(source)
     root = source if source.is_dir() else source.parent
     results: list[DatasetFileRef] = []
     signals = [str(item) for item in required_signals if str(item).strip()]
+    cancelled = cancel_requested or (lambda: False)
     # Inventory and fingerprint must always cover the complete dataset.
     # SimulationSpec.data.limit is applied later when selecting run inputs.
     for path in iter_mf4_inputs(source, limit=0):
+        if cancelled():
+            raise DatasetDiscoveryCancelled("dataset discovery cancelled")
         scan = scan_data_file(path, signals, max_bytes=max(0, int(max_read_mb)) * 1024 * 1024)
         if scan.signal_status in {"missing", "error"}:
             raise DatasetError("dataset file failed required-signal validation")
@@ -265,11 +273,13 @@ def discover_dataset_files(
             DatasetFileRef(
                 relative_path=relative,
                 size=int(scan.size),
-                checksum=_sha256_file(path) if checksum else "",
+                checksum=_sha256_file(path, cancel_requested=cancelled) if checksum else "",
                 signal_status=scan.signal_status,
                 mtime_ns=int(path.stat().st_mtime_ns),
             )
         )
+    if cancelled():
+        raise DatasetDiscoveryCancelled("dataset discovery cancelled")
     if not results:
         raise DatasetError("no input MF4 files were found")
     return tuple(results)
@@ -471,10 +481,20 @@ def resolve_shared_data(
         )
 
 
-def _sha256_file(path: Path) -> str:
+def _sha256_file(
+    path: Path,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> str:
     digest = hashlib.sha256()
+    cancelled = cancel_requested or (lambda: False)
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        while True:
+            if cancelled():
+                raise DatasetDiscoveryCancelled("dataset checksum cancelled")
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
 
@@ -482,6 +502,7 @@ def _sha256_file(path: Path) -> str:
 __all__ = [
     "DataResolution",
     "DatasetCatalog",
+    "DatasetDiscoveryCancelled",
     "DatasetError",
     "DatasetFileRef",
     "DatasetRef",

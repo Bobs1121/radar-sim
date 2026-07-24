@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -393,10 +394,14 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
     class FakeLeaseStore:
         uploaded = []
 
-        def create(self, payload, bindings, *, stage_id, attempt):
+        def create(
+            self, payload, bindings, *, stage_id, attempt, checksum, cancel_requested
+        ):
             assert payload["data_binding_id"].startswith("data-root:")
             assert stage_id == "stage-data"
             assert attempt == 1
+            assert checksum is True
+            assert cancel_requested() is False
             return SimpleNamespace(
                 lease_id="data-lease:sha256:" + "a" * 32,
                 files=(SimpleNamespace(relative_path="a.MF4", size=1, checksum="sha256:" + "b" * 64),),
@@ -417,11 +422,14 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
         def heartbeat(self, _agent_id, **_kwargs):
             return {"cancel_requested": False}
 
-        def upload_data_lease(self, evidence_ref, *, agent_id, lease, task_id, owner=""):
+        def upload_data_lease(
+            self, evidence_ref, *, agent_id, lease, task_id, owner="", cancel_requested
+        ):
             assert evidence_ref == "stage-data:1"
             assert agent_id == "agent-a"
             assert task_id == "stage-data"
             assert owner == "alice"
+            assert cancel_requested() is False
             return {
                 "dataset": {
                     "id": "dataset:sha256:" + "c" * 64,
@@ -460,3 +468,131 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
     ) == 0
     assert client.results[0]["status"] == "succeeded"
     assert client.results[0]["result"]["dataset_id"].startswith("dataset:sha256:")
+
+
+def test_prepare_data_heartbeat_cancels_a_slow_discovery(monkeypatch):
+    import core.agent_data_bindings as binding_module
+    import core.agent_data_lease as lease_module
+    from core.datasets import DatasetDiscoveryCancelled
+
+    class SlowLeaseStore:
+        def create(
+            self, _payload, _bindings, *, stage_id, attempt, checksum, cancel_requested
+        ):
+            assert stage_id == "stage-slow-data"
+            assert attempt == 1
+            assert checksum is True
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if cancel_requested():
+                    raise DatasetDiscoveryCancelled("cancelled")
+                time.sleep(0.01)
+            raise AssertionError("slow discovery did not observe cancellation")
+
+    class FakeClient:
+        def __init__(self):
+            self.heartbeats = 0
+            self.logs = []
+            self.results = []
+
+        def append_logs(self, _task_id, lines):
+            self.logs.extend(lines)
+
+        def heartbeat(self, _agent_id, **_kwargs):
+            self.heartbeats += 1
+            return {"cancel_requested": self.heartbeats >= 2}
+
+        def submit_result(self, _task_id, **kwargs):
+            self.results.append(kwargs)
+
+    monkeypatch.setattr(lease_module, "AgentDataLeaseStore", SlowLeaseStore)
+    monkeypatch.setattr(binding_module, "AgentDataBindingStore", lambda: object())
+    client = FakeClient()
+    task = {
+        "task_id": "stage-slow-data",
+        "task_type": "prepare_data",
+        "stage_type": "prepare_data",
+        "attempt_count": 1,
+        "owner": "alice",
+        "payload": {"project": "ovrs25", "data_binding_id": "data-root:sha256:" + "e" * 24},
+    }
+
+    assert agent_module._run_task(
+        client,
+        "agent-a",
+        task,
+        heartbeat_interval=0.01,
+        node_kind="windows_agent",
+    ) == 1
+    assert client.heartbeats >= 2
+    assert client.results[0]["status"] == "cancelled"
+    assert client.results[0]["returncode"] == 130
+
+
+def test_local_prepare_data_uses_metadata_fingerprint_without_content_checksum(monkeypatch, tmp_path):
+    import core.agent_data_bindings as binding_module
+    import core.agent_data_lease as lease_module
+    from core.datasets import DatasetFileRef
+
+    source = tmp_path / "data"
+    source.mkdir()
+
+    class LocalLeaseStore:
+        def create(
+            self, _payload, _bindings, *, stage_id, attempt, checksum, cancel_requested
+        ):
+            assert stage_id == "stage-local-data"
+            assert attempt == 1
+            assert checksum is False
+            assert cancel_requested() is False
+            return SimpleNamespace(
+                lease_id="data-lease:sha256:" + "a" * 32,
+                files=(DatasetFileRef("large.MF4", 20_000_000_000, mtime_ns=123),),
+                project="ovrs25",
+                binding_id="data-root:sha256:" + "e" * 24,
+                source_path=source,
+            )
+
+    class FakeClient:
+        def __init__(self):
+            self.logs = []
+            self.results = []
+
+        def append_logs(self, _task_id, lines):
+            self.logs.extend(lines)
+
+        def heartbeat(self, _agent_id, **_kwargs):
+            return {"cancel_requested": False}
+
+        def upload_data_lease(self, *_args, **_kwargs):
+            raise AssertionError("local simulation must not upload or hash dataset contents")
+
+        def submit_result(self, _task_id, **kwargs):
+            self.results.append(kwargs)
+
+    monkeypatch.setattr(lease_module, "AgentDataLeaseStore", LocalLeaseStore)
+    monkeypatch.setattr(binding_module, "AgentDataBindingStore", lambda: object())
+    client = FakeClient()
+    task = {
+        "task_id": "stage-local-data",
+        "task_type": "prepare_data",
+        "stage_type": "prepare_data",
+        "attempt_count": 1,
+        "owner": "alice",
+        "payload": {
+            "dispatch_scope": "local_data",
+            "project": "ovrs25",
+            "data_binding_id": "data-root:sha256:" + "e" * 24,
+        },
+    }
+
+    assert agent_module._run_task(
+        client,
+        "agent-a",
+        task,
+        heartbeat_interval=1,
+        node_kind="windows_full",
+    ) == 0
+    dataset = client.results[0]["result"]["dataset"]
+    assert dataset["total_size"] == 20_000_000_000
+    assert dataset["source_fingerprint"].startswith("sha256:")

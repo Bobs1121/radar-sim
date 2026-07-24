@@ -68,6 +68,8 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "no token is stored" in bootstrap
     assert "RegisterStartup" in bootstrap
     assert "New-ScheduledTaskAction" in bootstrap
+    assert "-AllowStartIfOnBatteries" in bootstrap
+    assert "-DontStopIfGoingOnBatteries" in bootstrap
     assert "-Supervise" in starter
     assert "Threading.Mutex" in starter
     assert "connector.pid" in starter

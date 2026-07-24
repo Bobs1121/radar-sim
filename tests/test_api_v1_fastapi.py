@@ -407,6 +407,10 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert "RadarSim-连接本机.cmd" in app_js.text
     assert "请双击运行已下载的文件" in app_js.text
     assert "本机已连接，等待中的任务将自动继续" in app_js.text
+    assert "本机连接暂时中断，正在自动重连" in app_js.text
+    assert "无需重新安装或重新提交" in app_js.text
+    assert "通常会自动恢复；长时间未连接时可重新连接本机" in app_js.text
+    assert 'actionButton("重新连接本机", "secondary"' in app_js.text
     styles = client.get("/console/styles.css")
     assert styles.status_code == 200
     assert ".windows-connect-callout" in styles.text

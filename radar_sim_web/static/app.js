@@ -79,6 +79,13 @@ function hasWindowsCapability(mode, capabilities = state.capabilities) {
   return Boolean(snapshot.windows_light?.available || snapshot.windows_full?.available);
 }
 
+function hasConfiguredWindows(mode, capabilities = state.capabilities) {
+  const snapshot = capabilities?.capabilities || capabilities || {};
+  if (mode === "full") return Number(snapshot.windows_full?.configured_count || 0) > 0;
+  return Number(snapshot.windows_light?.configured_count || 0) > 0
+    || Number(snapshot.windows_full?.configured_count || 0) > 0;
+}
+
 async function refreshCapabilities() {
   if (state.capabilitiesRequestInFlight) return state.capabilities;
   state.capabilitiesRequestInFlight = true;
@@ -551,7 +558,9 @@ function renderJobs() {
     const stage = document.createElement("span");
     const waiting = windowsWaitState(job);
     const currentStage = stageName(job.current_stage);
-    stage.textContent = waiting ? `等待连接本机 · ${waiting.shortCapability}` : currentStage || (
+    stage.textContent = waiting
+      ? `${waiting.reconnecting ? "本机正在自动重连" : "等待连接本机"} · ${waiting.shortCapability}`
+      : currentStage || (
       ["failed", "cancelled", "succeeded"].includes(job.status)
         ? statusName(job.status)
         : "等待调度"
@@ -593,9 +602,12 @@ function windowsWaitState(job, candidateStage = null) {
   if (serverWaiting && !hasWindowsCapability(serverWaiting.mode)) {
     const full = serverWaiting.mode === "full";
     const build = !full && source === "build";
+    const reconnecting = serverWaiting.connection_state === "reconnecting"
+      || hasConfiguredWindows(serverWaiting.mode);
     return {
       mode: serverWaiting.mode,
-      title: "任务正在等待连接本机",
+      reconnecting,
+      title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
       capability: full
         ? "缺少本地仿真能力"
         : build ? "缺少本机编译和文件访问能力" : "缺少本机文件访问和上传能力",
@@ -622,27 +634,33 @@ function windowsWaitState(job, candidateStage = null) {
   const localStages = new Set(["resolve_spec", "environment_check", "prepare_selena", "prepare_data", "preflight", "run_simulation", "collect_results", "finalize_manifest"]);
 
   if (target === "local" && !hasWindowsCapability("full")) {
+    const reconnecting = hasConfiguredWindows("full");
     return {
       mode: "full",
-      title: "任务正在等待连接本机",
+      reconnecting,
+      title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
       capability: "缺少本地仿真能力",
       shortCapability: "本地仿真能力",
       reason: "你选择了本地仿真，运行 Selena 和收集结果需要由这台 Windows 电脑完成。",
     };
   }
   if (source === "build" && buildStages.has(stageType) && !hasWindowsCapability("light")) {
+    const reconnecting = hasConfiguredWindows("light");
     return {
       mode: "light",
-      title: "任务正在等待连接本机",
+      reconnecting,
+      title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
       capability: "缺少本机编译和文件访问能力",
       shortCapability: "本机编译能力",
       reason: "任务会编译当前代码工作区，再把 Selena 产物交给 Cluster；代码和编译脚本只在你的 Windows 电脑上可访问。",
     };
   }
   if (target !== "local" && usesWindowsLocalPath && localStages.has(stageType) && !hasWindowsCapability("light")) {
+    const reconnecting = hasConfiguredWindows("light");
     return {
       mode: "light",
-      title: "任务正在等待连接本机",
+      reconnecting,
+      title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
       capability: "缺少本机文件访问和上传能力",
       shortCapability: "本机文件访问能力",
       reason: "配置中包含 Windows 本地路径，需要由这台电脑准备 Selena、Runtime 或数据，再交给 Cluster。",
@@ -797,7 +815,7 @@ function renderWindowsConnectionCallout(job, waiting) {
   const copy = document.createElement("div");
   const eyebrow = document.createElement("span");
   eyebrow.className = "callout-eyebrow";
-  eyebrow.textContent = "等待用户操作";
+  eyebrow.textContent = waiting.reconnecting ? "自动恢复中" : "等待用户操作";
   const title = document.createElement("h3");
   title.textContent = waiting.title;
   const capability = document.createElement("strong");
@@ -806,17 +824,27 @@ function renderWindowsConnectionCallout(job, waiting) {
   reason.textContent = waiting.reason;
   const reassurance = document.createElement("p");
   reassurance.className = "callout-reassurance";
-  reassurance.textContent = "任务没有失败，也不需要重新提交。连接成功后，调度会自动继续。";
+  reassurance.textContent = waiting.reconnecting
+    ? "本机已经配置完成，无需重新安装或重新提交。连接恢复后，调度会自动继续。"
+    : "任务没有失败，也不需要重新提交。连接成功后，调度会自动继续。";
   copy.append(eyebrow, title, capability, reason, reassurance);
 
   const controls = document.createElement("div");
   controls.className = "windows-connect-actions";
   const status = document.createElement("small");
-  status.textContent = "安装一次，后续自动连接";
-  const button = actionButton("一键连接本机", "primary", () =>
-    downloadWindowsConnector(job.id, waiting.mode, button, status)
-  );
-  controls.append(button, status);
+  if (waiting.reconnecting) {
+    status.textContent = "通常会自动恢复；长时间未连接时可重新连接本机";
+    const button = actionButton("重新连接本机", "secondary", () =>
+      downloadWindowsConnector(job.id, waiting.mode, button, status)
+    );
+    controls.append(button, status);
+  } else {
+    status.textContent = "安装一次，后续自动连接";
+    const button = actionButton("一键连接本机", "primary", () =>
+      downloadWindowsConnector(job.id, waiting.mode, button, status)
+    );
+    controls.append(button, status);
+  }
   panel.append(copy, controls);
   return panel;
 }
@@ -887,7 +915,9 @@ function renderStage(job, stage) {
   title.textContent = stageName(stage.stage_type || stage.task_type);
   const detail = document.createElement("small");
   const waiting = windowsWaitState(job, stage);
-  detail.textContent = waiting ? `等待连接本机：${waiting.capability}` : friendlyStageDetail(stage);
+  detail.textContent = waiting
+    ? `${waiting.reconnecting ? "本机正在自动重连" : "等待连接本机"}：${waiting.capability}`
+    : friendlyStageDetail(stage);
   copy.append(title, detail);
   const actions = document.createElement("div");
   actions.className = "stage-actions";

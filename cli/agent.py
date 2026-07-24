@@ -905,16 +905,20 @@ def _run_v5_prepare_data(
     """Authorize and discover local MF4s, uploading only for Cluster routes."""
     from core.agent_data_bindings import AgentDataBindingStore
     from core.agent_data_lease import AgentDataLeaseStore
+    from core.datasets import DatasetDiscoveryCancelled
 
     task_id = str(task.get("task_id") or "")
     attempt = int(task.get("attempt_count") or 0)
     evidence_ref = f"{task_id}:{attempt}"
+    cancel_event = threading.Event()
     stop_event = threading.Event()
 
     def heartbeat_loop() -> None:
         while not stop_event.wait(max(1.0, heartbeat_interval)):
             try:
-                client.heartbeat(agent_id, status="busy", current_task_id=task_id)
+                response = client.heartbeat(agent_id, status="busy", current_task_id=task_id)
+                if response.get("cancel_requested"):
+                    cancel_event.set()
             except Exception:
                 pass
 
@@ -926,12 +930,22 @@ def _run_v5_prepare_data(
     local_route = str((task.get("payload") or {}).get("dispatch_scope") or "") == "local_data"
     result: dict = {"error": "local dataset preparation failed"}
     try:
+        response = client.heartbeat(agent_id, status="busy", current_task_id=task_id)
+        if response.get("cancel_requested"):
+            cancel_event.set()
+        if cancel_event.is_set():
+            raise DatasetDiscoveryCancelled("dataset preparation cancelled")
         leases = AgentDataLeaseStore()
         lease = leases.create(
             dict(task.get("payload") or {}),
             AgentDataBindingStore(),
             stage_id=task_id,
             attempt=attempt,
+            # Local simulation consumes the immutable Agent lease directly.
+            # Path/size/mtime evidence is sufficient there; Cluster upload
+            # still requires content checksums for integrity and resume.
+            checksum=not local_route,
+            cancel_requested=cancel_event.is_set,
         )
         if local_route:
             import hashlib
@@ -968,6 +982,7 @@ def _run_v5_prepare_data(
                 lease=lease,
                 task_id=task_id,
                 owner=str(task.get("owner") or ""),
+                cancel_requested=cancel_event.is_set,
             )
             dataset = dict(uploaded.get("dataset") or {})
             dataset_id = str(dataset.get("id") or "")
@@ -984,6 +999,11 @@ def _run_v5_prepare_data(
             status = "succeeded"
             returncode = 0
             client.append_logs(task_id, ["[agent] local dataset upload completed; Agent may now disconnect"])
+    except DatasetDiscoveryCancelled:
+        status = "cancelled"
+        returncode = 130
+        result = {"status": "cancelled", "code": "cancelled"}
+        client.append_logs(task_id, ["[agent] local dataset preparation cancelled"])
     except Exception:
         client.append_logs(task_id, ["[agent] local dataset upload failed; retry is resumable"])
     finally:
@@ -1945,12 +1965,17 @@ class _ControlClient:
         lease,
         task_id: str,
         owner: str = "",
+        cancel_requested=None,
     ) -> dict:
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for dataset upload")
+        from core.datasets import DatasetDiscoveryCancelled
         from core.user import current_user
         from radar_sim_sdk import RadarSimClient
 
+        cancelled = cancel_requested or (lambda: False)
+        if cancelled():
+            raise DatasetDiscoveryCancelled("dataset upload cancelled")
         manifest = [
             {
                 "relative_path": item.relative_path,
@@ -1973,11 +1998,15 @@ class _ControlClient:
             current = session
             total = len(session.files)
             for index, upload_file in enumerate(session.files, start=1):
+                if cancelled():
+                    raise DatasetDiscoveryCancelled("dataset upload cancelled")
                 path = source if source.is_file() else root.joinpath(*Path(upload_file.relative_path).parts)
                 with path.open("rb") as handle:
                     handle.seek(upload_file.received_bytes)
                     offset = upload_file.received_bytes
                     while offset < upload_file.expected_size:
+                        if cancelled():
+                            raise DatasetDiscoveryCancelled("dataset upload cancelled")
                         data = handle.read(min(current.chunk_size, upload_file.expected_size - offset))
                         if not data:
                             raise ValueError("leased data file ended during upload")
@@ -1989,7 +2018,11 @@ class _ControlClient:
                         )
                         state = next(item for item in current.files if item.file_id == upload_file.file_id)
                         offset = state.received_bytes
+                if cancelled():
+                    raise DatasetDiscoveryCancelled("dataset upload cancelled")
                 self.append_logs(task_id, [f"[agent] uploaded MF4 {index}/{total}"])
+            if cancelled():
+                raise DatasetDiscoveryCancelled("dataset upload cancelled")
             uploaded = sdk.finalize_dataset_upload(session.session_id)
         return {
             "dataset": dict(uploaded.dataset),

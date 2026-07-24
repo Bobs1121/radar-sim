@@ -5,6 +5,7 @@ import pytest
 
 from core.datasets import (
     DatasetCatalog,
+    DatasetDiscoveryCancelled,
     DatasetError,
     DatasetFileRef,
     classify_data_path,
@@ -57,6 +58,25 @@ def test_discover_uploaded_files_can_calculate_checksums(tmp_path: Path):
     files = discover_dataset_files(mf4, checksum=True)
     assert files[0].relative_path == "input.MF4"
     assert files[0].checksum.startswith("sha256:")
+
+
+def test_large_file_checksum_stops_cooperatively_between_chunks(tmp_path: Path):
+    mf4 = tmp_path / "large.MF4"
+    mf4.write_bytes(b"x" * (3 * 1024 * 1024))
+    checks = 0
+
+    def cancel_after_first_chunk() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks >= 3
+
+    with pytest.raises(DatasetDiscoveryCancelled, match="cancelled"):
+        discover_dataset_files(
+            mf4,
+            checksum=True,
+            cancel_requested=cancel_after_first_chunk,
+        )
+    assert checks >= 3
 
 
 def test_dataset_file_rejects_absolute_or_traversal_path():

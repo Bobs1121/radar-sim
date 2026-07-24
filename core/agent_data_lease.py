@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from core.agent_data_bindings import AgentDataBindingStore
 from core.agent_bindings import default_agent_binding_db_path
-from core.datasets import DatasetFileRef, discover_dataset_files
+from core.datasets import DatasetDiscoveryCancelled, DatasetFileRef, discover_dataset_files
 
 
 class AgentDataLeaseError(ValueError):
@@ -91,6 +91,8 @@ class AgentDataLeaseStore:
         *,
         stage_id: str,
         attempt: int,
+        checksum: bool = True,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> AgentDataLease:
         project = str(payload.get("project") or "").strip()
         binding_id = str(payload.get("data_binding_id") or "").strip()
@@ -111,8 +113,11 @@ class AgentDataLeaseStore:
             files = discover_dataset_files(
                 source,
                 payload.get("required_signals") or (),
-                checksum=True,
+                checksum=bool(checksum),
+                cancel_requested=cancel_requested,
             )
+        except DatasetDiscoveryCancelled:
+            raise
         except Exception as exc:
             raise AgentDataLeaseError("authorized data discovery failed") from exc
         lease_id = "data-lease:sha256:" + uuid.uuid4().hex
