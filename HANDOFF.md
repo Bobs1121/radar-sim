@@ -1,6 +1,6 @@
 # radar-sim v5 Active Handoff
 
-> 最近更新：2026-07-23
+> 最近更新：2026-07-24
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
@@ -75,6 +75,7 @@
 
 | 日期 | 范围 | 证据 |
 |---|---|---|
+| 2026-07-24 | Xpeng 已有 Selena 真实复用、结果真实性与 Web 防误提交发布 | 用户原始 YAML `radar-sim.simulation-xpeng.yaml` 未被改写，SHA256 `dcf7b6b8fa9257135cfe847cd6bad9976fa7b4521d59264babf0e95573e92c4a`；Runtime XML 与 MatFilter 分别和既有 Bundle/配置资产逐字节匹配。按用户明确要求复用 `selena-bundle:sha256:cd049cb022813dc32639f46888b7ba264c2432aaac089ca5f3b97fda1a7f0746`，先以 `job_5136eae6267e` dry-run 验证计划，再提交真实 `job_47798df4e6cc`；`prepare_source/build_selena/register_artifact` 均跳过，证明未重新编译。外部 Cluster job `10361` 的 32 个任务全部返回 `successfull=0`，首个真实错误为 Runtime 缺少信号 `g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_port_ParallelLanes_in`；32 个非空 `out.MF4` 仍被回收，Job/Manifest/Diagnosis 一致为 failed 且 `artifacts_available=true`，Result `result:sha256:2b8fdc7293bce154e2d23d4224115ad1ee0078f18dc6deca0b6bacd3d490f3de` 的 17,659,970-byte 归档 Range 下载返回 206。错误 Web 任务 `job_bee6703caa11` 的规范实际为 `source=existing,target=local`，并非后端把 Cluster 错路由为本地；取消后仅运行中的 19.8GB 数据校验因 Windows 连接进程失联未协作退出，单次安全 reclaim 将其终结为带 `AGENT_STALE` 证据的 failed，preflight/本地仿真/回收均未执行。Web 修复 `e0f125e` 明确已有 Selena 文件夹必填且包含 exe/DLL，`936682a` 增加最终执行位置/Selena 来源摘要、导入后改路由红色警告与提交前二次确认；专项 32 passed、`node --check` 通过。正式 release `/home/hoz2wx/radar-sim-v1-936682a` 已 active，PID `1647561`、进程 cwd 与 release 一致、`/api/v1/health` 返回 ok；真实浏览器已验证 Cluster YAML 改为本地时双重警告，dismiss 后任务总数仍为 26、未产生误任务。取消在大文件扫描期间仍不能及时中断，以及 Windows 连接进程自恢复策略，保留为后续稳定性门禁。 |
 | 2026-07-23 | 结果真实性、可诊断 API 与无项目配置识别 | Web、Python SDK 与未来 Skill/MCP 统一复用 `/api/v1/jobs/{job_id}/diagnosis`，返回路径无关的业务结论、稳定错误分类、下一动作、结果可下载性和 Job/Manifest 一致性；仿真失败但存在日志/部分产物时允许 `outcome=failed` 与 `artifacts_available=true` 同时成立。Cluster 结果以 `result.ini` 聚合和结构化失败计数为准，失败结果同样可归档下载；历史 Manifest 只按明确正数失败计数安全归一化，不因 `errors` 文本存在误改成功任务。已有 Selena 可选填写代码仓和两个脚本作为产品证据，与 Selena/Runtime 明确标记交叉校验；只有证据不足时才生成稳定 `workspace-<hash>` 与 `generic:existing-selena` 内部身份，用户仍不配置项目/Agent/Cluster 字段。新增 `docs/RESULT_TRUTH_CONTRACT.md`、`docs/AI_INTEGRATION_CONTRACT.md`、`docs/project-free-recognition.md`。代码提交 `fdeda44` 后，Linux 门禁发现 SDK 把可读 POSIX 本地路径误当中央路径，修复为可读根文件系统路径自动上传、独立挂载保持直读，并将硬编码 Windows 测试目录改为仓库相对路径，修复提交为 `edf8462`。Windows 专项 `189 passed`，服务器新 release `/home/hoz2wx/radar-sim-v1-edf8462` 专项 `189 passed`；`radar-sim-v1.service` 已切换并保持 `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`，active 且监听 `0.0.0.0:8877`。外部 Web/health/capabilities 均成功；SDK 实测列出 23 个任务，`job_0be20501b3a8` 返回 `outcome=failed`、`artifacts_available=true`、Manifest `failed`，失败归档 Range 下载 `206`；`job_6ba9d83a6cf4` 继续保持 Job/Diagnosis/Manifest `succeeded`。Windows 计划任务已恢复运行并以 light capability 重连；同 release 生成 147 文件一键连接包，`connect.cmd` 自动绑定 `http://10.190.171.44:8877`，安装脚本 `200`、包 Range 下载 `206`。未触发新的真实仿真。 |
 | 2026-07-22 | 一键连接、通用脚本识别与 Xpeng 构建卡死修复 | 本轮针对真实 `job_0be20501b3a8` 收敛：任务最初因 Windows 节点仍绑定 `127.0.0.1:8878` 而停在 10%，随后未登记 Xpeng 又被项目配置白名单阻断；修复为 Web/SDK 结构化 `waiting` 状态和“一键连接本机”，Linux 同源生成 `connect.cmd` 并自动绑定当前地址；未知代码仓改为脚本组合生成不含路径的内部 workspace ID，并由 Selena 脚本推导输出，不再要求 `config/projects/<name>`。真实任务已完成 resolve、环境检查和 32 个共享数据文件解析，编译进一步暴露软件包链路所需 Perl 未进入子进程 PATH、失败脚本末尾 `pause` 导致假卡住；现从用户所选脚本的有界邻域推导 Perl，自动发现本机 TCC Perl，仅向单次构建注入环境，并统一非交互 stdin。最终测试、部署和重试结果在本轮结束前补记。 |
 | 2026-07-22 | OD25 用户发布指南、产物定位与 Linux 部署 | 新增 `docs/OD25_USER_GUIDE.md` 和 build/existing 两份可导入 YAML；OD25 适配器登记 `apl/byd/tools/builder/cmake_build.bat` 作为软件包依赖/二次识别入口。修复 R2D2 `-B` 仅指向 build base 时遗漏 `full_DSP` 子树的问题；真实本机解析已定位 `D:/bydod25fr/byd/build/full_dsp/dc_tools/selena/core/RelWithDebInfo/selena.exe`（170,395,648 bytes），任意盘符双脚本识别回归已覆盖。Windows bootstrap 读取 health 的 `authentication_required`，当前可信内网无认证服务不再要求伪令牌。代码 `3e0e0ae` 已推送 `origin/codex/v1-existing-cluster` 并原子部署到 `10.190.171.44:8877`；切换前 running/queued 均为 0，服务器预检 40 passed，旧目录保留为 `.pre-3e0e0ae`。部署后 systemd enabled/active、外部 health/Web 200、build/existing 两份 OD25 YAML 均校验成功并路由 Cluster；历史 `job_6ba9d83a6cf4`、Manifest 仍为 200，结果 Range 下载仍为 206。 |
@@ -98,6 +99,16 @@
 | 2026-07-15 | V1 existing + Cluster 收敛 | 单 YAML + 单 SDK 方法；SDK/服务端双侧已有 Selena 导入、数据/配置资产准备、manifest role 解包、Cluster 提交/结果回收纵向门禁通过；聚焦 101 passed，目标服务器烟测 Pending |
 
 ## 4. 真实任务记录
+
+### 2026-07-24 - Xpeng 已有 Selena 复用、真实 Cluster 失败与 release936 验收
+
+- Goal: 不改用户原始 YAML、不重新编译，复用已登记的 Selena/Runtime/MatFilter，在 Cluster 触发一次真实仿真并以结果文件而非调度返回值判定成功；同时修复 Web 导入配置后误切换执行位置仍可直接提交的问题。
+- Input evidence: 用户 YAML SHA256 为 `dcf7b6b8fa9257135cfe847cd6bad9976fa7b4521d59264babf0e95573e92c4a`；复用 Bundle 为 `selena-bundle:sha256:cd049cb022813dc32639f46888b7ba264c2432aaac089ca5f3b97fda1a7f0746`。本地 Runtime XML 与 Bundle 中 Runtime checksum 相同，本地 MatFilter 与既有配置资产 checksum 相同。Bundle 记录的实际 branch 是 `release/2430`，YAML 期望 branch 是 `feature/2492`；该差异作为 `workspace_branch_mismatch` 证据保留，因用户明确选择复用已有产物而未触发编译。
+- Execution evidence: dry-run `job_5136eae6267e` succeeded 且所有 Stage 为 plan-only；真实 `job_47798df4e6cc` 跳过 `prepare_source/build_selena/register_artifact`，外部 Cluster durable job id 为 `10361`。32/32 仿真项均结束但 `successfull=0`，首条错误是 Runtime 缺少 `g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_port_ParallelLanes_in`；每项仍产生非空 `out.MF4`，共约 400MB。
+- Truth/result evidence: `collect_results` succeeded，`finalize_manifest` 按真实性合同失败；Job、Manifest 与 Diagnosis 一致为 failed，Diagnosis 同时给出 `artifacts_available=true`。失败产物已登记为 `result:sha256:2b8fdc7293bce154e2d23d4224115ad1ee0078f18dc6deca0b6bacd3d490f3de`，17,659,970-byte ZIP 的 Range 下载实测为 206。
+- Wrong-route incident: `job_bee6703caa11` 收到的最终规范明确是 `source=existing,target=local`，后端按显式用户选择绑定 Windows full 节点。它只执行了 existing Bundle 导入、环境检查并开始 19.8GB/32 MF4 数据校验；取消后下游 Stage 立即取消，但运行中的校验直到连接进程心跳过期仍未退出。经一次 `stale_after=300` 安全 reclaim，Stage 以 `AGENT_STALE` 结束，任务最终 failed；本地 `run_simulation` 从未启动。不得通过直接改数据库把该有证据的 failed 伪装为 cancelled。
+- Prevention and release: `e0f125e` 将“已有 Selena 文件夹”设为明确必填并说明必须包含 `Selena.exe` 和 DLL；`936682a` 在表单底部持续展示最终执行位置和 Selena 来源，导入 YAML 后改变执行位置会显示红色警告，提交时再弹出包含同样信息的确认框。专项测试 32 passed，JS 语法检查通过；正式 release `/home/hoz2wx/radar-sim-v1-936682a` active，PID `1647561`，`/api/v1/health` 正常。真实浏览器导入 Cluster YAML、切到本地、点击提交后已看到完整二次确认并选择取消；服务端任务数保持 26。
+- Remaining stability gate: 大文件发现/校验必须周期性检查取消信号；Windows 连接进程必须具备明确退出日志、非电池模式自动恢复和可观测的重启原因。该稳定性修复需独立测试验收，不得仅用“任务可 reclaim”替代。
 
 ### 2026-07-15 - 用户最终合同固化与 existing Selena 底座纠偏
 
