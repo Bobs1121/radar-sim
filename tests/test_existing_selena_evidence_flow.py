@@ -72,6 +72,26 @@ def test_web_keeps_optional_existing_workspace_evidence():
     assert "当前配置将从本地代码编译 Selena" in app
 
 
+def test_web_requires_final_target_and_source_confirmation_after_yaml_import():
+    root = Path(__file__).parents[1] / "radar_sim_web" / "static"
+    app = (root / "app.js").read_text(encoding="utf-8")
+    html = (root / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="finalExecutionSummary"' in html
+    assert "最终执行位置：自动（提交前确认）" in html
+    assert 'id="finalSelenaSummary"' in html
+    assert "Selena 来源：本地编译" in html
+    assert 'id="importSelectionWarning"' in html
+    assert "state.importedSelection = {" in app
+    assert "执行位置已从" in app
+    assert "Selena 来源已从" in app
+    assert "注意：导入 YAML 后" in app
+    assert "window.confirm(" in app
+    assert "confirmSubmission(config, validation)" in app
+    assert "已取消提交，配置保持不变" in app
+    assert 'target: selectedValue("target") || "auto"' in app
+
+
 def test_sdk_passes_existing_workspace_evidence_to_local_import(tmp_path, monkeypatch):
     existing = tmp_path / "Selena"
     existing.mkdir()

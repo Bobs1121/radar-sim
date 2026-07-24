@@ -160,8 +160,10 @@
           <div id="formError" class="notice error" role="alert" hidden></div>
           <div class="submit-bar">
             <div>
-              <strong id="routeSummary">系统将自动选择可用执行路径</strong>
-              <span>提交后可以在任务中心查看环境检查、编译、上传和仿真进度。</span>
+              <strong id="finalExecutionSummary">最终执行位置：自动（提交前确认）</strong>
+              <span id="finalSelenaSummary">Selena 来源：本地编译</span>
+              <span id="routeSummary">系统将自动选择可用执行路径</span>
+              <span id="importSelectionWarning" class="notice error" role="alert" hidden></span>
             </div>
             <button type="button" class="button secondary" id="validateSpec">检查配置</button>
             <button type="submit" class="button primary" id="submitJob">提交任务</button>

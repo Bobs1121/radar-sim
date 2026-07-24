@@ -17,6 +17,8 @@ const state = {
   dataFolderFiles: [],
   uploadedDataPath: "",
   selectedFolderLabel: "",
+  importedSelection: null,
+  validatedTarget: "",
 };
 
 const byId = (id) => document.getElementById(id);
@@ -308,17 +310,66 @@ function updateConditionalFields() {
 function updateRouteSummary() {
   const target = selectedValue("target") || "auto";
   const source = byId("selenaSource").value;
+  const finalTarget = state.validatedTarget || (target === "auto" ? "" : target);
   const targetText = { auto: "自动选择本地或 Cluster", local: "在完整 Windows 节点本地仿真", cluster: "由 Cluster 执行仿真" }[target];
   const selenaText = source === "build"
     ? (byId("selenaBranch").value.trim() ? "校验期望分支并编译当前工作区" : "编译当前工作区修改")
     : "使用已有 Selena 文件夹";
+  byId("finalExecutionSummary").textContent = `最终执行位置：${{
+    local: "本机",
+    cluster: "Cluster",
+  }[finalTarget] || "自动（提交前确认）"}`;
+  byId("finalSelenaSummary").textContent = `Selena 来源：${source === "existing" ? "已有产物" : "本地编译"}`;
   byId("routeSummary").textContent = `${selenaText}，${targetText}`;
+  updateImportedSelectionWarning(target, source);
+}
+
+function updateImportedSelectionWarning(target, source) {
+  const warning = byId("importSelectionWarning");
+  const imported = state.importedSelection;
+  const changes = [];
+  if (imported && target !== imported.target) {
+    changes.push(`执行位置已从 ${submissionTargetName(imported.target)} 改为 ${submissionTargetName(target)}`);
+  }
+  if (imported && source !== imported.source) {
+    changes.push(`Selena 来源已从 ${submissionSourceName(imported.source)} 改为 ${submissionSourceName(source)}`);
+  }
+  warning.hidden = changes.length === 0;
+  warning.textContent = changes.length ? `注意：导入 YAML 后，${changes.join("；")}。提交前请确认。` : "";
+}
+
+function submissionTargetName(value) {
+  return { auto: "自动", local: "本机", cluster: "Cluster" }[value] || value;
+}
+
+function submissionSourceName(value) {
+  return value === "existing" ? "已有产物" : "本地编译";
+}
+
+function invalidateValidatedTarget() {
+  state.validatedTarget = "";
+  updateRouteSummary();
+}
+
+function confirmSubmission(config, validation) {
+  const selectedTarget = validation?.execution?.selected_target || config.simulation?.target || "auto";
+  state.validatedTarget = selectedTarget;
+  updateRouteSummary();
+  const changedWarning = byId("importSelectionWarning").hidden
+    ? ""
+    : `\n${byId("importSelectionWarning").textContent}`;
+  return window.confirm(
+    `请确认本次仿真任务：\n最终执行位置：${submissionTargetName(selectedTarget)}\n`
+    + `Selena 来源：${submissionSourceName(config.selena?.source)}${changedWarning}`,
+  );
 }
 
 function renderExecutionPlan(result) {
   const stages = Array.isArray(result?.execution_plan) ? result.execution_plan : [];
   if (!stages.length) return;
   const target = result?.execution?.selected_target;
+  state.validatedTarget = target || "";
+  updateRouteSummary();
   const route = target === "local" ? "Windows 本地" : target === "cluster" ? "Cluster" : "待调度";
   byId("planStatus").textContent = `配置有效，当前将使用 ${route} 路径。`;
   const list = byId("planStages");
@@ -376,7 +427,12 @@ async function submitCurrentSpec(event) {
   try {
     await ensureSelectedDataUploaded();
     const config = runConfigFromForm();
-    await api("/run-configs/validate", { method: "POST", json: config });
+    const validation = await api("/run-configs/validate", { method: "POST", json: config });
+    renderExecutionPlan(validation);
+    if (!confirmSubmission(config, validation)) {
+      showToast("已取消提交，配置保持不变");
+      return;
+    }
     const job = await api("/run-jobs", {
       method: "POST",
       headers: { "Idempotency-Key": crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` },
@@ -399,6 +455,11 @@ async function importYamlFile(file) {
   try {
     const yaml = await file.text();
     const result = await api("/run-configs/import", { method: "POST", json: { yaml_content: yaml } });
+    state.importedSelection = {
+      target: result.config?.simulation?.target || "auto",
+      source: result.config?.selena?.source || "build",
+    };
+    state.validatedTarget = "";
     applyRunConfig(result.config);
     showToast(
       result.config?.selena?.source === "existing"
@@ -842,6 +903,8 @@ function renderStage(job, stage) {
 }
 
 function continueWithDataPath(spec) {
+  state.importedSelection = null;
+  state.validatedTarget = "";
   applyRunConfig(spec || {});
   switchView("create");
   byId("dataPath").focus();
@@ -978,14 +1041,16 @@ function schedulePolling() {
 async function initialize() {
   qa(".nav-item").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   qa('input[name="target"]').forEach((input) => input.addEventListener("change", () => {
-    updateConditionalFields(); updateRouteSummary();
+    updateConditionalFields(); invalidateValidatedTarget();
   }));
-  byId("selenaSource").addEventListener("change", () => { updateConditionalFields(); updateRouteSummary(); });
+  byId("selenaSource").addEventListener("change", () => { updateConditionalFields(); invalidateValidatedTarget(); });
   byId("existingPath").addEventListener("input", updateRouteSummary);
   byId("selenaBranch").addEventListener("input", updateRouteSummary);
   byId("chooseDataFolder").addEventListener("click", () => byId("dataFolderInput").click());
   byId("dataFolderInput").addEventListener("change", (event) => chooseDataFolder(event.target.files));
   byId("dataPath").addEventListener("input", () => {
+    state.validatedTarget = "";
+    updateRouteSummary();
     const value = byId("dataPath").value.trim();
     if (value !== state.selectedFolderLabel && value !== state.uploadedDataPath) {
       state.dataFolderFiles = [];
