@@ -122,15 +122,15 @@
                 <small>本地编译时必填；使用已有 Selena 时可用于交叉识别产品。</small>
               </label>
             </div>
-            <div id="existingFields" hidden>
+            <div id="existingFields" class="field-grid one" hidden>
               <label class="field">
-                <span>已有 Selena 文件夹</span>
+                <span>Selena 产物文件夹（必填）</span>
                 <input id="existingPath" name="existingPath" placeholder="D:/runtime/Selena 或 //server/share/Selena">
-                <small>填写包含 Selena.exe 和依赖 DLL 的文件夹；系统自动检查并按执行位置传输。</small>
+                <small>选择“使用已有 Selena 文件夹”后必填。请选择包含 Selena.exe 和依赖 DLL 的产物文件夹；系统自动检查并按执行位置传输。</small>
               </label>
             </div>
             <label class="field">
-              <span>Runtime XML</span>
+              <span>Runtime XML（必填）</span>
               <input id="runtimeXml" name="runtimeXml" placeholder="D:/runtime/Runtime.xml" required>
               <small>Runtime 必须与编译产物或已有 Selena 文件夹匹配。</small>
             </label>

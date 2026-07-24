@@ -36,6 +36,25 @@ def test_existing_evidence_roundtrips_without_enabling_build_stages():
     assert stages["build_selena"].initial_status == "skipped"
 
 
+def test_existing_minimal_config_keeps_required_folder_and_runtime():
+    raw = _existing_with_evidence()
+    for field in (
+        "code_path",
+        "branch",
+        "selena_build_script",
+        "package_build_script",
+    ):
+        raw["selena"].pop(field)
+
+    config = UserRunConfig.from_dict(raw)
+
+    assert config.to_dict()["selena"] == {
+        "source": "existing",
+        "existing_path": "D:/runtime/Selena",
+        "runtime_xml": "D:/runtime/Runtime.xml",
+    }
+
+
 def test_web_keeps_optional_existing_workspace_evidence():
     root = Path(__file__).parents[1] / "radar_sim_web" / "static"
     app = (root / "app.js").read_text(encoding="utf-8")
@@ -45,6 +64,12 @@ def test_web_keeps_optional_existing_workspace_evidence():
     assert "buildFields\").hidden = false" in app
     assert "以下代码仓和脚本为可选识别证据" in app
     assert "使用已有 Selena 时可选" in html
+    assert "Selena 产物文件夹（必填）" in html
+    assert "Runtime XML（必填）" in html
+    assert 'byId("existingFields").hidden = !usingExisting' in app
+    assert 'byId("existingPath").required = usingExisting' in app
+    assert "请填写 Selena 产物文件夹" in app
+    assert "当前配置将从本地代码编译 Selena" in app
 
 
 def test_sdk_passes_existing_workspace_evidence_to_local_import(tmp_path, monkeypatch):

@@ -173,7 +173,10 @@ function runConfigFromForm() {
   if (source === "build" && !codePath) throw new Error("本地编译需要填写代码路径");
   if (source === "build" && !selenaBuildScript) throw new Error("本地编译需要填写 Selena 编译脚本");
   if (source === "build" && !packageBuildScript) throw new Error("本地编译需要填写软件包编译脚本");
-  if (source === "existing" && !existingPath) throw new Error("请选择已有 Selena 文件夹");
+  if (source === "existing" && !existingPath) {
+    byId("existingPath").setAttribute("aria-invalid", "true");
+    throw new Error("请填写 Selena 产物文件夹");
+  }
   if (!runtimeXml) throw new Error("请选择与 Selena 匹配的 Runtime XML");
   if (!matFilter) throw new Error("请选择 MatFilter 配置文件");
 
@@ -288,8 +291,12 @@ async function ensureSelectedDataUploaded() {
 
 function updateConditionalFields() {
   const source = byId("selenaSource").value;
+  const usingExisting = source === "existing";
   byId("buildFields").hidden = false;
-  byId("existingFields").hidden = source !== "existing";
+  byId("existingFields").hidden = !usingExisting;
+  byId("existingPath").required = usingExisting;
+  byId("existingPath").setAttribute("aria-required", String(usingExisting));
+  if (!usingExisting) byId("existingPath").removeAttribute("aria-invalid");
   for (const id of ["codePath", "selenaBuildScript", "packageBuildScript"]) {
     byId(id).required = source === "build";
   }
@@ -393,7 +400,11 @@ async function importYamlFile(file) {
     const yaml = await file.text();
     const result = await api("/run-configs/import", { method: "POST", json: { yaml_content: yaml } });
     applyRunConfig(result.config);
-    showToast("YAML 已导入并完成规范化");
+    showToast(
+      result.config?.selena?.source === "existing"
+        ? "YAML 已导入：请确认 Selena 产物文件夹和 Runtime XML"
+        : "YAML 已导入：当前配置将从本地代码编译 Selena",
+    );
   } catch (error) {
     showFormError(error);
   } finally {
