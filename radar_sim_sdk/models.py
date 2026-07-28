@@ -189,6 +189,7 @@ class RunConfigValidationResult:
     fingerprint: str
     environment_plan: dict[str, Any] = field(default_factory=dict)
     execution: dict[str, Any] = field(default_factory=dict)
+    readiness: dict[str, Any] = field(default_factory=dict)
     execution_plan: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
@@ -199,6 +200,7 @@ class RunConfigValidationResult:
             fingerprint=str(data.get("fingerprint") or ""),
             environment_plan=dict(data.get("environment_plan") or {}),
             execution=dict(data.get("execution") or {}),
+            readiness=dict(data.get("readiness") or {}),
             execution_plan=[dict(item) for item in data.get("execution_plan") or []],
         )
 

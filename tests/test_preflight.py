@@ -212,6 +212,202 @@ def test_signal_contract_missing_signal_hard_fails(base_config, tmp_path, monkey
 
 
 # ---------------------------------------------------------------------------
+# Runtime.xml DataPlayer -> MF4 contract (V1 strict path)
+# ---------------------------------------------------------------------------
+
+def _write_runtime_dataplayer(path: Path, port: str) -> None:
+    path.write_text(
+        "<selena><outport runnable='DataPlayer' port='" + port + "' /></selena>",
+        encoding="utf-8",
+    )
+
+
+def test_runtime_data_signal_contract_warns_but_allows_missing_dataplayer_port(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime.xml"
+    mf4 = tmp_path / "input.MF4"
+    _write_runtime_dataplayer(runtime, "g_DataPlayer_Fcta_ParallelLanes")
+    mf4.write_bytes(b"MF4")
+    monkeypatch.setattr(preflight, "_mf4_channel_names", lambda _path: {"Other"})
+
+    result = preflight.check_runtime_data_signal_contract(
+        {"simulation": {"runtime_xml": str(runtime), "input_mf4": str(mf4)}}
+    )
+
+    assert result.passed is True
+    assert result.level == "warning"
+    assert "DataPlayer" in result.detail
+    assert "g_DataPlayer_Fcta_ParallelLanes" in result.detail
+
+
+def test_runtime_data_signal_contract_requires_real_header_reader(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime.xml"
+    mf4 = tmp_path / "input.MF4"
+    _write_runtime_dataplayer(runtime, "Input_A")
+    mf4.write_bytes(b"MF4")
+    monkeypatch.setattr(preflight, "_mf4_channel_names", lambda _path: None)
+
+    result = preflight.assert_runtime_data_signal_contract(
+        tmp_path, preflight.runtime_data_player_ports(str(runtime))
+    )
+
+    assert result.passed is True
+    assert result.level == "warning"
+    assert "未能读取有效通道目录" in result.detail
+
+
+def test_runtime_data_signal_contract_malformed_runtime_is_warning_only(tmp_path):
+    runtime = tmp_path / "runtime.xml"
+    mf4 = tmp_path / "input.MF4"
+    runtime.write_text("<selena><connection>", encoding="utf-8")
+    mf4.write_bytes(b"MF4")
+
+    result = preflight.check_runtime_data_signal_contract(
+        {"simulation": {"runtime_xml": str(runtime), "input_mf4": str(mf4)}}
+    )
+
+    assert result.passed is True
+    assert result.level == "warning"
+    assert "未验证" in result.detail
+
+
+def test_runtime_data_signal_contract_scans_other_files_after_one_unreadable_header(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime.xml"
+    first = tmp_path / "broken.MF4"
+    second = tmp_path / "readable.MF4"
+    _write_runtime_dataplayer(runtime, "Input_A")
+    first.write_bytes(b"bad")
+    second.write_bytes(b"mf4")
+    calls: list[str] = []
+
+    def channels(path: str):
+        calls.append(Path(path).name)
+        return None if Path(path).name == "broken.MF4" else {"Other"}
+
+    monkeypatch.setattr(preflight, "_mf4_channel_names", channels)
+    result, code = preflight._runtime_data_signal_check(tmp_path, ["Input_A"])
+
+    assert calls == ["broken.MF4", "readable.MF4"]
+    assert code == "runtime_data_signal_missing"
+    assert "已验证读取 1 个 MF4" in result.detail
+    assert "另有 1 个 MF4 未能读取有效通道目录" in result.detail
+    assert "Input_A" in result.detail
+
+
+def test_runtime_data_player_port_exact_match_records_method():
+    match = preflight.match_runtime_data_player_port(
+        "g_Active_m_Input_A", {"g_Active_m_Input_A", "Other"}
+    )
+
+    assert match.method == "exact"
+    assert match.candidates == ("g_Active_m_Input_A",)
+
+
+def test_runtime_data_player_port_normalized_unique_match_is_structural():
+    match = preflight.match_runtime_data_player_port(
+        "g_Active_m_Input_A",
+        {
+            "_g_Active.Payload._._m_Input_A.TBase._._m_value",
+            "_g_Other.Payload._._m_Input_A.TBase._._m_value",
+        },
+    )
+
+    assert match.method == "normalized_unique"
+    assert match.candidates == ("g_Active.Payload._._m_Input_A",)
+
+
+def test_runtime_data_player_port_multiple_normalized_endpoints_are_ambiguous(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime.xml"
+    mf4 = tmp_path / "input.MF4"
+    _write_runtime_dataplayer(runtime, "g_Active_m_Input_A")
+    mf4.write_bytes(b"MF4")
+    monkeypatch.setattr(
+        preflight,
+        "_mf4_channel_names",
+        lambda _path: {
+            "_g_Active.Left._m_Input_A.TBase",
+            "_g_Active.Right._m_Input_A.TBase",
+        },
+    )
+
+    result, code = preflight._runtime_data_signal_check(
+        tmp_path, preflight.runtime_data_player_ports(str(runtime))
+    )
+
+    assert code == "runtime_data_signal_ambiguous"
+    assert result.passed is True
+    assert result.level == "warning"
+    assert "2 个候选" in result.detail
+
+
+def test_runtime_data_ports_only_cover_scheduled_runnable_closure(tmp_path):
+    runtime = tmp_path / "runtime.xml"
+    runtime.write_text(
+        "<selena>"
+        "<job task='t'><runnable name='g_Active' /></job>"
+        "<connection><outport runnable='DataPlayer' port='g_Active_m_Input' />"
+        "<inport runnable='g_Active' port='m_Input' /></connection>"
+        "<connection><outport runnable='DataPlayer' port='g_Inactive_m_Missing' />"
+        "<inport runnable='g_Inactive' port='m_Missing' /></connection>"
+        "</selena>",
+        encoding="utf-8",
+    )
+
+    assert preflight.runtime_active_runnables(str(runtime)) == {"g_Active"}
+    assert preflight.runtime_data_player_ports(str(runtime)) == ["g_Active_m_Input"]
+
+
+def test_runtime_data_ports_include_upstream_runnable_in_scheduled_closure(tmp_path):
+    runtime = tmp_path / "runtime.xml"
+    runtime.write_text(
+        "<selena>"
+        "<job task='t'><runnable name='g_Active' /></job>"
+        "<connection><outport runnable='g_Upstream' port='m_Output' />"
+        "<inport runnable='g_Active' port='m_Input' /></connection>"
+        "<connection><outport runnable='DataPlayer' port='g_Upstream_m_Source' />"
+        "<inport runnable='g_Upstream' port='m_Source' /></connection>"
+        "</selena>",
+        encoding="utf-8",
+    )
+
+    assert preflight.runtime_active_runnables(str(runtime)) == {"g_Active", "g_Upstream"}
+    assert preflight.runtime_data_player_ports(str(runtime)) == ["g_Upstream_m_Source"]
+
+
+def test_runtime_data_signal_contract_does_not_treat_empty_catalog_as_missing(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime.xml"
+    first = tmp_path / "one.MF4"
+    second = tmp_path / "two.MF4"
+    _write_runtime_dataplayer(runtime, "Input_A")
+    first.write_bytes(b"mf4")
+    second.write_bytes(b"mf4")
+    monkeypatch.setattr(preflight, "_mf4_channel_names", lambda _path: set())
+
+    result, code = preflight._runtime_data_signal_check(tmp_path, ["Input_A"])
+
+    assert code == "runtime_data_signal_unverified"
+    assert result.passed is True
+    assert result.level == "warning"
+    assert "2 个 MF4" in result.detail
+    assert "Input_A" not in result.detail
+
+
+def test_strict_preflight_adds_runtime_data_contract(tmp_path, base_config, monkeypatch):
+    runtime = tmp_path / "runtime.xml"
+    mf4 = tmp_path / "input.MF4"
+    _write_runtime_dataplayer(runtime, "Input_A")
+    mf4.write_bytes(b"MF4")
+    monkeypatch.setattr(preflight, "_mf4_channel_names", lambda _path: {"Input_A"})
+    monkeypatch.setattr("core.config.load_signals", lambda project: [])
+    cfg = dict(base_config)
+    cfg["simulation"] = {"runtime_xml": str(runtime), "input_mf4": str(mf4)}
+
+    result = preflight.run_preflight(cfg, strict_runtime_data_signals=True)
+
+    assert result.ok is True
+    assert [item.name for item in result.checks][-1] == "runtime_data_signal_contract"
+
+
+# ---------------------------------------------------------------------------
 # Aggregate
 # ---------------------------------------------------------------------------
 

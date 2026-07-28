@@ -415,8 +415,12 @@ async function validateCurrentSpec() {
     const config = runConfigFromForm();
     const result = await api("/run-configs/validate", { method: "POST", json: config });
     renderExecutionPlan(result);
-    byId("formError").className = "notice success";
-    byId("formError").textContent = `配置检查通过，指纹 ${result.fingerprint.slice(0, 19)}...`;
+    const readiness = result.readiness || { can_submit: true, blockers: [] };
+    const blockers = Array.isArray(readiness.blockers) ? readiness.blockers : [];
+    byId("formError").className = readiness.can_submit ? "notice success" : "notice error";
+    byId("formError").textContent = readiness.can_submit
+      ? `配置检查通过，指纹 ${result.fingerprint.slice(0, 19)}...`
+      : blockers.map((item) => `${item.message}${item.action ? ` ${item.action}` : ""}`).join("\n");
     byId("formError").hidden = false;
     return result;
   } catch (error) {
@@ -436,6 +440,11 @@ async function submitCurrentSpec(event) {
     const config = runConfigFromForm();
     const validation = await api("/run-configs/validate", { method: "POST", json: config });
     renderExecutionPlan(validation);
+    if (validation.readiness && validation.readiness.can_submit === false) {
+      const blockers = Array.isArray(validation.readiness.blockers) ? validation.readiness.blockers : [];
+      throw new Error(blockers.map((item) => `${item.message}${item.action ? ` ${item.action}` : ""}`).join("\n")
+        || "当前环境尚未就绪，请先按页面提示完成连接或恢复服务。");
+    }
     if (!confirmSubmission(config, validation)) {
       showToast("已取消提交，配置保持不变");
       return;

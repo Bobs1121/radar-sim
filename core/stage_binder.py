@@ -65,6 +65,11 @@ def bind_run_config_environment(
     asset_bindings = dict(result.get("asset_bindings") or {})
     config_assets = dict(result.get("config_assets") or {})
     selected_data_binding_id = str(result.get("data_binding_id") or "").strip()
+    runtime_data_player_signals = [
+        str(item).strip()
+        for item in result.get("runtime_data_player_signals") or []
+        if str(item).strip()
+    ]
     selena_script_ref = str(result.get("selena_build_script_ref") or "").strip()
     package_script_ref = str(result.get("package_build_script_ref") or "").strip()
     branch_repo_ref = str(result.get("branch_repo_ref") or "").strip()
@@ -147,6 +152,7 @@ def bind_run_config_environment(
                     "data_path": data_path,
                     "data_binding_id": binding,
                     "required_signals": [],
+                    "runtime_data_player_signals": runtime_data_player_signals,
                 },
             )
     return control.bind_stage_to_agent(
@@ -261,6 +267,11 @@ def bind_existing_runtime_resolution(
     if not environment or environment.get("status") != "queued":
         raise StageBindingError("existing Selena environment Stage is unavailable")
     data_binding_id = str(recognition.get("data_binding_id") or "")
+    runtime_data_player_signals = [
+        str(item).strip()
+        for item in recognition.get("runtime_data_player_signals") or []
+        if str(item).strip()
+    ]
     if target == "cluster":
         bound = control.bind_stage_to_agent(
             str(environment["stage_id"]),
@@ -291,6 +302,7 @@ def bind_existing_runtime_resolution(
                     "data_path": str((spec.get("data") or {}).get("path") or ""),
                     "data_binding_id": data_binding_id,
                     "required_signals": [],
+                    "runtime_data_player_signals": runtime_data_player_signals,
                 },
             )
         return bound

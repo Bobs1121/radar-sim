@@ -110,6 +110,18 @@ class AgentDataLeaseStore:
                 raise
         try:
             source = bindings.authorize_path(project=project, binding_id=binding_id, data_path=data_path)
+            runtime_signals = [
+                str(item).strip()
+                for item in payload.get("runtime_data_player_signals") or []
+                if str(item).strip()
+            ]
+            if runtime_signals:
+                # Do this before checksumming or uploading the MF4 set.  A
+                # bounded byte scan cannot prove a channel is absent, whereas
+                # the Runtime.xml DataPlayer contract must be exact.
+                from core.preflight import assert_runtime_data_signal_contract
+
+                assert_runtime_data_signal_contract(source, runtime_signals)
             files = discover_dataset_files(
                 source,
                 payload.get("required_signals") or (),
@@ -119,6 +131,14 @@ class AgentDataLeaseStore:
         except DatasetDiscoveryCancelled:
             raise
         except Exception as exc:
+            # Preserve the stable, path-free Runtime/MF4 diagnostic for the
+            # task centre. Other discovery failures remain intentionally
+            # generic because their original exceptions can contain a local
+            # Windows path.
+            from core.preflight import RuntimeDataSignalContractError
+
+            if isinstance(exc, RuntimeDataSignalContractError):
+                raise
             raise AgentDataLeaseError("authorized data discovery failed") from exc
         lease_id = "data-lease:sha256:" + uuid.uuid4().hex
         now = float(self._now_fn())

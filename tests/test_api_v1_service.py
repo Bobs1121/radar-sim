@@ -424,6 +424,42 @@ def test_project_free_run_config_validate_and_submit_waits_for_node_recognition(
     assert api.list_jobs("alice")["count"] == 1
 
 
+def test_run_config_readiness_blocks_known_infrastructure_gaps_without_paths(tmp_path):
+    control = ControlService(tmp_path / "readiness.db", now_fn=lambda: 100)
+    api = ApiV1Service(control_service_factory=lambda _owner: control, now_fn=lambda: 100)
+
+    blocked = api.validate_user_run_config(run_config_dict(), owner="alice")["readiness"]
+    assert blocked["status"] == "blocked"
+    assert blocked["can_submit"] is False
+    assert {item["code"] for item in blocked["blockers"]} >= {
+        "cluster_service_unavailable",
+        "windows_build_unavailable",
+    }
+    assert "D:/" not in json.dumps(blocked)
+    assert "agent_id" not in json.dumps(blocked)
+
+    control.register_agent(
+        "Windows build", agent_id="win-build-1", capabilities=["build.selena"],
+        metadata={"node_kind": "windows_agent"},
+    )
+    control.register_agent(
+        "Linux executor", agent_id="linux-1", capabilities=["cluster.prepare"],
+        metadata={"node_kind": "linux_executor"},
+    )
+    control.register_agent(
+        "Cluster gateway", agent_id="gateway-1", capabilities=["simulation.cluster"],
+        metadata={"node_kind": "platform_gateway"},
+    )
+    ready = api.validate_user_run_config(run_config_dict(), owner="alice")["readiness"]
+    assert ready == {"status": "ready", "can_submit": True, "blockers": [], "notices": [
+        {
+            "code": "shared_path_will_be_checked",
+            "message": "共享数据路径将在 Linux 调度节点按部署映射校验；校验失败时不会启动仿真。",
+            "action": "确认该共享路径已由部署方挂载到 Linux 服务。",
+        }
+    ]}
+
+
 def test_run_config_job_reports_path_free_windows_connection_wait(tmp_path):
     api, services = make_api(tmp_path)
     job = api.submit_user_run("alice", config_payload=run_config_dict())

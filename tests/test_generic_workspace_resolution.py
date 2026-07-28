@@ -1,11 +1,14 @@
 import re
 
+import pytest
+
 from cli import agent as agent_module
 from core.agent_asset_bindings import AgentAssetBindingStore
 from core.agent_bindings import AgentBindingStore
 from core.agent_build_stage import prepare_selena_build
 from core.repo import WorkspaceFingerprint
 from core.workspace_recognizer import WorkspaceRecognizer
+from core.config import load_config
 
 
 def _make_unknown_workspace(tmp_path):
@@ -65,6 +68,20 @@ def test_unknown_workspace_derives_stable_internal_identity_and_output(tmp_path)
     assert first.output_dir.casefold() == str(
         workspace / "ip_dc" / "build" / "CUSTOM_OD25"
     ).replace("\\", "/").casefold()
+
+
+def test_unknown_workspace_identity_never_falls_back_to_legacy_project_config(tmp_path):
+    workspace, selena_script, package_script = _make_unknown_workspace(tmp_path)
+    recognizer = WorkspaceRecognizer(tmp_path / "no-projects")
+    (tmp_path / "no-projects").mkdir()
+    outcome = recognizer.recognize(
+        str(workspace),
+        selena_build_script=str(selena_script),
+        package_build_script=str(package_script),
+    )
+
+    with pytest.raises(FileNotFoundError, match="internal execution adapter"):
+        load_config(outcome.internal_project)
 
 
 def test_agent_auto_configures_unknown_workspace_without_project_registration(

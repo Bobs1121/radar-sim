@@ -1,0 +1,48 @@
+# Internal adapter for Xpeng OD25 Selena workspaces.
+#
+# This file is deliberately not part of the user YAML.  The Windows resolver
+# recognizes the selected Selena/package build scripts and uses this adapter
+# only to obtain safe Cluster defaults and a stable internal execution key.
+# All executable paths are rebased from the user's selected checkout.
+
+project:
+  name: "XPENG_OD25"
+  platform: "gen5_selena"
+
+repos:
+  outer_repo_root: "D:/pl-xpeng"
+  inner_repo_root: "D:/pl-xpeng/apl/base/bindings/xpeng"
+
+build:
+  selena_build_script: "D:/pl-xpeng/apl/base/bindings/xpeng/selena/jenkins_selena_build.bat"
+  # The package script is inspected by the Windows connection component for
+  # toolchain requirements; it is not exposed as a project selector.
+  env_build_script: "D:/pl-xpeng/apl/base/bindings/xpeng/buildscripts/testbuild_BaseC0SS_SINGLE.bat"
+  build_config: "ROS_PER_SIT_RPM_FCT_RECR"
+  build_output: "D:/pl-xpeng/ip_dc/build/ROS_PER_SIT_RPM_FCT_RECR"
+  script_args_template: []
+
+# These Cluster settings are the same deployed Radar/PSS2 route already used
+# by the successful in-service OD25 executions. Linux mount mapping and any
+# site-specific credentials stay in deployment.yaml, never in user input.
+cluster:
+  workspace_root: "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Isilon3\\Cluster"
+  software_path: "\\\\szhradar01\\_CLUSTER_SOFTWARE"
+  project_folder: "radar-sim"
+  group: "Radar"
+  subgroup: "PSS2"
+  timeout_min: 120
+  copy_data: false
+  copy_selena: false
+  # Do not inherit another product's static channel contract. The selected
+  # Runtime.xml contributes the actual DataPlayer inputs at preflight time.
+  required_input_signals: []
+
+simulation:
+  source: "RadarFC"
+  auto_detect_radar: false
+  nogui: true
+  disable_sequence_check: false
+  enable_multibuffer_border: true
+  enable_doorkeeper: true
+  max_duration_per_file_sec: 600

@@ -238,6 +238,12 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
     """Check only central/Gateway prerequisites; Linux never checks build tools."""
     bundle = _bundle(context, job)
     project = bundle.internal_project
+    if project.startswith("workspace-"):
+        raise ClusterStageExecutionError(
+            "未能从所选代码和脚本确定可用的仿真适配，系统不会套用其他产品的默认配置。",
+            code="PROJECT_ADAPTER_UNAVAILABLE",
+            actions=({"type": "fix_configuration", "label": "确认代码路径、Selena 编译脚本和软件包编译脚本"},),
+        )
     config = context.config_loader(project)
     from core.cluster import check_cluster_environment
 
@@ -328,9 +334,19 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     _apply_existing_cluster_profile_defaults(config, job)
 
     from core.preflight import run_preflight
+    # Runtime/MF4 inspection records compatibility evidence for the task
+    # centre. It is deliberately non-blocking: a static MF4 catalog cannot
+    # model every generated DataPlayer representation. Selena/Cluster result
+    # collection remains the source of truth for execution success.
+    config["_strict_runtime_data_signals"] = True
     preflight = run_preflight(config)
     if not preflight.ok:
-        raise ClusterStageExecutionError("Preflight compatibility validation failed")
+        detail = next((item.detail for item in preflight.checks if not item.passed), "")
+        raise ClusterStageExecutionError(
+            detail or "仿真前兼容性校验未通过，请根据修复建议调整配置后重试。",
+            code="PREFLIGHT_COMPATIBILITY_FAILED",
+            actions=({"type": "fix_configuration", "label": "修正 Runtime XML、数据或 Selena 后重试"},),
+        )
 
     from core.cluster import prepare_cluster_job
     package = prepare_cluster_job(
@@ -359,7 +375,12 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         "preflight": {
             "ok": True,
             "checks": [
-                {"name": item.name, "level": item.level, "passed": bool(item.passed)}
+                {
+                    "name": item.name,
+                    "level": item.level,
+                    "passed": bool(item.passed),
+                    "detail": item.detail,
+                }
                 for item in preflight.checks
             ],
         },

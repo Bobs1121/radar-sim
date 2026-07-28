@@ -74,3 +74,26 @@ def test_lease_rejects_path_outside_bound_root(tmp_path: Path):
             stage_id="stage_data",
             attempt=1,
         )
+
+
+def test_agent_records_runtime_dataplayer_mismatch_without_blocking_upload_lease(tmp_path: Path, monkeypatch):
+    root = tmp_path / "data"
+    root.mkdir()
+    (root / "a.MF4").write_bytes(b"mf4")
+    bindings = AgentDataBindingStore(tmp_path / "bindings.db")
+    binding = bindings.register(project="xpengod25", root_path=root)
+    monkeypatch.setattr("core.preflight._mf4_channel_names", lambda _path: {"Other"})
+
+    lease = AgentDataLeaseStore(tmp_path / "leases.db").create(
+        {
+            "project": "xpengod25",
+            "data_binding_id": binding.binding_id,
+            "data_path": str(root),
+            "runtime_data_player_signals": ["DataPlayer_FCTA_Input"],
+        },
+        bindings,
+        stage_id="stage_data",
+        attempt=1,
+    )
+
+    assert lease.files[0].relative_path == "a.MF4"

@@ -162,6 +162,7 @@ class ApiV1Service:
         config = self._parse_user_run_config(config_payload)
         plan = plan_user_run_stages(config)
         selected_target, route_reason = self._select_user_execution_target(owner, config)
+        readiness = self._user_run_readiness(owner, config, selected_target)
         return {
             "valid": True,
             "config": config.to_dict(),
@@ -172,6 +173,11 @@ class ApiV1Service:
                 "selected_target": selected_target,
                 "reason": route_reason,
             },
+            # A syntactically valid YAML is not necessarily runnable on the
+            # current control plane. Keep the distinction explicit and
+            # path-free so Web and SDK clients do not submit a job destined to
+            # wait/fail for a known infrastructure reason.
+            "readiness": readiness,
             "execution_plan": [
                 {
                     "stage_type": stage.stage_type,
@@ -180,6 +186,82 @@ class ApiV1Service:
                 }
                 for stage in plan.stages
             ],
+        }
+
+    def _user_run_readiness(
+        self,
+        owner: str,
+        config: UserRunConfig,
+        selected_target: str,
+    ) -> dict[str, Any]:
+        """Return submit-time capability guidance without exposing internals.
+
+        This checks only information the Linux control plane can know safely:
+        registered execution roles and whether a user input inherently needs a
+        connected Windows computer. It never serializes agent IDs, local paths
+        or the internally recognized product adapter.
+        """
+        capabilities = self.execution_capabilities(self._owner(owner))["capabilities"]
+        blockers: list[dict[str, str]] = []
+        notices: list[dict[str, str]] = []
+
+        def block(code: str, message: str, action: str) -> None:
+            blockers.append({"code": code, "message": message, "action": action})
+
+        has_windows_build = bool(
+            capabilities["windows_light"]["available"]
+            or capabilities["windows_full"]["available"]
+        )
+        if selected_target == "cluster" and not capabilities["cluster"]["available"]:
+            block(
+                "cluster_service_unavailable",
+                "Linux 服务当前未连接到 Cluster 调度组件，暂不能提交云端仿真。",
+                "请等待服务恢复，或联系部署方检查 Linux 调度与 Cluster 网关。",
+            )
+        if selected_target == "local" and not capabilities["windows_full"]["available"]:
+            block(
+                "windows_local_simulation_unavailable",
+                "本地仿真需要已连接的完整 Windows 运行环境。",
+                "在这台电脑完成一键连接，或将执行位置改为 Cluster。",
+            )
+        if config.selena.source == "build" and not has_windows_build:
+            block(
+                "windows_build_unavailable",
+                "本地编译需要已连接的 Windows 电脑来访问代码和编译脚本。",
+                "在代码所在电脑完成一键连接后重新检查配置。",
+            )
+
+        local_data = classify_data_path(config.data.path) == "agent"
+        if selected_target == "cluster" and local_data and not has_windows_build:
+            block(
+                "windows_data_access_unavailable",
+                "当前数据位于本机，云端仿真前需要 Windows 电脑验证并上传数据。",
+                "在数据所在电脑完成一键连接，或填写 Cluster 可直接访问的数据路径。",
+            )
+
+        if config.selena.source == "existing":
+            existing_visible = self._server_visible_path(config.selena.existing_path).is_dir()
+            runtime_visible = self._server_visible_path(config.selena.runtime_xml).is_file()
+            if not (existing_visible and runtime_visible) and not has_windows_build:
+                block(
+                    "windows_selena_access_unavailable",
+                    "现有 Selena 产物和 Runtime XML 需要由已连接的 Windows 电脑读取并打包。",
+                    "在保存该 Selena 文件夹的电脑完成一键连接，或改用 Linux 可访问的共享位置。",
+                )
+
+        if selected_target == "cluster" and classify_data_path(config.data.path) == "shared":
+            notices.append(
+                {
+                    "code": "shared_path_will_be_checked",
+                    "message": "共享数据路径将在 Linux 调度节点按部署映射校验；校验失败时不会启动仿真。",
+                    "action": "确认该共享路径已由部署方挂载到 Linux 服务。",
+                }
+            )
+        return {
+            "status": "ready" if not blockers else "blocked",
+            "can_submit": not blockers,
+            "blockers": blockers,
+            "notices": notices,
         }
 
     def submit_user_run(

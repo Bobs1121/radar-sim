@@ -1004,8 +1004,20 @@ def _run_v5_prepare_data(
         returncode = 130
         result = {"status": "cancelled", "code": "cancelled"}
         client.append_logs(task_id, ["[agent] local dataset preparation cancelled"])
-    except Exception:
-        client.append_logs(task_id, ["[agent] local dataset upload failed; retry is resumable"])
+    except Exception as exc:
+        from core.preflight import RuntimeDataSignalContractError
+
+        if isinstance(exc, RuntimeDataSignalContractError):
+            status = "failed"
+            returncode = 2
+            result = {
+                "error": exc.detail,
+                "code": exc.code,
+                "actions": ([{"type": "fix_configuration", "label": exc.repair_hint}] if exc.repair_hint else []),
+            }
+            client.append_logs(task_id, [f"[agent] {exc.detail}"])
+        else:
+            client.append_logs(task_id, ["[agent] local dataset upload failed; retry is resumable"])
     finally:
         stop_event.set()
         thread.join(timeout=max(1.0, heartbeat_interval))
@@ -1156,9 +1168,11 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         timeout_seconds=(timeout_minutes * 60 if timeout_minutes > 0 else 3600),
     )
     private = store.get_private(lease["lease_id"])
+    private["config"]["_strict_runtime_data_signals"] = True
     preflight = run_preflight(private["config"])
     if not preflight.ok:
-        raise ValueError("local compatibility preflight failed")
+        detail = next((item.detail for item in preflight.checks if not item.passed), "")
+        raise ValueError(detail or "local compatibility preflight failed")
     return {
         "local_run_lease_ref": lease["lease_id"],
         "runtime_bundle_id": lease["runtime_bundle_id"],
@@ -1166,7 +1180,12 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         "preflight": {
             "ok": True,
             "checks": [
-                {"name": item.name, "level": item.level, "passed": bool(item.passed)}
+                {
+                    "name": item.name,
+                    "level": item.level,
+                    "passed": bool(item.passed),
+                    "detail": item.detail,
+                }
                 for item in preflight.checks
             ],
         },
@@ -1451,6 +1470,19 @@ def _resolve_v2_run_config(payload: dict) -> dict:
                 binding_id=asset_binding.binding_id, asset_path=asset_path, role=role
             )
         asset_bindings[role] = asset_binding.binding_id
+    # Runtime.xml is branch/binary-specific. Discover its DataPlayer inputs on
+    # the Windows machine that can read the user file, then pass only the port
+    # names to the later data stage. That stage validates MF4 headers before a
+    # potentially very large upload starts.
+    from core.preflight import RuntimeDataSignalContractError, runtime_data_player_ports
+
+    try:
+        runtime_data_player_signals = runtime_data_player_ports(asset_paths["runtime_xml"])
+    except RuntimeDataSignalContractError:
+        # Runtime/MF4 inspection is diagnostic-only. The later Cluster
+        # preflight records the parse warning beside the task; it must not
+        # prevent a valid Runtime asset from reaching Selena.
+        runtime_data_player_signals = []
     data_binding_id = ""
     data_path = str(payload.get("data_path") or "").strip()
     if data_path and payload.get("auto_configure") is True:
@@ -1485,6 +1517,7 @@ def _resolve_v2_run_config(payload: dict) -> dict:
         "workspace_binding_id": binding.binding_id,
         "asset_bindings": asset_bindings,
         "data_binding_id": data_binding_id,
+        "runtime_data_player_signals": runtime_data_player_signals,
         "selena_build_script_ref": relative_ref(outcome.selena_build_script or outcome.build_script),
         "package_build_script_ref": relative_ref(outcome.package_build_script),
         # The user-facing code_path is the build workspace.  Selena scripts in
@@ -1546,6 +1579,7 @@ def _resolve_existing_v2_run_config(task: dict) -> dict:
     from core.agent_data_bindings import AgentDataBindingStore
     from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
     from core.existing_selena import import_existing_selena
+    from core.preflight import RuntimeDataSignalContractError, runtime_data_player_ports
 
     payload = dict(task.get("payload") or {})
     if payload.get("auto_configure") is not True:
@@ -1583,6 +1617,12 @@ def _resolve_existing_v2_run_config(task: dict) -> dict:
                 root_path=data_root,
             ).binding_id
     evidence_ref = f"{stage_id}:{attempt}"
+    try:
+        runtime_data_player_signals = runtime_data_player_ports(
+            str(payload.get("runtime_xml") or "")
+        )
+    except RuntimeDataSignalContractError:
+        runtime_data_player_signals = []
     return {
         "status": "resolved",
         "source": "existing",
@@ -1592,6 +1632,7 @@ def _resolve_existing_v2_run_config(task: dict) -> dict:
         "runtime_bundle": imported.bundle.manifest.to_dict(),
         "archive": imported.archive.public_dict,
         "data_binding_id": data_binding_id,
+        "runtime_data_player_signals": runtime_data_player_signals,
         "build_evidence_ref": evidence_ref,
         "confidence": 1.0,
         "evidence": [

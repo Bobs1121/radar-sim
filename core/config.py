@@ -572,6 +572,17 @@ def load_config(project: Optional[str] = None) -> dict[str, Any]:
     if project is None:
         project = get_default_project()
 
+    # ``workspace-<digest>`` is an anonymous authorization namespace for an
+    # unregistered user checkout, not a project adapter.  Falling back to the
+    # repository's legacy config.yaml here used to silently apply BYD/OVRS
+    # paths and Cluster defaults to an unknown product.  Generic workspaces
+    # may still be inspected/built through their explicit Agent contract, but
+    # execution must stop until a real internal adapter is deployed.
+    if str(project or "").startswith("workspace-"):
+        raise FileNotFoundError(
+            "No internal execution adapter is installed for this workspace"
+        )
+
     # Try new multi-project config first
     project_cfg_path = get_projects_dir() / project / "config.yaml"
     if project_cfg_path.exists():

@@ -114,6 +114,28 @@ def test_real_bydod25_adapter_recognizes_both_scripts_on_any_drive():
     assert result.output_dir == "e:/users/alice/byd/build/full_dsp"
 
 
+def test_real_xpeng_od25_adapter_is_recognized_from_the_two_selected_scripts():
+    """Xpeng must not fall through to the legacy generic/BYD config."""
+    projects = Path(__file__).resolve().parents[1] / "config" / "projects"
+    result = WorkspaceRecognizer(projects).recognize(
+        "E:/work/pl-xpeng",
+        selena_build_script=(
+            "E:/work/pl-xpeng/apl/base/bindings/xpeng/selena/jenkins_selena_build.bat"
+        ),
+        package_build_script=(
+            "E:/work/pl-xpeng/apl/base/bindings/xpeng/buildscripts/"
+            "testbuild_BaseC0SS_SINGLE.bat"
+        ),
+    )
+
+    assert result.status == "resolved"
+    assert result.internal_project == "xpengod25"
+    assert result.adapter_key == "project:xpengod25"
+    assert result.output_dir == "e:/work/pl-xpeng/ip_dc/build/ros_per_sit_rpm_fct_recr"
+    assert "explicit_build_script" in result.evidence
+    assert "explicit_package_build_script" in result.evidence
+
+
 def test_missing_adapter_output_is_derived_from_user_selena_script(tmp_path, monkeypatch):
     root = tmp_path / "projects"
     _write_adapter(
