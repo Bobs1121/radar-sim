@@ -10,7 +10,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable
 
 from core.agent_bindings import default_agent_binding_db_path
@@ -38,8 +38,16 @@ def make_asset_binding_id(root_path: str) -> str:
 
 def candidate_asset_binding_ids(asset_path: str) -> tuple[str, ...]:
     """Return exact parent/ancestor root IDs without exposing any path."""
-    path = PureWindowsPath(str(asset_path or "").strip())
-    if not path.is_absolute() or not path.drive:
+    text = str(asset_path or "").strip()
+    windows = PureWindowsPath(text)
+    if windows.is_absolute() and windows.drive:
+        path = windows
+    elif os.name != "nt" and PurePosixPath(text).is_absolute():
+        # Linux control-plane/SDK tests use node-local temporary paths. They
+        # are safe to enumerate only on POSIX hosts; Windows continues to
+        # accept drive/UNC paths exclusively.
+        path = PurePosixPath(text)
+    else:
         return ()
     result: list[str] = []
     for value in [path.parent, *path.parent.parents]:

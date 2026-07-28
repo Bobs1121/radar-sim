@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -58,3 +59,15 @@ def test_candidate_ids_include_parent_ancestors_without_paths():
     assert values[0] == make_asset_binding_id(r"D:\\data\\config")
     assert all(value.startswith("asset-root:sha256:") for value in values)
     assert candidate_asset_binding_ids("relative/Runtime.xml") == ()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX runtime paths are accepted only on POSIX hosts")
+def test_candidate_ids_accept_posix_absolute_paths_on_posix_hosts(tmp_path):
+    asset = tmp_path / "assets" / "Runtime.xml"
+    asset.parent.mkdir()
+    asset.write_text("<runtime/>", encoding="utf-8")
+
+    values = candidate_asset_binding_ids(str(asset))
+
+    assert values
+    assert values[0] == make_asset_binding_id(str(asset.parent))
