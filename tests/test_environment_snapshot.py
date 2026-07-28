@@ -209,7 +209,7 @@ def test_environment_adapts_visual_studio_before_capturing_final_workspace_snaps
     assert "Visual Studio 2015" in check.message
 
 
-def test_environment_prepares_package_generated_dependencies():
+def test_environment_only_confirms_package_script_without_running_generators():
     before = SimpleNamespace(
         to_dict=lambda: {"branch": "main", "commit": "a" * 40, "dirty": False, "sha256": "b" * 64}
     )
@@ -218,11 +218,6 @@ def test_environment_prepares_package_generated_dependencies():
         build_script_path="jenkins.bat",
         package_build_script_path="cmake_build.bat",
         authorized=SimpleNamespace(workspace_root="D:/workspace"),
-    )
-    generated = SimpleNamespace(
-        generator="D:/workspace/ip_if/tools/pad_gen/bin/pad_generator.pl",
-        changed=True,
-        generated_targets=("apl/byd/padrpm",),
     )
     installation = SimpleNamespace(year="2015", tag="vs14", toolset="v140")
 
@@ -233,9 +228,47 @@ def test_environment_prepares_package_generated_dependencies():
         node_kind=NODE_KIND_WINDOWS_AGENT,
         prepare_fn=lambda _payload, _store: prepared,
         vs_adapter=lambda _path: SimpleNamespace(changed=False, installation=installation),
-        generated_dependency_preparer=lambda *_args: generated,
     )
 
-    check = next(item for item in snapshot.checks if item.requirement_id == "package_generated_dependencies")
+    check = next(item for item in snapshot.checks if item.requirement_id == "package_build_script")
     assert check.status == "passed"
-    assert check.code == "package_generated_dependencies_prepared"
+    assert "实际编译前准备" in check.message
+
+
+def test_environment_missing_workspace_binding_has_chinese_actionable_reason():
+    snapshot = inspect_selena_build_environment(
+        {"project": "xpengod25", "workspace_binding_id": BINDING_ID, "build_mode": "Release"},
+        object(),
+        agent_id="agent-a",
+        node_kind=NODE_KIND_WINDOWS_AGENT,
+        prepare_fn=lambda *_args: (_ for _ in ()).throw(ValueError("binding not found")),
+    )
+
+    check = snapshot.checks[0]
+    assert check.code == "workspace_binding_missing"
+    assert "尚未登记" in check.message
+    assert "连接这台电脑" in check.action
+
+
+def test_environment_reports_each_bounded_check_progress():
+    before = SimpleNamespace(
+        to_dict=lambda: {
+            "branch": "feature/selena", "commit": "a" * 40,
+            "dirty": False, "sha256": "b" * 64,
+        }
+    )
+    progress = []
+    inspect_selena_build_environment(
+        {"project": "xpengod25", "workspace_binding_id": BINDING_ID, "build_mode": "Release"},
+        object(),
+        agent_id="agent-a",
+        node_kind=NODE_KIND_WINDOWS_AGENT,
+        prepare_fn=lambda *_args: SimpleNamespace(
+            before=before, branch_before=before, build_script_path=None,
+            package_build_script_path=None,
+        ),
+        progress_fn=progress.append,
+    )
+
+    assert any("代码仓" in item for item in progress)
+    assert any("Selena 子仓" in item for item in progress)

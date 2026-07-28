@@ -27,7 +27,12 @@ from core.agent_bindings import (
     AgentBindingStore,
     make_workspace_binding_id,
 )
-from core.repo import RepoSourceError, WorkspaceFingerprint, inspect_workspace
+from core.repo import (
+    RepoSourceError,
+    WorkspaceFingerprint,
+    inspect_workspace,
+    inspect_workspace_identity,
+)
 from core.agent_asset_bindings import AgentAssetBindingStore, AgentAssetBindingError
 from core.build_runner import _build_selena_command
 from core.config import load_config, resolve_selena_executable
@@ -73,6 +78,7 @@ class PreparedSelenaBuild:
     source_commit: str = ""
     branch_repo_path: Path | None = None
     branch_before: WorkspaceFingerprint | None = None
+    workspace_identity_mode: str = "full"
 
     def __post_init__(self) -> None:
         _validate_project(self.project)
@@ -168,6 +174,27 @@ def _hash_script(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _uninspected_workspace_evidence() -> WorkspaceFingerprint:
+    """Return path-free outer-workspace evidence without invoking Git.
+
+    A selected nested Selena repository supplies the real branch and commit.
+    The surrounding product root is intentionally not queried in that case:
+    it may contain unrelated submodules, generated files, and local work.
+    """
+    digest = hashlib.sha256(b"radar-sim.outer-workspace-not-inspected.v1").hexdigest()
+    return WorkspaceFingerprint(
+        branch="",
+        commit="0" * 40,
+        dirty=False,
+        sha256=digest,
+        staged_diff_sha256=hashlib.sha256(b"").hexdigest(),
+        staged_diff_bytes=0,
+        unstaged_diff_sha256=hashlib.sha256(b"").hexdigest(),
+        unstaged_diff_bytes=0,
+        untracked=(),
+    )
+
+
 def _resolve_artifact_path(exe_path: str, authorized: AuthorizedRoots) -> Path:
     """Resolve the artifact path and ensure it is authorized.
 
@@ -223,6 +250,8 @@ def _resolve_cwd(cwd: str | None, authorized: AuthorizedRoots) -> Path:
 def _resolve_branch_repo_snapshot(
     branch_repo_ref: Any,
     authorized: AuthorizedRoots,
+    *,
+    identity_only: bool = False,
 ) -> tuple[Path | None, WorkspaceFingerprint | None]:
     """Resolve a workspace-relative Selena branch repository without escape.
 
@@ -243,7 +272,8 @@ def _resolve_branch_repo_snapshot(
     if not candidate.is_dir() or candidate.is_symlink() or not authorized.contains_workspace(candidate):
         raise AgentBuildStageError("branch repository is outside authorized workspace")
     try:
-        return candidate, inspect_workspace(candidate)
+        inspector = inspect_workspace_identity if identity_only else inspect_workspace
+        return candidate, inspector(candidate)
     except (RepoSourceError, OSError) as exc:
         raise AgentBuildStageError("branch repository is unavailable") from exc
 
@@ -372,7 +402,9 @@ def prepare_selena_build(
     8. Obtain actual command/cwd from injected *command_builder*.
     9. Resolve artifact path (may not exist yet) and validate it is under an
        authorized output root and named ``selena.exe``.
-    10. Capture *before* snapshot only after all authorization checks pass.
+    10. Capture *before* source evidence only after all authorization checks
+       pass.  User-run configs use bounded branch/HEAD evidence: they never
+       scan the product root for diffs or untracked files.
     """
     if not isinstance(payload, Mapping):
         raise AgentBuildStageError("payload must be a mapping")
@@ -392,6 +424,13 @@ def prepare_selena_build(
     if profile and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", profile):
         raise AgentBuildStageError("profile must be a logical token")
     contract = str(payload.get("contract") or "").strip()
+    # The public run-config contract intentionally compiles the user's current
+    # workspace.  Product roots can be very large and contain generated files
+    # from unrelated components, so a full Git fingerprint here made an
+    # environment check take minutes before a compiler was even started.
+    # Keep legacy callers unchanged; v1 user-run builds use only bounded
+    # branch+HEAD evidence and record that local changes were not inspected.
+    identity_only = contract == "user-run-config/2.0"
     runtime_xml_path = None
     adapter_path = None
     mat_filter_path = None
@@ -588,13 +627,25 @@ def prepare_selena_build(
 
     artifact_path = _resolve_artifact_path(exe_path, authorized)
 
-    # Capture before snapshot only after all authorization checks.
+    # Capture before snapshot only after all authorization checks.  The v1
+    # user-facing flow deliberately avoids ``git diff``/``git status`` on the
+    # outer product root; selecting a Selena branch is enough for its initial
+    # executable identity and does not disturb local modifications.
+    has_selected_branch_repo = bool(str(payload.get("branch_repo_ref") or "").strip())
     try:
-        before = capture_source_snapshot(authorized.workspace_root, authorized)
-    except AgentArtifactStagingError as exc:
-        raise AgentBuildStageError(str(exc)) from exc
+        before = (
+            _uninspected_workspace_evidence()
+            if identity_only and has_selected_branch_repo
+            else inspect_workspace_identity(authorized.workspace_root)
+            if identity_only
+            else capture_source_snapshot(authorized.workspace_root, authorized)
+        )
+    except (AgentArtifactStagingError, RepoSourceError, OSError) as exc:
+        raise AgentBuildStageError(
+            "workspace identity check failed" if identity_only else str(exc)
+        ) from exc
     branch_repo_path, branch_before = _resolve_branch_repo_snapshot(
-        payload.get("branch_repo_ref"), authorized,
+        payload.get("branch_repo_ref"), authorized, identity_only=identity_only,
     )
 
     return PreparedSelenaBuild(
@@ -620,6 +671,7 @@ def prepare_selena_build(
         source_commit=source_commit,
         branch_repo_path=branch_repo_path,
         branch_before=branch_before,
+        workspace_identity_mode="branch_head_only" if identity_only else "full",
     )
 
 
@@ -652,11 +704,23 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
     if not isinstance(prepared, PreparedSelenaBuild):
         raise AgentBuildStageError("prepared build is required")
 
-    # Capture after snapshot.
+    # Capture after snapshot.  For the user-run-config flow this remains the
+    # same bounded branch/HEAD probe used before the compiler ran.  Do not
+    # turn a successful build into another full product-root diff/status scan.
     try:
-        after = capture_source_snapshot(prepared.authorized.workspace_root, prepared.authorized)
-    except AgentArtifactStagingError as exc:
-        raise AgentBuildStageError(str(exc)) from exc
+        after = (
+            _uninspected_workspace_evidence()
+            if prepared.workspace_identity_mode == "branch_head_only" and prepared.branch_before is not None
+            else inspect_workspace_identity(prepared.authorized.workspace_root)
+            if prepared.workspace_identity_mode == "branch_head_only"
+            else capture_source_snapshot(prepared.authorized.workspace_root, prepared.authorized)
+        )
+    except (AgentArtifactStagingError, RepoSourceError, OSError) as exc:
+        raise AgentBuildStageError(
+            "workspace identity check failed after build"
+            if prepared.workspace_identity_mode == "branch_head_only"
+            else str(exc)
+        ) from exc
 
     # Validate and hash the actual artifact.
     try:
@@ -674,7 +738,12 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
     branch_repository_changed = False
     if prepared.branch_repo_path is not None:
         try:
-            branch_after = inspect_workspace(prepared.branch_repo_path)
+            inspector = (
+                inspect_workspace_identity
+                if prepared.workspace_identity_mode == "branch_head_only"
+                else inspect_workspace
+            )
+            branch_after = inspector(prepared.branch_repo_path)
         except (RepoSourceError, OSError) as exc:
             raise AgentBuildStageError("branch repository is unavailable after build") from exc
         if branch_before is None:
@@ -697,6 +766,15 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
         before_public["commit"] = prepared.source_commit
         after_public["branch"] = prepared.source_branch
         after_public["commit"] = prepared.source_commit
+    source_change_evidence: dict[str, Any] = {
+        "workspace_changed": workspace_changed,
+        "branch_repository_changed": branch_repository_changed,
+        "identity_scope": (
+            "selena_branch_repository" if branch_before is not None else "workspace"
+        ),
+    }
+    if prepared.workspace_identity_mode == "branch_head_only":
+        source_change_evidence["local_changes_checked"] = False
     result: dict[str, Any] = {
         "project": prepared.project,
         "workspace_binding_id": prepared.binding_id,
@@ -708,13 +786,7 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
         # one was identified.  Keep the outer workspace integrity gate
         # explicit instead of making a true source_changed flag appear to
         # contradict those public branch snapshots.
-        "source_change_evidence": {
-            "workspace_changed": workspace_changed,
-            "branch_repository_changed": branch_repository_changed,
-            "identity_scope": (
-                "selena_branch_repository" if branch_before is not None else "workspace"
-            ),
-        },
+        "source_change_evidence": source_change_evidence,
         "artifact": {
             "logical_path": evidence.logical_path,
             "checksum": evidence.checksum,

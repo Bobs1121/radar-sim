@@ -296,10 +296,31 @@ def _run_task(
                     result=cached,
                 )
                 return 0
+            def report_environment_progress(message: str) -> None:
+                client.append_logs(task_id, ["[agent] " + str(message)])
+                heartbeat = getattr(client, "heartbeat", None)
+                if callable(heartbeat):
+                    try:
+                        heartbeat(
+                            agent_id,
+                            status="busy",
+                            current_task_id=task_id,
+                            metadata={
+                                "workspace_bindings": _public_workspace_bindings(),
+                                "data_bindings": _public_data_bindings(),
+                                "asset_bindings": _public_asset_bindings(),
+                            },
+                        )
+                    except Exception:
+                        # Log delivery must not turn a successful local check
+                        # into a failed task when the control plane reconnects.
+                        pass
+
             snapshot = _check_v5_environment(
                 dict(task.get("payload") or {}),
                 agent_id=agent_id,
                 node_kind=node_kind,
+                progress_fn=report_environment_progress,
             )
             client.append_logs(task_id, ["[agent] node-local environment check completed"])
             client.submit_result(
@@ -695,7 +716,13 @@ def _public_asset_bindings() -> list[dict]:
         return []
 
 
-def _check_v5_environment(payload: dict, *, agent_id: str, node_kind: str) -> dict:
+def _check_v5_environment(
+    payload: dict,
+    *,
+    agent_id: str,
+    node_kind: str,
+    progress_fn=None,
+) -> dict:
     from core.agent_bindings import AgentBindingStore
     from core.environment_snapshot import inspect_selena_build_environment
 
@@ -704,6 +731,7 @@ def _check_v5_environment(payload: dict, *, agent_id: str, node_kind: str) -> di
         AgentBindingStore(),
         agent_id=agent_id,
         node_kind=node_kind,
+        progress_fn=progress_fn,
     ).to_dict()
 
 

@@ -34,6 +34,57 @@ _BINDING_RE = re.compile(r"^workspace:sha256:[0-9a-f]{24}$")
 _WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
+def _report_progress(callback: Callable[[str], None] | None, message: str) -> None:
+    """Emit a best-effort, path-free environment-check progress update."""
+    if callback is None:
+        return
+    try:
+        callback(message)
+    except Exception:
+        # Progress reporting must never make a usable Windows environment fail.
+        return
+
+
+def _build_environment_failure(exc: Exception) -> tuple[str, str, str]:
+    """Translate stable local failures into a Chinese, actionable diagnosis."""
+    raw = str(exc or "").strip()
+    if raw == "binding not found":
+        return (
+            "workspace_binding_missing",
+            "这台 Windows 电脑尚未登记当前代码仓（原始检查：binding not found）。",
+            "在 Web 中重新执行一次“连接这台电脑”，选择当前代码仓后重试。",
+        )
+    if raw == "binding project mismatch":
+        return (
+            "workspace_binding_project_mismatch",
+            "当前代码仓登记信息与自动识别出的 Selena 产品不一致（原始检查：binding project mismatch）。",
+            "在 Web 中重新连接这台电脑并选择当前代码仓后重试。",
+        )
+    if "build script is missing" in raw or "build script is not accessible" in raw:
+        return (
+            "selena_build_script_unavailable",
+            "找不到或无法读取所选的 Selena 编译脚本。",
+            "确认 YAML 中的 Selena 编译脚本路径属于已选择的代码仓，然后重试。",
+        )
+    if "package build script" in raw:
+        return (
+            "package_build_script_unavailable",
+            "找不到或无法读取所选的软件包编译脚本。",
+            "确认 YAML 中的软件包编译脚本路径属于已选择的代码仓，然后重试。",
+        )
+    if "workspace identity check failed" in raw or "branch repository is unavailable" in raw:
+        return (
+            "selena_branch_identity_unavailable",
+            "无法在短时检查内读取所选 Selena 子仓的分支或提交。",
+            "确认 Selena 子仓可正常执行 Git 分支与提交查询后重试；系统不会扫描本地 diff 或未跟踪文件。",
+        )
+    return (
+        "selena_build_environment_unavailable",
+        "Windows 本机编译环境检查未通过（原始检查：" + (raw or "unknown") + "）。",
+        "检查代码仓授权、编译脚本和输出目录后重试。",
+    )
+
+
 @dataclass(frozen=True)
 class EnvironmentCheckResult:
     requirement_id: str
@@ -223,8 +274,14 @@ def inspect_selena_build_environment(
     prepare_fn: Callable[..., Any] = prepare_selena_build,
     vs_adapter: Callable[..., Any] = adapt_selena_script_visual_studio,
     generated_dependency_preparer: Callable[..., Any] | None = None,
+    progress_fn: Callable[[str], None] | None = None,
 ) -> EnvironmentSnapshot:
-    """Inspect the authorized build boundary without starting a subprocess."""
+    """Inspect the authorized build boundary without starting a subprocess.
+
+    The user-facing flow is intentionally bounded: selected scripts, output
+    location, Visual Studio and selected Selena child-repository branch/HEAD.
+    It never scans the product root for local diffs or untracked files.
+    """
     if not isinstance(payload, Mapping):
         raise EnvironmentSnapshotError("environment payload must be a mapping")
     project = str(payload.get("project") or "").strip()
@@ -232,14 +289,20 @@ def inspect_selena_build_environment(
     created_at = float(now_fn())
     adaptation = None
     try:
+        _report_progress(progress_fn, "正在确认代码仓、编译脚本和 Selena 输出位置")
         prepared = prepare_fn(payload, binding_store)
+        _report_progress(progress_fn, "已确认所选 Selena 子仓的分支与提交")
         build_script = getattr(prepared, "build_script_path", None)
         if build_script is not None:
+            _report_progress(progress_fn, "正在检查 Visual Studio 与 Selena 编译脚本")
             adaptation = vs_adapter(build_script)
             if bool(getattr(adaptation, "changed", False)):
                 # The adaptation is an intentional current-workspace change.
-                # Re-prepare so checksum and dirty fingerprint include it.
+                # Re-prepare so the script checksum reflects the supported VS
+                # adaptation.  No Git diff/status scan is performed.
+                _report_progress(progress_fn, "正在确认适配后的 Selena 编译脚本")
                 prepared = prepare_fn(payload, binding_store)
+                _report_progress(progress_fn, "已确认适配后的 Selena 子仓分支与提交")
     except WindowsToolchainError as exc:
         checks = (
             EnvironmentCheckResult(
@@ -252,14 +315,15 @@ def inspect_selena_build_environment(
             ),
         )
     except (AgentBuildStageError, ValueError, TypeError, OSError) as exc:
+        code, message, action = _build_environment_failure(exc)
         checks = (
             EnvironmentCheckResult(
                 requirement_id="selena_build_environment",
                 capability="build.selena",
                 status="failed",
-                code="selena_build_environment_unavailable",
-                message=str(exc) or "Selena build environment is unavailable",
-                action="Repair the Windows Agent project binding or build dependencies, then retry.",
+                code=code,
+                message=message,
+                action=action,
             ),
         )
     else:
@@ -270,9 +334,20 @@ def inspect_selena_build_environment(
         before = getattr(prepared, "branch_before", None) or getattr(prepared, "before", None)
         workspace = before.to_dict() if before is not None and hasattr(before, "to_dict") else None
         checks_list = [
-            EnvironmentCheckResult("workspace_binding", "source.workspace.read", "passed"),
-            EnvironmentCheckResult("selena_build_toolchain", "build.selena", "passed"),
+            EnvironmentCheckResult(
+                "workspace_binding", "source.workspace.read", "passed",
+                message="已确认本机代码仓授权、所选 Selena 编译脚本和输出位置。",
+            ),
+            EnvironmentCheckResult(
+                "selena_build_toolchain", "build.selena", "passed",
+                message="已完成 Selena 子仓分支与提交的有界身份检查。",
+            ),
             EnvironmentCheckResult("artifact_local_staging", "artifact.validate", "passed"),
+            EnvironmentCheckResult(
+                "workspace_local_changes", "source.workspace.read", "passed",
+                code="workspace_local_changes_not_scanned",
+                message="按当前配置不扫描本地 diff 或未跟踪文件；现有本地修改会保留并直接参与编译。",
+            ),
         ]
         if adaptation is not None:
             installation = getattr(adaptation, "installation", None)
@@ -293,117 +368,13 @@ def inspect_selena_build_environment(
                     ),
                 )
             )
-        package_script = getattr(prepared, "package_build_script_path", None)
-        if package_script is not None:
-            from core.tcc import auto_repair_environment, derive_dependencies_from_build_script
-            from core.windows_generated_dependencies import (
-                GeneratedDependencyError,
-                prepare_package_generated_dependencies,
+        if getattr(prepared, "package_build_script_path", None) is not None:
+            checks_list.append(
+                EnvironmentCheckResult(
+                    "package_build_script", "build.dependencies", "passed",
+                    message="已确认软件包编译脚本位于当前代码仓；脚本依赖将在实际编译前准备。",
+                )
             )
-
-            dependency_config = {"build": {"env_build_script": str(package_script)}}
-            dependencies = derive_dependencies_from_build_script(dependency_config)
-            managed = [
-                item
-                for item in dependencies
-                if item.get("kind") in {"toolcollection", "legacy_toolcollection"}
-            ]
-            if managed:
-                report = auto_repair_environment(dependency_config)
-                checks_list.append(
-                    EnvironmentCheckResult(
-                        "package_build_dependencies",
-                        "build.dependencies",
-                        "passed" if report.ok else "failed",
-                        code="" if report.ok else "package_build_dependencies_unavailable",
-                        message=report.summary,
-                        action="" if report.ok else "Repair the package build dependencies, then retry.",
-                    )
-                )
-            else:
-                checks_list.append(
-                    EnvironmentCheckResult(
-                        "package_build_dependencies",
-                        "build.dependencies",
-                        "passed",
-                        message=f"{len(dependencies)} dependency hints inspected",
-                    )
-                )
-            # The package entry and the Selena entry jointly define the local
-            # process environment.  This step never rewrites the workspace;
-            # the same overlay is derived again immediately before build.
-            from core.windows_build_environment import (
-                WindowsBuildDependencyError,
-                prepare_windows_build_environment,
-            )
-
-            try:
-                dependency_environment = prepare_windows_build_environment(
-                    workspace_root=prepared.authorized.workspace_root,
-                    selena_build_script=getattr(prepared, "build_script_path", None),
-                    package_build_script=package_script,
-                )
-            except WindowsBuildDependencyError as exc:
-                checks_list.append(
-                    EnvironmentCheckResult(
-                        "script_derived_build_dependencies",
-                        "build.dependencies",
-                        "failed",
-                        code="script_derived_build_dependencies_unavailable",
-                        message=str(exc) or "A script-derived build dependency is unavailable.",
-                        action="Install the dependency reported by the selected build scripts, then retry.",
-                    )
-                )
-            else:
-                dependencies = tuple(
-                    getattr(dependency_environment, "dependencies", ()) or ()
-                )
-                if dependencies:
-                    checks_list.append(
-                        EnvironmentCheckResult(
-                            "script_derived_build_dependencies",
-                            "build.dependencies",
-                            "passed",
-                            code="script_derived_build_environment_prepared",
-                            message=f"Prepared process-local environment for: {', '.join(dependencies)}.",
-                        )
-                    )
-
-            # Keep the existing safe generated-source contract as a second,
-            # independent step.  Some BYD workspaces need missing PAD headers
-            # generated after a clean; the preparer only runs a recognized
-            # workspace-local generator and does not alter build scripts.
-            prepare_generated = generated_dependency_preparer or prepare_package_generated_dependencies
-            try:
-                generated = prepare_generated(package_script, prepared.authorized.workspace_root)
-            except GeneratedDependencyError as exc:
-                checks_list.append(
-                    EnvironmentCheckResult(
-                        "package_generated_dependencies",
-                        "build.dependencies.generate",
-                        "failed",
-                        code="package_generated_dependencies_unavailable",
-                        message=str(exc) or "Package-generated source dependencies are unavailable.",
-                        action="Repair the generator dependency reported by the software-package script, then retry.",
-                    )
-                )
-            else:
-                if str(getattr(generated, "generator", "") or ""):
-                    changed = bool(getattr(generated, "changed", False))
-                    targets = tuple(getattr(generated, "generated_targets", ()) or ())
-                    checks_list.append(
-                        EnvironmentCheckResult(
-                            "package_generated_dependencies",
-                            "build.dependencies.generate",
-                            "passed",
-                            code="package_generated_dependencies_prepared" if changed else "",
-                            message=(
-                                f"Prepared generated source dependencies for {len(targets)} package target(s)."
-                                if changed
-                                else "Package-generated source dependencies are ready."
-                            ),
-                        )
-                    )
         expected_branch = str(payload.get("expected_branch") or "").strip()
         actual_branch = str((workspace or {}).get("branch") or "").strip()
         nested_selena_repo = bool(str(payload.get("branch_repo_ref") or "").strip())

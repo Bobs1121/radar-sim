@@ -258,6 +258,46 @@ def inspect_workspace(repo: str | Path) -> WorkspaceFingerprint:
     )
 
 
+def inspect_workspace_identity(repo: str | Path, *, timeout: int = 10) -> WorkspaceFingerprint:
+    """Read only the selected repository's branch and ``HEAD``.
+
+    This deliberately does **not** execute ``git diff`` or ``git status`` and
+    never walks untracked files.  It is the bounded identity check used before
+    and after a user-requested Windows build: a large product checkout may
+    contain many independent repositories and generated files, neither of
+    which should delay or block compiling the selected Selena branch.
+
+    ``dirty`` is reported as ``False`` solely because local changes are not
+    inspected in this mode; callers must carry the matching
+    ``local_changes_checked=False`` evidence instead of treating it as a
+    clean-worktree assertion.
+    """
+    bounded_timeout = max(1, min(int(timeout), _WORKSPACE_METADATA_TIMEOUT))
+    repo_root = _repo_root(repo)
+    repo_s = str(repo_root)
+    branch = _git_text_checked(
+        repo_s, ["branch", "--show-current"], timeout=bounded_timeout,
+    ) or "HEAD"
+    commit = _git_text_checked(
+        repo_s, ["rev-parse", "HEAD"], timeout=bounded_timeout,
+    )
+    digest = hashlib.sha256()
+    _digest_part(digest, "format", b"radar-sim.workspace-identity.v1")
+    _digest_part(digest, "branch", branch.encode("utf-8"))
+    _digest_part(digest, "head", commit.encode("ascii"))
+    return WorkspaceFingerprint(
+        branch=branch,
+        commit=commit,
+        dirty=False,
+        sha256=digest.hexdigest(),
+        staged_diff_sha256=_EMPTY_SHA256,
+        staged_diff_bytes=0,
+        unstaged_diff_sha256=_EMPTY_SHA256,
+        unstaged_diff_bytes=0,
+        untracked=(),
+    )
+
+
 def _reject_unsafe_ref_text(ref: str) -> None:
     if not ref:
         raise ResolveGitRefError("Git ref is required")
