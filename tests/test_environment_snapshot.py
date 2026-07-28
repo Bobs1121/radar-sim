@@ -118,6 +118,34 @@ def test_expected_branch_mismatch_is_a_non_blocking_visible_warning():
     assert "feature/actual" in branch_check.message
 
 
+def test_nested_selena_branch_snapshot_is_used_for_branch_evidence():
+    workspace_before = SimpleNamespace(
+        to_dict=lambda: {
+            "branch": "outer-main", "commit": "a" * 40, "dirty": False, "sha256": "b" * 64,
+        }
+    )
+    selena_before = SimpleNamespace(
+        to_dict=lambda: {
+            "branch": "feature/selena", "commit": "c" * 40, "dirty": True, "sha256": "d" * 64,
+        }
+    )
+    snapshot = inspect_selena_build_environment(
+        {
+            "project": "ovrs25", "workspace_binding_id": BINDING_ID,
+            "build_mode": "Release", "expected_branch": "feature/selena",
+        },
+        object(),
+        agent_id="agent-alice-host1", node_kind=NODE_KIND_WINDOWS_AGENT,
+        now_fn=lambda: 100,
+        prepare_fn=lambda _payload, _store: SimpleNamespace(
+            before=workspace_before, branch_before=selena_before, package_build_script_path=None,
+        ),
+    )
+    assert snapshot.workspace["branch"] == "feature/selena"
+    check = next(item for item in snapshot.checks if item.requirement_id == "workspace_branch_expectation")
+    assert check.code == ""
+
+
 def test_environment_adapts_visual_studio_before_capturing_final_workspace_snapshot():
     calls = {"prepare": 0}
     before = SimpleNamespace(

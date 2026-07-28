@@ -263,7 +263,11 @@ def inspect_selena_build_environment(
             ),
         )
     else:
-        before = getattr(prepared, "before", None)
+        # Selena branch identity can live in a nested Git repository while
+        # the authorized build workspace remains its outer product checkout.
+        # The Agent chooses it from the selected script and exposes only the
+        # path-free fingerprint as the public source evidence.
+        before = getattr(prepared, "branch_before", None) or getattr(prepared, "before", None)
         workspace = before.to_dict() if before is not None and hasattr(before, "to_dict") else None
         checks_list = [
             EnvironmentCheckResult("workspace_binding", "source.workspace.read", "passed"),

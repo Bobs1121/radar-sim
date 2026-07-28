@@ -27,7 +27,7 @@ from core.agent_bindings import (
     AgentBindingStore,
     make_workspace_binding_id,
 )
-from core.repo import WorkspaceFingerprint
+from core.repo import RepoSourceError, WorkspaceFingerprint, inspect_workspace
 from core.agent_asset_bindings import AgentAssetBindingStore, AgentAssetBindingError
 from core.build_runner import _build_selena_command
 from core.config import load_config, resolve_selena_executable
@@ -71,6 +71,8 @@ class PreparedSelenaBuild:
     source_lease_ref: str = ""
     source_branch: str = ""
     source_commit: str = ""
+    branch_repo_path: Path | None = None
+    branch_before: WorkspaceFingerprint | None = None
 
     def __post_init__(self) -> None:
         _validate_project(self.project)
@@ -216,6 +218,34 @@ def _resolve_cwd(cwd: str | None, authorized: AuthorizedRoots) -> Path:
     if not resolved.is_dir() or resolved.is_symlink():
         raise AgentBuildStageError("working directory is unavailable")
     return resolved
+
+
+def _resolve_branch_repo_snapshot(
+    branch_repo_ref: Any,
+    authorized: AuthorizedRoots,
+) -> tuple[Path | None, WorkspaceFingerprint | None]:
+    """Resolve a workspace-relative Selena branch repository without escape.
+
+    The reference is created only by the local Agent from the selected build
+    script.  It is never an absolute task payload.  Older jobs omit it and
+    retain the previous workspace-as-branch behavior.
+    """
+    text = str(branch_repo_ref or "").strip().replace("\\", "/")
+    if not text:
+        return None, None
+    relative = Path(text)
+    if relative.is_absolute() or text.startswith("/") or ".." in relative.parts:
+        raise AgentBuildStageError("branch repository reference is invalid")
+    try:
+        candidate = (authorized.workspace_root / relative).resolve(strict=True)
+    except OSError as exc:
+        raise AgentBuildStageError("branch repository is unavailable") from exc
+    if not candidate.is_dir() or candidate.is_symlink() or not authorized.contains_workspace(candidate):
+        raise AgentBuildStageError("branch repository is outside authorized workspace")
+    try:
+        return candidate, inspect_workspace(candidate)
+    except (RepoSourceError, OSError) as exc:
+        raise AgentBuildStageError("branch repository is unavailable") from exc
 
 
 def _rebase_branch_config(
@@ -563,6 +593,9 @@ def prepare_selena_build(
         before = capture_source_snapshot(authorized.workspace_root, authorized)
     except AgentArtifactStagingError as exc:
         raise AgentBuildStageError(str(exc)) from exc
+    branch_repo_path, branch_before = _resolve_branch_repo_snapshot(
+        payload.get("branch_repo_ref"), authorized,
+    )
 
     return PreparedSelenaBuild(
         project=project,
@@ -585,6 +618,8 @@ def prepare_selena_build(
         source_lease_ref=source_lease_ref,
         source_branch=source_branch,
         source_commit=source_commit,
+        branch_repo_path=branch_repo_path,
+        branch_before=branch_before,
     )
 
 
@@ -634,9 +669,22 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
         prepared.before.sha256 != after.sha256
         or prepared.before.commit != after.commit
     )
+    branch_before = prepared.branch_before
+    branch_after = None
+    if prepared.branch_repo_path is not None:
+        try:
+            branch_after = inspect_workspace(prepared.branch_repo_path)
+        except (RepoSourceError, OSError) as exc:
+            raise AgentBuildStageError("branch repository is unavailable after build") from exc
+        if branch_before is None:
+            raise AgentBuildStageError("branch repository evidence is unavailable")
+        source_changed = source_changed or (
+            branch_before.sha256 != branch_after.sha256
+            or branch_before.commit != branch_after.commit
+        )
 
-    before_public = prepared.before.to_dict()
-    after_public = after.to_dict()
+    before_public = (branch_before or prepared.before).to_dict()
+    after_public = (branch_after or after).to_dict()
     if prepared.source_lease_ref:
         before_public["branch"] = prepared.source_branch
         before_public["commit"] = prepared.source_commit

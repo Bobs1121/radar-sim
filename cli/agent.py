@@ -1473,6 +1473,11 @@ def _resolve_v2_run_config(payload: dict) -> dict:
         except (OSError, ValueError) as exc:
             raise ValueError("build script is outside the authorized workspace") from exc
 
+    branch_repo_ref = _resolve_branch_repo_ref(
+        binding.workspace_root,
+        outcome.selena_build_script or outcome.build_script,
+    )
+
     return {
         "status": "resolved",
         "adapter_key": outcome.adapter_key,
@@ -1482,9 +1487,56 @@ def _resolve_v2_run_config(payload: dict) -> dict:
         "data_binding_id": data_binding_id,
         "selena_build_script_ref": relative_ref(outcome.selena_build_script or outcome.build_script),
         "package_build_script_ref": relative_ref(outcome.package_build_script),
+        # The user-facing code_path is the build workspace.  Selena scripts in
+        # large products commonly live in a nested Git repository whose
+        # branch, rather than the outer workspace branch, identifies Selena.
+        # Keep only a workspace-relative internal reference here: it is later
+        # resolved and authorized on the same Windows Agent.
+        "branch_repo_ref": branch_repo_ref,
         "confidence": outcome.confidence,
         "evidence": list(outcome.evidence),
     }
+
+
+def _resolve_branch_repo_ref(workspace_root: Path, selena_build_script: str) -> str:
+    """Return the nearest Git repository for a selected script, as a safe ref.
+
+    ``code_path`` deliberately remains the full build workspace because the
+    script and its output may depend on sibling repositories.  The selected
+    Selena script can nevertheless live in a nested sub-repository.  Git's
+    own ``--show-toplevel`` resolves that repository without checking out or
+    modifying anything.  The returned value is relative to the authorized
+    workspace so no local path crosses the Agent/control-plane boundary.
+    """
+    try:
+        workspace = Path(workspace_root).resolve(strict=True)
+        script = Path(str(selena_build_script or "")).resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("Selena branch repository is unavailable") from exc
+    try:
+        script.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError("Selena branch repository is outside the authorized workspace") from exc
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(script.parent), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        # Compatibility for older generic workspaces: before this refinement
+        # they were allowed to compile without a Git branch expectation.
+        return ""
+    if result.returncode != 0 or not result.stdout.strip():
+        return ""
+    try:
+        repository = Path(result.stdout.strip()).resolve(strict=True)
+        reference = repository.relative_to(workspace).as_posix()
+    except (OSError, ValueError) as exc:
+        raise ValueError("Selena branch repository is outside the authorized workspace") from exc
+    return reference or "."
 
 
 def _resolve_existing_v2_run_config(task: dict) -> dict:

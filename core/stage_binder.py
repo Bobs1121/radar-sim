@@ -67,6 +67,7 @@ def bind_run_config_environment(
     selected_data_binding_id = str(result.get("data_binding_id") or "").strip()
     selena_script_ref = str(result.get("selena_build_script_ref") or "").strip()
     package_script_ref = str(result.get("package_build_script_ref") or "").strip()
+    branch_repo_ref = str(result.get("branch_repo_ref") or "").strip()
     if (
         not agent_id
         or agent_id == INTERNAL_V1_SCHEDULER_AGENT_ID
@@ -163,6 +164,7 @@ def bind_run_config_environment(
             "adapter_key": adapter_key,
             "selena_build_script_ref": selena_script_ref,
             "package_build_script_ref": package_script_ref,
+            "branch_repo_ref": branch_repo_ref,
             "asset_bindings": asset_bindings,
             "runtime_xml": str(selena.get("runtime_xml") or ""),
             "expected_branch": str(selena.get("branch") or ""),

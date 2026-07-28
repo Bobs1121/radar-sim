@@ -239,6 +239,29 @@ def test_prepare_rejects_cwd_and_artifact_escape(local_binding, monkeypatch, tmp
         )
 
 
+def test_prepare_keeps_nested_branch_repository_inside_workspace(local_binding, monkeypatch):
+    nested = local_binding.workspace / "apl" / "base" / "bindings" / "xpeng"
+    nested.mkdir(parents=True)
+    monkeypatch.setattr(
+        build_stage,
+        "inspect_workspace",
+        lambda path: snapshot(commit="c" * 40) if Path(path) == nested.resolve() else snapshot(),
+    )
+    prepared = prepare(
+        local_binding,
+        monkeypatch,
+        payload={"branch_repo_ref": "apl/base/bindings/xpeng"},
+    )
+    assert prepared.branch_repo_path == nested.resolve()
+    assert prepared.branch_before is not None
+    assert prepared.branch_before.commit == "c" * 40
+
+
+def test_prepare_rejects_branch_repository_escape(local_binding, monkeypatch):
+    with pytest.raises(build_stage.AgentBuildStageError, match="branch repository reference"):
+        prepare(local_binding, monkeypatch, payload={"branch_repo_ref": "../outside"})
+
+
 def test_finish_returns_redacted_evidence_and_detects_change(local_binding, monkeypatch):
     prepared = prepare(local_binding, monkeypatch)
     (local_binding.output / "selena.exe").write_bytes(b"binary")

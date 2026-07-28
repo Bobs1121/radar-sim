@@ -38,6 +38,7 @@ def test_expected_branch_builds_dirty_current_workspace_and_warns_on_mismatch(tm
             "asset_bindings": {"runtime_xml": asset_id},
             "selena_build_script_ref": "selena/build.bat",
             "package_build_script_ref": "build/package.bat",
+            "branch_repo_ref": "apl/base/bindings/xpeng",
         }},
     )
     resolve_stage = next(stage for stage in resolved["stages"] if stage["stage_type"] == "resolve_spec")
@@ -68,6 +69,7 @@ def test_expected_branch_builds_dirty_current_workspace_and_warns_on_mismatch(tm
     assert "source_lease_ref" not in build["payload"]
     assert build["payload"]["selena_build_script_ref"] == "selena/build.bat"
     assert build["payload"]["package_build_script_ref"] == "build/package.bat"
+    assert environment["payload"]["branch_repo_ref"] == "apl/base/bindings/xpeng"
     public = api.get_job("alice", job["id"])
     decision = public["resolved_spec"]["decisions"]["selena"]
     assert decision["action"] == "build_current_workspace"

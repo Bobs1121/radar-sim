@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import time
 from types import SimpleNamespace
 
@@ -240,6 +241,19 @@ def test_node_local_project_free_resolution_requires_authorized_binding(tmp_path
 
     with pytest.raises(ValueError, match="not uniquely authorized"):
         agent_module._resolve_v2_run_config({"code_path": str(tmp_path / "other")})
+
+
+def test_branch_repo_reference_uses_nearest_nested_git_repository(tmp_path):
+    workspace = tmp_path / "workspace"
+    script = workspace / "apl" / "base" / "bindings" / "xpeng" / "selena" / "jenkins_selena_build.bat"
+    script.parent.mkdir(parents=True)
+    script.write_text("@echo off", encoding="utf-8")
+    for repo in (workspace, script.parents[1]):
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+
+    reference = agent_module._resolve_branch_repo_ref(workspace, str(script))
+
+    assert reference == "apl/base/bindings/xpeng"
 
 
 def test_light_execution_defense_reports_failure_without_spawning(monkeypatch):
