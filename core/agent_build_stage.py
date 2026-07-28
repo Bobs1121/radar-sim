@@ -665,12 +665,13 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
         raise AgentBuildStageError(str(exc)) from exc
 
     # Source changed detection.
-    source_changed = (
+    workspace_changed = (
         prepared.before.sha256 != after.sha256
         or prepared.before.commit != after.commit
     )
     branch_before = prepared.branch_before
     branch_after = None
+    branch_repository_changed = False
     if prepared.branch_repo_path is not None:
         try:
             branch_after = inspect_workspace(prepared.branch_repo_path)
@@ -678,10 +679,16 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
             raise AgentBuildStageError("branch repository is unavailable after build") from exc
         if branch_before is None:
             raise AgentBuildStageError("branch repository evidence is unavailable")
-        source_changed = source_changed or (
+        branch_repository_changed = (
             branch_before.sha256 != branch_after.sha256
             or branch_before.commit != branch_after.commit
         )
+    # When the selected script identified a nested Selena repository, that
+    # repository is the artifact's branch identity.  The outer workspace can
+    # contain unrelated product work and must not turn an otherwise stable
+    # Selena Bundle into an ambiguous one.  We still persist its change bit as
+    # diagnostic evidence without using it as the Bundle identity gate.
+    source_changed = branch_repository_changed if branch_before is not None else workspace_changed
 
     before_public = (branch_before or prepared.before).to_dict()
     after_public = (branch_after or after).to_dict()
@@ -697,6 +704,17 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
         "before": before_public,
         "after": after_public,
         "source_changed_during_build": source_changed,
+        # ``before``/``after`` are always the Selena branch repository when
+        # one was identified.  Keep the outer workspace integrity gate
+        # explicit instead of making a true source_changed flag appear to
+        # contradict those public branch snapshots.
+        "source_change_evidence": {
+            "workspace_changed": workspace_changed,
+            "branch_repository_changed": branch_repository_changed,
+            "identity_scope": (
+                "selena_branch_repository" if branch_before is not None else "workspace"
+            ),
+        },
         "artifact": {
             "logical_path": evidence.logical_path,
             "checksum": evidence.checksum,

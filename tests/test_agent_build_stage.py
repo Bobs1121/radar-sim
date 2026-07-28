@@ -18,9 +18,14 @@ from core.repo import WorkspaceFingerprint
 EMPTY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
-def snapshot(sha: str = "a" * 64, commit: str = "b" * 40, dirty: bool = False):
+def snapshot(
+    sha: str = "a" * 64,
+    commit: str = "b" * 40,
+    dirty: bool = False,
+    branch: str = "feature/test",
+):
     return WorkspaceFingerprint(
-        branch="feature/test",
+        branch=branch,
         commit=commit,
         dirty=dirty,
         sha256=sha,
@@ -275,6 +280,61 @@ def test_finish_returns_redacted_evidence_and_detects_change(local_binding, monk
     assert result["artifact"]["logical_path"] == "selena.exe"
     assert result["artifact"]["checksum"].startswith("sha256:")
     assert str(local_binding.workspace.resolve()) not in json.dumps(result)
+
+
+def test_finish_keeps_nested_branch_evidence_consistent(local_binding, monkeypatch):
+    nested = local_binding.workspace / "apl" / "base" / "bindings" / "xpeng"
+    nested.mkdir(parents=True)
+    branch_before = snapshot(sha="c" * 64, commit="d" * 40, branch="feature/selena")
+    branch_after = snapshot(sha="e" * 64, commit="f" * 40, branch="feature/selena")
+    snapshots = iter((branch_before, branch_after))
+    monkeypatch.setattr(build_stage, "inspect_workspace", lambda _path: next(snapshots))
+    prepared = prepare(
+        local_binding,
+        monkeypatch,
+        payload={"branch_repo_ref": "apl/base/bindings/xpeng"},
+    )
+    (local_binding.output / "selena.exe").write_bytes(b"binary")
+    result = build_stage.finish_selena_build(prepared)
+
+    assert result["before"]["branch"] == "feature/selena"
+    assert result["after"]["branch"] == "feature/selena"
+    assert result["before"]["commit"] == "d" * 40
+    assert result["after"]["commit"] == "f" * 40
+    assert result["source_changed_during_build"] is True
+    assert result["source_change_evidence"] == {
+        "workspace_changed": False,
+        "branch_repository_changed": True,
+        "identity_scope": "selena_branch_repository",
+    }
+
+
+def test_finish_reports_outer_workspace_change_without_faking_branch_change(local_binding, monkeypatch):
+    nested = local_binding.workspace / "apl" / "base" / "bindings" / "xpeng"
+    nested.mkdir(parents=True)
+    branch = snapshot(sha="c" * 64, commit="d" * 40, branch="feature/selena")
+    monkeypatch.setattr(build_stage, "inspect_workspace", lambda _path: branch)
+    prepared = prepare(
+        local_binding,
+        monkeypatch,
+        payload={"branch_repo_ref": "apl/base/bindings/xpeng"},
+    )
+    (local_binding.output / "selena.exe").write_bytes(b"binary")
+    monkeypatch.setattr(
+        build_stage,
+        "capture_source_snapshot",
+        lambda *_args: snapshot(sha="e" * 64, commit="f" * 40, branch="outer-main"),
+    )
+    result = build_stage.finish_selena_build(prepared)
+
+    assert result["before"]["commit"] == "d" * 40
+    assert result["after"]["commit"] == "d" * 40
+    assert result["source_changed_during_build"] is False
+    assert result["source_change_evidence"] == {
+        "workspace_changed": True,
+        "branch_repository_changed": False,
+        "identity_scope": "selena_branch_repository",
+    }
 
 
 @pytest.mark.parametrize("content", [None, b""])

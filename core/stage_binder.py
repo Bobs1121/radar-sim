@@ -371,12 +371,17 @@ def bind_current_workspace_build(
     workspace = dict(snapshot.workspace)
     actual_branch = str(workspace.get("branch") or "")
     expected_branch = str(selena.get("branch") or "").strip() if is_run_config else ""
+    branch_repo_ref = str(environment.get("payload", {}).get("branch_repo_ref") or "").strip()
     branch_mismatch = bool(expected_branch and expected_branch != actual_branch)
     branch_warnings: list[dict[str, str]] = []
     if branch_mismatch:
         warning = {
             "code": "workspace_branch_mismatch",
             "message": (
+                f"期望 Selena 子仓分支 '{expected_branch}'，当前子仓分支为 "
+                f"'{actual_branch}'。将编译当前工作区，不会切换分支。"
+                if branch_repo_ref
+                else
                 f"Expected branch '{expected_branch}', but the workspace is on "
                 f"'{actual_branch}'. The current workspace will be compiled unchanged."
             ),
@@ -428,6 +433,11 @@ def bind_current_workspace_build(
             "package_build_script_ref": str(
                 environment.get("payload", {}).get("package_build_script_ref") or ""
             ),
+            # The resolver obtains this relative reference from the selected
+            # Selena script.  It must follow the environment snapshot into
+            # the actual build; otherwise a nested Selena repository would
+            # be checked correctly but recorded as its outer workspace.
+            "branch_repo_ref": branch_repo_ref,
             "runtime_xml": str(selena.get("runtime_xml") or ""),
             "expected_branch": expected_branch,
             "actual_branch": actual_branch,

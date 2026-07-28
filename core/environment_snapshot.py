@@ -406,6 +406,7 @@ def inspect_selena_build_environment(
                     )
         expected_branch = str(payload.get("expected_branch") or "").strip()
         actual_branch = str((workspace or {}).get("branch") or "").strip()
+        nested_selena_repo = bool(str(payload.get("branch_repo_ref") or "").strip())
         mismatch = bool(expected_branch and expected_branch != actual_branch)
         checks_list.append(
             EnvironmentCheckResult(
@@ -414,12 +415,21 @@ def inspect_selena_build_environment(
                 "passed",
                 code="workspace_branch_mismatch" if mismatch else "",
                 message=(
+                    f"期望 Selena 子仓分支 '{expected_branch}'，当前子仓分支为 '{actual_branch}'。"
+                    "将编译当前工作区，不会切换分支。"
+                    if mismatch and nested_selena_repo
+                    else
                     f"Expected branch '{expected_branch}', current branch is '{actual_branch}'. "
                     "The current workspace will be compiled unchanged."
                     if mismatch
+                    else "Current Selena 子仓分支为 '" + actual_branch + "'."
+                    if nested_selena_repo
                     else f"Current branch is '{actual_branch}'."
                 ),
                 action=(
+                    "请确认 Selena 子仓分支及本地修改后再使用该构建产物。"
+                    if mismatch and nested_selena_repo
+                    else
                     "Confirm the branch and local modifications before relying on this build."
                     if mismatch
                     else ""

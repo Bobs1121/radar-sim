@@ -133,6 +133,7 @@ def test_nested_selena_branch_snapshot_is_used_for_branch_evidence():
         {
             "project": "ovrs25", "workspace_binding_id": BINDING_ID,
             "build_mode": "Release", "expected_branch": "feature/selena",
+            "branch_repo_ref": "apl/base/bindings/xpeng",
         },
         object(),
         agent_id="agent-alice-host1", node_kind=NODE_KIND_WINDOWS_AGENT,
@@ -144,6 +145,30 @@ def test_nested_selena_branch_snapshot_is_used_for_branch_evidence():
     assert snapshot.workspace["branch"] == "feature/selena"
     check = next(item for item in snapshot.checks if item.requirement_id == "workspace_branch_expectation")
     assert check.code == ""
+
+
+def test_nested_selena_branch_mismatch_names_the_selena_subrepository():
+    before = SimpleNamespace(
+        to_dict=lambda: {
+            "branch": "feature/actual", "commit": "a" * 40, "dirty": False, "sha256": "b" * 64,
+        }
+    )
+    snapshot = inspect_selena_build_environment(
+        {
+            "project": "ovrs25", "workspace_binding_id": BINDING_ID,
+            "build_mode": "Release", "expected_branch": "feature/expected",
+            "branch_repo_ref": "apl/base/bindings/xpeng",
+        },
+        object(),
+        agent_id="agent-alice-host1", node_kind=NODE_KIND_WINDOWS_AGENT,
+        now_fn=lambda: 100,
+        prepare_fn=lambda _payload, _store: SimpleNamespace(
+            before=before, branch_before=before, package_build_script_path=None,
+        ),
+    )
+    check = next(item for item in snapshot.checks if item.requirement_id == "workspace_branch_expectation")
+    assert check.code == "workspace_branch_mismatch"
+    assert "Selena 子仓" in check.message
 
 
 def test_environment_adapts_visual_studio_before_capturing_final_workspace_snapshot():

@@ -69,6 +69,7 @@ def test_expected_branch_builds_dirty_current_workspace_and_warns_on_mismatch(tm
     assert "source_lease_ref" not in build["payload"]
     assert build["payload"]["selena_build_script_ref"] == "selena/build.bat"
     assert build["payload"]["package_build_script_ref"] == "build/package.bat"
+    assert build["payload"]["branch_repo_ref"] == "apl/base/bindings/xpeng"
     assert environment["payload"]["branch_repo_ref"] == "apl/base/bindings/xpeng"
     public = api.get_job("alice", job["id"])
     decision = public["resolved_spec"]["decisions"]["selena"]
@@ -77,5 +78,5 @@ def test_expected_branch_builds_dirty_current_workspace_and_warns_on_mismatch(tm
     assert decision["branch_mismatch"] is True
     assert decision["warnings"][0]["code"] == "workspace_branch_mismatch"
     logs = control.get_logs(task_id=environment["stage_id"])["entries"]
-    assert any("current workspace will be compiled unchanged" in item["message"] for item in logs)
+    assert any("Selena 子仓分支" in item["message"] for item in logs)
     assert "source-lease" not in str(public)
