@@ -49,7 +49,9 @@ def test_rejects_outside_symlink_and_wrong_runtime_type(tmp_path):
         link.symlink_to(outside)
     except OSError:
         return
-    with pytest.raises(AgentAssetBindingError, match="readable file"):
+    # Windows rejects the symlink itself; POSIX resolves it and rejects the
+    # resulting outside target. Both preserve the authorization boundary.
+    with pytest.raises(AgentAssetBindingError, match="readable file|outside"):
         store.authorize_path(binding_id=binding.binding_id, asset_path=str(link), role="runtime_xml")
 
 
