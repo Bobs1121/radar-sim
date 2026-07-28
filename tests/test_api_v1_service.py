@@ -686,6 +686,29 @@ def test_existing_bundle_local_data_path_creates_agent_upload_stage(tmp_path):
     assert stage["payload"]["project"] == "bydod25"
     assert stage["payload"]["data_path"] == "D:/measurements/local"
 
+    # The existing Selena Bundle is already shared, but the user data is not.
+    # A newly installed one-click Windows Agent has no data-root registration
+    # yet; it must still receive this Stage and authorize the submitted local
+    # path itself, rather than allowing a Linux route to claim it.
+    control.register_agent(
+        "one-click",
+        agent_id="windows-one-click",
+        node_kind="windows_agent",
+        capabilities=["data.local.read", "data.upload"],
+        metadata={
+            "node_kind": "windows_agent",
+            "auto_configure": True,
+            "data_bindings": [],
+        },
+    )
+    bound = control.bind_pending_data_stage("windows-one-click")
+    assert bound is not None
+    assert bound["assigned_agent_id"] == "windows-one-click"
+    assert bound["required_agent_id"] == "windows-one-click"
+    assert bound["payload"]["dispatch_scope"] == "data_upload"
+    assert bound["payload"]["auto_configure"] is True
+    assert "data_binding_id" not in bound["payload"]
+
 
 def test_submit_get_cancel_and_manifest_are_logical_jobs(tmp_path):
     api, services = make_api(tmp_path)

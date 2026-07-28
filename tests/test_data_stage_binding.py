@@ -83,6 +83,50 @@ def test_pending_data_stage_does_not_leak_to_unmatched_agent(tmp_path: Path):
     assert service.claim_next_task("agent-1") is None
 
 
+def test_one_click_agent_binds_first_windows_data_path_without_linux_fallback(tmp_path: Path):
+    """Registered Selena + local Windows data must reach the Windows Agent.
+
+    The Agent has no pre-existing data binding, which is normal on its first
+    task.  It receives an explicit one-click authorization request instead of
+    leaving prepare_data for a Linux/shared executor.
+    """
+    service = ControlService(tmp_path / "control.db")
+    service.register_agent(
+        "one-click",
+        agent_id="agent-1",
+        node_kind="windows_agent",
+        capabilities=["data.local.read", "data.upload"],
+        metadata={
+            "node_kind": "windows_agent",
+            "auto_configure": True,
+            "data_bindings": [],
+        },
+    )
+    job = _job(service, "D:/measurements/case")
+
+    bound = service.bind_pending_data_stage("agent-1")
+
+    assert bound["job_id"] == job["job_id"]
+    assert bound["required_agent_id"] == "agent-1"
+    assert bound["assigned_agent_id"] == "agent-1"
+    assert bound["payload"]["dispatch_scope"] == "data_upload"
+    assert bound["payload"]["auto_configure"] is True
+    assert "data_binding_id" not in bound["payload"]
+
+
+def test_one_click_data_bootstrap_never_claims_shared_or_central_paths(tmp_path: Path):
+    service = ControlService(tmp_path / "control.db")
+    service.register_agent(
+        "one-click",
+        agent_id="agent-1",
+        node_kind="windows_agent",
+        capabilities=["data.local.read", "data.upload"],
+        metadata={"node_kind": "windows_agent", "auto_configure": True, "data_bindings": []},
+    )
+    _job(service, "//shared/data/case")
+    assert service.bind_pending_data_stage("agent-1") is None
+
+
 def test_successful_agent_data_upload_updates_path_free_resolved_spec(tmp_path: Path):
     service = ControlService(tmp_path / "control.db")
     service.register_agent(

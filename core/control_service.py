@@ -925,8 +925,18 @@ class ControlService:
             return None
 
     def bind_pending_data_stage(self, agent_id: str) -> Optional[dict[str, Any]]:
-        """Bind one local-data prepare Stage using path-free ancestor IDs."""
+        """Bind one local-data Stage, including one-click first-use authorization.
+
+        A pre-registered data-root remains the preferred, path-free match.
+        For a Windows one-click Agent, a Windows local path may be the first
+        path that user has submitted.  In that case the Agent owns the single
+        local authorization step and creates the same durable data-root
+        binding before it discovers or uploads data.  This fallback is
+        deliberately restricted to ``agent`` paths: shared and central data
+        must keep their existing Linux routes.
+        """
         from core.agent_data_bindings import candidate_data_binding_ids
+        from core.datasets import classify_data_path
 
         agent_id = str(agent_id or "").strip()
         with self._lock:
@@ -934,6 +944,10 @@ class ControlService:
             try:
                 agent = self._get_agent_locked(conn, agent_id)
                 metadata = dict(agent.get("metadata") or {})
+                node_kind = str(metadata.get("node_kind") or "")
+                auto_configure = metadata.get("auto_configure") is True
+                if node_kind not in {"windows_agent", "windows_full"}:
+                    return None
                 advertised: dict[str, set[str]] = {}
                 for item in metadata.get("data_bindings") or []:
                     if not isinstance(item, dict) or item.get("healthy") is not True:
@@ -942,8 +956,6 @@ class ControlService:
                     binding_id = str(item.get("id") or "").strip()
                     if project and binding_id.startswith("data-root:sha256:"):
                         advertised.setdefault(project, set()).add(binding_id)
-                if not advertised:
-                    return None
                 rows = conn.execute(
                     """
                     SELECT t.task_id,t.payload_json
@@ -962,22 +974,41 @@ class ControlService:
                     (INTERNAL_V1_SCHEDULER_AGENT_ID,),
                 ).fetchall()
                 candidate: tuple[str, str] | None = None
+                auto_candidate = ""
                 for row in rows:
                     payload = self._loads(row["payload_json"])
                     if payload.get("dispatch_scope") != "data_upload":
                         continue
                     project = str(payload.get("project") or "").strip()
-                    for binding_id in candidate_data_binding_ids(project, str(payload.get("data_path") or "")):
+                    data_path = str(payload.get("data_path") or "")
+                    for binding_id in candidate_data_binding_ids(project, data_path):
                         if binding_id in advertised.get(project, set()):
                             candidate = (str(row["task_id"]), binding_id)
                             break
                     if candidate is not None:
                         break
+                    # Only a Windows-path task can use the convenience
+                    # bootstrap.  It is never a fallback for Cluster/Linux
+                    # data, shared paths, or an already logical dataset.
+                    if (
+                        auto_configure
+                        and project
+                        and classify_data_path(data_path) == "agent"
+                        and not auto_candidate
+                    ):
+                        auto_candidate = str(row["task_id"])
             finally:
                 conn.close()
-        if candidate is None:
+        if candidate is None and not auto_candidate:
             return None
         try:
+            if candidate is None:
+                return self.bind_stage_to_agent(
+                    auto_candidate,
+                    agent_id=agent_id,
+                    expected_assigned_agent_id=INTERNAL_V1_SCHEDULER_AGENT_ID,
+                    payload_patch={"auto_configure": True},
+                )
             return self.bind_stage_to_agent(
                 candidate[0],
                 agent_id=agent_id,

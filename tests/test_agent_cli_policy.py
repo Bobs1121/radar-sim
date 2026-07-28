@@ -484,6 +484,80 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
     assert client.results[0]["result"]["dataset_id"].startswith("dataset:sha256:")
 
 
+def test_prepare_data_one_click_authorizes_first_local_path_then_uploads(monkeypatch, tmp_path):
+    import core.agent_data_lease as lease_module
+
+    monkeypatch.setenv("RSIM_HOME", str(tmp_path / "home"))
+    source = tmp_path / "measurements" / "case"
+    source.mkdir(parents=True)
+    (source / "one.MF4").write_bytes(b"mf4")
+
+    class FakeLeaseStore:
+        def create(self, payload, bindings, *, stage_id, attempt, checksum, cancel_requested):
+            assert stage_id == "stage-one-click-data"
+            assert attempt == 1
+            assert checksum is True
+            assert payload["data_binding_id"].startswith("data-root:sha256:")
+            assert bindings.authorize_path(
+                project="ovrs25",
+                binding_id=payload["data_binding_id"],
+                data_path=payload["data_path"],
+            ) == source.resolve()
+            return SimpleNamespace(
+                lease_id="data-lease:sha256:" + "a" * 32,
+                files=(SimpleNamespace(relative_path="one.MF4", size=3, checksum="sha256:" + "b" * 64),),
+                project="ovrs25",
+            )
+
+        def mark_uploaded(self, _lease_id, _dataset_id):
+            return None
+
+    class FakeClient:
+        def __init__(self):
+            self.logs = []
+            self.results = []
+            self.metadata = []
+
+        def append_logs(self, _task_id, lines):
+            self.logs.extend(lines)
+
+        def heartbeat(self, _agent_id, **kwargs):
+            self.metadata.append(kwargs.get("metadata") or {})
+            return {"cancel_requested": False}
+
+        def upload_data_lease(self, *_args, **_kwargs):
+            return {
+                "dataset": {"id": "dataset:sha256:" + "c" * 64},
+                "data_path": "dataset://sha256/" + "c" * 64,
+            }
+
+        def submit_result(self, _task_id, **kwargs):
+            self.results.append(kwargs)
+
+    monkeypatch.setattr(lease_module, "AgentDataLeaseStore", FakeLeaseStore)
+    client = FakeClient()
+    task = {
+        "task_id": "stage-one-click-data",
+        "task_type": "prepare_data",
+        "stage_type": "prepare_data",
+        "attempt_count": 1,
+        "owner": "alice",
+        "payload": {
+            "dispatch_scope": "data_upload",
+            "project": "ovrs25",
+            "data_path": str(source),
+            "auto_configure": True,
+        },
+    }
+
+    assert agent_module._run_task(
+        client, "agent-a", task, heartbeat_interval=1, node_kind="windows_agent"
+    ) == 0
+    assert client.results[0]["status"] == "succeeded"
+    assert any("authorized" in line for line in client.logs)
+    assert any(item.get("data_bindings") for item in client.metadata)
+
+
 def test_prepare_data_heartbeat_cancels_a_slow_discovery(monkeypatch):
     import core.agent_data_bindings as binding_module
     import core.agent_data_lease as lease_module

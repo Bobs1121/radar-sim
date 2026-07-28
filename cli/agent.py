@@ -963,10 +963,32 @@ def _run_v5_prepare_data(
             cancel_event.set()
         if cancel_event.is_set():
             raise DatasetDiscoveryCancelled("dataset preparation cancelled")
+        payload = dict(task.get("payload") or {})
+        bindings = AgentDataBindingStore()
+        # One-click Windows deployment has no separate "register data root"
+        # screen.  The control plane assigns this only for a syntactically
+        # Windows-local path; authorize that submitted path on this Agent once
+        # and retain the resulting durable binding for later tasks.
+        if payload.get("auto_configure") is True and not str(payload.get("data_binding_id") or ""):
+            project = str(payload.get("project") or "").strip()
+            data_path = str(payload.get("data_path") or "").strip()
+            candidate = Path(data_path).expanduser()
+            if not project or not data_path or not candidate.exists():
+                raise ValueError("submitted local data path is unavailable for one-click authorization")
+            root = candidate if candidate.is_dir() else candidate.parent
+            binding = bindings.register(project=project, root_path=root)
+            payload["data_binding_id"] = binding.binding_id
+            client.heartbeat(
+                agent_id,
+                status="busy",
+                current_task_id=task_id,
+                metadata={"data_bindings": _public_data_bindings()},
+            )
+            client.append_logs(task_id, ["[agent] submitted local data path authorized for this Windows computer"])
         leases = AgentDataLeaseStore()
         lease = leases.create(
-            dict(task.get("payload") or {}),
-            AgentDataBindingStore(),
+            payload,
+            bindings,
             stage_id=task_id,
             attempt=attempt,
             # Local simulation consumes the immutable Agent lease directly.
