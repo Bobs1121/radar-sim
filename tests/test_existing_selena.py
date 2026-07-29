@@ -123,15 +123,16 @@ def test_bydod25_inference(tmp_path):
     assert r.internal_project == "bydod25"
 
 
-def test_ambiguous_inference_raises(tmp_path):
+def test_ambiguous_product_evidence_does_not_block_existing_selena(tmp_path):
     ex = tmp_path / "shared_project"
     ex.mkdir()
     (ex / "selena.exe").write_bytes(b"exe")
     rx = ex / "Runtime.xml"
     rx.write_text(_VALID_XML, encoding="utf-8")
     (ex / "ovrs25_bydod25.dll").write_bytes(b"dll")
-    with pytest.raises(ExistingSelenaError, match="ambiguous"):
-        import_existing_selena(ex, rx, created_at=_now())
+    result = import_existing_selena(ex, rx, created_at=_now())
+    assert result.internal_project.startswith("workspace-")
+    assert result.adapter_key == "generic:existing-selena"
 
 
 def test_deterministic_identity(tmp_path):
@@ -242,26 +243,28 @@ def test_existing_selena_uses_workspace_scripts_as_product_evidence(tmp_path):
     assert r.adapter_key == "recipe:g3n_fvg3_od25"
 
 
-def test_existing_selena_rejects_conflicting_artifact_and_workspace_evidence(tmp_path):
+def test_existing_selena_ignores_conflicting_optional_product_evidence(tmp_path):
     ex, rx = _mk(tmp_path, name="ovrs25_runtime", nested=True)
-    with pytest.raises(ExistingSelenaError, match="evidence conflicts"):
-        import_existing_selena(
-            ex,
-            rx,
-            code_path="D:/bydod25fr/byd",
-            selena_build_script="D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat",
-            package_build_script="D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat",
-            created_at=_now(),
-        )
+    result = import_existing_selena(
+        ex,
+        rx,
+        code_path="D:/bydod25fr/byd",
+        selena_build_script="D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat",
+        package_build_script="D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat",
+        created_at=_now(),
+    )
+    assert result.internal_project.startswith("workspace-")
+    assert result.adapter_key == "generic:existing-selena"
 
 
-def test_existing_selena_rejects_script_outside_evidence_workspace(tmp_path):
+def test_existing_selena_ignores_invalid_optional_workspace_evidence(tmp_path):
     ex, rx = _mk(tmp_path, name="neutral_runtime", nested=True)
-    with pytest.raises(ExistingSelenaError, match="inside that repository"):
-        import_existing_selena(
-            ex,
-            rx,
-            code_path="D:/workspace",
-            selena_build_script="E:/other/build_selena.bat",
-            created_at=_now(),
-        )
+    result = import_existing_selena(
+        ex,
+        rx,
+        code_path="D:/workspace",
+        selena_build_script="E:/other/build_selena.bat",
+        created_at=_now(),
+    )
+    assert result.internal_project.startswith("workspace-")
+    assert result.adapter_key == "generic:existing-selena"

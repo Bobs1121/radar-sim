@@ -1389,9 +1389,9 @@ def _copy_assets(config: dict[str, Any], assets_dir: Path, warnings: list[str], 
     }
     for key in ("runtime_xml", "matfilefilter", "adapter_file", "config_template"):
         # Stage execution writes the resolved Runtime/MatFilter/Adapter into
-        # simulation.*.  Those values are authoritative for this run; static
-        # project assets are only fallbacks.  The template remains primarily
-        # project-owned because Stage resolution does not normally replace it.
+        # simulation.* and those values are authoritative for this run.
+        # UserRunConfig V2 removes every project asset before reaching here;
+        # the generic worker template is used when no task template exists.
         primary = assets.get(key) if key == "config_template" else simulation.get(simulation_keys[key])
         fallback = simulation.get(simulation_keys[key]) if key == "config_template" else assets.get(key)
         value = str(

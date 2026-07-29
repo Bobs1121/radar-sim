@@ -16,6 +16,48 @@
 
 `CHECKPOINT.md`、`docs/handoff.md`、`docs/REFACTORING_PLAN.md`、`docs/WIZARD_IMPLEMENTATION_PLAN.md` 和旧 phase 章节只作为历史证据，不覆盖上述四份文档。
 
+## 0.0-current 阶段交接：仿真执行彻底去项目化（2026-07-29）
+
+### 本阶段冻结结论
+
+- 用户配置、Web、SDK 和后续 Skill/MCP 都不得出现 `project`、内部适配器、Radar FL/FR/RL/RR、Agent ID、Cluster 路径或 Runtime Bundle ID。
+- Cluster 和 Windows 本地仿真执行不按项目/产品选择配置。执行参数只来自本次任务：Selena 产物及同目录 DLL、绑定 Runtime、MatFilter、可选 Adapter、唯一 `data.path`，Radar source 从当前 MF4 acquisition metadata 自动推导。
+- `internal_project` 暂时只允许作为不透明的任务/产物/数据隔离标签，不能选择 Runtime、Adapter、MatFilter、source、ParamConfig 模板、额外参数、信号表或共享盘映射。
+- 项目/产品识别仅允许服务于 `source=build` 的构建脚本解析、Git 子仓定位、工具链依赖提示和 Selena 产物发现；识别失败不得阻止已有 Selena + Cluster。
+- 静态 Runtime/MF4/接口诊断只能作为告警证据，不能前置拦截。最终仿真成功与否由 Selena/Cluster 的真实 `result.ini`、输出 MF4 和结果归档决定。
+
+### 已完成并推送
+
+- `eb18512 fix: infer Cluster radar source from MF4`
+  - Cluster 不再读取项目默认 Radar source；从实际 MF4 自动枚举 acquisition source。
+  - 当前 Xpeng 数据发现 `RadarFL`、`RadarFR`，不含 `RadarFC`；选择证据会写入 manifest。
+  - V2 Stage 已删除项目 Runtime/Adapter/MatFilter/source/config template 的回退，使用通用内置 ParamConfig。
+- `e0d41c4 fix: make Cluster execution project independent`
+  - `load_cluster_execution_config()` 对已登记项目、未知项目和 `workspace-*` 一律只加载 global + platform + deployment 基础设施层。
+  - 已删除匿名现有 Selena 的 `PROJECT_ADAPTER_UNAVAILABLE` 阻断。
+  - 本机定向门禁 `25 passed`；同一加载器对 `ovrs25`、`xpeng-od25` 与匿名身份生成的执行配置除 trace identity 外完全一致。
+
+### 审计后暂停发布的残留（正在修复，禁止宣称已发布）
+
+- V1 preflight 曾把 `internal_project` 写入 `_meta.project`，继而加载 `config/projects/<name>/signals.yaml` 并可能前置阻断。这与“项目无关、真实仿真结果为准”冲突。
+- legacy `rsim server serve --cluster-executor` 曾按 `project/profile` 加载完整项目配置，缺省甚至回退 `ovrs25`。该入口必须停用，统一使用 `serve-v1` 的 V1 Stage executor。
+- 匿名 `workspace-*` 的本地数据上传曾受项目注册表白名单约束；共享路径解析和结果归档根目录也曾遍历项目配置。这些控制面能力必须改为 owner/job evidence + deployment-wide infrastructure。
+- 现有 Selena 的产品识别冲突仍可能阻止导入；识别只能是诊断信息，不能成为仿真前提。
+
+### 当前线上与安全状态
+
+- 当前线上仍为 `/home/hoz2wx/radar-sim-v1-eb18512`，`radar-sim-v1.service` active，入口 `http://10.190.171.44:8877`。
+- `/home/hoz2wx/radar-sim-v1-e0d41c4` 仅是由提交创建的独立候选 release；尚未切换 systemd、尚未提交新真实任务。
+- 真实发布已在审计发现残留后主动暂停，因此没有半修复版本进入用户流量，也没有额外 Cluster 资源被消耗。
+
+### 下一步恢复发布门禁
+
+1. 完成 preflight 非阻断、项目 signals 隔离、legacy executor 禁用、匿名数据上传和 deployment-wide 共享路径/结果根修复。
+2. 增加反例测试：`ovrs25`、Xpeng 名称、未知 `workspace-*` 输入必须得到相同 Cluster 执行配置；项目 `signals.yaml` 即使报错也不能阻止提交。
+3. 提交推送后创建新的不可变 Linux release，运行 Linux 门禁，原子切换且 health 失败自动回滚。
+4. 用用户指定的 Existing Selena + `runtime_fcta_per.xml` + 两个真实 MF4 + 明确 MatFilter 提交新任务；验证无编译、source 自动为实际 acquisition、真实 Cluster 终态、结果 MF4 和下载。
+5. 将真实 job/Cluster id、Runtime/Selena hash、Config source、结果归档证据回填本节；只有此时才能把本阶段标记为完成。
+
 ## 0.0 P0 已闭合：直接 Selena 文件夹 + 本机数据 + Cluster 端到端真实验证完成（2026-07-29）
 
 > 本节是最新实时状态，优先级高于下方 0.1。0.1 节描述的“未完成 P0 缺口”已由本次两个修复 + 真实 Cluster 仿真闭环验证闭合。

@@ -123,7 +123,7 @@ def test_linux_service_maps_authorized_unc_selena_to_its_mount(tmp_path, monkeyp
     catalog = RuntimeBundleCatalog(tmp_path / "catalog.db")
     uploads = RuntimeBundleUploadService(store, catalog, lambda _owner, _ref: None)
     monkeypatch.setattr(
-        "core.config.load_config",
+        "core.config.load_cluster_execution_config",
         lambda _project: {
             "cluster": {"linux_mount_map": {r"\\server\share": tmp_path.as_posix()}}
         },

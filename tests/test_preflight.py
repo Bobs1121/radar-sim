@@ -211,6 +211,24 @@ def test_signal_contract_missing_signal_hard_fails(base_config, tmp_path, monkey
     assert "MISSING_SIG" in r.detail
 
 
+def test_project_independent_execution_never_loads_project_signal_contract(
+    base_config, monkeypatch
+):
+    loaded = []
+    monkeypatch.setattr(
+        "core.config.load_signals",
+        lambda project: loaded.append(project) or [{"name": "PROJECT_ONLY_SIGNAL"}],
+    )
+    cfg = dict(base_config)
+    cfg["_project_independent_execution"] = True
+
+    result = preflight.check_signal_contract(cfg)
+
+    assert result.passed is True
+    assert result.level == "info"
+    assert loaded == []
+
+
 # ---------------------------------------------------------------------------
 # Runtime.xml DataPlayer -> MF4 contract (V1 strict path)
 # ---------------------------------------------------------------------------

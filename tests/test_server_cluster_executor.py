@@ -12,6 +12,13 @@ import pytest
 from core.server_cluster_executor import execute_cluster_run
 
 
+def test_legacy_project_profile_executor_has_no_server_entrypoint():
+    from cli.server import _start_cluster_executor
+
+    with pytest.raises(RuntimeError, match="project/profile Cluster execution is disabled"):
+        _start_cluster_executor("127.0.0.1", 8877)
+
+
 @pytest.fixture
 def captured_logs():
     logs: dict[str, list[str]] = {}

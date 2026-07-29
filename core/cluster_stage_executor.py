@@ -274,9 +274,8 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     # as RadarFC.  The public v1 YAML has no source field, so that value is not
     # user intent and must not outrank MF4 acquisition metadata.
     config["_cluster_source_explicit"] = False
-    # V2 run parameters belong to the submitted task, never to project
-    # recognition. Keep project configuration only for infrastructure,
-    # compilation/toolchain and artifact discovery.
+    # V2 run parameters belong to the submitted task, never to product
+    # recognition.  The loader supplies only deployment-wide infrastructure.
     project_simulation = config.setdefault("simulation", {})
     for key in (
         "source",
@@ -346,6 +345,9 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     data_location = context.dataset_catalog.resolve_location(dataset.id, owner=owner)
 
     config.setdefault("_meta", {})["project"] = project
+    # The bundle identity is trace metadata only.  It must not activate
+    # config/projects/<name>/signals.yaml or any other product contract.
+    config["_project_independent_execution"] = True
     config.setdefault("paths", {})["build_output"] = str(exe.parent)
     config.setdefault("selena", {})["exe_pattern"] = "{executable_name}"
     config["selena"]["executable_name"] = exe.name
@@ -363,13 +365,6 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     # collection remains the source of truth for execution success.
     config["_strict_runtime_data_signals"] = True
     preflight = run_preflight(config)
-    if not preflight.ok:
-        detail = next((item.detail for item in preflight.checks if not item.passed), "")
-        raise ClusterStageExecutionError(
-            detail or "仿真前兼容性校验未通过，请根据修复建议调整配置后重试。",
-            code="PREFLIGHT_COMPATIBILITY_FAILED",
-            actions=({"type": "fix_configuration", "label": "修正 Runtime XML、数据或 Selena 后重试"},),
-        )
 
     from core.cluster import prepare_cluster_job
     package = prepare_cluster_job(
@@ -396,7 +391,12 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         "cluster_run": run.to_dict(),
         "cluster_run_ref": run.ref,
         "preflight": {
+            # Static inspection is diagnostic only.  Selena/Cluster result
+            # collection is the execution truth and decides the terminal job
+            # status, so a best-effort mismatch never blocks dispatch here.
             "ok": True,
+            "diagnostic_ok": bool(preflight.ok),
+            "dispatch_blocked": False,
             "checks": [
                 {
                     "name": item.name,

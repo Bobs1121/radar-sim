@@ -62,11 +62,18 @@ def import_existing_selena(
     exe = _find_unique_exe(root)
     _require_colocated_dll(exe)
     runtime = _resolve_runtime_xml(runtime_xml)
-    artifact_recognition = _infer_project_adapter(root, runtime, exe)
-    workspace_recognition = _recognize_workspace_product(
-        code_path=code_path,
-        selena_build_script=selena_build_script,
-        package_build_script=package_build_script,
+    # Product recognition is optional trace evidence.  Existing Selena
+    # execution depends on the files themselves, never on a registered project
+    # or a successful adapter guess.
+    artifact_recognition = _best_effort_product_evidence(
+        lambda: _infer_project_adapter(root, runtime, exe)
+    )
+    workspace_recognition = _best_effort_product_evidence(
+        lambda: _recognize_workspace_product(
+            code_path=code_path,
+            selena_build_script=selena_build_script,
+            package_build_script=package_build_script,
+        )
     )
     recognized = _merge_product_evidence(
         artifact_recognition,
@@ -261,14 +268,18 @@ def _merge_product_evidence(
     artifact: tuple[str, str] | None,
     workspace: tuple[str, str] | None,
 ) -> tuple[str, str] | None:
-    """Prefer proven evidence and fail closed when two products disagree."""
+    """Keep unambiguous trace evidence without making it an execution gate."""
     if artifact is not None and workspace is not None and artifact != workspace:
-        raise ExistingSelenaError(
-            "Selena product evidence conflicts: the existing folder/Runtime and "
-            "the code repository/build scripts identify different products; "
-            "confirm that all selected paths belong to the same product"
-        )
+        return None
     return workspace or artifact
+
+
+def _best_effort_product_evidence(callback) -> tuple[str, str] | None:
+    """Discard optional recognition errors; file validation remains strict."""
+    try:
+        return callback()
+    except (ExistingSelenaError, OSError, ValueError):
+        return None
 
 
 def _extract_path_tokens(text: str, out: list[str]) -> None:

@@ -32,11 +32,8 @@ def register(subparsers):
     serve.add_argument(
         "--cluster-executor",
         action="store_true",
-        help="Start an in-process cluster.run executor (Mode A). The server itself "
-        "claims cluster.run tasks and runs prepare_cluster_job + submit_cluster_job "
-        "directly — no Windows agent needed. Requires PyYAML + write access to the "
-        "cluster workspace share + reachability to SZHRADAR01:8123. Use this so T2/T3 "
-        "users can submit cluster sims from the browser without a Windows machine.",
+        help="Retired compatibility flag. Project/profile Cluster execution is disabled; "
+        "use `rsim server serve-v1` and its project-free Cluster Stage executor.",
     )
 
     serve_v1 = server_sub.add_parser(
@@ -195,11 +192,13 @@ def _run_serve(args) -> int:
 
     executor = None
     if getattr(args, "cluster_executor", False):
-        try:
-            executor = _start_cluster_executor(host, port)
-        except Exception as exc:
-            print(f"[warn] cluster executor not started: {exc}")
-            executor = None
+        print(
+            "The legacy project/profile Cluster executor is disabled. "
+            "Use `rsim server serve-v1`; its Cluster Stage executor consumes "
+            "the same project-free YAML/SDK contract."
+        )
+        server.server_close()
+        return 2
 
     print("Press Ctrl+C to stop.")
     try:
@@ -334,19 +333,9 @@ def _run_serve_v1(args) -> int:
     def runtime_bundle_upload_service_factory(_owner: str) -> RuntimeBundleUploadService:
         return runtime_bundle_upload_service
 
-    def project_available(project: str) -> bool:
-        if str(project or "") == "run-config-v2":
-            return True
-        try:
-            from core.config import list_projects
-            return str(project or "") in set(list_projects())
-        except Exception:
-            return False
-
     dataset_upload_service = DatasetUploadService(
         dataset_store,
         dataset_catalog,
-        project_validator=project_available,
         evidence_provider=lambda owner, evidence_ref: trusted_data_stage_evidence_from_control(
             factory(owner), owner, evidence_ref
         ),
@@ -370,11 +359,11 @@ def _run_serve_v1(args) -> int:
         )
 
     def data_resolution_provider(owner: str, spec):
-        from core.config import load_config
-        project_config = load_config(spec.project)
+        from core.config import load_cluster_execution_config
+        infrastructure_config = load_cluster_execution_config(spec.project)
         return resolve_data_reference(
             dataset_catalog,
-            SharedNamespaceRegistry.from_config(project_config),
+            SharedNamespaceRegistry.from_config(infrastructure_config),
             owner=owner,
             project=spec.project,
             data_path=spec.data.path,
@@ -383,24 +372,23 @@ def _run_serve_v1(args) -> int:
 
     def cluster_result_roots() -> list[Path]:
         """Return deployment-authorized Cluster workspaces for result archiving."""
-        from core.config import list_projects, load_config
+        from core.config import load_cluster_execution_config
 
         roots: list[Path] = []
-        for project in list_projects():
-            try:
-                cluster = dict((load_config(project).get("cluster") or {}))
-                workspace = str(cluster.get("workspace_root") or "").strip()
-                if not workspace:
-                    continue
-                for unc_prefix, mount in dict(cluster.get("linux_mount_map") or {}).items():
-                    if workspace.lower().startswith(str(unc_prefix).lower()):
-                        workspace = str(mount) + workspace[len(str(unc_prefix)):].replace("\\", "/")
-                        break
-                root = Path(workspace).expanduser()
-                if root.is_dir() and root not in roots:
-                    roots.append(root)
-            except Exception:
-                continue
+        try:
+            cluster = dict(
+                (load_cluster_execution_config("run-config-v2").get("cluster") or {})
+            )
+            workspace = str(cluster.get("workspace_root") or "").strip()
+            for unc_prefix, mount in dict(cluster.get("linux_mount_map") or {}).items():
+                if workspace.lower().startswith(str(unc_prefix).lower()):
+                    workspace = str(mount) + workspace[len(str(unc_prefix)):].replace("\\", "/")
+                    break
+            root = Path(workspace).expanduser()
+            if workspace and root.is_dir():
+                roots.append(root)
+        except Exception:
+            pass
         return roots
 
     result_catalog = default_result_catalog(
@@ -464,18 +452,10 @@ def _is_loopback_bind(host: str) -> bool:
 
 
 def _start_cluster_executor(host: str, port: int):
-    """Start the in-process cluster.run executor (Mode A server-side execution)."""
-    from core.server_cluster_executor import ClusterExecutor
-
-    def config_loader(project: str) -> dict:
-        from core.config import load_config
-        return load_config(project or "ovrs25")
-
-    url = f"http://{host}:{port}"
-    executor = ClusterExecutor(url, config_loader, agent_id="server-cluster-executor")
-    executor.start()
-    print(f"[cluster-executor] in-process agent started (claims cluster.run, submits to SZHRADAR)")
-    return executor
+    """Reject the retired project/profile Cluster execution path."""
+    raise RuntimeError(
+        "legacy project/profile Cluster execution is disabled; use `rsim server serve-v1`"
+    )
 
 
 def _per_user_service_factory():

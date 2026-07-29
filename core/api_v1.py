@@ -582,10 +582,10 @@ class ApiV1Service:
     def _server_visible_path(self, value: str) -> Path:
         """Resolve a raw or administrator-authorized shared path on Linux."""
         candidate = Path(str(value or "")).expanduser()
-        if candidate.exists() or self.project_names_provider is None:
+        if candidate.exists():
             return candidate
         try:
-            from core.config import load_config
+            from core.config import load_cluster_execution_config
             from core.shared_namespace import (
                 SharedNamespaceError,
                 SharedNamespaceRegistry,
@@ -594,19 +594,12 @@ class ApiV1Service:
 
             if not looks_like_shared_path(str(value or "")):
                 return candidate
-            # Existing Selena is packaged before its internal project is
-            # known. Try each administrator-owned namespace and accept only a
-            # mount path that really exists on this control plane.
-            for project in self.project_names_provider():
-                try:
-                    resolved = SharedNamespaceRegistry.from_config(
-                        load_config(str(project))
-                    ).resolve(str(value))
-                except (OSError, ValueError, SharedNamespaceError):
-                    continue
-                central = Path(resolved.central_probe_path)
-                if central.exists():
-                    return central
+            resolved = SharedNamespaceRegistry.from_config(
+                load_cluster_execution_config("run-config-v2")
+            ).resolve(str(value))
+            central = Path(resolved.central_probe_path)
+            if central.exists():
+                return central
         except (ImportError, OSError, TypeError, ValueError):
             pass
         return candidate

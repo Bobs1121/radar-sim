@@ -301,7 +301,9 @@ def check_interface(config: dict[str, Any]) -> CheckResult:
 
 def _required_signal_names(config: dict[str, Any]) -> list[str]:
     """Required Signals from signals.yaml (project-level, hard constraint)."""
-    project = config.get("_meta", {}).get("project") or config.get("project", {}).get("name")
+    project = None
+    if not bool(config.get("_project_independent_execution")):
+        project = config.get("_meta", {}).get("project") or config.get("project", {}).get("name")
     if project:
         try:
             from core.config import load_signals
