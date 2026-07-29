@@ -16,6 +16,187 @@
 
 `CHECKPOINT.md`、`docs/handoff.md`、`docs/REFACTORING_PLAN.md`、`docs/WIZARD_IMPLEMENTATION_PLAN.md` 和旧 phase 章节只作为历史证据，不覆盖上述四份文档。
 
+## 0.0 P0 已闭合：existing Bundle + 本机数据 auto-binding 端到端真实验证完成（2026-07-29）
+
+> 本节是最新实时状态，优先级高于下方 0.1。0.1 节描述的“未完成 P0 缺口”已由本次两个修复 + 真实 Cluster 仿真闭环验证闭合。
+
+### 两个已提交并部署的修复
+
+1. `2d1756e fix: bind first Windows-local data path on one-click Agent`（`core/control_service.py` + `cli/agent.py`）
+   - `source=existing + existing_path=selena-bundle:... + target=cluster` + 本机 `D:/...` 数据时，控制面把 `prepare_data` 以 `auto_configure=true` 绑定给 `windows_agent/windows_full` Agent；Agent 首次领取时为本机路径登记一次持久 data-root binding，再复用既有 immutable `AgentDataLease` + resumable upload。
+   - 仅对 `classify_data_path(data_path)=="agent"` 生效；`shared`/`//UNC`/`/mnt/...`/`dataset://` 仍走 Linux central route，绝不产生 Windows data upload。
+2. `3293d16 fix: use task payload project for prepare_data upload evidence`（`core/dataset_upload_service.py`）
+   - `trusted_data_stage_evidence_from_control` 原读 `spec.project`，但用户 YAML 是 project-free（INV-15），`spec.project=None` 导致 `TrustedDataStageEvidence.__post_init__` 抛 `invalid_data_stage_evidence`，Windows Agent 上传在 `create_agent_dataset_upload` 即被拒。
+   - 改为读 prepare_data task payload 的内部 project（如 `xpengod25`），回退到 `spec.project`。这是 0.1 节“未审计工作区输入”未覆盖的真实缺口，由本次端到端跑批暴露并修复。
+
+### 端到端真实验证证据：`job_f93748715fad`（2026-07-29）
+
+- 输入：`output/xpeng-cr5cb-existing-cluster.yaml`，复用 Bundle `selena-bundle:sha256:8e1e49cb...`（未重编译），本机数据 `D:/data/xpeng-cr5cb/MPCTEXPFB-4363/CBFA_10%_10KPH_NG/Radar`（2 个 MF4，1,239,892,640 bytes）。
+- 持久化 `spec.data.path` 精确等于正确的 `D:/.../Radar`，未被 Linux/Cluster 改写；`existing_path` 精确为 `8e1e...`。
+- `prepare_data` 被 Windows Agent 领取，事件链：`submitted local data path authorized` → `discovered 2 MF4 input(s)` → `uploaded MF4 1/2` → `uploaded MF4 2/2` → `local dataset upload completed`。
+- 回传 Dataset：`dataset:sha256:b720623e...`，`source_kind=agent_upload`，`file_count=2`，`total_size=1,239,892,640`，`data_path=dataset://sha256/b720623e...`。Linux/Cluster 只收到逻辑 dataset ref，未看到或解析本机 D 路径。
+- `build_selena`/`register_artifact` skipped（复用 Bundle，未重新编译）；`environment_check`/`preflight`/`run_simulation`/`collect_results` 均 succeeded。
+- 外部 Cluster 真实执行：`cluster_run_ref=cluster-run:572792f9940d47ba941ae10c0a2fdcdd`，产出 12 个结果文件（2× out.MF4 + result.ini + logfile.txt.zip + selena.log + radar_sim_paramconfig.txt + robocopy.txt）。
+- `finalize_manifest` failed `simulation_failed`：Cluster result.ini 聚合为失败，首条真实错误为 Runtime 缺信号 `g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_port_ParallelLanes_in`（与 2026-07-24 `job_47798df4e6cc` 同一业务错误）。这是 Runtime/数据信号的业务配置问题，不是调度/接口问题；`artifacts_available=true`，结果归档 `result:sha256:13334746...` 可下载。按产品规则，调度接口已完成其职责，最终业务结论以 Cluster 回收的 result.ini 为准。
+
+### 已发布版本
+
+- Linux release：`/home/hoz2wx/radar-sim-v1-3293d16`（systemd user service `radar-sim-v1.service`，WorkingDirectory 已切，active，health OK，`RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`）。入口 `http://10.190.171.44:8877`。Bundle catalog 10 个，`8e1e...` 仍在。
+- Windows Connector：Agent install root `C:\Users\HOZ2WX\AppData\Local\radar-sim\app` 的 `cli/agent.py` 已同步 `2d1756e` 的 auto-binding patch（`core/control_service.py` 修复在服务端，Agent 不 import 它）。计划任务 `RadarSimConnector-HOZ2WX` Running，`windows_full available=true,count=1,reconnecting=false`。重启 Connector 时发现 supervisor 会留下多个残留 python 进程（`.venv` 与 `Python312` 两套），需 `schtasks /End` 后用 `taskkill` 清理 `rsim.py agent` 进程再 `/Run`，否则旧代码进程会继续领取任务。
+- SDK 客户端上传陷阱：Windows 本机用 `RadarSimClient.submit_yaml(dry_run=False)` 提交 `D:/...` 数据时，`_should_upload_client_data` 对 `data_kind=="agent"` 返回 True，SDK 会自己 `upload_run_data` 1.2GB 而绕过 Agent auto-binding。本次用 `/api/v1/run-jobs` 直接提交原始 config（仅上传 mat_filter 为 config-asset，data.path 原样保留）来验证 Agent 路径。该 SDK 行为是否符合产品意图（无 Windows Agent 的 SDK 调用方应自传；本机即 Agent 宿主时应交给 Agent）留待后续产品决策，不在本次修复范围。
+
+### 下一步（非阻塞，按需）
+
+- 仿真业务失败是 Runtime 信号配置问题：需要匹配该 feature/2492 产物与数据的正确 Runtime XML（当前 `D:/data/chromedownload/runtime_fcta.xml` 缺 `ParallelLanes_in` 等端口），或换用数据目录里 7-28 新增的 `runtime_fcta_per.xml` 重试。这属于用户配置/数据匹配，不是接口缺陷。
+- SDK 客户端上传与本机 Agent 上传的策略选择需产品确认后统一。
+- HANDOFF 0.1 节“未审计工作区输入”已由本次 `2d1756e` 正式提交替代，不再适用。
+
+## 0.1 当前 P0 交接快照（2026-07-28，下一位 AI 从这里继续）
+
+### 已冻结的产品原则
+
+- 用户只提交一份 `UserRunConfig 2.0` YAML：`Selena`、`Runtime`、`MatFilter`、可选 Adapter 和唯一的 `data.path`。用户不填写 project、profile、Runtime Bundle、Agent、共享盘类型、Cluster 管理器或内部输出目录。
+- Web、SDK、后续 Skill/MCP 必须调用同一套 Linux `/api/v1` 调度合同；Linux 只做控制、传输、Cluster 调度，**不编译 Selena、不执行 Windows 本地仿真**。
+- Windows 本机路径由已连接的 Windows Connector 在用户提交路径后一次性授权；Cluster 任务必须上传为 `DatasetRef` 后才能脱离用户电脑。共享/Cluster 可达路径由 Linux 直读。两条路都只能由 `data.path` 自动判断，不能让用户选择“数据类型”。
+- `source=build` 直接编译用户当前工作区；不得 checkout、reset、clean、stash、扫描 outer workspace 的 diff/未跟踪文件，更不得修改用户现有本地改动。当前分支仅用于提示；Selena 子仓 branch/HEAD 是有界身份检查对象。
+- 已有 Selena 的目录或内部 Bundle 复用必须携带 `selena.exe`、同目录依赖 DLL 和绑定 Runtime；Runtime Bundle 只是内部传输/缓存对象，不能进入用户 YAML。
+- Runtime/MF4 静态诊断只能告警，不得替代真实 Cluster/本地执行或阻止提交；最终仿真业务结论以 Cluster 回收的 `result.ini` 和结果归档为准。
+- 发生配置疑义时，先以持久化 job 的 `spec_json/payload_json` 为证据，绝不猜测 Linux 是否“替换”了用户数据路径；下次提交前必须回显有效 YAML 的 `data.path` 和 hash 并由用户确认。
+
+### 当前已发布版本与服务
+
+- 当前 Git 发布提交：`e0f3044`（`fix: bound Windows Selena environment checks`），已推送；重点是 Xpeng 编译环境检查只检查 Selena 子仓 branch/HEAD、脚本、输出和 VS，不再遍历 `D:/pl-xpeng` 的 Git diff/status/untracked。
+- Linux release：`/home/hoz2wx/radar-sim-v1-e0f3044`；systemd user service：`radar-sim-v1.service`；入口：`http://10.190.171.44:8877`；服务 `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`。
+- Windows Connector：计划任务 `RadarSimConnector-HOZ2WX`，Agent `agent-HOZ2WX-WX8-C-0001A`，`windows_full`、`auto_configure=true`。部署更新必须保留其既有配置/自启/重连，不要求用户重新填写服务地址、Agent ID 或令牌。
+- 发布门禁（`e0f3044`）：Linux 独立 release 测试 106 passed、1 个既有 SyntaxWarning；本地环境检查专项 11 passed，`py_compile` 通过。不要把这些专项结果表述成完整产品回归。
+
+### 已终止的真实作业：`job_c61a4cc2889c`
+
+此 job 是一次真实 Xpeng 编译到 Cluster 的验证，**已由控制面安全取消**。已成功的编译和 Bundle 必须保留，绝不删除或重编译；取消原因是发现任务从创建起使用了错误的旧共享数据 YAML，而不是用户准备验证的本机 `D:/data/.../Radar` 数据。
+
+| Stage | 终态 / attempt | 可信证据 |
+|---|---|---|
+| `resolve_spec` | succeeded / 1 | Xpeng 由 Selena 编译脚本和软件包脚本识别；内部 `xpengod25` 仅为系统身份。 |
+| `environment_check` | succeeded / 2 | 首次 attempt 曾因 outer `D:/pl-xpeng` 大仓 Git 扫描失败；`e0f3044` 后 5.21 秒通过，只读取 `apl/base/bindings/xpeng` 子仓 branch `feature/CRGVXPFIII-2492-bl01v06-selena-front`、commit `9e39f75961b29b77329c053a423efb15580cdeb5`。 |
+| `prepare_source` | skipped | 当前工作区直接编译，符合用户“不切仓/不清仓”的规则。 |
+| `prepare_data` | succeeded / 1，但输入错误 | 解析的是 TestackData UNC，得到 32 个 MF4、19,770,136,020 bytes；它不是下面要求验证的本机 Radar 数据。 |
+| `build_selena` | succeeded / 1，returncode 0 | 实际 `jenkins_selena_build.bat` 总耗时 52m41.85s，日志含 `SELENA R2D2 BUILD FINISHED SUCCESSFULLY`；`sleep is not recognized` 和 `Press any key` 是脚本兼容性日志，最终退出码与产物校验均为成功。 |
+| `register_artifact` | succeeded / 1，returncode 0 | Runtime Bundle 已上传、登记，见下一节。 |
+| `preflight` | succeeded / 1 | binary 签名/接口清单/MF4 静态信号校验是 warning/info，按产品规则未阻断。 |
+| `run_simulation` | cancelled / 1 | 先收到用户侧 P0 取消；最终 returncode -1 / `CLUSTER_GATEWAY_UNREACHABLE`。Cluster Run 保持 `prepared`、`external_job_id=''`、`submit_mode=''`，因此**没有外部 Cluster job 被创建或继续消耗资源**。 |
+| `collect_results`、`finalize_manifest` | cancelled / 0 | 取消链正常收口；不应把本 job 当作仿真成功或失败样本。 |
+
+#### 本次可复用的成功 Selena Bundle
+
+- Bundle ID：`selena-bundle:sha256:8e1e49cb04d49df84593f724cd6913d5ffb32a759305a672959dec59d378c936`
+- 来源：Xpeng Selena 子仓 branch `feature/CRGVXPFIII-2492-bl01v06-selena-front`，commit `9e39f75961b29b77329c053a423efb15580cdeb5`，`RelWithDebInfo`。
+- 入口：`dc_tools/selena/core/RelWithDebInfo/selena.exe`，2,112,000 bytes，checksum `sha256:aa74654125e1b7009e829a5cfa5b6b11240151c8220825e8633baba25b1b5e3b`。
+- 归档：16,024,418 bytes，checksum `sha256:7aa732ba6c2d3a33c9fb820665e54939e9af3caba4cd519e0f3d67488419aab1`，内部存储引用 `shared://selena-bundles/xpengod25/bundles/8e1e49cb04d49df84593f724cd6913d5ffb32a759305a672959dec59d378c936/runtime-bundle.zip`。
+- 文件清单已校验：`selena.exe`、`Mdf4Lib_x64.dll`、`MdfLibSort_x64.dll`、`MDFSort_x64.dll`、`selena_core.dll`、`selena_dll.dll`、`selena_gui.dll`、`XmlParser_x64.dll`、`runtime_fcta.xml`。下一次真实 run 必须复用此 Bundle，**不要再次调用 build**。
+
+### 错误旧 YAML 与正确新 YAML
+
+1. 已取消 job 的持久化 `spec_json/payload_json` 从 job 创建时就是下面的旧共享路径，证实不存在 Linux/Cluster 改写本地路径：
+
+   ```yaml
+   data:
+     path: "//abtvdfs2.de.bosch.com/ismdfs/loc/szh/Isilon2/TestackData/Driving_APP/41_xiaopengTem/Xpeng-D03ES-CR-BL01V06-CBNA-CBFA"
+   ```
+
+   它被 Linux 作为 `source_kind=shared_path`、`route=central` 解析，产生 dataset `dataset:sha256:54eae7d650b6ab0c5c2b20230bb84a5d0fa6e08b4dbf9790676efb9fe6b0f26e`。这条路径不得用于下一次本机 Radar 验证。
+
+2. 正确的新 YAML 已创建且通过 `UserRunConfig` schema 校验：`output/xpeng-cr5cb-existing-cluster.yaml`。它复用上面的 Bundle，核心字段必须保持如下：
+
+   ```yaml
+   selena:
+     source: existing
+     existing_path: "selena-bundle:sha256:8e1e49cb04d49df84593f724cd6913d5ffb32a759305a672959dec59d378c936"
+     runtime_xml: "D:/data/chromedownload/runtime_fcta.xml"
+     code_path: "D:/pl-xpeng"
+     branch: "feature/CRGVXPFIII-2492-bl01v06-selena-front"
+     selena_build_script: "D:/pl-xpeng/apl/base/bindings/xpeng/selena/jenkins_selena_build.bat"
+     package_build_script: "D:/pl-xpeng/apl/base/bindings/xpeng/buildscripts/testbuild_BaseC0SS_SINGLE.bat"
+   data:
+     path: "D:/data/xpeng-cr5cb/MPCTEXPFB-4363/CBFA_10%_10KPH_NG/Radar"
+   simulation:
+     target: cluster
+     adapter_file: ""
+     mat_filter: "D:/pl-xpeng/reco_fw/tools/selena/matlab_transport_cfg/matlab_swx_plotreco.mdf.mat.filter"
+   ```
+
+3. 正确数据的现场读证：目录 `D:/data/xpeng-cr5cb/MPCTEXPFB-4363/CBFA_10%_10KPH_NG/Radar` 存在，恰有 2 个 MF4、总计 1,239,892,640 bytes：
+   - `Gen5_2026-07-18_16-09_0150.MF4`：656,822,600 bytes
+   - `Gen5_2026-07-18_16-14_0151.MF4`：583,070,040 bytes
+
+### 未完成 P0 缺口：registered Bundle + 本地数据自动绑定
+
+当前线上逻辑对 `source=build` 的本机数据能在 `resolve_spec` 时通过 one-click Agent 的 `auto_configure` 自动登记数据根；但对 `source=existing + existing_path=selena-bundle:... + target=cluster`，resolve Stage 被正确跳过，`prepare_data` 只有已存在的同 project Data Binding 才会分配给 Windows Agent。当前 Agent 的 data binding 属于旧匿名 workspace，不属于本次 `xpengod25`，所以正确 D 路径在未修复前不能保证走 Agent upload。
+
+必须实现的最小修复（只针对 `classify_data_path(data.path) == agent`）：
+
+1. `core/control_service.py`：当已连接 `windows_agent/windows_full` 的 metadata 有 `auto_configure=true`、task 是 `prepare_data`、路径为本地 Windows 路径且无现有 Binding 时，允许将 Stage 绑定到该 Agent，并在 payload 标记 `auto_configure=true`。不得对 `shared`、`central`、`dataset://` 走此分支。
+2. `cli/agent.py`：`prepare_data` 收到上面 payload 后，在**本机**仅针对该用户本次提交路径登记一次 Data Binding，然后复用现有 immutable `AgentDataLease`、MF4 发现、checksum/resume upload 机制；成功后必须回传 `source_kind=agent_upload` / `dataset://sha256/...`，不得把本地 D 路径发给 Linux resolver。
+3. 增加 focused tests：
+   - existing registered bundle + `D:/.../Radar` + Cluster -> Windows Agent `prepare_data`，payload `dispatch_scope=data_upload`、`auto_configure=true`；
+   - Agent 自动登记后实际调用现有 upload lease；
+   - `//UNC`、`/mnt/...`、`dataset://` 均仍由 Linux central route，绝不产生 Windows data upload；
+   - 无 auto-configure Agent 时保持明确 `windows_data_access_unavailable`/等待状态，不能静默 fallback 到旧共享数据。
+
+一个子 Agent 曾开始上述未提交修复并报告聚焦测试 6 passed、扩大回归运行到 74% 未失败；父任务随后要求停止所有代码操作。该工作只能视为**未审计的工作区输入**，不得部署、不得引用为已完成，下一位 AI 需要先审阅变更和重跑测试。
+
+### 下一位 AI 的精确恢复顺序
+
+1. 只读核对 service/Agent/Bundles，确认上述 Bundle 仍存在；禁止清理、重新编译、删除 catalog 或取消计划任务。
+2. 审阅并完成“registered Bundle + local data auto binding”最小修复；运行 focused tests 和与 API/Agent/Stage binding 相关的扩大回归。只在测试通过后提交并推送。
+3. 建立新的 Linux release 目录，运行 release focused gate，切换 `radar-sim-v1.service`；生成同一提交的 Windows Connector 包，并以静默更新方式重连现有 Connector，保留其配置。
+4. 使用 `output/xpeng-cr5cb-existing-cluster.yaml` 先做 **dry-run/ready 验证**。必须同时记录：
+   - 持久化 job `spec_json.data.path` 精确等于正确的 `D:/.../Radar` 路径；
+   - `prepare_data` 被 Windows Agent 领取，日志出现本地 MF4 发现和 resumable upload；
+   - 结果 Dataset 是 `source_kind=agent_upload`（或等价明确 Agent upload 身份），文件数为 2；
+   - Linux/Cluster 只收到 `dataset://sha256/...`，不会看到或解析 TestackData UNC；
+   - Bundle ID 精确为本节记录的 `8e1e...`，`build_selena`/`register_artifact` 不得重新执行。
+5. 以上全部成立后，用户已授权的前提下提交一次真实 Cluster run；记录 external Cluster job id、Gateway 实际输入 dataset ref、`result.ini`、`collect_results`、Manifest、结果归档和下载验证。若 Gateway 未产生 external id，先报告其具体错误，禁止盲目重试/重编译。
+6. 最后更新本 HANDOFF 顶部状态，写入正确 job 的真实结果与 release commit；再开始 Web 的“提交前有效 YAML/hash/数据路径确认”体验修复。
+
+### 恢复时的只读检查命令
+
+```powershell
+# Linux 服务、release 与 API
+ssh hoz2wx@10.190.171.44 "systemctl --user status radar-sim-v1.service --no-pager"
+Invoke-RestMethod http://10.190.171.44:8877/api/v1/health
+
+# Windows Connector 是否在运行（不重启）
+Get-Process -Name python -ErrorAction SilentlyContinue |
+  Where-Object { $_.Path -like '*radar-sim*' }
+schtasks /Query /TN "RadarSimConnector-HOZ2WX" /FO LIST /V
+
+# 正确本机数据的只读计数
+$p='D:\data\xpeng-cr5cb\MPCTEXPFB-4363\CBFA_10%_10KPH_NG\Radar'
+Get-ChildItem -LiteralPath $p -File -Filter *.MF4 |
+  Select-Object Name,Length,LastWriteTime
+
+# 查询新 job：替换 <job_id>，不要对旧 job retry
+Invoke-RestMethod "http://10.190.171.44:8877/api/v1/jobs/<job_id>"
+Invoke-RestMethod "http://10.190.171.44:8877/api/v1/jobs/<job_id>/diagnosis"
+```
+
+### 明确禁止事项
+
+- 不检查、不要求、不修改用户工作区 diff/未跟踪文件；不执行 `git clean`、`reset --hard`、checkout、stash 或清仓。
+- 不删除本次 `selena-bundle:sha256:8e1e...`，不重新运行 Xpeng 编译，除非用户明确要求新编译。
+- 不重试或复活 `job_c61a4cc2889c`；它的 `prepare_data` 是旧 TestackData UNC，不能作为正确本机 Radar 验证的起点。
+- 不让本机 `D:/...` 路径 fallback 到 Linux Central/shared resolver；无 Windows Agent/授权时必须停在可执行的等待/授权提示。
+- 不把静态 Runtime/MF4 warning 当作仿真业务成功/失败；不把“Cluster提交成功”当作“仿真成功”。
+- 不重启服务、Connector 或 Cluster 作业来“排障”；先读取持久化 Stage/Event/Cluster Run 证据，再采取最小、可回滚动作。
+
+### 已知可靠性问题（继续观察，不在本次交接中擅自扩展）
+
+- Xpeng 全量编译会同时运行约 26 个 MSBuild / 数十个 `cl.exe`，显著拖慢 Windows 的 WMI、终端和 SSH 探针；任务现场应以 Agent 日志、Control DB 的 `returncode`、最终 runtime bundle 校验为准，不能因探针超时杀编译进程。
+- 用户脚本的 `sleep`/`Press any key` 输出在 Windows 兼容环境中仍会出现；当前 Agent 非交互执行下最终 returncode 0 和 Bundle 验证才是成功依据。后续可将其降噪为兼容性 warning，但不得遮蔽真正的 script failure。
+- 当前 `run_simulation` 取消在没有 external Cluster id 时安全收口；若将来已经拿到 external id，必须补明确的 Gateway/manager cancel 协议并以外部状态回读确认，不能只取消 Control DB。
+- 高日志量编译仍会放大 SQLite/单进程 API 查询延迟；查询和执行器拆分、批量日志写入、受控 worker pool 是后续稳定性项，不能用删除历史日志规避。
+- 当前服务以可信内网测试模式运行；多人正式发布前仍需认证、权限、审计、限流与资源隔离验收。
+
 ## 1. 产品不变量
 
 每个实施任务必须引用其触碰的 INV。
@@ -79,6 +260,7 @@
 | 2026-07-28 | Xpeng Cluster 验证前的静态诊断与未知产品收敛 | 用户确认：用户填写的 Selena、branch、Runtime 与数据默认正确；Runtime XML/MF4 静态检查（包含端口缺失、格式、歧义或仅部分 runnable）只能产生 `warning/diagnostic`，不得阻断提交或提前宣告业务失败。只有路径不可达、需要本地能力但 Agent 离线、Linux/Cluster 不可用等基础设施条件可以前置停止；最终业务结论以 Cluster/本地真实执行和回收的 `result.ini` 为准。当前尚无 runnable 范围下发链路，禁止以“只预检一部分端口”替代完整执行前提，也禁止部署全量 Runtime DataPlayer 端口硬阻断版本；待安全规范化匹配诊断补丁和真实验证后再发布并触发已授权的 Xpeng 编译 + Cluster 任务。未知产品已有 Selena + Cluster 是独立 P0：现有 `workspace-<hash>` 匿名身份会被 Cluster executor 拒绝，且识别只采用最高单条证据；后续必须独立改为编译脚本/包脚本/仓库/Runtime 多证据一致才选已知 adapter，冲突或证据不足走稳定匿名 generic Cluster 路径，绝不伪装或套用其他项目配置。本问题不阻塞本轮已可识别 Xpeng 的真实验证。 |
 | 2026-07-28 | Linux 发布门禁的跨平台资产授权修复 | `c3a5b4a` 的 Linux release 焦点门禁首次为 `90 passed, 1 failed`；根因不是生产授权状态或 Xpeng 配置，而是 `candidate_asset_binding_ids()` 仅接受 Windows drive/UNC，导致 Linux pytest 的 POSIX 临时资产路径无法映射到已登记根目录。修复只在非 Windows host 接受 POSIX 绝对路径；Windows 仍只接受 drive/UNC、相对路径仍拒绝，且最终文件仍必须在已登记可读根目录内。symlink 越权在 Windows 直接拒绝链接、POSIX 解析后拒绝外部目标，均未放宽边界；测试接受两种等价安全错误。专项 `23 passed, 1 skipped`、编译和 diff check 均通过；随后必须以独立 `RSIM_HOME` 重跑 Linux release 门禁，禁止清理或修改生产 Agent DB 来获取绿灯。 |
 | 2026-07-28 | Xpeng 本地编译环境检查有界化 | 真实任务 `job_c61a4cc2889c` 的 `resolve_spec` 已正确识别 Xpeng、授权工作区和 Selena 子仓，但旧 `environment_check` 对外层 `D:/pl-xpeng` 做两次完整 Git diff/status/untracked 指纹，约 19 分钟后泛化为 `workspace inspection failed`，尚未开始编译、上传或 Cluster。用户确认不检查 diff、未跟踪文件或 dirty，默认现有本地修改直接参与编译；新规则仅检查执行必需项：授权路径/两个脚本/输出、所选 Selena 子仓 branch+HEAD、VS 与脚本位置。安全 `branch_repo_ref` 存在时外层产品根仓完全不执行 Git，prepare/finish 均只读取子仓 branch+HEAD；无子仓引用才兼容 outer 的快速 branch+HEAD。环境检查不执行依赖修复或生成器，实际编译前才准备脚本依赖；逐项输出日志和 heartbeat，缺失授权/脚本/子仓身份返回中文可执行原因。真实只读检查 `ready`、5.21 秒，分支 `feature/CRGVXPFIII-2492-bl01v06-selena-front`、commit `9e39f75961b29b77329c053a423efb15580cdeb5`，Git 调用仅 Selena 子仓，未编译且未改用户仓。专项 11 passed、py_compile/diff check 通过；发布后重试原任务 `task_ed8262684e6e`，不得重提或清理用户仓。 |
+| 2026-07-28 | 提交配置一致性与本地数据路径追踪（后续门禁） | `job_c61a4cc2889c` 的持久化 `payload_json/spec_json` 从创建时就是 TestackData UNC，并非 Linux/Cluster 将用户本地路径覆写；这次错误配置在 Cluster submit 前已安全取消，已成功的 Selena Runtime Bundle 保留且未产生外部 Cluster job。后续 Web/SDK 必须在提交前显示并二次确认“有效 YAML 的 data.path + config hash”；任务详情必须同时显示原始 YAML 的 hash 和持久化 spec 的 hash/数据路径，任一不一致即阻止提交。对 `D:/...` 本机路径，必须强制 Windows Agent 的一次性授权+上传链路，禁止 Linux Central resolver 回退到历史共享数据。 |
 | 2026-07-24 | Xpeng 已有 Selena 真实复用、结果真实性与 Web 防误提交发布 | 用户原始 YAML `radar-sim.simulation-xpeng.yaml` 未被改写，SHA256 `dcf7b6b8fa9257135cfe847cd6bad9976fa7b4521d59264babf0e95573e92c4a`；Runtime XML 与 MatFilter 分别和既有 Bundle/配置资产逐字节匹配。按用户明确要求复用 `selena-bundle:sha256:cd049cb022813dc32639f46888b7ba264c2432aaac089ca5f3b97fda1a7f0746`，先以 `job_5136eae6267e` dry-run 验证计划，再提交真实 `job_47798df4e6cc`；`prepare_source/build_selena/register_artifact` 均跳过，证明未重新编译。外部 Cluster job `10361` 的 32 个任务全部返回 `successfull=0`，首个真实错误为 Runtime 缺少信号 `g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_port_ParallelLanes_in`；32 个非空 `out.MF4` 仍被回收，Job/Manifest/Diagnosis 一致为 failed 且 `artifacts_available=true`，Result `result:sha256:2b8fdc7293bce154e2d23d4224115ad1ee0078f18dc6deca0b6bacd3d490f3de` 的 17,659,970-byte 归档 Range 下载返回 206。错误 Web 任务 `job_bee6703caa11` 的规范实际为 `source=existing,target=local`，并非后端把 Cluster 错路由为本地；取消后仅运行中的 19.8GB 数据校验因 Windows 连接进程失联未协作退出，单次安全 reclaim 将其终结为带 `AGENT_STALE` 证据的 failed，preflight/本地仿真/回收均未执行。Web 修复 `e0f125e` 明确已有 Selena 文件夹必填且包含 exe/DLL，`936682a` 增加最终执行位置/Selena 来源摘要、导入后改路由红色警告与提交前二次确认；专项 32 passed、`node --check` 通过。正式 release `/home/hoz2wx/radar-sim-v1-936682a` 已 active，PID `1647561`、进程 cwd 与 release 一致、`/api/v1/health` 返回 ok；真实浏览器已验证 Cluster YAML 改为本地时双重警告，dismiss 后任务总数仍为 26、未产生误任务。取消在大文件扫描期间仍不能及时中断，以及 Windows 连接进程自恢复策略，保留为后续稳定性门禁。 |
 | 2026-07-23 | 结果真实性、可诊断 API 与无项目配置识别 | Web、Python SDK 与未来 Skill/MCP 统一复用 `/api/v1/jobs/{job_id}/diagnosis`，返回路径无关的业务结论、稳定错误分类、下一动作、结果可下载性和 Job/Manifest 一致性；仿真失败但存在日志/部分产物时允许 `outcome=failed` 与 `artifacts_available=true` 同时成立。Cluster 结果以 `result.ini` 聚合和结构化失败计数为准，失败结果同样可归档下载；历史 Manifest 只按明确正数失败计数安全归一化，不因 `errors` 文本存在误改成功任务。已有 Selena 可选填写代码仓和两个脚本作为产品证据，与 Selena/Runtime 明确标记交叉校验；只有证据不足时才生成稳定 `workspace-<hash>` 与 `generic:existing-selena` 内部身份，用户仍不配置项目/Agent/Cluster 字段。新增 `docs/RESULT_TRUTH_CONTRACT.md`、`docs/AI_INTEGRATION_CONTRACT.md`、`docs/project-free-recognition.md`。代码提交 `fdeda44` 后，Linux 门禁发现 SDK 把可读 POSIX 本地路径误当中央路径，修复为可读根文件系统路径自动上传、独立挂载保持直读，并将硬编码 Windows 测试目录改为仓库相对路径，修复提交为 `edf8462`。Windows 专项 `189 passed`，服务器新 release `/home/hoz2wx/radar-sim-v1-edf8462` 专项 `189 passed`；`radar-sim-v1.service` 已切换并保持 `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`，active 且监听 `0.0.0.0:8877`。外部 Web/health/capabilities 均成功；SDK 实测列出 23 个任务，`job_0be20501b3a8` 返回 `outcome=failed`、`artifacts_available=true`、Manifest `failed`，失败归档 Range 下载 `206`；`job_6ba9d83a6cf4` 继续保持 Job/Diagnosis/Manifest `succeeded`。Windows 计划任务已恢复运行并以 light capability 重连；同 release 生成 147 文件一键连接包，`connect.cmd` 自动绑定 `http://10.190.171.44:8877`，安装脚本 `200`、包 Range 下载 `206`。未触发新的真实仿真。 |
 | 2026-07-22 | 一键连接、通用脚本识别与 Xpeng 构建卡死修复 | 本轮针对真实 `job_0be20501b3a8` 收敛：任务最初因 Windows 节点仍绑定 `127.0.0.1:8878` 而停在 10%，随后未登记 Xpeng 又被项目配置白名单阻断；修复为 Web/SDK 结构化 `waiting` 状态和“一键连接本机”，Linux 同源生成 `connect.cmd` 并自动绑定当前地址；未知代码仓改为脚本组合生成不含路径的内部 workspace ID，并由 Selena 脚本推导输出，不再要求 `config/projects/<name>`。真实任务已完成 resolve、环境检查和 32 个共享数据文件解析，编译进一步暴露软件包链路所需 Perl 未进入子进程 PATH、失败脚本末尾 `pause` 导致假卡住；现从用户所选脚本的有界邻域推导 Perl，自动发现本机 TCC Perl，仅向单次构建注入环境，并统一非交互 stdin。最终测试、部署和重试结果在本轮结束前补记。 |
