@@ -582,6 +582,49 @@ def test_missing_mf4_reader_blocks_source_discovery_before_cluster(monkeypatch):
         cluster_mod._available_mf4_radar_sources("input.MF4")
 
 
+def test_cluster_path_check_retries_transient_cifs_error(tmp_path, monkeypatch):
+    import core.cluster as cluster_mod
+
+    calls = []
+    real_is_dir = Path.is_dir
+
+    def transient_is_dir(path):
+        calls.append(str(path))
+        if len(calls) == 1:
+            raise BlockingIOError(115, "Operation now in progress")
+        return real_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", transient_is_dir)
+    monkeypatch.setattr(cluster_mod.time, "sleep", lambda _delay: None)
+
+    item = cluster_mod._path_item(
+        "CIFS dependency", tmp_path, must_be_dir=True
+    )
+
+    assert item.ok is True
+    assert len(calls) == 2
+
+
+def test_cluster_path_check_preserves_os_error_detail(tmp_path, monkeypatch):
+    import core.cluster as cluster_mod
+
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda _path: (_ for _ in ()).throw(
+            BlockingIOError(115, "Operation now in progress")
+        ),
+    )
+    monkeypatch.setattr(cluster_mod.time, "sleep", lambda _delay: None)
+
+    item = cluster_mod._path_item("CIFS dependency", tmp_path)
+
+    assert item.ok is False
+    assert item.severity == "error"
+    assert "BlockingIOError" in item.detail
+    assert "Operation now in progress" in item.detail
+
+
 def test_scan_cluster_data_detects_required_signal_and_skips_outputs(tmp_path):
     from core.cluster import scan_cluster_data
 

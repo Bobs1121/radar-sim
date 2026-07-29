@@ -1372,11 +1372,31 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _path_item(name: str, path: Path, *, must_be_dir: bool = False) -> CheckItem:
-    exists = path.is_dir() if must_be_dir else path.exists()
+def _path_item(
+    name: str,
+    path: Path,
+    *,
+    must_be_dir: bool = False,
+    attempts: int = 3,
+    retry_delay: float = 0.5,
+) -> CheckItem:
+    exists = False
+    error = ""
+    for attempt in range(max(int(attempts), 1)):
+        try:
+            exists = path.is_dir() if must_be_dir else path.exists()
+            error = ""
+            break
+        except OSError as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            if attempt + 1 < max(int(attempts), 1):
+                time.sleep(max(float(retry_delay), 0.0))
+    detail = str(path)
+    if error:
+        detail += f" (unavailable after {max(int(attempts), 1)} attempts: {error})"
     # severity must agree with ok so the display layer (which keys off severity)
     # shows OK for passing checks, not "!!". info = passed, error = blocking.
-    return CheckItem(name, exists, str(path), severity="info" if exists else "error")
+    return CheckItem(name, exists, detail, severity="info" if exists else "error")
 
 
 def _client_path(cluster: dict[str, Any]) -> Path:

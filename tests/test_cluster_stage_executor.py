@@ -514,6 +514,37 @@ def test_cluster_environment_never_requires_project_adapter(identity, monkeypatc
     assert loaded == [identity]
 
 
+def test_cluster_environment_failure_keeps_dependency_detail_and_retry_action(monkeypatch):
+    context = SimpleNamespace(config_loader=lambda _identity: {"cluster": {}})
+    monkeypatch.setattr(
+        "core.cluster_stage_executor._bundle",
+        lambda _context, _job: SimpleNamespace(
+            internal_project="workspace-anonymous123",
+            manifest=SimpleNamespace(id="selena-bundle:sha256:" + "2" * 64),
+        ),
+    )
+    monkeypatch.setattr(
+        "core.cluster.check_cluster_environment",
+        lambda _config: [
+            SimpleNamespace(
+                name="Worker dependency path",
+                ok=False,
+                severity="error",
+                detail="BlockingIOError: Operation now in progress",
+            )
+        ],
+    )
+
+    with pytest.raises(ClusterStageExecutionError) as excinfo:
+        execute_cluster_environment(context, _job())
+
+    assert excinfo.value.code == "CLUSTER_ENVIRONMENT_UNAVAILABLE"
+    assert "BlockingIOError" in str(excinfo.value)
+    assert excinfo.value.actions == (
+        {"type": "retry_stage", "label": "Retry environment check"},
+    )
+
+
 def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tmp_path: Path, monkeypatch):
     control = ControlService(tmp_path / "control.db")
     runtime_output = tmp_path / "build"

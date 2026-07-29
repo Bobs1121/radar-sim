@@ -244,13 +244,21 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
     checks = check_cluster_environment(config)
     superseded = {"Profile Selena executable", "Profile runtime XML"}
     failed = [
-        item.name for item in checks
+        item for item in checks
         if item.name not in superseded
         and not bool(item.ok)
         and str(getattr(item, "severity", "error") or "error") == "error"
     ]
     if failed:
-        raise ClusterStageExecutionError("Cluster environment is unavailable: " + ", ".join(failed))
+        detail = "; ".join(
+            f"{item.name}: {str(getattr(item, 'detail', '') or 'unavailable')}"
+            for item in failed
+        )
+        raise ClusterStageExecutionError(
+            "Cluster environment is temporarily unavailable: " + detail,
+            code="CLUSTER_ENVIRONMENT_UNAVAILABLE",
+            actions=({"type": "retry_stage", "label": "Retry environment check"},),
+        )
     return {
         "environment_snapshot": {
             "status": "ready",
