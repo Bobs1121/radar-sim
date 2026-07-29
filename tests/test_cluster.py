@@ -278,7 +278,7 @@ def test_cluster_source_inference_failure_keeps_generic_configured_source(
 
 
 @pytest.mark.parametrize("reader_result", [[], RuntimeError("metadata read failed")])
-def test_project_independent_cluster_never_submits_empty_or_configured_fallback_source(
+def test_project_independent_cluster_rejects_filename_fallback_when_metadata_fails(
     tmp_path, monkeypatch, reader_result
 ):
     import core.cluster as cluster
@@ -287,7 +287,7 @@ def test_project_independent_cluster_never_submits_empty_or_configured_fallback_
     config = _cluster_config(tmp_path)
     config["_cluster_source_explicit"] = False
     config["simulation"]["source"] = "RadarFC"
-    input_mf4 = tmp_path / "input.MF4"
+    input_mf4 = tmp_path / "Vehicle_FR5CP_20090101_055502_0042.MF4"
     input_mf4.write_text("dummy", encoding="utf-8")
 
     if isinstance(reader_result, Exception):
@@ -303,12 +303,40 @@ def test_project_independent_cluster_never_submits_empty_or_configured_fallback_
         "detect_radar_orientation",
         lambda _path: {},
     )
-    monkeypatch.setattr(cluster, "_infer_radar_from_path", lambda _path: {})
 
     with pytest.raises(RuntimeError, match="could not be inferred"):
         cluster.prepare_cluster_job(
             config, input_path=str(input_mf4), run_id="source_must_be_known"
         )
+    assert not list(tmp_path.rglob("Config.cfg"))
+
+
+def test_project_independent_cluster_rejects_low_confidence_path_hint(
+    tmp_path, monkeypatch
+):
+    import core.cluster as cluster
+    import core.simulation as simulation
+
+    config = _cluster_config(tmp_path)
+    config["_cluster_source_explicit"] = False
+    input_mf4 = tmp_path / "RadarFR_input.MF4"
+    input_mf4.write_text("dummy", encoding="utf-8")
+    monkeypatch.setattr(cluster, "_available_mf4_radar_sources", lambda _path: [])
+    monkeypatch.setattr(
+        simulation,
+        "detect_radar_orientation",
+        lambda path: {
+            "source": "RadarFR",
+            "method": "path_hint",
+            "evidence": {"path": path},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="could not be inferred"):
+        cluster.prepare_cluster_job(
+            config, input_path=str(input_mf4), run_id="path_hint_is_not_evidence"
+        )
+    assert not list(tmp_path.rglob("Config.cfg"))
 
 
 def test_worker_paramconfig_overrides_template_source_drift(tmp_path, monkeypatch):

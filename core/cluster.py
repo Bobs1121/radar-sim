@@ -1296,10 +1296,13 @@ def _resolve_cluster_radar_context(
                 "MF4 contains multiple radar acquisition sources "
                 f"({', '.join(available)}); selected {selected} by {selection_method}."
             )
-    elif detection:
+    elif detection and not (
+        require_detected_source
+        and str(detection.get("method") or "").strip().lower() == "path_hint"
+    ):
         selected = _canonical_radar_source(str(detection.get("source") or ""))
         selection_method = str(detection.get("method") or "orientation_detection")
-    if not selected:
+    if not selected and not require_detected_source:
         inferred = _infer_radar_from_path(mf4_path or datafile_path)
         selected = _canonical_radar_source(inferred.get("source", ""))
         if selected:

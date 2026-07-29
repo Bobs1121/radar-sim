@@ -64,6 +64,7 @@
 - Cluster job `10366`、tasks `5445763/5445764` 已真实完成但均失败。manifest/Config 的 source 为空，worker Selena 回退 `RadarFC`。根因不是项目适配，而是 Linux `.[v5-server]` 未包含 `asammdf`，无法从 MF4 acquisition metadata 得到 `RadarFL/RadarFR`。
 - 发布修复要求：把 `asammdf` 纳入 Linux `v5-server` 依赖；Cluster 环境检查必须验证 MF4 source reader，缺失时在提交前失败；禁止解析失败后以空 source 静默提交。
 - `17471ce` 复审又发现：即使 reader 已安装，MF4 metadata 读取异常或没有合法 acquisition source 时仍会走 `empty_fallback`。后续候选已改为 fail-closed：UserRunConfig V2 最终得不到合法 source 就在生成 Config 前失败，禁止回退项目/历史 `RadarFC`，也禁止提交空 source。
+- `41852e9` 复审继续发现低置信文件名 `path_hint` 仍可能被严格 V2 接受。最终规则进一步收紧：V2 只接受 MF4 acquisition source，或从 MF4 内 mounting/channel 证据得到的 source；文件名/path hint 仅保留 legacy 兼容，不能生成 V2 Config。反例测试同时断言异常后磁盘上不存在 `Config.cfg`。
 - 两个 worker 的 result.ini、输出 MF4、paramconfig 和 Selena log 实际完整落盘，但 `collect_results` 因 `ResultCatalogError: result path escapes its controlled root` 未归档。去项目化后结果根计算没有通过 `get_cluster_config()` 注入通用 `workspace_root`，allowed roots 只剩本机 Agent runs。
 - 结果修复要求：结果归档根从 deployment config 经 `get_cluster_config()` 补齐通用 Cluster 默认，再由 `linux_mount_map` 转为受控 Linux 根；仿真失败结果也必须可下载，不能因业务失败丢失诊断产物。
 - `job_65c1a299c133` 是有效失败证据，不得宣称成功；修复依赖和结果根后必须创建新 release 并提交新任务，不能只在当前服务器手工安装包。
