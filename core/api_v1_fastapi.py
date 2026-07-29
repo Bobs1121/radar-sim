@@ -453,7 +453,7 @@ def create_app(
             status=body.status, returncode=body.returncode, result=body.result,
         )
 
-    @app.get("/api/agents/config-assets/{asset_id}/download")
+    @app.get("/api/agents/config-assets/{asset_id:path}/download")
     def download_agent_config_asset(
         request: Request,
         asset_id: str,

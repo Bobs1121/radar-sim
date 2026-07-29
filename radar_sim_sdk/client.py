@@ -717,8 +717,15 @@ class RadarSimClient:
             return
         try:
             payload = response.json()
-        except json.JSONDecodeError:
-            payload = {"code": "http_error", "message": response.text}
+        except (json.JSONDecodeError, httpx.ResponseNotRead):
+            # A streaming response has not been read yet; read it first so the
+            # error body is available instead of masking the real status with a
+            # ResponseNotRead traceback.
+            try:
+                response.read()
+                payload = response.json()
+            except (json.JSONDecodeError, httpx.ResponseNotRead):
+                payload = {"code": "http_error", "message": response.text}
         if not isinstance(payload, dict):
             payload = {"code": "http_error", "message": str(payload)}
         raise RadarSimApiError.from_envelope(
