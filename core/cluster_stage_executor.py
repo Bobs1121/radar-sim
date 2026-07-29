@@ -250,8 +250,14 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
         and str(getattr(item, "severity", "error") or "error") == "error"
     ]
     if failed:
+        for item in failed:
+            _LOG.error(
+                "Cluster environment dependency unavailable: name=%s detail=%s",
+                item.name,
+                str(getattr(item, "detail", "") or "unavailable"),
+            )
         detail = "; ".join(
-            f"{item.name}: {str(getattr(item, 'detail', '') or 'unavailable')}"
+            f"{item.name}: {_public_environment_error_detail(item)}"
             for item in failed
         )
         raise ClusterStageExecutionError(
@@ -270,6 +276,16 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
             "runtime_bundle_id": bundle.manifest.id,
         }
     }
+
+
+def _public_environment_error_detail(item: Any) -> str:
+    """Keep deployment paths private while preserving actionable OS errors."""
+    detail = str(getattr(item, "detail", "") or "").strip()
+    marker = "(unavailable after "
+    index = detail.find(marker)
+    if index >= 0:
+        return detail[index + 1 :].rstrip(")")
+    return "unavailable"
 
 
 def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any]) -> dict[str, Any]:

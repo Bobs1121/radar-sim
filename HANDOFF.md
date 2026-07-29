@@ -66,6 +66,7 @@
 - `17471ce` 复审又发现：即使 reader 已安装，MF4 metadata 读取异常或没有合法 acquisition source 时仍会走 `empty_fallback`。后续候选已改为 fail-closed：UserRunConfig V2 最终得不到合法 source 就在生成 Config 前失败，禁止回退项目/历史 `RadarFC`，也禁止提交空 source。
 - `41852e9` 复审继续发现低置信文件名 `path_hint` 仍可能被严格 V2 接受。最终规则进一步收紧：V2 只接受 MF4 acquisition source，或从 MF4 内 mounting/channel 证据得到的 source；文件名/path hint 仅保留 legacy 兼容，不能生成 V2 Config。反例测试同时断言异常后磁盘上不存在 `Config.cfg`。
 - `job_f372c5e4ffb0` 在 41852e9 上未进入 Cluster：CIFS 依赖目录探测瞬时返回 `BlockingIOError [Errno 115] Operation now in progress`，旧 `_path_item()` 未捕获导致 `cluster_stage_failed`。最终候选对路径探测做 3 次有界重试；仍失败时返回 `CLUSTER_ENVIRONMENT_UNAVAILABLE`、原始路径/OSError 详情和 `retry_stage` 动作，不再丢失为执行器泛化异常。
+- 环境错误的完整物理路径只写服务器私有日志；Web/SDK/Skill/MCP 只得到依赖名称、重试次数、异常类型/errno/消息和重试动作，不能暴露 Linux mount 或 Cluster UNC。
 - 两个 worker 的 result.ini、输出 MF4、paramconfig 和 Selena log 实际完整落盘，但 `collect_results` 因 `ResultCatalogError: result path escapes its controlled root` 未归档。去项目化后结果根计算没有通过 `get_cluster_config()` 注入通用 `workspace_root`，allowed roots 只剩本机 Agent runs。
 - 结果修复要求：结果归档根从 deployment config 经 `get_cluster_config()` 补齐通用 Cluster 默认，再由 `linux_mount_map` 转为受控 Linux 根；仿真失败结果也必须可下载，不能因业务失败丢失诊断产物。
 - `job_65c1a299c133` 是有效失败证据，不得宣称成功；修复依赖和结果根后必须创建新 release 并提交新任务，不能只在当前服务器手工安装包。

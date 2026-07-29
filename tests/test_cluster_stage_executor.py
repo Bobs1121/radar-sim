@@ -530,7 +530,11 @@ def test_cluster_environment_failure_keeps_dependency_detail_and_retry_action(mo
                 name="Worker dependency path",
                 ok=False,
                 severity="error",
-                detail="BlockingIOError: Operation now in progress",
+                detail=(
+                    "/mnt/private/cluster/dependency "
+                    "(unavailable after 3 attempts: "
+                    "BlockingIOError: [Errno 115] Operation now in progress)"
+                ),
             )
         ],
     )
@@ -540,6 +544,7 @@ def test_cluster_environment_failure_keeps_dependency_detail_and_retry_action(mo
 
     assert excinfo.value.code == "CLUSTER_ENVIRONMENT_UNAVAILABLE"
     assert "BlockingIOError" in str(excinfo.value)
+    assert "/mnt/private" not in str(excinfo.value)
     assert excinfo.value.actions == (
         {"type": "retry_stage", "label": "Retry environment check"},
     )
