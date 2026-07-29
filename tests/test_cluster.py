@@ -1,5 +1,7 @@
+import json
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -183,6 +185,139 @@ def test_prepare_cluster_job_infers_fr_radar_from_input_name(tmp_path):
     script = Path(package.simulation_script).read_text(encoding="utf-8")
     assert "__INPUT_MF4__" in script
     assert "chr(123) + chr(123)" in script
+
+
+def test_prepare_cluster_job_preserves_explicit_user_source(tmp_path, monkeypatch):
+    import core.cluster as cluster
+
+    config = _cluster_config(tmp_path)
+    config["_cluster_source_explicit"] = True
+    config["simulation"]["source"] = "RadarFR"
+    config["simulation"]["mounting_position"] = "auto"
+    input_mf4 = tmp_path / "input.MF4"
+    input_mf4.write_text("dummy", encoding="utf-8")
+    monkeypatch.setattr(
+        cluster,
+        "_available_mf4_radar_sources",
+        lambda _path: pytest.fail("explicit source must not be replaced by MF4 inference"),
+    )
+
+    package = cluster.prepare_cluster_job(
+        config, input_path=str(input_mf4), run_id="explicit_source"
+    )
+
+    cfg = Path(package.config_path).read_text(encoding="utf-8")
+    assert 'radar = "RadarFR";' in cfg
+    assert 'mountingPosition = "CFR";' in cfg
+
+
+def test_prepare_cluster_job_ignores_non_user_radarfc_and_uses_mf4_source(
+    tmp_path, monkeypatch
+):
+    import core.cluster as cluster
+    import core.simulation as simulation
+
+    config = _cluster_config(tmp_path)
+    config["_cluster_source_explicit"] = False
+    config["simulation"]["source"] = "RadarFC"
+    config["simulation"]["mounting_position"] = "front"
+    input_mf4 = tmp_path / "input.MF4"
+    input_mf4.write_text("dummy", encoding="utf-8")
+    monkeypatch.setattr(
+        cluster,
+        "_available_mf4_radar_sources",
+        lambda _path: ["RadarFL", "RadarFR"],
+    )
+    monkeypatch.setattr(
+        simulation,
+        "detect_radar_orientation",
+        lambda _path: {
+            "source": "RadarFL",
+            "mounting_position": "CFL",
+            "method": "acq_source",
+        },
+    )
+
+    package = cluster.prepare_cluster_job(
+        config, input_path=str(input_mf4), run_id="inferred_source"
+    )
+
+    cfg = Path(package.config_path).read_text(encoding="utf-8")
+    assert 'radar = "RadarFL";' in cfg
+    assert 'mountingPosition = "CFL";' in cfg
+    assert 'radar = "RadarFC";' not in cfg
+    assert any("multiple radar acquisition sources" in item for item in package.warnings)
+    manifest = json.loads(Path(package.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["radar"]["available_sources"] == ["RadarFL", "RadarFR"]
+    assert manifest["radar"]["source"] == "RadarFL"
+    assert (
+        manifest["radar"]["selection_evidence"]["selection_method"]
+        == "first_acq_source"
+    )
+
+
+def test_cluster_source_inference_failure_keeps_generic_configured_source(
+    tmp_path, monkeypatch
+):
+    import core.cluster as cluster
+
+    monkeypatch.setattr(cluster, "_first_mf4_for_source_detection", lambda _path: "")
+    warnings = []
+
+    resolved = cluster._resolve_cluster_radar_context(
+        {"source": "RadarFC", "mounting_position": "front"},
+        datafile_path=str(tmp_path / "unreadable"),
+        local_datafile=str(tmp_path / "unreadable"),
+        source_is_explicit=False,
+        warnings=warnings,
+    )
+
+    assert resolved["source"] == "RadarFC"
+    assert resolved["mounting_position"] == "front"
+    assert any("best-effort fallback" in item for item in warnings)
+
+
+def test_worker_paramconfig_overrides_template_source_drift(tmp_path, monkeypatch):
+    from core.cluster import _render_worker_script
+
+    template = tmp_path / "template.txt"
+    template.write_text(
+        "config=runtime.xml\n"
+        "input={{INPUT_MF4}}\n"
+        "output={{OUTPUT_MF4}}\n"
+        "log={{LOG_FILE}}\n"
+        "source = RadarFC\n",
+        encoding="utf-8",
+    )
+    values = {
+        "paramconfigTemplate": str(template),
+        "radar": "RadarFL",
+    }
+    runtime = ModuleType("simulation_runtime")
+    runtime.getConfigfileParameter = lambda name: (
+        (0, values[name]) if name in values else (1, "")
+    )
+    runtime.init = lambda *_args: None
+    monkeypatch.setitem(sys.modules, "simulation_runtime", runtime)
+    namespace = {}
+    exec(
+        _render_worker_script(
+            software_path=str(tmp_path),
+            job_dir=str(tmp_path),
+            dependency_paths=[],
+        ),
+        namespace,
+    )
+
+    paramconfig = namespace["_write_paramconfig"](
+        "input.MF4",
+        str(tmp_path / "output.MF4"),
+        str(tmp_path / "selena.log"),
+        str(tmp_path),
+    )
+    text = Path(paramconfig).read_text(encoding="utf-8")
+    assert "source=RadarFL" in text
+    assert "source=RadarFC" not in text
 
 
 def test_cluster_profile_overrides_runtime_and_selena(tmp_path):

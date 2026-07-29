@@ -586,7 +586,7 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
             "schema_version": "2.0",
             "selena": {
                 "source": "existing",
-                "existing_path": record.manifest.id,
+                "existing_path": "D:/existing/Selena",
                 "runtime_xml": "D:/existing/Selena/Runtime.xml",
             },
             "data": {"path": "dataset://sha256/" + dataset.id.rsplit(":", 1)[-1]},
@@ -595,7 +595,11 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
                 "mat_filter": mat_filter.uri,
             },
         }
-        submitted = api.submit_user_run("alice", config_payload=config_payload)
+        submitted = api.submit_user_run(
+            "alice",
+            config_payload=config_payload,
+            prepared_runtime_bundle_id=record.manifest.id,
+        )
         deadline = time.time() + 10
         while time.time() < deadline:
             current = api.get_job("alice", submitted["id"])

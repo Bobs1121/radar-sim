@@ -274,7 +274,21 @@ def test_one_sdk_call_reaches_cluster_submission_with_existing_selena(tmp_path, 
         "paths": {},
         "selena": {},
         "build": {},
-        "simulation": {},
+        "simulation": {
+            "source": "RadarFC",
+            "mounting_position": "front",
+            "auto_detect_radar": False,
+            "runtime_xml": "project-runtime.xml",
+            "adapter_file": "project-adapter.txt",
+            "matfilefilter": "project.filter",
+            "config_template": "project-paramconfig.txt",
+        },
+        "assets": {
+            "runtime_xml": "project-runtime.xml",
+            "adapter_file": "project-adapter.txt",
+            "matfilefilter": "project.filter",
+            "config_template": "project-paramconfig.txt",
+        },
         "cluster": {
             "timeout_min": 1,
             "workspace_root": "//cluster/work",
@@ -317,8 +331,18 @@ def test_one_sdk_call_reaches_cluster_submission_with_existing_selena(tmp_path, 
             for stage in current.stages
         ]
         assert submitted_configs == [(str(private_job / "Config.cfg"), False)]
-        assert prepared_configs[0]["simulation"]["source"] == "RadarFL"
-        assert prepared_configs[0]["simulation"]["mounting_position"] == "CFL"
+        prepared = prepared_configs[0]
+        assert prepared["_cluster_source_explicit"] is False
+        assert "source" not in prepared["simulation"]
+        assert "mounting_position" not in prepared["simulation"]
+        assert "auto_detect_radar" not in prepared["simulation"]
+        assert "config_template" not in prepared["simulation"]
+        assert prepared["simulation"]["runtime_xml"] != "project-runtime.xml"
+        assert prepared["simulation"]["adapter_file"] == ""
+        assert prepared["simulation"]["matfilefilter"] != "project.filter"
+        assert not {
+            "runtime_xml", "adapter_file", "matfilefilter", "config_template"
+        } & set(prepared["assets"])
         manifest = sdk.manifest(submitted.id)
         assert manifest.available is True
         assert manifest.manifest["runtime_bundle_id"].startswith("selena-bundle:sha256:")

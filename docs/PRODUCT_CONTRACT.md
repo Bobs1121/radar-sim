@@ -42,18 +42,20 @@ data:
 
 simulation:
   target: auto                  # auto | local | cluster
-  adapter_file: ""             # ovrs25 可选；其他内部 recipe 按规则校验
+  adapter_file: ""             # 可选；仅在当前 Selena/数据链确实需要时填写
   mat_filter: "C:/path/to/MatFilter.cfg"
 ```
 
 强制约束：
 
 - `data` 只有一个 `path`。用户不区分本地、公盘或上传数据；系统自动识别、检索 MF4，并在目标不可访问时传输到 Cluster 可访问存储。
+- RL/RR/FL/FR 等 Selena 数据源和安装位置只从本次 MF4 的 acquisition source、对应数据组和 mounting 证据自动推导，不进入用户 YAML。单一源直接采用；多源必须记录候选、选择结果和依据。项目名、项目 adapter、历史 profile 或默认 `RadarFC` 不得覆盖该推导结果。
 - `source=build` 时，系统从用户给出的 Selena 编译脚本确认真实输出位置，并在编译后验证 `Selena.exe` 与同目录 DLL；软件包编译脚本为可选项，只用于补充内部项目识别、环境依赖发现/处理及其明确声明的代码生成步骤。未提供软件包脚本不得单独阻止编译。
 - `source=build` 始终编译用户当前工作区及其未提交修改，默认认为用户已自行切好分支。系统不得自动执行 checkout、reset、clean 或 stash。`branch` 仅是可选的期望分支；与实际分支不一致时，Web、SDK Job 结果和任务日志必须明确警告，但允许用户继续执行。
 - 清仓只属于用户明确选择并二次确认的可选动作，默认流程不执行。`git clean -xfd`、`git reset --hard`、递归 submodule reset/clean 等破坏性命令绝不能静默作用于用户工作区。
 - `source=existing` 时，用户只填写 Selena 文件夹路径和 Runtime XML。系统必须使用该目录中的 `Selena.exe` 和所需 DLL，不能只复制一个 exe。
 - Runtime Bundle、artifact id、bundle ref 等可以作为内部传输/缓存实现，但绝不出现在用户配置和 Web 表单中。
+- 仿真执行必须项目无关：Runtime、Adapter、MatFilter 只取本次任务输入，显式空值不得回退到项目资产；Cluster 使用框架统一 ParamConfig，不套用项目模板。项目识别只可用于本地编译脚本、工具链依赖和产物路径推导。
 - Web 必须支持同一 YAML 的导入、修改和导出；SDK 直接使用同一 YAML/JSON。
 - 路径输入在 Web 中应提供文件/文件夹选择器；选择只改善体验，不改变配置字段。
 

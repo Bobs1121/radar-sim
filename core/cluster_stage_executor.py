@@ -276,6 +276,27 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     dataset = _dataset(context, job, owner=owner)
     project = bundle.internal_project
     config = copy.deepcopy(context.config_loader(project))
+    # Project adapters and legacy profiles may carry a historical source such
+    # as RadarFC.  The public v1 YAML has no source field, so that value is not
+    # user intent and must not outrank MF4 acquisition metadata.
+    config["_cluster_source_explicit"] = False
+    # V2 run parameters belong to the submitted task, never to project
+    # recognition. Keep project configuration only for infrastructure,
+    # compilation/toolchain and artifact discovery.
+    project_simulation = config.setdefault("simulation", {})
+    for key in (
+        "source",
+        "mounting_position",
+        "auto_detect_radar",
+        "runtime_xml",
+        "adapter_file",
+        "matfilefilter",
+        "config_template",
+    ):
+        project_simulation.pop(key, None)
+    project_assets = config.setdefault("assets", {})
+    for key in ("runtime_xml", "adapter_file", "matfilefilter", "config_template"):
+        project_assets.pop(key, None)
     job_id = str(job.get("job_id") or "")
     private_root = context.work_root / _safe_token(job_id)
     runtime_root = private_root / "runtime-bundle"
@@ -312,12 +333,21 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         if adapter_value
         else None
     )
-    mat_filter = _resolve_config_asset(
-        context,
-        registry,
-        owner,
-        "mat_filter",
-        resolved_assets.get("mat_filter") or simulation.get("mat_filter"),
+    mat_filter_value = (
+        resolved_assets["mat_filter"]
+        if "mat_filter" in resolved_assets
+        else simulation.get("mat_filter", "")
+    )
+    mat_filter = (
+        _resolve_config_asset(
+            context,
+            registry,
+            owner,
+            "mat_filter",
+            mat_filter_value,
+        )
+        if str(mat_filter_value or "").strip()
+        else None
     )
     data_location = context.dataset_catalog.resolve_location(dataset.id, owner=owner)
 
@@ -329,9 +359,8 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     sim = config.setdefault("simulation", {})
     sim["runtime_xml"] = str(runtime_xml)
     sim["adapter_file"] = str(adapter) if adapter is not None else ""
-    sim["matfilefilter"] = str(mat_filter)
+    sim["matfilefilter"] = str(mat_filter) if mat_filter is not None else ""
     sim["input_mf4"] = str(data_location)
-    _apply_existing_cluster_profile_defaults(config, job)
 
     from core.preflight import run_preflight
     # Runtime/MF4 inspection records compatibility evidence for the task
@@ -607,48 +636,6 @@ def _dedupe_relative_paths(values: list[str]) -> list[str]:
         seen.add(key)
         unique.append(text)
     return unique
-
-
-def _apply_existing_cluster_profile_defaults(
-    config: dict[str, Any], job: dict[str, Any]
-) -> None:
-    """Apply hidden radar/mounting defaults for one exact existing runtime.
-
-    These are administrator-owned project adaptation details. They must not
-    become user YAML fields, but an existing Selena folder and Runtime pair
-    can deterministically select the matching legacy Cluster profile.
-    """
-    selena = dict((job.get("spec") or {}).get("selena") or {})
-    if str(selena.get("source") or "") != "existing":
-        return
-    existing = _normalized_path(str(selena.get("existing_path") or ""))
-    runtime = _normalized_path(str(selena.get("runtime_xml") or ""))
-    if not existing or not runtime:
-        return
-    matches: list[dict[str, Any]] = []
-    for raw_profile in (config.get("cluster") or {}).get("profiles") or []:
-        profile = dict(raw_profile or {})
-        profile_exe = _normalized_path(str(profile.get("selena_exe") or ""))
-        profile_runtime = _normalized_path(str(profile.get("runtime_xml") or ""))
-        profile_folder = profile_exe.rsplit("/", 1)[0] if "/" in profile_exe else ""
-        if profile_folder == existing and profile_runtime == runtime:
-            matches.append(profile)
-    if len(matches) > 1:
-        raise ClusterStageExecutionError(
-            "Existing Selena matches multiple internal Cluster profiles"
-        )
-    if not matches:
-        return
-    profile = matches[0]
-    simulation = config.setdefault("simulation", {})
-    if str(profile.get("source") or "").strip():
-        simulation["source"] = str(profile["source"])
-    if str(profile.get("mounting_position") or "").strip():
-        simulation["mounting_position"] = str(profile["mounting_position"])
-
-
-def _normalized_path(value: str) -> str:
-    return str(value or "").strip().replace("\\", "/").rstrip("/").casefold()
 
 
 def build_public_run_manifest(

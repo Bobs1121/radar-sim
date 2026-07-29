@@ -61,6 +61,13 @@ RUNTIME_COPY_NAMES = {
 }
 
 CLUSTER_KILL_PASSWORD_ENV = "RSIM_CLUSTER_KILL_PASSWORD"
+RADAR_SOURCE_ORDER = ("RadarFL", "RadarFR", "RadarRL", "RadarRR")
+RADAR_SOURCE_MOUNTING = {
+    "RadarFL": "CFL",
+    "RadarFR": "CFR",
+    "RadarRL": "CRL",
+    "RadarRR": "CRR",
+}
 
 
 @dataclass
@@ -794,35 +801,24 @@ def prepare_cluster_job(
         selena_exe = local_selena
         warnings.append("Selena executable still points to the local build; set cluster.selena_exe or use --copy-selena before real submit.")
 
-    # Radar orientation auto-detection: when source/mounting are auto/unset and
-    # the input is a single MF4, infer from the file's metadata so the worker
-    # runs with the correct radar source (RadarFL/FR/RL/RR) instead of a default.
-    # This mirrors what rsim run does locally via build_effective_simulation.
-    source_value = str(sim.get("source", "") or "").strip().lower()
-    mounting_value = str(sim.get("mounting_position", "") or "").strip().lower()
-    needs_detection = source_value in ("", "auto") or mounting_value in ("", "auto")
-    if needs_detection and datafile_path:
-        # On Linux the datafile is a UNC string workers read; resolve to the
-        # local mount point to stat/read it for orientation detection.
-        local_datafile = _to_local_path(datafile_path)
-        try:
-            is_regular_file = Path(local_datafile).is_file()
-        except OSError as exc:
-            # SMB/DFS hiccups (connection refused, stale handle) shouldn't crash
-            # prepare — orientation detection is best-effort.
-            is_regular_file = False
-            warnings.append(f"Could not stat datafile for orientation detection: {exc}")
-        if is_regular_file:
-            try:
-                from core.simulation import detect_radar_orientation
-                detection = detect_radar_orientation(local_datafile)
-                if detection:
-                    sim = dict(sim)
-                    sim["source"] = detection["source"]
-                    sim["mounting_position"] = detection["mounting_position"]
-                    sim["radar_detection"] = detection
-            except Exception as exc:
-                warnings.append(f"Radar orientation auto-detection failed: {exc}")
+    # The project adapter may contain an old radar default, but it is not user
+    # intent.  V2 callers mark that distinction explicitly.  Legacy/direct SDK
+    # callers remain backwards-compatible: a non-auto simulation.source is
+    # considered explicit when no provenance marker is present.
+    configured_source = str(sim.get("source", "") or "").strip()
+    source_explicit_marker = config.get("_cluster_source_explicit")
+    source_is_explicit = (
+        configured_source.lower() not in ("", "auto")
+        if source_explicit_marker is None
+        else bool(source_explicit_marker) and configured_source.lower() not in ("", "auto")
+    )
+    sim = _resolve_cluster_radar_context(
+        sim,
+        datafile_path=datafile_path,
+        local_datafile=_to_local_path(datafile_path),
+        source_is_explicit=source_is_explicit,
+        warnings=warnings,
+    )
 
     script_path = job_dir_local / "SIMULATION_RADAR_SIM.py"
     script_unc = job_dir_unc_str + "\\SIMULATION_RADAR_SIM.py"
@@ -837,20 +833,23 @@ def prepare_cluster_job(
 
     config_path = job_dir_local / "Config.cfg"
     config_unc = job_dir_unc_str + "\\Config.cfg"
-    config_path.write_text(
-        _render_config_cfg(
-            cluster=cluster,
-            sim=sim,
-            simulation_script=script_unc,
-            datafile_path=datafile_path,
-            selena_exe=selena_exe,
-            runtime_xml=copied_assets.get("runtime_xml", sim.get("runtime_xml", "")),
-            matfilefilter=copied_assets.get("matfilefilter", sim.get("matfilefilter", "")),
-            adapter_file=copied_assets.get("adapter_file", sim.get("adapter_file", "")),
-            config_template=copied_assets.get("config_template", ""),
-        ),
-        encoding="utf-8",
+    config_text = _render_config_cfg(
+        cluster=cluster,
+        sim=sim,
+        simulation_script=script_unc,
+        datafile_path=datafile_path,
+        selena_exe=selena_exe,
+        runtime_xml=copied_assets.get("runtime_xml", sim.get("runtime_xml", "")),
+        matfilefilter=copied_assets.get("matfilefilter", sim.get("matfilefilter", "")),
+        adapter_file=copied_assets.get("adapter_file", sim.get("adapter_file", "")),
+        config_template=copied_assets.get("config_template", ""),
     )
+    _assert_source_fidelity(
+        str(sim.get("source") or ""),
+        _parse_simple_cfg(config_text).get("radar", ""),
+        boundary="Config.cfg",
+    )
+    config_path.write_text(config_text, encoding="utf-8")
 
     # submit_command passes config_path to the Windows manager — must be UNC.
     submit_command = build_submit_command(
@@ -872,6 +871,12 @@ def prepare_cluster_job(
         "output_hint": job_dir_unc_str + "\\output",
         "selena_exe": selena_exe,
         "assets": copied_assets,
+        "radar": {
+            "source": str(sim.get("source") or ""),
+            "mounting_position": str(sim.get("mounting_position") or ""),
+            "available_sources": list(sim.get("radar_available_sources") or []),
+            "selection_evidence": dict(sim.get("radar_selection_evidence") or {}),
+        },
         "submit_command": submit_command,
         "warnings": warnings,
     }
@@ -1168,6 +1173,151 @@ def _infer_radar_from_path(path: str) -> dict[str, str]:
     return {}
 
 
+def _canonical_radar_source(value: str) -> str:
+    text = str(value or "").strip()
+    folded = text.casefold()
+    known = next(
+        (item for item in RADAR_SOURCE_ORDER if item.casefold() == folded), ""
+    )
+    if known:
+        return known
+    # Other mature projects legitimately use sources such as RadarFC. Keep the
+    # contract open while rejecting obviously malformed metadata values.
+    return text if re.fullmatch(r"Radar[A-Za-z0-9_]+", text, re.IGNORECASE) else ""
+
+
+def _first_mf4_for_source_detection(path: str) -> str:
+    candidate = Path(str(path or ""))
+    try:
+        if candidate.is_file() and candidate.suffix.casefold() == ".mf4":
+            return str(candidate)
+        if candidate.is_dir():
+            return next((str(item) for item in iter_mf4_inputs(candidate, limit=1)), "")
+    except (OSError, StopIteration):
+        return ""
+    return ""
+
+
+def _available_mf4_radar_sources(mf4_path: str) -> list[str]:
+    """Return valid radar acquisition sources in deterministic MF4 group order."""
+    try:
+        from asammdf import MDF
+    except ImportError:
+        return []
+    if not mf4_path:
+        return []
+
+    mdf = MDF(mf4_path, memory="minimum")
+    try:
+        found: dict[str, str] = {}
+        for group in mdf.groups:
+            channel_group = getattr(group, "channel_group", None)
+            if channel_group is None and isinstance(group, dict):
+                channel_group = group.get("channel_group")
+            acquisition = getattr(channel_group, "acq_source", None)
+            source = _canonical_radar_source(getattr(acquisition, "path", ""))
+            if source:
+                found.setdefault(source.casefold(), source)
+        return list(found.values())
+    finally:
+        mdf.close()
+
+
+def _resolve_cluster_radar_context(
+    sim: dict[str, Any],
+    *,
+    datafile_path: str,
+    local_datafile: str,
+    source_is_explicit: bool,
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Resolve one faithful Cluster source without trusting project defaults."""
+    resolved = dict(sim)
+    configured_source = str(resolved.get("source", "") or "").strip()
+    mounting = str(resolved.get("mounting_position", "") or "").strip()
+
+    if source_is_explicit:
+        resolved["source"] = configured_source
+        canonical = _canonical_radar_source(configured_source)
+        if canonical in RADAR_SOURCE_MOUNTING and mounting.lower() in ("", "auto"):
+            resolved["mounting_position"] = RADAR_SOURCE_MOUNTING[canonical]
+        return resolved
+
+    mf4_path = _first_mf4_for_source_detection(local_datafile)
+    available: list[str] = []
+    if mf4_path:
+        try:
+            available = _available_mf4_radar_sources(mf4_path)
+        except Exception as exc:
+            warnings.append(f"Could not inspect MF4 acquisition sources: {exc}")
+
+    detection: dict[str, Any] | None = None
+    if mf4_path and not available:
+        try:
+            from core.simulation import detect_radar_orientation
+            detection = detect_radar_orientation(mf4_path)
+        except Exception as exc:
+            warnings.append(f"Radar orientation auto-detection failed: {exc}")
+
+    selected = ""
+    selection_method = ""
+    if available:
+        selected = available[0]
+        selection_method = (
+            "single_acq_source" if len(available) == 1 else "first_acq_source"
+        )
+        if len(available) > 1:
+            warnings.append(
+                "MF4 contains multiple radar acquisition sources "
+                f"({', '.join(available)}); selected {selected} by {selection_method}."
+            )
+    elif detection:
+        selected = _canonical_radar_source(str(detection.get("source") or ""))
+        selection_method = str(detection.get("method") or "orientation_detection")
+    if not selected:
+        inferred = _infer_radar_from_path(mf4_path or datafile_path)
+        selected = _canonical_radar_source(inferred.get("source", ""))
+        if selected:
+            selection_method = "path_hint"
+    if not selected:
+        selected = _canonical_radar_source(configured_source)
+        selection_method = "configured_fallback" if selected else "empty_fallback"
+        warnings.append(
+            "Could not infer Cluster radar source from MF4 acquisition metadata; "
+            + (
+                f"retained configured source {selected} as a best-effort fallback."
+                if selected
+                else "left source empty for Selena to evaluate."
+            )
+        )
+
+    resolved["source"] = selected
+    if selected in RADAR_SOURCE_MOUNTING:
+        resolved["mounting_position"] = RADAR_SOURCE_MOUNTING[selected]
+    elif mounting.lower() == "auto":
+        resolved["mounting_position"] = ""
+    if detection:
+        resolved["radar_detection"] = detection
+    resolved["radar_available_sources"] = available
+    resolved["radar_selection_evidence"] = {
+        "available_sources": available,
+        "selected_source": selected,
+        "selection_method": selection_method,
+        "orientation_evidence": dict((detection or {}).get("evidence") or {}),
+    }
+    return resolved
+
+
+def _assert_source_fidelity(expected: str, actual: str, *, boundary: str) -> None:
+    expected_text = str(expected or "").strip()
+    actual_text = str(actual or "").strip()
+    if expected_text.casefold() != actual_text.casefold():
+        raise RuntimeError(
+            f"Cluster radar source fidelity check failed at {boundary}: "
+            f"expected {expected_text!r}, got {actual_text!r}"
+        )
+
+
 def _discover_output_dirs(job_root: Path) -> list[Path]:
     dirs = []
     direct = job_root / "output"
@@ -1365,6 +1515,7 @@ def _write_paramconfig(inputfile, outputfile, logfile, outputpath):
     adapter = _cfg("adapterFile", "")
     radar = _cfg("radar", "")
     mounting = _cfg("mountingPosition", "")
+    expected_source = str(radar).strip()
     if template and os.path.isfile(template):
         text = open(template, "r").read()
     else:
@@ -1415,6 +1566,24 @@ def _write_paramconfig(inputfile, outputfile, logfile, outputpath):
             if left and right in ("", chr(123) + chr(125), chr(123) + chr(123) + left.upper().replace("-", "_") + chr(125) + chr(125)):
                 continue
         lines.append(line)
+    rendered_source = ""
+    source_line_index = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip().lower() == "source":
+            rendered_source = value.strip()
+            source_line_index = index
+            break
+    if expected_source:
+        if source_line_index is None:
+            lines.append("source=" + expected_source)
+        elif rendered_source.lower() != expected_source.lower():
+            lines[source_line_index] = "source=" + expected_source
+    elif source_line_index is not None:
+        lines.pop(source_line_index)
     paramconfig = os.path.join(outputpath, "radar_sim_paramconfig.txt")
     open(paramconfig, "w").write("\\n".join(lines) + "\\n")
     return paramconfig

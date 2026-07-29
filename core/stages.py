@@ -186,7 +186,7 @@ def plan_user_environment_requirements(config: UserRunConfig) -> dict[str, Any]:
         {
             "id": "simulation_assets",
             "stage_type": "preflight",
-            "description": "Verify MatFilter and the Adapter only when the recognized recipe requires it.",
+            "description": "Verify this task's MatFilter and optional Adapter without project defaults.",
         },
     ]
     if config.selena.source == "build":
