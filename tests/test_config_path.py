@@ -53,7 +53,9 @@ def test_cluster_config_uses_only_infrastructure_layers_for_every_identity(monke
     )
     monkeypatch.setattr(
         "core.config._load_yaml_file",
-        lambda _path: {"cluster": {"group": "Radar"}},
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("Cluster execution must not load a platform or project file")
+        ),
     )
     monkeypatch.setattr(
         "core.config.load_deployment_config",
@@ -69,7 +71,7 @@ def test_cluster_config_uses_only_infrastructure_layers_for_every_identity(monke
         assert config["_meta"]["project"] == identity
         assert config["_meta"]["project_independent_cluster"] is True
         assert config["cluster"]["manager_host"] == "deployment-manager"
-        assert config["cluster"]["group"] == "Radar"
+        assert "group" not in config["cluster"]
         assert config["linux_mounts"] == {"//share": "/mnt/share"}
         assert "forbidden" not in config
     assert project_loader_calls == []

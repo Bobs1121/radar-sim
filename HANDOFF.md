@@ -33,7 +33,7 @@
   - 当前 Xpeng 数据发现 `RadarFL`、`RadarFR`，不含 `RadarFC`；选择证据会写入 manifest。
   - V2 Stage 已删除项目 Runtime/Adapter/MatFilter/source/config template 的回退，使用通用内置 ParamConfig。
 - `e0d41c4 fix: make Cluster execution project independent`
-  - `load_cluster_execution_config()` 对已登记项目、未知项目和 `workspace-*` 一律只加载 global + platform + deployment 基础设施层。
+  - `load_cluster_execution_config()` 对已登记项目、未知项目和 `workspace-*` 一律只加载 global + deployment 基础设施层，不读取 platform/project 文件。
   - 已删除匿名现有 Selena 的 `PROJECT_ADAPTER_UNAVAILABLE` 阻断。
   - 本机定向门禁 `25 passed`；同一加载器对 `ovrs25`、`xpeng-od25` 与匿名身份生成的执行配置除 trace identity 外完全一致。
 

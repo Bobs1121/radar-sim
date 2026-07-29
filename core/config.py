@@ -608,10 +608,8 @@ def load_cluster_execution_config(project: Optional[str] = None) -> dict[str, An
     Stage executor.
     """
     project_name = str(project or get_default_project())
-    platform_path = get_config_dir() / "platforms" / "gen5_selena.yaml"
     layers = [
         _normalize_layer(load_global_defaults()),
-        _normalize_layer(_load_yaml_file(platform_path)),
         _normalize_layer(load_deployment_config()),
     ]
     config: dict[str, Any] = {}
