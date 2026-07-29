@@ -818,6 +818,7 @@ def prepare_cluster_job(
         datafile_path=datafile_path,
         local_datafile=_to_local_path(datafile_path),
         source_is_explicit=source_is_explicit,
+        require_detected_source=source_explicit_marker is not None,
         warnings=warnings,
     )
 
@@ -1253,6 +1254,7 @@ def _resolve_cluster_radar_context(
     local_datafile: str,
     source_is_explicit: bool,
     warnings: list[str],
+    require_detected_source: bool = False,
 ) -> dict[str, Any]:
     """Resolve one faithful Cluster source without trusting project defaults."""
     resolved = dict(sim)
@@ -1305,6 +1307,12 @@ def _resolve_cluster_radar_context(
     if not selected:
         selected = _canonical_radar_source(configured_source)
         selection_method = "configured_fallback" if selected else "empty_fallback"
+        if require_detected_source:
+            raise RuntimeError(
+                "Cluster radar source could not be inferred from MF4 acquisition "
+                "metadata; verify that the data is readable and contains a valid "
+                "RadarFL/RadarFR/RadarRL/RadarRR acquisition source"
+            )
         warnings.append(
             "Could not infer Cluster radar source from MF4 acquisition metadata; "
             + (

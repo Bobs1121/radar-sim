@@ -277,6 +277,40 @@ def test_cluster_source_inference_failure_keeps_generic_configured_source(
     assert any("best-effort fallback" in item for item in warnings)
 
 
+@pytest.mark.parametrize("reader_result", [[], RuntimeError("metadata read failed")])
+def test_project_independent_cluster_never_submits_empty_or_configured_fallback_source(
+    tmp_path, monkeypatch, reader_result
+):
+    import core.cluster as cluster
+    import core.simulation as simulation
+
+    config = _cluster_config(tmp_path)
+    config["_cluster_source_explicit"] = False
+    config["simulation"]["source"] = "RadarFC"
+    input_mf4 = tmp_path / "input.MF4"
+    input_mf4.write_text("dummy", encoding="utf-8")
+
+    if isinstance(reader_result, Exception):
+        def fail_reader(_path):
+            raise reader_result
+        monkeypatch.setattr(cluster, "_available_mf4_radar_sources", fail_reader)
+    else:
+        monkeypatch.setattr(
+            cluster, "_available_mf4_radar_sources", lambda _path: reader_result
+        )
+    monkeypatch.setattr(
+        simulation,
+        "detect_radar_orientation",
+        lambda _path: {},
+    )
+    monkeypatch.setattr(cluster, "_infer_radar_from_path", lambda _path: {})
+
+    with pytest.raises(RuntimeError, match="could not be inferred"):
+        cluster.prepare_cluster_job(
+            config, input_path=str(input_mf4), run_id="source_must_be_known"
+        )
+
+
 def test_worker_paramconfig_overrides_template_source_drift(tmp_path, monkeypatch):
     from core.cluster import _render_worker_script
 
