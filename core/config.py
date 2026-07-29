@@ -599,6 +599,30 @@ def load_config(project: Optional[str] = None) -> dict[str, Any]:
     )
 
 
+def load_cluster_execution_config(project: Optional[str] = None) -> dict[str, Any]:
+    """Load project-independent Cluster infrastructure.
+
+    ``project`` is retained only as an opaque trace identity.  It must never
+    select simulation inputs or a project adapter: task
+    Runtime/Adapter/MatFilter/source values are injected later by the Cluster
+    Stage executor.
+    """
+    project_name = str(project or get_default_project())
+    platform_path = get_config_dir() / "platforms" / "gen5_selena.yaml"
+    layers = [
+        _normalize_layer(load_global_defaults()),
+        _normalize_layer(_load_yaml_file(platform_path)),
+        _normalize_layer(load_deployment_config()),
+    ]
+    config: dict[str, Any] = {}
+    for layer in layers:
+        config = _deep_merge(config, layer)
+    config.setdefault("_meta", {})
+    config["_meta"]["project"] = project_name
+    config["_meta"]["project_independent_cluster"] = True
+    return config
+
+
 def load_simulation_spec_bundle(
     project: Optional[str] = None,
     *,

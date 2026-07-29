@@ -238,12 +238,6 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
     """Check only central/Gateway prerequisites; Linux never checks build tools."""
     bundle = _bundle(context, job)
     project = bundle.internal_project
-    if project.startswith("workspace-"):
-        raise ClusterStageExecutionError(
-            "未能从所选代码和脚本确定可用的仿真适配，系统不会套用其他产品的默认配置。",
-            code="PROJECT_ADAPTER_UNAVAILABLE",
-            actions=({"type": "fix_configuration", "label": "确认代码路径、Selena 编译脚本和软件包编译脚本"},),
-        )
     config = context.config_loader(project)
     from core.cluster import check_cluster_environment
 

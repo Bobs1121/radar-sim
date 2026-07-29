@@ -36,6 +36,45 @@ def test_load_config_from_path_standard(tmp_path, monkeypatch):
     assert by_path["build"]["selena_branch"] == "dev"
 
 
+def test_cluster_config_uses_only_infrastructure_layers_for_every_identity(monkeypatch):
+    from core.config import load_cluster_execution_config
+
+    project_loader_calls = []
+    monkeypatch.setattr(
+        "core.config.load_config",
+        lambda project: project_loader_calls.append(project) or {"forbidden": True},
+    )
+    monkeypatch.setattr(
+        "core.config.load_global_defaults",
+        lambda: {
+            "cluster": {"manager_host": "global-manager"},
+            "simulation": {"source": "RadarFC"},
+        },
+    )
+    monkeypatch.setattr(
+        "core.config._load_yaml_file",
+        lambda _path: {"cluster": {"group": "Radar"}},
+    )
+    monkeypatch.setattr(
+        "core.config.load_deployment_config",
+        lambda: {
+            "cluster": {"manager_host": "deployment-manager"},
+            "linux_mounts": {"//share": "/mnt/share"},
+        },
+    )
+
+    for identity in ("workspace-anonymous123", "ovrs25", "xpeng-od25"):
+        config = load_cluster_execution_config(identity)
+
+        assert config["_meta"]["project"] == identity
+        assert config["_meta"]["project_independent_cluster"] is True
+        assert config["cluster"]["manager_host"] == "deployment-manager"
+        assert config["cluster"]["group"] == "Radar"
+        assert config["linux_mounts"] == {"//share": "/mnt/share"}
+        assert "forbidden" not in config
+    assert project_loader_calls == []
+
+
 def test_load_config_from_path_free_layout(tmp_path, monkeypatch):
     """local.yaml in arbitrary location + explicit assets.root → loads without config/projects/."""
     from core.config import load_config_from_path

@@ -434,7 +434,9 @@ def _run_serve_v1(args) -> int:
             config_assets=config_asset_store,
             run_store=ClusterRunStore(runtime_bundle_db.parent / "cluster_runs.db"),
             work_root=runtime_bundle_db.parent / "cluster_stage_work",
-            config_loader=lambda project: __import__("core.config", fromlist=["load_config"]).load_config(project),
+            config_loader=lambda project: __import__(
+                "core.config", fromlist=["load_cluster_execution_config"]
+            ).load_cluster_execution_config(project),
             result_catalog=result_catalog,
         )
         cluster_stage_executor = ClusterStageExecutor(service, cluster_stage_context)

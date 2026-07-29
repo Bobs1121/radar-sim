@@ -10,6 +10,7 @@ from core.cluster_stage_executor import (
     ClusterStageExecutionError,
     build_public_run_manifest,
     execute_cluster_collect,
+    execute_cluster_environment,
     execute_cluster_submit,
     resolve_cluster_data,
 )
@@ -487,6 +488,30 @@ def test_shared_data_uses_trusted_recognition_while_runtime_is_still_building(mo
 
     assert result["dataset_id"] == dataset.id
     assert loaded == ["ovrs25"]
+
+
+@pytest.mark.parametrize("identity", ["workspace-anonymous123", "ovrs25", "xpeng-od25"])
+def test_cluster_environment_never_requires_project_adapter(identity, monkeypatch):
+    loaded = []
+    context = SimpleNamespace(
+        config_loader=lambda trace_identity: loaded.append(trace_identity) or {"cluster": {}},
+    )
+    monkeypatch.setattr(
+        "core.cluster_stage_executor._bundle",
+        lambda _context, _job: SimpleNamespace(
+            internal_project=identity,
+            manifest=SimpleNamespace(id="selena-bundle:sha256:" + "2" * 64),
+        ),
+    )
+    monkeypatch.setattr(
+        "core.cluster.check_cluster_environment",
+        lambda _config: [SimpleNamespace(name="manager", ok=True, severity="error")],
+    )
+
+    result = execute_cluster_environment(context, _job())
+
+    assert result["environment_snapshot"]["status"] == "ready"
+    assert loaded == [identity]
 
 
 def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tmp_path: Path, monkeypatch):
