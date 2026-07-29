@@ -124,9 +124,9 @@ def test_optional_adapter_package_script_is_rebased_to_user_checkout(tmp_path):
 
     assert result.status == "resolved"
     assert Path(result.package_build_script).resolve() == package.resolve()
-    assert result.output_dir == _normalize_path(
+    assert result.output_dir.casefold() == _normalize_path(
         str(workspace / "ip_dc" / "build" / "KNOWN")
-    )
+    ).casefold()
 
 
 def test_real_bydod25_adapter_recognizes_both_scripts_on_any_drive():

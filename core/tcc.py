@@ -504,7 +504,7 @@ def _batch_dependency_sources(script_path: Path, *, max_files: int = 20) -> list
             )
             if "%" in expanded or "!" in expanded:
                 continue
-            candidate = Path(expanded.replace("/", os.sep))
+            candidate = Path(expanded.replace("\\", os.sep).replace("/", os.sep))
             if not candidate.is_absolute():
                 candidate = current.parent / candidate
             candidate = candidate.resolve(strict=False)
