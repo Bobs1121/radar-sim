@@ -31,6 +31,15 @@ def _service(tmp_path: Path) -> DatasetUploadService:
     )
 
 
+def _service_with_project_validator(tmp_path: Path, project_validator) -> DatasetUploadService:
+    quota = DatasetStoreQuota(min_free_bytes=0, chunk_size=8, max_file_size=100, max_total_size=100)
+    return DatasetUploadService(
+        DatasetStore(tmp_path / "store", quota=quota),
+        DatasetCatalog(tmp_path / "catalog.db"),
+        project_validator=project_validator,
+    )
+
+
 def test_public_upload_source_kind_is_server_owned_and_returns_reusable_data_path(tmp_path: Path):
     service = _service(tmp_path)
     data = b"mf4"
@@ -125,6 +134,64 @@ def test_control_derived_running_prepare_data_evidence_authorizes_agent_session(
     session = service.create_agent_from_evidence(
         "alice",
         project="ovrs25",
+        files=[_file("a.MF4", b"x")],
+        evidence_ref=evidence_ref,
+        requesting_agent_id="agent_1",
+    )
+    assert session["session_id"].startswith("dsup_")
+    assert claimed["job_id"] == job["job_id"]
+
+
+def test_control_derived_evidence_uses_payload_project_when_spec_is_project_free(tmp_path: Path):
+    """A project-free user YAML (INV-15) leaves spec.project empty.
+
+    The scheduler resolves the internal project identity and carries it on the
+    prepare_data task payload.  Evidence must read that payload project, or a
+    one-click existing-Selena + Cluster run cannot authorize the Windows Agent
+    data upload.
+    """
+    control = ControlService(tmp_path / "control.db")
+    control.register_agent(
+        "light",
+        agent_id="agent_1",
+        node_kind="windows_agent",
+        capabilities=["data.local.read", "data.upload"],
+        metadata={"node_kind": "windows_agent"},
+    )
+    # spec has NO project (project-free user contract); payload carries the
+    # internal project the scheduler resolved.
+    job = control.create_job(
+        "simulation.v1",
+        owner="alice",
+        assigned_agent_id=INTERNAL_V1_SCHEDULER_AGENT_ID,
+        spec={"data": {"path": "D:/data/xpeng-cr5cb/Radar"}},
+        tasks=[
+            {"task_type": "resolve_spec", "stage_type": "resolve_spec", "status": "skipped"},
+            {
+                "task_type": "prepare_data",
+                "stage_type": "prepare_data",
+                "dependencies": ["resolve_spec"],
+                "assigned_agent_id": "agent_1",
+                "required_agent_id": "agent_1",
+                "payload": {
+                    "project": "xpengod25",
+                    "dispatch_scope": "data_upload",
+                    "data_path": "D:/data/xpeng-cr5cb/Radar",
+                    "auto_configure": True,
+                },
+            },
+        ],
+    )
+    claimed = control.claim_next_task("agent_1")
+    evidence_ref = f"{claimed['stage_id']}:{claimed['attempt_count']}"
+    service = _service_with_project_validator(tmp_path / "upload", lambda value: value == "xpengod25")
+    service._evidence_provider = lambda owner, ref: trusted_data_stage_evidence_from_control(
+        control, owner, ref
+    )
+
+    session = service.create_agent_from_evidence(
+        "alice",
+        project="xpengod25",
         files=[_file("a.MF4", b"x")],
         evidence_ref=evidence_ref,
         requesting_agent_id="agent_1",

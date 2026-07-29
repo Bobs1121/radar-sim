@@ -244,7 +244,12 @@ def trusted_data_stage_evidence_from_control(
             "data_stage_evidence_unavailable", "prepare_data evidence is unavailable", status_code=409
         ) from exc
     spec = dict(job.get("spec") or {})
-    project = str(spec.get("project") or "")
+    # The user YAML is project-free (INV-15); the internal project identity is
+    # resolved by the scheduler and carried on the prepare_data task payload.
+    # The evidence must use that internal project, not the absent spec.project,
+    # or the Windows Agent upload authorization fails for one-click Cluster runs.
+    payload = dict(task.get("payload") or {})
+    project = str(payload.get("project") or spec.get("project") or "")
     if (
         normalize_user(job.get("owner") or "") != owner
         or task.get("stage_type") != "prepare_data"
