@@ -154,25 +154,6 @@ class RadarSimClient:
         data_path = Path(config.data.path).expanduser()
         existing_is_shared = config.selena.existing_path.startswith("//")
         runtime_is_shared = config.selena.runtime_xml.startswith("//")
-        # A direct SDK caller may not have a Windows Agent at all.  When all
-        # inputs are local to this caller, apply the same Runtime.xml
-        # DataPlayer-to-MF4 contract before either Selena or data is uploaded.
-        # This keeps Web and SDK behaviour aligned without adding any internal
-        # project field to the reusable YAML.
-        if (
-            config.selena.source == "existing"
-            and existing.is_dir()
-            and runtime.is_file()
-            and data_path.exists()
-        ):
-            from core.preflight import (
-                assert_runtime_data_signal_contract,
-                runtime_data_player_ports,
-            )
-
-            assert_runtime_data_signal_contract(
-                data_path, runtime_data_player_ports(str(runtime))
-            )
         if (
             config.selena.source == "existing"
             and not existing_is_shared

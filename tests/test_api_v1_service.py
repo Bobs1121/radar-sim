@@ -64,6 +64,24 @@ def run_config_dict(**patch):
     return data
 
 
+def test_user_run_rejects_internal_bundle_id_as_existing_folder(tmp_path):
+    api = ApiV1Service(
+        control_service_factory=lambda _owner: ControlService(tmp_path / "control.db"),
+    )
+    config = run_config_dict()
+    config["selena"] = {
+        "source": "existing",
+        "existing_path": "selena-bundle:sha256:" + "a" * 64,
+        "runtime_xml": "D:/data/runtime_fcta.xml",
+    }
+
+    with pytest.raises(ApiV1Error) as caught:
+        api.submit_user_run("alice", config_payload=config)
+
+    assert caught.value.code == "internal_selena_reference_not_allowed"
+    assert caught.value.status_code == 422
+
+
 def make_api(tmp_path):
     services: dict[str, ControlService] = {}
 

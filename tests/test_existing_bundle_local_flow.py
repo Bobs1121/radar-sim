@@ -64,11 +64,11 @@ def _registered_service(tmp_path, bundle, archive):
     return RuntimeBundleUploadService(store, catalog, lambda _owner, _ref: None), record
 
 
-def _local_config(bundle_id, data_path, adapter, mat_filter):
+def _local_config(data_path, adapter, mat_filter):
     config = run_config_dict()
     config["selena"] = {
         "source": "existing",
-        "existing_path": bundle_id,
+        "existing_path": "D:/existing/Selena",
         "runtime_xml": "D:/existing/Selena/Runtime.xml",
     }
     config["data"]["path"] = str(data_path)
@@ -132,7 +132,8 @@ def test_existing_bundle_local_cache_and_data_are_bound_to_same_full_agent(tmp_p
     )
     job = api.submit_user_run(
         "bob",
-        config_payload=_local_config(bundle.manifest.id, data, adapter, mat_filter),
+        config_payload=_local_config(data, adapter, mat_filter),
+        prepared_runtime_bundle_id=bundle.manifest.id,
     )
     stages = {item["stage_type"]: item for item in control.get_job(job["id"])["stages"]}
     assert stages["environment_check"]["payload"]["dispatch_scope"] == "runtime_bundle_cache"

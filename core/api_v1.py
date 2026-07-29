@@ -282,6 +282,21 @@ class ApiV1Service:
         """
         owner = self._owner(owner)
         config = self._parse_user_run_config(config_payload)
+        if (
+            config.selena.source == "existing"
+            and config.selena.existing_path.startswith("selena-bundle:sha256:")
+        ):
+            raise ApiV1Error(
+                "internal_selena_reference_not_allowed",
+                "请填写 Selena 产物文件夹；公开 YAML 不能使用内部 Bundle ID。",
+                status_code=422,
+                actions=[
+                    {
+                        "type": "select_existing_selena_folder",
+                        "label": "选择 Selena 产物文件夹",
+                    }
+                ],
+            )
         canonical = config.to_dict()
         config_hash = config.fingerprint()
         plan = plan_user_run_stages(config)
@@ -370,14 +385,9 @@ class ApiV1Service:
         recognition_status = "pending_node"
         selected_runtime_bundle: dict[str, Any] | None = None
         selected_runtime_project = ""
-        # Compatibility only: a trusted internal caller may still submit an
-        # already registered logical id. A normal existing_path is a folder
-        # and is resolved on the node that can access it.
-        bundle_selector = prepared_bundle_id or (
-            config.selena.existing_path
-            if config.selena.existing_path.startswith("selena-bundle:sha256:")
-            else ""
-        )
+        # Only the out-of-band SDK/API preparation field may carry an internal
+        # logical id. Public existing_path remains a user-visible folder.
+        bundle_selector = prepared_bundle_id
         if config.selena.source == "existing" and bundle_selector:
             if self.runtime_bundle_upload_service_factory is None:
                 raise ApiV1Error("runtime_bundle_catalog_unavailable", "Runtime Bundle catalog is unavailable", status_code=503)

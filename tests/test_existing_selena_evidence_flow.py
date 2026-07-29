@@ -1,6 +1,7 @@
 """Public existing-Selena evidence stays optional and never triggers a build."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from core.stages import plan_user_run_stages
 from core.user_config import UserRunConfig
@@ -124,3 +125,47 @@ def test_sdk_passes_existing_workspace_evidence_to_local_import(tmp_path, monkey
     assert captured["selena_build_script"].endswith("build_selena.bat")
     assert captured["package_build_script"].endswith("build_package.bat")
     assert payload["selena"]["source"] == "existing"
+
+
+def test_sdk_does_not_block_user_inputs_on_signal_contract(tmp_path, monkeypatch):
+    existing = tmp_path / "Selena"
+    existing.mkdir()
+    runtime = tmp_path / "runtime_fcta.xml"
+    runtime.write_text("<runtime><DataPlayer input='ConfiguredSignal'/></runtime>", encoding="utf-8")
+    data = tmp_path / "Radar"
+    data.mkdir()
+    (data / "sample.MF4").write_bytes(b"not-a-real-mf4")
+
+    raw = _existing_with_evidence()
+    raw["selena"]["existing_path"] = str(existing)
+    raw["selena"]["runtime_xml"] = str(runtime)
+    raw["data"]["path"] = str(data)
+    raw["simulation"]["target"] = "cluster"
+    raw["simulation"]["adapter_file"] = ""
+    raw["simulation"]["mat_filter"] = "//shared/signals.filter"
+    config = UserRunConfig.from_dict(raw)
+    client = RadarSimClient("http://127.0.0.1:1")
+
+    monkeypatch.setattr(
+        "core.preflight.assert_runtime_data_signal_contract",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("SDK must not pre-judge user-selected simulation inputs")
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "_upload_existing_selena",
+        lambda *_args, **_kwargs: "selena-bundle:sha256:" + "a" * 64,
+    )
+    monkeypatch.setattr(
+        client,
+        "upload_run_data",
+        lambda source: SimpleNamespace(
+            data_path="dataset://sha256/" + "b" * 64,
+        ),
+    )
+
+    payload, bundle_id = client._prepare_user_run(config, dry_run=False)
+
+    assert bundle_id == "selena-bundle:sha256:" + "a" * 64
+    assert payload["data"]["path"] == "dataset://sha256/" + "b" * 64
