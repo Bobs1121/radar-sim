@@ -1,6 +1,6 @@
 # radar-sim v5 Active Handoff
 
-> 最近更新：2026-07-24
+> 最近更新：2026-07-29
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
@@ -16,11 +16,35 @@
 
 `CHECKPOINT.md`、`docs/handoff.md`、`docs/REFACTORING_PLAN.md`、`docs/WIZARD_IMPLEMENTATION_PLAN.md` 和旧 phase 章节只作为历史证据，不覆盖上述四份文档。
 
-## 0.0 P0 已闭合：existing Bundle + 本机数据 auto-binding 端到端真实验证完成（2026-07-29）
+## 0.0 P0 已闭合：直接 Selena 文件夹 + 本机数据 + Cluster 端到端真实验证完成（2026-07-29）
 
 > 本节是最新实时状态，优先级高于下方 0.1。0.1 节描述的“未完成 P0 缺口”已由本次两个修复 + 真实 Cluster 仿真闭环验证闭合。
 
-### 0.0a 第二轮真实验证：换 runtime_fcta_per.xml（2026-07-29）
+### 0.0a 直接 Selena 文件夹真实验证：`job_0fc305516985`（2026-07-29）
+
+- 发布提交：`823adc96504e61cd0d9b034098c99ba12d2cf439`（`fix: align existing Selena folder runtime flow`）。Linux release 已原子切换到 `/home/hoz2wx/radar-sim-v1-823adc9`，PID `2142440`、`NRestarts=0`、`RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`，Health、Windows full、Cluster 均在线。Windows Connector 由同一提交一键静默更新，保留原 Agent ID/配置，无重新配对。
+- 用户有效配置：`output/xpeng-cr5cb-existing-folder-cluster.yaml`。公开 YAML 使用真实 Selena 文件夹，不再暴露内部 Bundle ID：
+  - Selena：`D:/pl-xpeng/ip_dc/build/ROS_PER_SIT_RPM_FCT_RECR/dc_tools/selena/core/RelWithDebInfo`
+  - Runtime：`D:/data/xpeng-cr5cb/MPCTEXPFB-4363/CBFA_10%_10KPH_NG/Radar/runtime_fcta.xml`
+  - Data：`D:/data/xpeng-cr5cb/MPCTEXPFB-4363/CBFA_10%_10KPH_NG/Radar`
+  - MatFilter：`D:/pl-xpeng/reco_fw/tools/selena/matlab_transport_cfg/matlab_swx_plotreco.mdf.mat.filter`；Adapter 为空；target 为 Cluster。
+- Raw API dry-run `job_53d8bb2c023c` 逐字确认三条用户路径，自动识别 `xpengod25`（confidence `1.0`），`prepare_source/build_selena` 均 skipped；真实任务没有重新编译。
+- Windows Agent 从用户 Selena 文件夹实际打包 `Selena.exe`、7 个同目录 DLL 和用户指定的 `runtime/runtime_fcta.xml`。Runtime SHA256 为 `7A5B89723973ECFACC94B19CBAF71C4E4EBDC84929F6CF183F36C1FAE0D7EB88`，与用户文件逐字节一致；登记 Bundle 为 `selena-bundle:sha256:09de5ed24c917f9586a244e252a51c22214ffd99ea95869238f5a14cd697e868`。
+- Windows Agent 自动发现并上传 2 个 MF4（总计 `1,239,892,640` bytes），得到 `dataset:sha256:b720623eb29def5d31dc37e41e07fb94659684bdd4b659e8a55ec1b69a03e86a`。`source_kind=agent_upload`，文件名和大小与本地逐项一致；Linux 没有尝试读取 `D:`，也没有回退到旧 UNC/central 数据。
+- Cluster 真实 job `10364` 创建 2 个 Worker 任务并完成执行。两份 `result.ini` 均为 `successfull=0`、Selena return `-1`，首个业务错误为 MF4 缺少 Runtime 端口 `g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_port_ParallelLanes_in`。系统按产品原则只在执行前记录诊断，不前置阻断；最终 Job 正确标记 failed，不伪装成功。
+- `collect_results` succeeded；Diagnosis 为 `failed/simulation/consistent` 且 `artifacts_available=true`。Result 为 `result:sha256:0f218547b0497c6ee4b0edc2c66d9bf55f09ebc804d170322b02566a98e94b22`，ZIP `1,099,356` bytes，SHA256 `D5EC81E6734E3AB24D9F40FF0149FB4F76F6701A513C8963219E8988E091A367`；Range 下载返回 206，归档含两份非空 out.MF4、result.ini、Selena 日志和参数配置。
+- 本次修复删除 SDK 对 Runtime/MF4 信号合同的提交前硬拦截；公开 `existing_path` 只接受 Selena 产物文件夹。SDK 上传文件夹后仍通过独立 `prepared_runtime_bundle_id` 传递内部 immutable Bundle；用户直接把 `selena-bundle:*` 写进公开 YAML 会收到 422 中文动作提示，避免“配置 Runtime A、实际复用旧 Bundle Runtime B”。
+- 发布门禁：本机 focused `77 passed`；Linux `76 passed, 1 failed`。唯一 Linux 失败在旧线上 `112a5de` 同样复现，是既有 POSIX 测试模拟 Windows binding 的问题，不是 `823adc9` 回归。
+
+### 下一轮轻量通用化目标：Build Script Inference
+
+- 产品边界：radar-sim 是本地/Cluster 仿真脚手架，不实现或替代成熟仿真内部逻辑。外围只负责配置、编译、产物/runtime/DLL 打包、数据传输、调度、进度、结果真值和可恢复诊断。
+- Selena 编译脚本是构建适配的首要证据。应从 `code_path + selena_build_script` 推导实际 Git 子仓、build cwd、build mode/config、输出根、`selena.exe` 及成功条件；脚本退出 0 且推导候选中存在非空普通 `selena.exe` 才算编译成功。禁止扫描 Git diff/未跟踪文件，也禁止全盘递归找产物。
+- `package_build_script` 应改为可选，只提供 VS/ToolCollection/工具链依赖提示，不作为产品身份或编译前提。Xpeng 当前需从 `ip_if/tcc_toolversion_itc2.txt` 推导 `IF:BTC-6.2.0`；现有 bounded call graph 未理解 `pushd ../../../../tools`，不能把空结果解释为“无依赖”。
+- 未知项目不得因 `config/projects` 未登记而失败。Generic Workspace 应消费统一脚本推导结果；只有输出路径/工作目录无法可靠推导时，才向 Web/SDK 暴露高级 fallback，不要求普通用户填写 project、Agent、Bundle、Cluster 路径或 output_root。
+- 建议以一个小型内部 `BuildPlan` 统一现有 `derive_project_context_from_selena_script()`、最近 Git 子仓推导和有限候选产物解析；不要继续扩展产品注册表，不要进入 Runtime/MF4 信号和 runnable 的仿真内部推断。
+
+### 0.0b 第二轮真实验证：换 runtime_fcta_per.xml（2026-07-29）
 
 - 用户指出数据目录里的 `runtime_fcta_per.xml` 才是适配这份 Radar 数据的 Runtime，YAML 已改用 `D:/data/xpeng-cr5cb/MPCTEXPFB-4363/CBFA_10%_10KPH_NG/Radar/runtime_fcta_per.xml`。
 - `job_0d65dd8e9bd6`（`output/xpeng-cr5cb-existing-cluster.yaml`，runtime_fcta_per.xml）端到端再次跑通调度链路：`environment_check`/`prepare_data`/`preflight`/`run_simulation`/`collect_results` 均 succeeded；Agent auto-bind → 发现 2 MF4 → resumable 上传 1.2GB → 回传 `dataset://` → Cluster 真实执行 → 结果回收，全链路成功。
