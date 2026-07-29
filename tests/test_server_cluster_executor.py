@@ -19,6 +19,27 @@ def test_legacy_project_profile_executor_has_no_server_entrypoint():
         _start_cluster_executor("127.0.0.1", 8877)
 
 
+def test_result_archive_root_uses_generic_cluster_defaults(tmp_path, monkeypatch):
+    from cli.server import _deployment_cluster_result_roots
+
+    monkeypatch.setattr(
+        "core.config.load_cluster_execution_config",
+        lambda _identity: {
+            "cluster": {
+                "linux_mount_map": {
+                    r"\\cluster\workspace": tmp_path.as_posix(),
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "core.cluster.DEFAULT_WORKSPACE_ROOT",
+        r"\\cluster\workspace",
+    )
+
+    assert _deployment_cluster_result_roots() == [tmp_path]
+
+
 @pytest.fixture
 def captured_logs():
     logs: dict[str, list[str]] = {}

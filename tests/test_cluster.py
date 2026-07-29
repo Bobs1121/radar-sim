@@ -497,6 +497,27 @@ def test_cluster_check_allows_xmlrpc_without_python2(tmp_path, monkeypatch):
     assert "optional" in by_name["Python for client.py"].detail
     assert by_name["Submit path"].ok is True
     assert by_name["Submit path"].detail == "xmlrpc"
+    assert by_name["MF4 acquisition source reader"].ok is True
+
+
+def test_missing_mf4_reader_blocks_source_discovery_before_cluster(monkeypatch):
+    import builtins
+    import core.cluster as cluster_mod
+
+    real_import = builtins.__import__
+
+    def import_without_asammdf(name, *args, **kwargs):
+        if name == "asammdf":
+            raise ImportError("simulated missing parser")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_asammdf)
+
+    item = cluster_mod._mf4_source_reader_item()
+    assert item.ok is False
+    assert item.severity == "error"
+    with pytest.raises(RuntimeError, match=r"pip install \.\[v5-server\]"):
+        cluster_mod._available_mf4_radar_sources("input.MF4")
 
 
 def test_scan_cluster_data_detects_required_signal_and_skips_outputs(tmp_path):

@@ -372,24 +372,7 @@ def _run_serve_v1(args) -> int:
 
     def cluster_result_roots() -> list[Path]:
         """Return deployment-authorized Cluster workspaces for result archiving."""
-        from core.config import load_cluster_execution_config
-
-        roots: list[Path] = []
-        try:
-            cluster = dict(
-                (load_cluster_execution_config("run-config-v2").get("cluster") or {})
-            )
-            workspace = str(cluster.get("workspace_root") or "").strip()
-            for unc_prefix, mount in dict(cluster.get("linux_mount_map") or {}).items():
-                if workspace.lower().startswith(str(unc_prefix).lower()):
-                    workspace = str(mount) + workspace[len(str(unc_prefix)):].replace("\\", "/")
-                    break
-            root = Path(workspace).expanduser()
-            if workspace and root.is_dir():
-                roots.append(root)
-        except Exception:
-            pass
-        return roots
+        return _deployment_cluster_result_roots()
 
     result_catalog = default_result_catalog(
         extra_allowed_source_roots=cluster_result_roots()
@@ -449,6 +432,28 @@ def _is_loopback_bind(host: str) -> bool:
         return __import__("ipaddress").ip_address(text).is_loopback
     except ValueError:
         return False
+
+
+def _deployment_cluster_result_roots() -> list[Path]:
+    """Resolve the generic Cluster workspace into a controlled local root."""
+    from core.cluster import get_cluster_config
+    from core.config import load_cluster_execution_config
+
+    try:
+        # get_cluster_config injects deployment-independent Cluster defaults
+        # such as workspace_root before linux_mount_map translates them.
+        cluster = get_cluster_config(
+            load_cluster_execution_config("run-config-v2")
+        )
+        workspace = str(cluster.get("workspace_root") or "").strip()
+        for unc_prefix, mount in dict(cluster.get("linux_mount_map") or {}).items():
+            if workspace.lower().startswith(str(unc_prefix).lower()):
+                workspace = str(mount) + workspace[len(str(unc_prefix)):].replace("\\", "/")
+                break
+        root = Path(workspace).expanduser()
+        return [root] if workspace and root.is_dir() else []
+    except Exception:
+        return []
 
 
 def _start_cluster_executor(host: str, port: int):

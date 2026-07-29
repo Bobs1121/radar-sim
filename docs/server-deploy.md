@@ -1,12 +1,15 @@
 # 控制平面服务器部署（Linux）
 
 > 目标：在 Linux 服务器 `10.190.171.44` 上跑 control server，本机 Windows 跑 agent 调本机 `rsim`。
-> server 只需 Python 3 标准库（无 PyYAML/asammdf）。
+> 当前产品入口是 `rsim server serve-v1`。Linux 需要 `.[v5-server]`，其中
+> `asammdf` 用于在提交 Cluster 前从 MF4 acquisition metadata 自动推导 Radar
+> source；Linux 仍不执行 Selena。下面的 stdlib zipapp 仅适用于历史 control API，
+> 不能作为 UserRunConfig V2 发布入口。
 > 支持多用户：每个用户的 job/日志互不可见（独立 SQLite DB）。
 
 ## 0. 分发方式（两种任选）
 
-### 方式 A：zipapp 单文件（推荐给 server）
+### 方式 A：zipapp 单文件（仅 legacy control，不用于当前产品）
 
 在本机构建一个 14KB 的 `.pyz`，拷到服务器即可，无需 pip/无需仓库：
 
@@ -23,12 +26,12 @@ ssh you@10.190.171.44
 python3 rsim_server.pyz server serve --host 0.0.0.0 --port 8877
 ```
 
-### 方式 B：pip install（推荐给 Windows 本机全栈）
+### 方式 B：pip install（当前 Linux/Web/SDK 产品入口）
 
 ```bash
 # 内网 devpi / 共享盘 wheel（离线）
 pip install radar-sim-4.0.0-py3-none-any.whl[full]   # Windows 全栈（asammdf+openai+PyYAML）
-pip install radar-sim-4.0.0-py3-none-any.whl[control] # server/agent 轻量（仅 PyYAML）
+pip install radar-sim-4.0.0-py3-none-any.whl[v5-server] # Linux V2 控制面 + MF4 source 推导
 ```
 
 构建 wheel：`python setup.py bdist_wheel`（产物在 `dist/`）。

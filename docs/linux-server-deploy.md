@@ -22,7 +22,13 @@ Linux server (本指南)            Windows 用户机 (最小依赖)
 
 **Linux 上不跑 selena、不编译、不仿真。** cluster 仿真在集群节点上跑，Linux 只负责调度/存储/路由。
 
-控制面 server 是**纯 Python stdlib**(无 PyYAML/asammdf/openai),所以 Linux 上不需要装第三方包,只要有 Python 3.9+。
+当前产品入口必须使用 `rsim server serve-v1`。Linux 不执行 Selena，但必须读取
+MF4 acquisition metadata 来自动推导 RadarFL/FR/RL/RR，因此发布环境必须安装
+`.[v5-server]`（其中包含 `asammdf`）。缺少该依赖时环境检查会在 Cluster 提交前
+失败，禁止以空 source 静默提交。
+
+旧 zipapp 仅保留最小 legacy control API，不具备 UserRunConfig V2、自动 Radar
+source、结果归档等发布能力，不得作为当前产品入口。
 
 ## 部署方式 A:zipapp(最简,推荐试跑)
 

@@ -40,6 +40,9 @@ setup(
             "fastapi==0.139.0",
             "uvicorn==0.50.2",
             "pydantic==2.13.4",
+            # UserRunConfig V2 derives RadarFL/FR/RL/RR from MF4 acquisition
+            # metadata on the Linux control plane before Cluster submission.
+            "asammdf>=6.0",
         ],
         # Official Python SDK transport stack.
         "sdk": [
@@ -51,6 +54,7 @@ setup(
             "uvicorn==0.50.2",
             "httpx==0.28.1",
             "pydantic==2.13.4",
+            "asammdf>=6.0",
         ],
         # Full local-execution stack: MF4 analysis + AI Q&A + config.
         "full": [

@@ -259,6 +259,7 @@ def check_cluster_environment(config: dict[str, Any], *, profile: str = "") -> l
         manager,
         CheckItem("Submit path", (python_ok and submit_mode == "client") or (submit_mode == "xmlrpc" and manager.ok), submit_mode,
                   severity="info" if ((python_ok and submit_mode == "client") or (submit_mode == "xmlrpc" and manager.ok)) else "error"),
+        _mf4_source_reader_item(),
     ]
 
     writable_detail = "not checked"
@@ -1202,8 +1203,11 @@ def _available_mf4_radar_sources(mf4_path: str) -> list[str]:
     """Return valid radar acquisition sources in deterministic MF4 group order."""
     try:
         from asammdf import MDF
-    except ImportError:
-        return []
+    except ImportError as exc:
+        raise RuntimeError(
+            "MF4 source discovery is unavailable: install the Linux service "
+            "with `pip install .[v5-server]`"
+        ) from exc
     if not mf4_path:
         return []
 
@@ -1221,6 +1225,25 @@ def _available_mf4_radar_sources(mf4_path: str) -> list[str]:
         return list(found.values())
     finally:
         mdf.close()
+
+
+def _mf4_source_reader_item() -> CheckItem:
+    """Require the parser used for project-free Radar source discovery."""
+    try:
+        from asammdf import MDF  # noqa: F401
+    except (ImportError, OSError) as exc:
+        return CheckItem(
+            "MF4 acquisition source reader",
+            False,
+            "asammdf is unavailable: " + str(exc),
+            severity="error",
+        )
+    return CheckItem(
+        "MF4 acquisition source reader",
+        True,
+        "asammdf is available",
+        severity="info",
+    )
 
 
 def _resolve_cluster_radar_context(

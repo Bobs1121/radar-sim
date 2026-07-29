@@ -58,6 +58,15 @@
 4. 用用户指定的 Existing Selena + `runtime_fcta_per.xml` + 两个真实 MF4 + 明确 MatFilter 提交新任务；验证无编译、source 自动为实际 acquisition、真实 Cluster 终态、结果 MF4 和下载。
 5. 将真实 job/Cluster id、Runtime/Selena hash、Config source、结果归档证据回填本节；只有此时才能把本阶段标记为完成。
 
+### 0b5c216 首次真实外部验证暴露的发布依赖（修复中）
+
+- Linux release `/home/hoz2wx/radar-sim-v1-0b5c216` 已通过 188 项门禁并原子切换，Health 200、PID `2422540`、`NRestarts=0`。真实 Existing Selena 任务为 `job_65c1a299c133`，确认 build/resolve/register 均 skipped；Selena SHA256 `aa7465...`，`runtime_fcta_per.xml` SHA256 `9c544a...`。
+- Cluster job `10366`、tasks `5445763/5445764` 已真实完成但均失败。manifest/Config 的 source 为空，worker Selena 回退 `RadarFC`。根因不是项目适配，而是 Linux `.[v5-server]` 未包含 `asammdf`，无法从 MF4 acquisition metadata 得到 `RadarFL/RadarFR`。
+- 发布修复要求：把 `asammdf` 纳入 Linux `v5-server` 依赖；Cluster 环境检查必须验证 MF4 source reader，缺失时在提交前失败；禁止解析失败后以空 source 静默提交。
+- 两个 worker 的 result.ini、输出 MF4、paramconfig 和 Selena log 实际完整落盘，但 `collect_results` 因 `ResultCatalogError: result path escapes its controlled root` 未归档。去项目化后结果根计算没有通过 `get_cluster_config()` 注入通用 `workspace_root`，allowed roots 只剩本机 Agent runs。
+- 结果修复要求：结果归档根从 deployment config 经 `get_cluster_config()` 补齐通用 Cluster 默认，再由 `linux_mount_map` 转为受控 Linux 根；仿真失败结果也必须可下载，不能因业务失败丢失诊断产物。
+- `job_65c1a299c133` 是有效失败证据，不得宣称成功；修复依赖和结果根后必须创建新 release 并提交新任务，不能只在当前服务器手工安装包。
+
 ## 0.0 P0 已闭合：直接 Selena 文件夹 + 本机数据 + Cluster 端到端真实验证完成（2026-07-29）
 
 > 本节是最新实时状态，优先级高于下方 0.1。0.1 节描述的“未完成 P0 缺口”已由本次两个修复 + 真实 Cluster 仿真闭环验证闭合。
