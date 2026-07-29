@@ -34,6 +34,17 @@
 - 回归证据：推导/Web/TCC/Bundle 专项 `66 passed`；配置/Agent/分支/调度专项 `55 passed`；API/SDK 合同专项 `79 passed, 1 third-party warning`；JavaScript 语法、Python `py_compile` 与 `git diff --check` 通过。此次只做无副作用干跑，不重复已成功且耗时约 53 分钟的真实编译。
 - 当前安全边界：自动授权的编译产物目录必须位于 `code_path` 内，用户无需也不能填写 `output_root`。若未来真实产品脚本把 `-B` 指向代码仓外或其他盘符，应新增一次性明确授权的外部产物根协议；不能为“兼容”而直接放宽到任意磁盘目录。
 
+### 0.0-pre2 5388c0e 线上 Xpeng existing → Cluster 端到端复验（2026-07-29）
+
+- 输入严格使用用户指定路径：Selena 文件夹 `D:/pl-xpeng/ip_dc/build/ROS_PER_SIT_RPM_FCT_RECR/dc_tools/selena/core/RelWithDebInfo`；数据 `D:/data/xpeng-cr5cb/MPCTEXPFB-4363/CBFA_10%_10KPH_NG/Radar`；Runtime 为数据目录内 `runtime_fcta.xml`；Adapter 为空；MatFilter 为仓内 `reco_fw/tools/selena/matlab_transport_cfg/matlab_swx_plotreco.mdf.mat.filter`；target 为 Cluster。
+- Dry-run `job_69aaabcaa8e2` succeeded，`source=existing/target=cluster`，`build_selena=skipped/attempt_count=0/dry_run_plan_only`。真实任务 `job_87156bf120d1` 从创建到终态均未触发编译。
+- Existing Selena 校验/登记成功：Bundle `selena-bundle:sha256:09de5ed24c917f9586a244e252a51c22214ffd99ea95869238f5a14cd697e868` 含 Selena.exe、7 DLL 和指定 Runtime；Selena.exe SHA256 `aa74654125e1b7009e829a5cfa5b6b11240151c8220825e8633baba25b1b5e3b`，Runtime SHA256 `7a5b89723973ecfacc94b19cbaf71c4e4ebdc84929f6cf183f36c1fae0d7eb88`，与本机文件一致。
+- Windows Connector 发现并以 resumable upload 上传 2 个 MF4，总计 `1,239,892,640` bytes；Dataset `dataset:sha256:b720623eb29def5d31dc37e41e07fb94659684bdd4b659e8a55ec1b69a03e86a`。上传过程中可从 server staging byte offset 证明持续推进，前台 1/2 长时间不变不是卡死。
+- Preflight succeeded 且静态 Runtime/MF4 诊断只告警；真实 Cluster run `cluster-run:43f70d4ebe8c43f2aa50c8171dbcbd02`，持久 Cluster job `10365`，task record `5445761/5445762`。`collect_results` succeeded。
+- 两份真实 `result.ini` 均为 `simulation_state=4/successfull=0/Returncode=-1`，首错为 MF4 缺少 `g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_port_ParallelLanes_in`。`finalize_manifest` 正确将 Job 标记 `failed(code=simulation_failed)`；这是该 Selena 分支/Runtime 只覆盖部分 runnable 与数据通道不匹配的业务结果，不是调度链失败。
+- 结果可下载：`result:sha256:604b525fe5e1eb541ae176d9fc1f345396126167628e1035694e80d0c7afb4ac`，Range 返回 206；ZIP `1,099,412` bytes，SHA256 `b242db1fe868ed43e6729e95050a95b5b732cef1b19410840224c8d2af3c8d41`，12 entries，含 2 个 out.MF4、2 个 result.ini 和日志。
+- MatFilter 推导调研：Xpeng 仓内 `reco_fw/tools/selena/matlab_transport_cfg` 有 4 个候选，不能仅按扩展名盲选；项目自带 `measurement_info_parser.py::selectFilterfile()` 明确把 `MATLAB_SWX_PLOT_RECO` 映射为 `matlab_swx_plotreco.mdf.mat.filter`、`MATLAB_SWX` 映射为 `matlab_swx_.mdf.mat.filter`。后续应采用“读取项目规则得到唯一高置信候选则自动选择；多候选同级则让用户确认”，当前公开 YAML 仍要求显式 `mat_filter`。
+
 ### 0.0a 直接 Selena 文件夹真实验证：`job_0fc305516985`（2026-07-29）
 
 - 发布提交：`823adc96504e61cd0d9b034098c99ba12d2cf439`（`fix: align existing Selena folder runtime flow`）。Linux release 已原子切换到 `/home/hoz2wx/radar-sim-v1-823adc9`，PID `2142440`、`NRestarts=0`、`RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`，Health、Windows full、Cluster 均在线。Windows Connector 由同一提交一键静默更新，保留原 Agent ID/配置，无重新配对。
