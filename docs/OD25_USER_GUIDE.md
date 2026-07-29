@@ -14,7 +14,7 @@ OD25 用户不需要选择 project、recipe、profile、输出目录、Runtime B
 |---|---:|---:|
 | Windows 代码仓路径 | 必需 | 不需要 |
 | Selena 编译脚本 | 必需 | 不需要 |
-| 软件包编译脚本 | 必需 | 不需要 |
+| 软件包编译脚本 | 可选依赖线索 | 不需要 |
 | 已有 Selena 文件夹 | 不需要 | 必需 |
 | 与 Selena 强绑定的 Runtime XML | 必需 | 必需 |
 | 数据路径 | 必需 | 必需 |
@@ -32,7 +32,7 @@ OD25 用户不需要选择 project、recipe、profile、输出目录、Runtime B
 - Selena 脚本中的配置：`full_DSP`
 - 内部适配结果：OD25 的 `g3n_fvg3_od25` 配方
 
-代码仓可以位于任意盘符或任意父目录，只要两个脚本都在所填 `code_path` 内。系统从 Selena 脚本的 `-B` 和 `full_DSP.config` 推导真实产物目录为 `build/full_dsp`，再定位其中的 `Selena.exe` 和依赖 DLL。
+代码仓可以位于任意盘符或任意父目录。Selena 脚本必须在所填 `code_path` 内；提供软件包脚本时它也必须位于仓内。系统从 Selena 脚本的 `-B` 和 `full_DSP.config` 推导真实产物目录为 `build/full_dsp`，再定位其中的 `Selena.exe` 和依赖 DLL。
 
 软件包脚本不会作为本任务的交互式整包构建执行。Agent 静态读取它及其本仓库调用链，用于识别构建变体、发现/安装 TCC 依赖和处理明确支持的生成文件。Visual Studio 仍由用户自行安装。
 
@@ -49,7 +49,7 @@ selena:
   code_path: "D:/bydod25fr/byd"
   branch: ""
   selena_build_script: "D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat"
-  package_build_script: "D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat"
+  package_build_script: "D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat"  # 可选
   runtime_xml: "D:/path/to/OD25_Runtime.xml"
 data:
   path: "D:/path/to/OD25_measurements"

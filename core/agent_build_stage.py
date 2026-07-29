@@ -311,13 +311,16 @@ def _rebase_branch_config(
             repos[key] = mapped(repos[key], key)
     if "project_root" in rebased:
         rebased["project_root"] = mapped(rebased["project_root"], "project_root")
+    machine = rebased.get("machine")
+    if isinstance(machine, dict) and "project_root" in machine:
+        machine["project_root"] = mapped(machine["project_root"], "machine.project_root")
     build = rebased.setdefault("build", {})
     for key in ("selena_build_script", "env_build_script", "build_output"):
         if key in build:
             build[key] = mapped(build[key], key)
     paths = rebased.get("paths")
     if isinstance(paths, dict):
-        for key in ("project_root", "build_output"):
+        for key in ("project_root", "source_root", "build_output"):
             if key in paths:
                 paths[key] = mapped(paths[key], key)
 
@@ -472,17 +475,34 @@ def prepare_selena_build(
             raise AgentBuildStageError("config loading failed") from exc
     config = copy.deepcopy(config)
     if contract == "user-run-config/2.0":
+        workspace_root = str(binding.workspace_root)
+        output_root = str(binding.output_roots[0])
         repos = config.setdefault("repos", {})
-        repos["inner_repo_root"] = str(binding.workspace_root)
-        repos["outer_repo_root"] = str(binding.workspace_root)
+        repos["inner_repo_root"] = workspace_root
+        repos["outer_repo_root"] = workspace_root
+        # Registered adapters may have been authored against another checkout
+        # or drive.  The user-selected workspace and the locally inferred
+        # output binding are authoritative for this run.
+        config["project_root"] = workspace_root
+        paths = config.setdefault("paths", {})
+        paths["project_root"] = workspace_root
+        paths["source_root"] = workspace_root
+        paths["build_output"] = output_root
+        machine = config.setdefault("machine", {})
+        machine["project_root"] = workspace_root
         build = config.setdefault("build", {})
-        build["build_output"] = str(binding.output_roots[0])
-        for payload_key, config_key, label in (
-            ("selena_build_script_ref", "selena_build_script", "Selena build script"),
-            ("package_build_script_ref", "env_build_script", "package build script"),
+        build["build_output"] = output_root
+        for payload_key, config_key, label, required in (
+            ("selena_build_script_ref", "selena_build_script", "Selena build script", True),
+            ("package_build_script_ref", "env_build_script", "package build script", False),
         ):
             ref = str(payload.get(payload_key) or "").strip().replace("\\", "/")
-            if not ref or Path(ref).is_absolute() or ".." in Path(ref).parts:
+            if not ref:
+                if required:
+                    raise AgentBuildStageError(f"{label} reference is invalid")
+                build.pop(config_key, None)
+                continue
+            if Path(ref).is_absolute() or ".." in Path(ref).parts:
                 raise AgentBuildStageError(f"{label} reference is invalid")
             try:
                 target = (binding.workspace_root / Path(ref)).resolve(strict=True)
@@ -603,9 +623,7 @@ def prepare_selena_build(
     script_checksum = _hash_script(resolved_script)
     package_script_path: Path | None = None
     package_script = str(getattr(user_bindings, "environment_build_script", "") or "").strip()
-    if contract == "user-run-config/2.0":
-        if not package_script:
-            raise AgentBuildStageError("package build script is required")
+    if contract == "user-run-config/2.0" and package_script:
         package_candidate = Path(package_script)
         if not package_candidate.is_absolute():
             package_candidate = authorized.workspace_root / package_candidate

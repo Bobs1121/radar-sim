@@ -60,8 +60,6 @@ class UserSelenaConfig(_Frozen):
                 raise ValueError("selena.code_path is required for local build")
             if not self.selena_build_script:
                 raise ValueError("selena.selena_build_script is required for local build")
-            if not self.package_build_script:
-                raise ValueError("selena.package_build_script is required for local build")
             if not self.runtime_xml:
                 raise ValueError("selena.runtime_xml is required and bound to the build output")
             if self.existing_path:
@@ -175,9 +173,10 @@ class UserRunConfig(_Frozen):
                 "code_path": self.selena.code_path,
                 "branch": self.selena.branch,
                 "selena_build_script": self.selena.selena_build_script,
-                "package_build_script": self.selena.package_build_script,
                 "runtime_xml": self.selena.runtime_xml,
             }
+            if self.selena.package_build_script:
+                selena["package_build_script"] = self.selena.package_build_script
         else:
             selena = {
                 "source": "existing",

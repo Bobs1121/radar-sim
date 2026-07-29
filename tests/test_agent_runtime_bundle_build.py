@@ -49,6 +49,13 @@ def test_v2_build_stages_only_exe_dll_and_bound_runtime(tmp_path, monkeypatch):
     config = {
         "project": {"name": "demo"},
         "repos": {"inner_repo_root": str(workspace), "outer_repo_root": str(workspace)},
+        "project_root": "Z:/adapter-author-machine",
+        "machine": {"project_root": "Z:/adapter-author-machine"},
+        "paths": {
+            "project_root": "Z:/adapter-author-machine",
+            "source_root": "Z:/adapter-author-machine",
+            "build_output": "Z:/adapter-author-machine/build",
+        },
         "build": {
             "selena_build_script": str(script),
             "env_build_script": str(package_script),
@@ -56,7 +63,13 @@ def test_v2_build_stages_only_exe_dll_and_bound_runtime(tmp_path, monkeypatch):
             "script_args_template": [],
         },
     }
-    monkeypatch.setattr("core.agent_build_stage.capture_source_snapshot", lambda *_args: _snapshot())
+    observed_config = {}
+
+    def artifact_resolver(rebased, _mode):
+        observed_config.update(rebased)
+        return str(exe)
+
+    monkeypatch.setattr("core.agent_build_stage.inspect_workspace_identity", lambda *_args: _snapshot())
     prepared = prepare_selena_build(
         {
             "contract": "user-run-config/2.0",
@@ -77,8 +90,11 @@ def test_v2_build_stages_only_exe_dll_and_bound_runtime(tmp_path, monkeypatch):
         asset_binding_store=asset_store,
         config_loader=lambda _project: config,
         command_builder=lambda *_args: (["cmd", "/c", str(script)], str(workspace)),
-        artifact_resolver=lambda *_args: str(exe),
+        artifact_resolver=artifact_resolver,
     )
+    assert observed_config["project_root"] == str(workspace)
+    assert observed_config["paths"]["build_output"] == str(output)
+    assert observed_config["machine"]["project_root"] == str(workspace)
     result = {
         "before": _snapshot().to_dict(),
         "after": _snapshot().to_dict(),
@@ -95,6 +111,64 @@ def test_v2_build_stages_only_exe_dll_and_bound_runtime(tmp_path, monkeypatch):
     assert "adapter_key" not in serialized
     assert "adapter.txt" not in serialized
     assert staged["runtime_bundle_identity"] == {"adapter_key": "recipe:demo"}
+
+
+def test_v2_build_accepts_optional_package_script(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    output = workspace / "build"
+    output.mkdir(parents=True)
+    script = workspace / "build.bat"
+    script.write_text("@echo off", encoding="utf-8")
+    runtime_root = tmp_path / "assets"
+    runtime_root.mkdir()
+    runtime = runtime_root / "Runtime.xml"
+    runtime.write_text("<runtime/>", encoding="utf-8")
+    binding_store = AgentBindingStore(tmp_path / "bindings.db")
+    binding = binding_store.register("internal-demo", workspace, (output,))
+    asset_store = AgentAssetBindingStore(tmp_path / "bindings.db")
+    runtime_binding = asset_store.register(runtime_root)
+    config = {
+        "project": {"name": "demo"},
+        "repos": {"inner_repo_root": str(workspace), "outer_repo_root": str(workspace)},
+        "project_root": str(workspace),
+        "machine": {"project_root": str(workspace)},
+        "paths": {
+            "project_root": str(workspace),
+            "source_root": str(workspace),
+            "build_output": str(output),
+        },
+        "build": {
+            "selena_build_script": str(script),
+            "build_output": str(output),
+            "script_args_template": [],
+        },
+    }
+    monkeypatch.setattr("core.agent_build_stage.inspect_workspace_identity", lambda *_args: _snapshot())
+
+    prepared = prepare_selena_build(
+        {
+            "contract": "user-run-config/2.0",
+            "project": "internal-demo",
+            "workspace_binding_id": binding.binding_id,
+            "build_mode": "Release",
+            "adapter_key": "generic:selena-script",
+            "selena_build_script_ref": "build.bat",
+            "package_build_script_ref": "",
+            "asset_bindings": {"runtime_xml": runtime_binding.binding_id},
+            "runtime_xml": str(runtime),
+        },
+        binding_store,
+        asset_binding_store=asset_store,
+        config_loader=lambda _project: config,
+        command_builder=lambda rebased, *_args: (
+            ["cmd", "/c", rebased["build"]["selena_build_script"]],
+            str(workspace),
+        ),
+        artifact_resolver=lambda *_args: str(output / "selena.exe"),
+    )
+
+    assert prepared.build_script_path == script.resolve()
+    assert prepared.package_build_script_path is None
 
 
 def test_v2_runtime_bundle_refuses_source_change(tmp_path):
@@ -152,7 +226,7 @@ def test_branch_build_rebases_script_output_and_cwd_into_worktree(tmp_path, monk
         observed["config"] = rebased
         return ["cmd", "/c", rebased["build"]["selena_build_script"]], rebased["repos"]["inner_repo_root"]
 
-    monkeypatch.setattr("core.agent_build_stage.capture_source_snapshot", lambda *_args: _snapshot())
+    monkeypatch.setattr("core.agent_build_stage.inspect_workspace_identity", lambda *_args: _snapshot())
     prepared = prepare_selena_build(
         {
             "contract": "user-run-config/2.0", "project": "internal-demo",
@@ -171,4 +245,7 @@ def test_branch_build_rebases_script_output_and_cwd_into_worktree(tmp_path, monk
     assert prepared.cwd == worktree.resolve()
     assert prepared.build_script_path == (worktree / "tools" / "build.bat").resolve()
     assert prepared.artifact_path == (worktree / "build" / "selena.exe").resolve()
-    assert str(workspace) not in str(observed["config"])
+    assert Path(observed["config"]["project_root"]).resolve() == worktree.resolve()
+    assert Path(observed["config"]["machine"]["project_root"]).resolve() == worktree.resolve()
+    assert Path(observed["config"]["paths"]["source_root"]).resolve() == worktree.resolve()
+    assert Path(observed["config"]["paths"]["build_output"]).resolve() == (worktree / "build").resolve()

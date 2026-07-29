@@ -21,10 +21,10 @@
 
 ### 0.3 首次 Agent 自动配置与脚本职责
 
-- `selena_build_script` 是实际 Selena 编译入口；Windows Agent 根据本机已安装的 VS C++ toolset 对其中 R2D2 `-vs`/`VS_POSTFIX` 做最小、可见、幂等适配。`package_build_script` 用于识别内部项目适配、静态提取 TCC/toolcollection 等依赖，并执行其明确声明且可安全识别的非交互代码生成步骤；VS 始终由用户自行安装。
-- 两个脚本必须位于用户填写的 `code_path` 内，中央只保存用户合同，Agent 回传并继续使用工作区内相对逻辑引用。
+- `selena_build_script` 是必需的实际 Selena 编译入口；Windows Agent 根据本机已安装的 VS C++ toolset 对其中 R2D2 `-vs`/`VS_POSTFIX` 做最小、可见、幂等适配。可选 `package_build_script` 用于补充内部项目适配证据、静态提取 TCC/toolcollection 等依赖，并执行其明确声明且可安全识别的非交互代码生成步骤；VS 始终由用户自行安装。
+- Selena 脚本以及用户填写时的软件包脚本必须位于 `code_path` 内。中央只保存用户合同，Agent 回传并继续使用工作区内相对逻辑引用。
 - 一键安装的 full/light Agent 声明 `auto_configure`。首次匹配任务可在本机验证路径后登记 workspace/output、Runtime 父目录和数据根；后续心跳只发布哈希化 binding ID，实现“一次配置、永久复用”。
-- 工作区识别以用户给出的代码仓和两个脚本为事实来源。已知 adapter 命中时复用其默认值；未命中时生成不含路径的匿名内部身份，并从 Selena 脚本推导输出目录、从两个脚本的有界调用邻域推导环境依赖。不存在 `config/projects/<name>` 不能单独导致任务失败。
+- 工作区识别以用户给出的代码仓和 Selena 脚本为首要事实来源，可选软件包脚本只补充证据。已知 adapter 命中时复用其默认值；未命中时生成不含路径的匿名内部身份，并从 Selena 脚本推导输出目录、从所有已提供脚本的有界调用邻域推导环境依赖。不存在 `config/projects/<name>` 不能单独导致任务失败。
 - `target=auto` 在提交时基于在线 capability 选择：有 `windows_full` 时优先本地；否则选择 Cluster。`windows_light` 只承担编译/上传，永不成为本地仿真节点。
 
 ### 0.2 Cluster Stage 实施拓扑

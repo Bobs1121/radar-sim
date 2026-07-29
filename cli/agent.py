@@ -1562,6 +1562,18 @@ def _resolve_v2_run_config(payload: dict) -> dict:
         binding.workspace_root,
         outcome.selena_build_script or outcome.build_script,
     )
+    package_ref = ""
+    if outcome.package_build_script:
+        if "explicit_package_build_script" in outcome.evidence:
+            package_ref = relative_ref(outcome.package_build_script)
+        else:
+            # Adapter defaults are optional dependency hints.  A checkout may
+            # legitimately omit or relocate that script; only an explicit user
+            # path is allowed to block resolution.
+            try:
+                package_ref = relative_ref(outcome.package_build_script)
+            except ValueError:
+                package_ref = ""
 
     return {
         "status": "resolved",
@@ -1572,7 +1584,7 @@ def _resolve_v2_run_config(payload: dict) -> dict:
         "data_binding_id": data_binding_id,
         "runtime_data_player_signals": runtime_data_player_signals,
         "selena_build_script_ref": relative_ref(outcome.selena_build_script or outcome.build_script),
-        "package_build_script_ref": relative_ref(outcome.package_build_script),
+        "package_build_script_ref": package_ref,
         # The user-facing code_path is the build workspace.  Selena scripts in
         # large products commonly live in a nested Git repository whose
         # branch, rather than the outer workspace branch, identifies Selena.

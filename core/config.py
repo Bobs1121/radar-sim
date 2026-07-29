@@ -940,7 +940,11 @@ def detect_binding(root: str) -> str:
     return ""
 
 
-def derive_project_context_from_selena_script(script_path: str) -> dict[str, Any]:
+def derive_project_context_from_selena_script(
+    script_path: str,
+    *,
+    project_root_hint: str = "",
+) -> dict[str, Any]:
     """Derive project context from a Selena build script path and content."""
     if not script_path:
         return {}
@@ -960,6 +964,15 @@ def derive_project_context_from_selena_script(script_path: str) -> dict[str, Any
         apl_idx = parts_lower.index("apl")
         if apl_idx > 0:
             data["project_root"] = os.path.normpath(str(Path(*script.parts[:apl_idx])))
+
+    if not data.get("project_root") and project_root_hint:
+        hinted_root = Path(os.path.normpath(str(project_root_hint)))
+        try:
+            script.resolve(strict=False).relative_to(hinted_root.resolve(strict=False))
+        except (OSError, ValueError):
+            pass
+        else:
+            data["project_root"] = os.path.normpath(str(hinted_root))
 
     if data.get("project_root") and data.get("binding"):
         project_root = Path(data["project_root"])
@@ -1018,6 +1031,8 @@ def derive_project_context_from_selena_script(script_path: str) -> dict[str, Any
                 config_value = str(data.get("build_config") or "").strip()
                 config_stem = Path(config_value).stem if config_value else ""
                 output_path = Path(build_output_from_script)
+                if not output_path.is_absolute():
+                    output_path = Path(project_root) / output_path
                 if config_stem and output_path.name.casefold() != config_stem.casefold():
                     output_path /= config_stem
                 data["build_output"] = os.path.normpath(str(output_path))

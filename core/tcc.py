@@ -519,19 +519,34 @@ def _batch_dependency_sources(script_path: Path, *, max_files: int = 20) -> list
 
 
 def derive_dependencies_from_build_script(config: dict) -> list[dict]:
-    """Statically parse the env build script (cmake_build.bat) for dependencies.
+    """Statically parse the supplied package and Selena scripts for dependencies.
 
     Returns a structured list: [{"kind": "toolcollection", "name": "IF:BTC-7.0.0"},
     {"kind": "init_bat", "path": "..."}, {"kind": "env_var", "name": "BOOST_ROOT", ...}].
-    Never executes the script (it is interactive) — pure regex text analysis.
-    Falls back to the selena build script if env_build_script is absent.
+    Never executes a script — this is bounded, read-only text analysis.  The
+    package script is optional and augments rather than replaces evidence from
+    the Selena entrypoint.
     """
     build = config.get("build") or {}
-    script_path = str(build.get("env_build_script") or build.get("selena_build_script") or "")
-    if not script_path or not Path(script_path).exists():
+    scripts: list[Path] = []
+    for value in (build.get("env_build_script"), build.get("selena_build_script")):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        path = Path(text).resolve(strict=False)
+        if path.is_file() and path not in scripts:
+            scripts.append(path)
+    if not scripts:
         return []
-    script = Path(script_path).resolve(strict=False)
-    sources = _batch_dependency_sources(script)
+
+    sources: list[tuple[Path, str]] = []
+    seen_sources: set[Path] = set()
+    for script in scripts:
+        for source_path, text in _batch_dependency_sources(script):
+            if source_path in seen_sources:
+                continue
+            seen_sources.add(source_path)
+            sources.append((source_path, text))
     if not sources:
         return []
 
@@ -562,15 +577,19 @@ def derive_dependencies_from_build_script(config: dict) -> list[dict]:
         if re.search(r"python3\s+.*R2D2\.py\b", text, flags=re.IGNORECASE):
             deps.append({"kind": "build_entry", "name": "R2D2.py", "source": source})
 
-    if unresolved_toolcollection:
-        modern = _modern_toolcollection_from_workspace(script)
-        if modern is not None:
-            deps.append(modern)
+    if unresolved_toolcollection or not any(
+        item["kind"] in {"toolcollection", "legacy_toolcollection"} for item in deps
+    ):
+        for script in scripts:
+            modern = _modern_toolcollection_from_workspace(script)
+            if modern is not None:
+                deps.append(modern)
 
     if not any(item["kind"] in {"toolcollection", "legacy_toolcollection"} for item in deps):
-        legacy = _legacy_toolcollection_from_workspace(script)
-        if legacy is not None:
-            deps.append(legacy)
+        for script in scripts:
+            legacy = _legacy_toolcollection_from_workspace(script)
+            if legacy is not None:
+                deps.append(legacy)
 
     unique: list[dict] = []
     identities: set[tuple[str, str]] = set()
@@ -613,6 +632,19 @@ def auto_repair_environment(config: dict, log: LogFn = None) -> RepairReport:
     steps: list[RepairStep] = []
 
     deps = derive_dependencies_from_build_script(config)
+    dependency_names = sorted(
+        {
+            str(item.get("name") or "").strip()
+            for item in deps
+            if item.get("kind") in {"toolcollection", "legacy_toolcollection"}
+            and str(item.get("name") or "").strip()
+        }
+    )
+    if len(dependency_names) > 1:
+        detail = "conflicting toolcollections: " + ", ".join(dependency_names)
+        steps.append(RepairStep("derive_toolcollection", False, detail))
+        return RepairReport(False, steps, summary=detail)
+
     legacy = next((item for item in deps if item.get("kind") == "legacy_toolcollection"), None)
     if legacy is not None:
         name = str(legacy.get("name") or "")

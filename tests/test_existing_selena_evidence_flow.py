@@ -73,6 +73,19 @@ def test_web_keeps_optional_existing_workspace_evidence():
     assert "当前配置将从本地代码编译 Selena" in app
 
 
+def test_web_does_not_require_optional_package_build_script():
+    static = Path(__file__).parents[1] / "radar_sim_web" / "static"
+    app = (static / "app.js").read_text(encoding="utf-8")
+    html = (static / "index.html").read_text(encoding="utf-8")
+
+    assert "本地编译需要填写软件包编译脚本" not in app
+    assert "if (packageBuildScript) selena.package_build_script = packageBuildScript" in app
+    assert '["codePath", "selenaBuildScript", "packageBuildScript"]' not in app
+    assert 'byId("packageBuildScript").required = false' in app
+    assert "本地编译需要代码仓和两个脚本" not in app
+    assert "可选；用于补充产品识别和环境依赖线索。" in html
+
+
 def test_web_requires_final_target_and_source_confirmation_after_yaml_import():
     root = Path(__file__).parents[1] / "radar_sim_web" / "static"
     app = (root / "app.js").read_text(encoding="utf-8")

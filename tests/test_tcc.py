@@ -220,6 +220,63 @@ def test_derive_dependencies_falls_back_to_selena_script(tmp_path):
     assert any(d["name"] == "IF:BTC-7.0.0" for d in deps if d["kind"] == "toolcollection")
 
 
+def test_derive_dependencies_combines_optional_package_and_selena_scripts(tmp_path):
+    workspace = tmp_path / "workspace"
+    selena = workspace / "apl" / "binding" / "selena" / "jenkins_selena_build.bat"
+    package = workspace / "apl" / "binding" / "buildscripts" / "package.bat"
+    selena.parent.mkdir(parents=True)
+    package.parent.mkdir(parents=True)
+    selena.write_text("set BOOST_ROOT=%TCCPATH_boost%\n", encoding="utf-8")
+    package.write_text("python3 R2D2.py -m demo\n", encoding="utf-8")
+
+    deps = tcc.derive_dependencies_from_build_script(
+        {
+            "build": {
+                "selena_build_script": str(selena),
+                "env_build_script": str(package),
+            }
+        }
+    )
+
+    assert any(item["kind"] == "env_var" and item["name"] == "TCCPATH_boost" for item in deps)
+    assert any(item["kind"] == "build_entry" and item["name"] == "R2D2.py" for item in deps)
+
+
+def test_derive_dependencies_uses_workspace_itc2_version_without_script_marker(tmp_path):
+    workspace = tmp_path / "workspace"
+    script = workspace / "apl" / "binding" / "selena" / "jenkins_selena_build.bat"
+    script.parent.mkdir(parents=True)
+    script.write_text("@echo off\n", encoding="utf-8")
+    version = workspace / "ip_if" / "tcc_toolversion_itc2.txt"
+    version.parent.mkdir(parents=True)
+    version.write_text("IF:BTC-6.2.0\n", encoding="utf-8")
+
+    deps = tcc.derive_dependencies_from_build_script(
+        {"build": {"selena_build_script": str(script)}}
+    )
+
+    dependency = next(item for item in deps if item["kind"] == "toolcollection")
+    assert dependency["name"] == "IF:BTC-6.2.0"
+    assert dependency["source"] == str(version)
+
+
+def test_auto_repair_reports_conflicting_toolcollections(monkeypatch):
+    monkeypatch.setattr(
+        "core.tcc.derive_dependencies_from_build_script",
+        lambda _config: [
+            {"kind": "toolcollection", "name": "IF:BTC-6.2.0"},
+            {"kind": "toolcollection", "name": "IF:BTC-7.0.0"},
+        ],
+    )
+
+    report = tcc.auto_repair_environment({"build": {}})
+
+    assert report.ok is False
+    assert "conflicting toolcollections" in report.summary
+    assert "IF:BTC-6.2.0" in report.summary
+    assert "IF:BTC-7.0.0" in report.summary
+
+
 def test_derive_dependencies_finds_legacy_package_toolcollection_in_workspace(tmp_path):
     workspace = tmp_path / "workspace"
     script = workspace / "apl" / "byd" / "bindings" / "ovrs25" / "buildscripts" / "package.bat"

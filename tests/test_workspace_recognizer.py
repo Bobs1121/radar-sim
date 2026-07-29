@@ -99,6 +99,36 @@ def test_configured_output_is_rebased_to_user_checkout(projects):
     assert result.output_dir == "e:/users/alice/byd/build/full_dsp"
 
 
+def test_optional_adapter_package_script_is_rebased_to_user_checkout(tmp_path):
+    projects = tmp_path / "projects"
+    _write_adapter(
+        projects,
+        "known",
+        workspace="Z:/vendor/product",
+        script="Z:/vendor/product/tools/selena/jenkins_selena_build.bat",
+        package_script="Z:/vendor/product/tools/package/build_package.bat",
+        output="Z:/vendor/product/ip_dc/build/KNOWN",
+    )
+    workspace = tmp_path / "customer-checkout"
+    selena = workspace / "tools" / "selena" / "jenkins_selena_build.bat"
+    package = workspace / "tools" / "package" / "build_package.bat"
+    selena.parent.mkdir(parents=True)
+    package.parent.mkdir(parents=True)
+    selena.write_text("@echo off\n", encoding="utf-8")
+    package.write_text("@echo off\n", encoding="utf-8")
+
+    result = WorkspaceRecognizer(projects).recognize(
+        str(workspace),
+        selena_build_script=str(selena),
+    )
+
+    assert result.status == "resolved"
+    assert Path(result.package_build_script).resolve() == package.resolve()
+    assert result.output_dir == _normalize_path(
+        str(workspace / "ip_dc" / "build" / "KNOWN")
+    )
+
+
 def test_real_bydod25_adapter_recognizes_both_scripts_on_any_drive():
     projects = Path(__file__).resolve().parents[1] / "config" / "projects"
     result = WorkspaceRecognizer(projects).recognize(
@@ -148,7 +178,7 @@ def test_missing_adapter_output_is_derived_from_user_selena_script(tmp_path, mon
     )
     monkeypatch.setattr(
         "core.config.derive_project_context_from_selena_script",
-        lambda _script: {"build_output": "C:/BYD_OVS_CB/ip_dc/build/ROS_PER_SIT_RPM_FCT_RECR"},
+        lambda _script, **_kwargs: {"build_output": "C:/BYD_OVS_CB/ip_dc/build/ROS_PER_SIT_RPM_FCT_RECR"},
     )
 
     result = WorkspaceRecognizer(root).recognize(
@@ -187,6 +217,33 @@ def test_auto_discovers_one_script_without_project_concept(tmp_path):
     assert result.status == "resolved"
     assert result.adapter_key == "generic:selena-script"
     assert result.build_script.endswith("jenkins_selena_build.bat")
+
+
+def test_unknown_project_derives_build_output_from_selected_selena_script(tmp_path):
+    workspace = tmp_path / "workspace"
+    script = workspace / "tools" / "new_product" / "jenkins_selena_build.bat"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "@echo off\n"
+        "set buildmode=RelWithDebInfo\n"
+        "set selena_config=ROS_PER_SIT_RPM_FCT_RECR\n"
+        "python3 R2D2.py -m !selena_config! -B ip_dc/build\n",
+        encoding="utf-8",
+    )
+    empty = tmp_path / "projects"
+    empty.mkdir()
+
+    result = WorkspaceRecognizer(empty).recognize(
+        str(workspace),
+        selena_build_script=str(script),
+    )
+
+    assert result.status == "resolved"
+    assert result.adapter_key == "generic:selena-script"
+    assert result.internal_project
+    assert result.output_dir == _normalize_path(
+        str(workspace / "ip_dc" / "build" / "ROS_PER_SIT_RPM_FCT_RECR")
+    )
 
 
 def test_multiple_discovered_scripts_do_not_guess(tmp_path):

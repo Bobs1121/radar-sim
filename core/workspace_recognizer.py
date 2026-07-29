@@ -194,7 +194,9 @@ class WorkspaceRecognizer:
 
                 derived_output = _normalize_path(
                     str(
-                        derive_project_context_from_selena_script(script).get(
+                        derive_project_context_from_selena_script(
+                            script, project_root_hint=raw_root
+                        ).get(
                             "build_output"
                         )
                         or ""
@@ -207,6 +209,11 @@ class WorkspaceRecognizer:
             winner.adapter.workspace_roots,
             root,
         )
+        inferred_package = _rebase_to_workspace(
+            winner.adapter.package_build_script,
+            winner.adapter.workspace_roots,
+            root,
+        )
         return RecognitionResult(
             status="resolved",
             adapter_key=winner.adapter.key,
@@ -214,7 +221,7 @@ class WorkspaceRecognizer:
             workspace_root=root,
             build_script=script,
             selena_build_script=explicit_selena or script,
-            package_build_script=explicit_package or winner.adapter.package_build_script,
+            package_build_script=explicit_package or inferred_package,
             output_dir=output_dir,
             confidence=winner.confidence,
             evidence=(
@@ -381,14 +388,14 @@ def _generic_internal_project(root: str, selena_script: str, package_script: str
 
     The value is deliberately opaque and path-free.  All inputs are already
     canonicalized by the recognizer, so equivalent Windows path spellings
-    produce the same identity while a different checkout or script pair gets
-    an independent authorization namespace.
+    produce the same identity while a different checkout or Selena script gets
+    an independent authorization namespace.  The package script is an optional
+    dependency hint, so adding or removing it must not create another binding.
     """
     payload = "\0".join(
         (
             _normalize_path(root),
             _normalize_path(selena_script),
-            _normalize_path(package_script),
         )
     )
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]

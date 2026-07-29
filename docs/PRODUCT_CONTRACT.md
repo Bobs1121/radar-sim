@@ -29,7 +29,7 @@ selena:
   code_path: "C:/path/to/repo"
   branch: ""                    # 可选期望分支；始终编译当前工作区
   selena_build_script: "C:/path/to/selena_build.bat"
-  package_build_script: "C:/path/to/software_package_build.bat"
+  package_build_script: "C:/path/to/software_package_build.bat"  # 可选依赖线索
 
   # source=existing 时填写；目录必须包含 Selena.exe 及其依赖 DLL
   # existing_path: "X:/path/to/selena_folder"
@@ -49,7 +49,7 @@ simulation:
 强制约束：
 
 - `data` 只有一个 `path`。用户不区分本地、公盘或上传数据；系统自动识别、检索 MF4，并在目标不可访问时传输到 Cluster 可访问存储。
-- `source=build` 时，系统从用户给出的 Selena 编译脚本确认真实输出位置，并在编译后验证 `Selena.exe` 与同目录 DLL；软件包编译脚本只用于内部项目识别、环境依赖发现/处理及其明确声明的代码生成步骤。
+- `source=build` 时，系统从用户给出的 Selena 编译脚本确认真实输出位置，并在编译后验证 `Selena.exe` 与同目录 DLL；软件包编译脚本为可选项，只用于补充内部项目识别、环境依赖发现/处理及其明确声明的代码生成步骤。未提供软件包脚本不得单独阻止编译。
 - `source=build` 始终编译用户当前工作区及其未提交修改，默认认为用户已自行切好分支。系统不得自动执行 checkout、reset、clean 或 stash。`branch` 仅是可选的期望分支；与实际分支不一致时，Web、SDK Job 结果和任务日志必须明确警告，但允许用户继续执行。
 - 清仓只属于用户明确选择并二次确认的可选动作，默认流程不执行。`git clean -xfd`、`git reset --hard`、递归 submodule reset/clean 等破坏性命令绝不能静默作用于用户工作区。
 - `source=existing` 时，用户只填写 Selena 文件夹路径和 Runtime XML。系统必须使用该目录中的 `Selena.exe` 和所需 DLL，不能只复制一个 exe。

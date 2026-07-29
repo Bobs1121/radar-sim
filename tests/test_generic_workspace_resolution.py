@@ -130,7 +130,7 @@ def test_agent_auto_configures_unknown_workspace_without_project_registration(
         untracked=(),
     )
     monkeypatch.setattr(
-        "core.agent_build_stage.capture_source_snapshot", lambda *_args: snapshot
+        "core.agent_build_stage.inspect_workspace_identity", lambda *_args: snapshot
     )
     prepared = prepare_selena_build(
         {
@@ -163,7 +163,7 @@ def test_agent_auto_configures_unknown_workspace_without_project_registration(
     ).resolve()
 
 
-def test_generic_identity_changes_when_the_build_contract_changes(tmp_path):
+def test_generic_identity_is_stable_when_optional_package_hint_changes(tmp_path):
     workspace, selena_script, package_script = _make_unknown_workspace(tmp_path)
     other_package = package_script.with_name("build_package_v2.bat")
     other_package.write_text("@echo off\n", encoding="utf-8")
@@ -182,10 +182,10 @@ def test_generic_identity_changes_when_the_build_contract_changes(tmp_path):
         package_build_script=str(other_package),
     )
 
-    assert original.internal_project != changed.internal_project
+    assert original.internal_project == changed.internal_project
 
 
-def test_agent_does_not_reuse_binding_after_generic_script_contract_changes(
+def test_agent_reuses_binding_when_only_optional_package_hint_changes(
     tmp_path, monkeypatch
 ):
     workspace, selena_script, package_script = _make_unknown_workspace(tmp_path)
@@ -208,10 +208,9 @@ def test_agent_does_not_reuse_binding_after_generic_script_contract_changes(
         {**common, "package_build_script": str(package_script)}
     )
 
-    assert changed["internal_project"] != original["internal_project"]
-    assert changed["workspace_binding_id"] != original["workspace_binding_id"]
+    assert changed["internal_project"] == original["internal_project"]
+    assert changed["workspace_binding_id"] == original["workspace_binding_id"]
     assert repeated["workspace_binding_id"] == original["workspace_binding_id"]
     assert {item.project for item in AgentBindingStore().list()} == {
         original["internal_project"],
-        changed["internal_project"],
     }

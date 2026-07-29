@@ -181,7 +181,6 @@ function runConfigFromForm() {
   const matFilter = byId("matFilter").value.trim();
   if (source === "build" && !codePath) throw new Error("本地编译需要填写代码路径");
   if (source === "build" && !selenaBuildScript) throw new Error("本地编译需要填写 Selena 编译脚本");
-  if (source === "build" && !packageBuildScript) throw new Error("本地编译需要填写软件包编译脚本");
   if (source === "existing" && !existingPath) {
     byId("existingPath").setAttribute("aria-invalid", "true");
     throw new Error("请填写 Selena 产物文件夹");
@@ -189,17 +188,19 @@ function runConfigFromForm() {
   if (!runtimeXml) throw new Error("请选择与 Selena 匹配的 Runtime XML");
   if (!matFilter) throw new Error("请选择 MatFilter 配置文件");
 
+  const selena = {
+    source,
+    code_path: codePath,
+    branch,
+    selena_build_script: selenaBuildScript,
+    existing_path: source === "existing" ? existingPath : "",
+    runtime_xml: runtimeXml,
+  };
+  if (packageBuildScript) selena.package_build_script = packageBuildScript;
+
   return {
     schema_version: "2.0",
-    selena: {
-      source,
-      code_path: codePath,
-      branch,
-      selena_build_script: selenaBuildScript,
-      package_build_script: packageBuildScript,
-      existing_path: source === "existing" ? existingPath : "",
-      runtime_xml: runtimeXml,
-    },
+    selena,
     data: { path: dataPath },
     simulation: {
       target: selectedValue("target") || "auto",
@@ -306,11 +307,12 @@ function updateConditionalFields() {
   byId("existingPath").required = usingExisting;
   byId("existingPath").setAttribute("aria-required", String(usingExisting));
   if (!usingExisting) byId("existingPath").removeAttribute("aria-invalid");
-  for (const id of ["codePath", "selenaBuildScript", "packageBuildScript"]) {
+  for (const id of ["codePath", "selenaBuildScript"]) {
     byId(id).required = source === "build";
   }
+  byId("packageBuildScript").required = false;
   byId("workspaceEvidenceHint").textContent = source === "build"
-    ? "本地编译需要代码仓和两个脚本；系统据此识别产品并检查依赖。"
+    ? "本地编译需要代码仓和 Selena 编译脚本；软件包脚本可选，用于补充依赖线索。"
     : "以下代码仓和脚本为可选识别证据；填写后系统会与 Selena/Runtime 交叉校验，不一致时阻止任务。";
 }
 

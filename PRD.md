@@ -24,7 +24,7 @@
 
 | 区域 | 用户填写 | 产品约束 |
 |---|---|---|
-| Selena | `source`、代码仓路径、分支、Selena 编译脚本、软件包编译脚本，或已有 Selena 文件夹 | Linux 永不编译；软件包脚本用于内部适配识别和依赖检查/修复；填写分支时使用隔离 worktree；留空分支时编译当前工作区修改；已有目录必须整体使用 exe 和依赖 DLL |
+| Selena | `source`、代码仓路径、分支、Selena 编译脚本、可选软件包编译脚本，或已有 Selena 文件夹 | Linux 永不编译；软件包脚本仅补充内部适配证据和依赖检查/修复；填写分支时使用隔离 worktree；留空分支时编译当前工作区修改；已有目录必须整体使用 exe 和依赖 DLL |
 | Runtime | 两种来源都填写与 Selena 分支/产物匹配的 Runtime XML | Runtime XML 与 Selena 分支/产物强绑定；内部可生成 Bundle，但用户不接触 Bundle 概念 |
 | 数据 | 一个数据路径，或 Web/SDK 上传后形成的 `dataset://` 引用 | 软件递归发现 MF4；Cluster 只消费已授权共享路径或 DatasetRef，不依赖用户电脑 |
 | 仿真配置 | Adapter、MatFilter | MatFilter 必填；Adapter 由识别出的 recipe 决定是否必填（ovrs25 可留空）；两者均不进入 Runtime Bundle，可使用共享路径或 `config-asset://` 引用 |
@@ -77,7 +77,7 @@ radar-sim 通过统一的 Web 和 Python SDK/API，让用户使用一份可复�
 8. **本地仿真只属于 Windows 完整部署**：需要本地仿真的用户必须安装 Windows full deployment；无部署用户只能使用 existing Selena + shared/uploaded data 进行 Cluster 仿真。
 9. **环境参数不进入用户配置**：工具路径、共享盘映射、Agent ID、队列、端口和密钥由平台管理。
 10. **用户不感知 Agent**：任务需要访问 Windows 本地路径、编译 Selena 或执行本地仿真时，Web 只提示“一键连接本机”并自动选择所需能力。用户不填写服务地址、Agent ID、部署模式或令牌；连接完成后原任务自动继续。
-11. **脚本识别不是项目白名单**：`code_path + selena_build_script + package_build_script` 能唯一推导工作区、构建输出和依赖时必须直接执行。内部项目适配只提供已知默认值，不能成为新代码仓的准入条件。
+11. **脚本识别不是项目白名单**：`code_path + selena_build_script` 能唯一推导工作区和构建输出时必须直接执行；可选 `package_build_script` 只补充依赖证据。内部项目适配只提供已知默认值，不能成为新代码仓的准入条件。
 12. **全过程可见且可追溯**：每一步有状态、进度、日志、责任节点、失败原因和恢复动作。
 13. **不破坏用户工作区**：不得用强制 checkout、reset 或自动 stash 覆盖用户修改。
 14. **复用优先且可回退**：具体实现优先改造现有代码，或采用成熟独立模块和标准协议；新增依赖必须先完成小型 spike、记录风险和回退方案，不能演变成全栈重写。

@@ -20,6 +20,17 @@
 
 > 本节是最新实时状态，优先级高于下方 0.1。0.1 节描述的“未完成 P0 缺口”已由本次两个修复 + 真实 Cluster 仿真闭环验证闭合。
 
+### 0.0-pre 多项目脚本推导已实现并完成真实 Xpeng 无编译干跑（2026-07-29）
+
+- 用户合同已收敛：`source=build` 只强制 `code_path + selena_build_script + runtime_xml`；`package_build_script` 为可选依赖线索，缺省不再被 YAML、Agent Build Stage 拒绝，也不导出空字段。
+- 未知产品继续使用稳定匿名内部身份，不要求登记 `config/projects/<name>`。Selena 脚本中的绝对或相对 R2D2 `-B`、构建配置名会组合为仓内输出根；相对 `-B` 已修正为基于用户代码仓，而不是进程当前目录。
+- 已登记适配器不再携带开发者机器的旧盘符进入执行：Agent 在每次用户任务中把 `project_root`、`paths.source_root`、`paths.build_output`、`machine.project_root` 和 `build.build_output` 重定位到本次授权的代码仓/推导输出。
+- 环境依赖分析同时读取 Selena 脚本和可选软件包脚本的有界仓内调用图；脚本没有显式 install 标记时仍读取仓内 `ip_if/tcc_toolversion_itc2.txt`。真实 Xpeng 脚本在不填写软件包脚本时推导出 `IF:BTC-6.2.0`。
+- 独立审查发现并闭合了四个发布缺口：旧 Web 的必填校验/HTML required 已取消；已知适配器的可选软件包脚本会重定位到用户 checkout，缺失的内部默认脚本不阻塞；可选软件包脚本不再改变匿名 workspace 身份；隔离 worktree 同步重定位 `machine.project_root` 和 `paths.source_root`。多个脚本声明不同 ToolCollection 时明确失败并列出冲突版本，不再静默选第一个。
+- 真实 Xpeng 只解析干跑（没有启动编译）通过：代码仓 `D:/pl-xpeng`，Selena 脚本自动识别 `project:xpengod25`，输出根 `D:/pl-xpeng/ip_dc/build/ROS_PER_SIT_RPM_FCT_RECR`，最终产物精确定位到 `dc_tools/selena/core/RelWithDebInfo/selena.exe` 且文件存在；工作目录为脚本目录，最近 Git 子仓为 `apl/base/bindings/xpeng`，实际分支为 `feature/CRGVXPFIII-2492-bl01v06-selena-front`。
+- 回归证据：推导/Web/TCC/Bundle 专项 `66 passed`；配置/Agent/分支/调度专项 `55 passed`；API/SDK 合同专项 `79 passed, 1 third-party warning`；JavaScript 语法、Python `py_compile` 与 `git diff --check` 通过。此次只做无副作用干跑，不重复已成功且耗时约 53 分钟的真实编译。
+- 当前安全边界：自动授权的编译产物目录必须位于 `code_path` 内，用户无需也不能填写 `output_root`。若未来真实产品脚本把 `-B` 指向代码仓外或其他盘符，应新增一次性明确授权的外部产物根协议；不能为“兼容”而直接放宽到任意磁盘目录。
+
 ### 0.0a 直接 Selena 文件夹真实验证：`job_0fc305516985`（2026-07-29）
 
 - 发布提交：`823adc96504e61cd0d9b034098c99ba12d2cf439`（`fix: align existing Selena folder runtime flow`）。Linux release 已原子切换到 `/home/hoz2wx/radar-sim-v1-823adc9`，PID `2142440`、`NRestarts=0`、`RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`，Health、Windows full、Cluster 均在线。Windows Connector 由同一提交一键静默更新，保留原 Agent ID/配置，无重新配对。

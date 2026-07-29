@@ -98,12 +98,23 @@ def test_existing_with_old_executable_is_rejected():
         UserRunConfig.from_dict(config)
 
 
-@pytest.mark.parametrize("field", ["selena_build_script", "package_build_script", "runtime_xml"])
+@pytest.mark.parametrize("field", ["selena_build_script", "runtime_xml"])
 def test_build_source_required_fields(field):
     config = _build_config()
     config["selena"][field] = ""
     with pytest.raises(ValidationError, match=field):
         UserRunConfig.from_dict(config)
+
+
+def test_build_source_accepts_missing_package_build_script():
+    config = _build_config()
+    config["selena"].pop("package_build_script")
+
+    parsed = UserRunConfig.from_dict(config)
+
+    assert parsed.selena.source == "build"
+    assert parsed.selena.package_build_script == ""
+    assert "package_build_script:" not in parsed.to_yaml()
 
 
 def test_mat_filter_is_always_required():
