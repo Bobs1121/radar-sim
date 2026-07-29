@@ -22,6 +22,9 @@
 
 ### 0.0-pre 多项目脚本推导已实现并完成真实 Xpeng 无编译干跑（2026-07-29）
 
+- 最终发布提交：`5388c0e`（主体 `d54b891` + Linux 解析 Windows batch 路径修复）。Linux 已切换到 `/home/hoz2wx/radar-sim-v1-5388c0e`，PID `2216333`、`NRestarts=0`、Health 正常；Windows full Connector 同提交一键更新完成，保留既有 Agent ID/配置/自启，无重新配对，`available=true/count=1/configured_count=1/reconnecting=false`。
+- 发布前曾因两项新增 Linux 测试失败立即原子回滚到 `823adc9`；修正大小写断言和 batch `\` 路径分隔后，本机与 Linux 门禁均为 `88 passed, 0 failed`，才重新切换。这证明 release gate 和回滚路径实际可用。
+- Live Web `/console/app.js` 已确认旧“软件包脚本必填”报错不存在、可选提示存在且 DOM `required=false`。Raw API dry-run `job_e71d3d77a080` 使用 `source=build` 且 spec 不含 `package_build_script`，Job succeeded；`build_selena=skipped/attempt_count=0/dry_run_plan_only`，没有领取或执行真实编译。
 - 用户合同已收敛：`source=build` 只强制 `code_path + selena_build_script + runtime_xml`；`package_build_script` 为可选依赖线索，缺省不再被 YAML、Agent Build Stage 拒绝，也不导出空字段。
 - 未知产品继续使用稳定匿名内部身份，不要求登记 `config/projects/<name>`。Selena 脚本中的绝对或相对 R2D2 `-B`、构建配置名会组合为仓内输出根；相对 `-B` 已修正为基于用户代码仓，而不是进程当前目录。
 - 已登记适配器不再携带开发者机器的旧盘符进入执行：Agent 在每次用户任务中把 `project_root`、`paths.source_root`、`paths.build_output`、`machine.project_root` 和 `build.build_output` 重定位到本次授权的代码仓/推导输出。
