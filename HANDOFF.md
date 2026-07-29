@@ -20,6 +20,24 @@
 
 > 本节是最新实时状态，优先级高于下方 0.1。0.1 节描述的“未完成 P0 缺口”已由本次两个修复 + 真实 Cluster 仿真闭环验证闭合。
 
+### 0.0a 第二轮真实验证：换 runtime_fcta_per.xml（2026-07-29）
+
+- 用户指出数据目录里的 `runtime_fcta_per.xml` 才是适配这份 Radar 数据的 Runtime，YAML 已改用 `D:/data/xpeng-cr5cb/MPCTEXPFB-4363/CBFA_10%_10KPH_NG/Radar/runtime_fcta_per.xml`。
+- `job_0d65dd8e9bd6`（`output/xpeng-cr5cb-existing-cluster.yaml`，runtime_fcta_per.xml）端到端再次跑通调度链路：`environment_check`/`prepare_data`/`preflight`/`run_simulation`/`collect_results` 均 succeeded；Agent auto-bind → 发现 2 MF4 → resumable 上传 1.2GB → 回传 `dataset://` → Cluster 真实执行 → 结果回收，全链路成功。
+- `finalize_manifest` 仍 `simulation_failed`，Cluster 首条真实错误**与 job_f93748715fad 完全相同**：`XMdfReaderImpl.cpp.581: no signal found in channel cache for port g_PlReCoFunctions_Sit_RunnableCfmFcta_RunnableCfmFcta_m_port_ParallelLanes_in. Please check measurement`。
+- 根因确认：`runtime_fcta_per.xml` 与 `runtime_fcta.xml` **都**含 `ParallelLanes` 的 DataPlayer outport 定义（grep 各 2 处），错误是 Selena 从 MF4 数据的 channel cache 里**读不到** `ParallelLanes_in` 信号——即这份 Radar MF4 数据本身缺该信号通道，或需要不同的 Runtime/DataPlayer 配置。这是数据↔Runtime 信号匹配的业务问题，不是 Runtime 版本选择问题，也不是接口缺陷。
+- 结论：调度接口（`2d1756e` + `3293d16`）已两次端到端验证可靠工作（`job_f93748715fad` 用 runtime_fcta.xml、`job_0d65dd8e9bd6` 用 runtime_fcta_per.xml，均 run_simulation succeeded）。仿真业务成功需要用户匹配一份真正包含 `ParallelLanes_in` 信号通道的 MF4 数据或调整 Runtime/DataPlayer 配置，不在接口范围。
+
+### 排障过程沉淀（Agent 运行时非显然事实）
+
+- **Agent “两个进程”不是并发 worker**：`start_windows.ps1 -Supervise` 用 `.venv/Scripts/python.exe` 启动 agent，Windows venv 的 python.exe 是指向 `Python312/python.exe` 的 launcher，所以进程列表里 1 个 `.venv` + 1 个 `Python312` 是同一逻辑 agent 的 launcher + real interpreter，不是抢同一 task 的并发 worker。之前误判为多进程并发并反复清进程是浪费时间。
+- **prepare_data “卡在 submitted 之后” 实为正常 checksum + 上传**：`lease.create` 对 1.2GB 数据算 SHA256 checksum（`checksum=not local_route`，Cluster route=True）需 1-2 分钟，之后 resumable 上传 1.2GB 需 3-7 分钟。事件流（`/events`）聚合比 `task_logs` 慢，排障时优先读服务端 `task_logs`（`control_v1.db`）而非 events。
+- **重启 Connector 必须先杀 supervisor(powershell) 再杀 agent python**：`start_windows.ps1 -Supervise` 的 `while($true)` 会在 agent 退出后 5 秒重启。`schtasks /End` 不杀已脱离计划任务的 supervisor 进程，残留 supervisor 会持续重启 agent。需 `taskkill` 杀掉所有 `start_windows.ps1` powershell 后再杀 `rsim.py agent` python，并删除 `connector.pid`，否则 mutex 不释放、多 supervisor 叠加。
+- **服务端 control DB 是** `~/.rsim-v1-git-smoke/artifacts/.store/control_v1.db`（central owner-scoped，非 `results/_control_<owner>.db`）。查 job/task/payload/task_logs 都用这个 DB。
+- 本次在 Agent `cli/agent.py` 和服务端 `core/control_service.py` 加的临时排障日志已全部还原；Agent install root 的 `cli/agent.py` 仅保留 `2d1756e` 的 auto-binding patch。
+
+
+
 ### 两个已提交并部署的修复
 
 1. `2d1756e fix: bind first Windows-local data path on one-click Agent`（`core/control_service.py` + `cli/agent.py`）
