@@ -1115,12 +1115,15 @@ def _run_v5_local_stage(
             cancel_event.set()
         if stage_type == "preflight":
             result = _execute_v5_local_preflight(task, client=client)
+            returncode = 0
         elif stage_type == "run_simulation":
             result, returncode = _execute_v5_local_simulation(task, cancel_event.is_set)
         elif stage_type == "collect_results":
             result = _execute_v5_local_collect(task)
+            returncode = 0
         elif stage_type == "finalize_manifest":
             result = _execute_v5_local_finalize(task)
+            returncode = 0
         else:
             raise ValueError("unsupported Windows-full local Stage")
         if cancel_event.is_set() or returncode == 130:
