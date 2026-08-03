@@ -1221,7 +1221,12 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         timeout_seconds=(timeout_minutes * 60 if timeout_minutes > 0 else 3600),
     )
     private = store.get_private(lease["lease_id"])
-    private["config"]["_strict_runtime_data_signals"] = True
+    # The Runtime/Data port list is already captured during resolution.  Do
+    # not reopen every MF4 in the local preflight: large recordings can be
+    # tens of gigabytes and Selena itself is the authoritative compatibility
+    # check.  Keep the preflight project-independent so repository signal
+    # lists cannot block a valid user-supplied runtime/data pair.
+    private["config"]["_project_independent_execution"] = True
     preflight = run_preflight(private["config"])
     if not preflight.ok:
         detail = next((item.detail for item in preflight.checks if not item.passed), "")
