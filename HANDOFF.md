@@ -1979,3 +1979,22 @@ systemd 管理的 server（`rsim-server.service`）+ fstab 持久挂载后，T3 
 - MCP/Skill 只调用 `RadarSimClient` 的 YAML 导入、校验、提交、事件查询、诊断和结果下载接口。
 - 不暴露 Agent ID、内部项目名、Runtime Bundle 内部路径、Windows 服务 URL 或令牌作为业务参数。
 - AI 后续只根据稳定的 `job-diagnosis`、阶段状态和 `result_ref` 做外围排障；`run_simulation` 内部失败原样归属于 Selena 运行结果，不在适配层推导业务结论。
+
+### BYD 已有 Selena → Cluster 单文件验证（2026-08-03）
+
+本次按用户提供的本机输入提交，不要求用户填写项目名，也不触发 Selena 编译：
+
+- Selena：`C:\BYD_OVS_CB\ip_dc\build\ROS_PER_SIT_RPM_FCT_RECR\dc_tools\selena\core\RelWithDebInfo`
+- Runtime：`C:\tools\Runtime_For_byd_ovrs25_bl16rc71_al2.xml`
+- MatFilter：`C:\BYD_OVS_CB\reco_fw\tools\selena\matlab_transport_cfg\matlab_swx_.mdf.mat.filter`
+- 单文件数据：`D:\data\byd\CRGVBYDPF-13086\0729\Gen5_2026-07-28_17-23_0119.MF4`
+
+SDK 通过 `RadarSimClient.submit_run(..., target=cluster)` 直连 Linux 服务，先将已有 Selena、Runtime、MatFilter 和单个 MF4 准备到服务端；`resolve_spec/build_selena/register_artifact` 均按 existing 语义跳过。
+
+- 配置校验：`valid=true`、`selected_target=cluster`、`readiness=ready`。
+- 首次任务：`job_d2c7917f0c90`。
+- 外围终态：`environment_check` 在两次尝试均失败，错误为 `CLUSTER_ENVIRONMENT_UNAVAILABLE`，`SZHRADAR01:8123` XML-RPC Manager 连接超时；未进入 Selena、Cluster 提交或结果收集。
+- 诊断结论：Linux API `health=true`、Cluster executor/gateway 均在线；目标主机 ICMP 可达，但 XML-RPC 8123 不可建立连接。该失败属于 Cluster Manager 外部依赖，不是 Selena、Runtime、MF4、MatFilter 或项目识别错误。
+- 任务可恢复：失败阶段保留 `retry_stage` 动作，不需要重新上传或编译。Cluster Manager 恢复后应直接重试 `task_523e7784af3d`。
+
+调用方式的注意事项：本机 SDK 大文件上传必须使用直连客户端（`trust_env=False`），否则会误走系统 HTTP 代理，造成数据准备阶段长时间无任务记录；这不是 Linux 服务或仿真失败。
