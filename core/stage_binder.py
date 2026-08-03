@@ -744,6 +744,27 @@ def maybe_bind_local_preflight(control: ControlService, job_id: str) -> dict | N
     ):
         raise StageBindingError("local preflight prerequisites are invalid")
     simulation = dict(spec.get("simulation") or {})
+    # Resolution uploads local Adapter/MatFilter files to the control plane
+    # and records path-free config-asset references in the resolved spec.  The
+    # Windows preflight must receive those references so the Agent can
+    # materialize and authorize them; passing the original workstation path
+    # makes an otherwise valid task fail with "asset path is not authorized".
+    resolved_assets = dict(
+        ((job.get("resolved_spec") or {}).get("decisions") or {}).get(
+            "simulation_assets"
+        )
+        or {}
+    )
+    adapter_file = str(
+        resolved_assets.get("adapter_file")
+        or simulation.get("adapter_file")
+        or ""
+    )
+    mat_filter = str(
+        resolved_assets.get("mat_filter")
+        or simulation.get("mat_filter")
+        or ""
+    )
     return control.bind_stage_to_agent(
         str(preflight["stage_id"]),
         agent_id=agent_id,
@@ -756,8 +777,8 @@ def maybe_bind_local_preflight(control: ControlService, job_id: str) -> dict | N
             "runtime_bundle_id": str(bundle.get("id") or ""),
             "data_lease_ref": data_lease_ref,
             "dataset_id": str(dataset.get("id") or ""),
-            "adapter_file": str(simulation.get("adapter_file") or ""),
-            "mat_filter": str(simulation.get("mat_filter") or ""),
+            "adapter_file": adapter_file,
+            "mat_filter": mat_filter,
             "limit": int((spec.get("data") or {}).get("limit") or 0),
             "timeout_minutes": int(simulation.get("timeout_minutes") or 0),
             "owner": str(job.get("owner") or (job.get("metadata") or {}).get("owner") or ""),

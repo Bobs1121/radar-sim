@@ -1237,7 +1237,12 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
                     "name": item.name,
                     "level": item.level,
                     "passed": bool(item.passed),
-                    "detail": item.detail,
+                        # Some injected/legacy preflight checks expose only
+                        # name/level/passed.  Diagnostics are best-effort and
+                        # must not turn a passed compatibility check into a
+                        # local Stage exception merely because detail is
+                        # absent.
+                        "detail": str(getattr(item, "detail", "") or ""),
                 }
                 for item in preflight.checks
             ],
