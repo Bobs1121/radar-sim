@@ -257,7 +257,7 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
                 str(getattr(item, "detail", "") or "unavailable"),
             )
         detail = "; ".join(
-            f"{item.name}: {_public_environment_error_detail(item)}"
+            f"{_public_environment_item_name(item)}: {_public_environment_error_detail(item)}"
             for item in failed
         )
         raise ClusterStageExecutionError(
@@ -286,6 +286,14 @@ def _public_environment_error_detail(item: Any) -> str:
     if index >= 0:
         return detail[index + 1 :].rstrip(")")
     return "unavailable"
+
+
+def _public_environment_item_name(item: Any) -> str:
+    """Remove deployment paths embedded in legacy check labels."""
+    name = str(getattr(item, "name", "") or "Cluster dependency").strip()
+    if name.casefold().startswith("worker dependency path:"):
+        return "Worker dependency path"
+    return name
 
 
 def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any]) -> dict[str, Any]:

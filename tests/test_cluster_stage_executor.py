@@ -527,7 +527,7 @@ def test_cluster_environment_failure_keeps_dependency_detail_and_retry_action(mo
         "core.cluster.check_cluster_environment",
         lambda _config: [
             SimpleNamespace(
-                name="Worker dependency path",
+                name="Worker dependency path: /mnt/private/cluster/dependency",
                 ok=False,
                 severity="error",
                 detail=(
@@ -545,6 +545,7 @@ def test_cluster_environment_failure_keeps_dependency_detail_and_retry_action(mo
     assert excinfo.value.code == "CLUSTER_ENVIRONMENT_UNAVAILABLE"
     assert "BlockingIOError" in str(excinfo.value)
     assert "/mnt/private" not in str(excinfo.value)
+    assert "Worker dependency path:" in str(excinfo.value)
     assert excinfo.value.actions == (
         {"type": "retry_stage", "label": "Retry environment check"},
     )
