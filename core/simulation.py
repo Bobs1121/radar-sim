@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,6 +18,12 @@ RADAR_POSITION_MAP: dict[str, dict[str, str]] = {
 }
 
 OUTPUT_FILE_PATTERN = re.compile(r"out(?:\s*\(\d+\))?$", re.IGNORECASE)
+
+# One data folder normally contains recordings from the same radar mounting.
+# Cache a successful adapter probe so a multi-file local run does not reopen a
+# multi-gigabyte MF4 for every input.  Failed probes are not cached.
+_RADAR_DETECTION_CACHE: dict[str, dict[str, Any]] = {}
+_RADAR_DETECTION_CACHE_LOCK = threading.Lock()
 
 
 def _data_root() -> Path:
@@ -179,6 +186,36 @@ def _find_channel_name(available: list[str], suffixes: list[str], preferred_toke
     return None
 
 
+def _read_first_channel_sample(mdf: Any, name: str) -> Any:
+    """Read one sample, selecting a concrete group/index for duplicates.
+
+    MF4 files commonly contain the same generated channel name in more than
+    one runnable/group (for example left and right radar instances).  Calling
+    ``MDF.get(name)`` is ambiguous and, without a record limit, can materialize
+    gigabytes.  The channel database gives us the concrete occurrences; use
+    the first one as the deterministic adapter probe and read one record only.
+    """
+    occurrences = list((getattr(mdf, "channels_db", {}) or {}).get(name) or ())
+    if not occurrences:
+        return mdf.get(name, record_offset=0, record_count=1)
+    last_error: Exception | None = None
+    for occurrence in occurrences:
+        try:
+            group, index = occurrence
+            return mdf.get(
+                name,
+                group=int(group),
+                index=int(index),
+                record_offset=0,
+                record_count=1,
+            )
+        except Exception as exc:  # one duplicate may be an unavailable group
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    return None
+
+
 def detect_radar_orientation(mf4_path: str) -> Optional[dict[str, Any]]:
     """Infer FL/FR/RL/RR from MF4 metadata with minimal reads."""
     try:
@@ -210,8 +247,8 @@ def detect_radar_orientation(mf4_path: str) -> Optional[dict[str, Any]]:
             ["PerSppRLocRunnable", "radarSensorPropertiesPort"],
         )
         if x_name and y_name:
-            x_sig = mdf.get(x_name)
-            y_sig = mdf.get(y_name)
+            x_sig = _read_first_channel_sample(mdf, x_name)
+            y_sig = _read_first_channel_sample(mdf, y_name)
             x_pos = _extract_first_scalar(x_sig)
             y_pos = _extract_first_scalar(y_sig)
             if x_pos is not None and y_pos is not None:
@@ -239,7 +276,7 @@ def detect_radar_orientation(mf4_path: str) -> Optional[dict[str, Any]]:
                 if not matched:
                     continue
                 try:
-                    signal = mdf.get(matched)
+                    signal = _read_first_channel_sample(mdf, matched)
                 except Exception:
                     continue
                 if _extract_first_scalar(signal) is None:
@@ -253,6 +290,11 @@ def detect_radar_orientation(mf4_path: str) -> Optional[dict[str, Any]]:
                     "confidence": 0.8,
                     "evidence": {"channel": matched},
                 }
+    except Exception:
+        # Orientation is an adapter hint, not an authorization gate.  A
+        # malformed/ambiguous MF4 header must fall through to the normal
+        # Selena invocation instead of failing the user's task.
+        pass
     finally:
         mdf.close()
 
@@ -293,7 +335,16 @@ def build_effective_simulation(
     mounting = str(sim.get("mounting_position", "") or "").strip().lower()
     needs_detection = detect_requested and (not source or source == "auto" or not mounting or mounting == "auto")
     if needs_detection:
-        detection = detect_radar_orientation(input_mf4)
+        cache_key = os.path.normcase(os.path.normpath(str(Path(input_mf4).parent)))
+        with _RADAR_DETECTION_CACHE_LOCK:
+            detection = copy.deepcopy(_RADAR_DETECTION_CACHE.get(cache_key))
+        if detection is None:
+            detection = detect_radar_orientation(input_mf4)
+            if detection:
+                with _RADAR_DETECTION_CACHE_LOCK:
+                    if len(_RADAR_DETECTION_CACHE) >= 128:
+                        _RADAR_DETECTION_CACHE.pop(next(iter(_RADAR_DETECTION_CACHE)))
+                    _RADAR_DETECTION_CACHE[cache_key] = copy.deepcopy(detection)
         if detection:
             sim.setdefault("radar_detection", detection)
             sim["source"] = detection["source"]
