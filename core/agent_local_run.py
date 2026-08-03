@@ -145,8 +145,16 @@ class AgentLocalRunLeaseStore:
         mat_filter_binding_id: str,
         mat_filter_path: str,
         timeout_seconds: int,
+        verify_input_checksums: bool = True,
     ) -> dict[str, Any]:
-        """Authorize immutable inputs, construct private config and create a lease."""
+        """Authorize immutable inputs, construct private config and create a lease.
+
+        Cluster/upload paths keep the default content verification.  A local
+        Windows run may opt out after ``prepare_data`` has already created an
+        immutable lease: that lease records size/mtime and (for upload
+        routes) checksums, while rehashing a multi-gigabyte local recording
+        just before every run would unnecessarily delay Selena.
+        """
         job_id = _required_token(job_id, "local run job id")
         project = _required_token(project, "local run project")
         if not isinstance(base_config, dict):
@@ -162,7 +170,9 @@ class AgentLocalRunLeaseStore:
         timeout = _positive_timeout(timeout_seconds)
 
         runtime = _verify_runtime_locations(runtime_manifest, runtime_locations)
-        inputs = _verify_data_lease(data_lease)
+        inputs = _verify_data_lease(
+            data_lease, verify_checksums=bool(verify_input_checksums)
+        )
         adapter: Path | None = None
         try:
             if str(adapter_path or "").strip():
@@ -499,17 +509,21 @@ def _verify_runtime_locations(
     return by_role
 
 
-def _verify_data_lease(lease: AgentDataLease) -> list[dict[str, Any]]:
+def _verify_data_lease(
+    lease: AgentDataLease, *, verify_checksums: bool = True
+) -> list[dict[str, Any]]:
     root = lease.source_path if lease.source_path.is_dir() else lease.source_path.parent
     result: list[dict[str, Any]] = []
     for ref in lease.files:
         path = lease.source_path if lease.source_path.is_file() else root.joinpath(*PurePosixPath(ref.relative_path).parts)
-        checksum = _sha256_regular_file(path)
         stat_result = path.stat()
         if stat_result.st_size != ref.size or (ref.mtime_ns and stat_result.st_mtime_ns != ref.mtime_ns):
             raise AgentLocalRunError("leased data file changed after discovery")
-        if ref.checksum and checksum != ref.checksum:
-            raise AgentLocalRunError("leased data file changed after discovery")
+        checksum = str(ref.checksum or "")
+        if verify_checksums:
+            checksum = _sha256_regular_file(path)
+            if ref.checksum and checksum != ref.checksum:
+                raise AgentLocalRunError("leased data file changed after discovery")
         result.append({"relative_path": ref.relative_path, "path": path, "checksum": checksum})
     if not result:
         raise AgentLocalRunError("data lease contains no simulation input")

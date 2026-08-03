@@ -1219,6 +1219,10 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         mat_filter_binding_id=mat_binding.binding_id,
         mat_filter_path=mat_filter_path,
         timeout_seconds=(timeout_minutes * 60 if timeout_minutes > 0 else 3600),
+        # prepare_data already established the local lease's size/mtime
+        # evidence.  Avoid hashing the complete local dataset again before
+        # Selena starts; Cluster/upload flows retain checksum verification.
+        verify_input_checksums=False,
     )
     private = store.get_private(lease["lease_id"])
     # The Runtime/Data port list is already captured during resolution.  Do
