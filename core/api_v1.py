@@ -14,7 +14,7 @@ import tempfile
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from pydantic import ValidationError
 
@@ -38,6 +38,7 @@ from core.user import control_db_path_for_user, current_user, normalize_user
 from core.datasets import classify_data_path
 from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID, CLUSTER_GATEWAY_AGENT_ID
 from core.local_results import ResultCatalog, ResultCatalogError
+from core.result_upload_service import ResultUploadService, ResultUploadServiceError
 
 API_VERSION = "v1"
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -118,6 +119,7 @@ class ApiV1Service:
     runtime_bundle_upload_service_factory: Callable[[str], RuntimeBundleUploadService] | None = None
     config_asset_store: ConfigAssetStore | None = None
     result_catalog: ResultCatalog | None = None
+    result_upload_service_factory: Callable[[str], ResultUploadService] | None = None
     project_names_provider: ProjectNamesProvider | None = None
     now_fn: Callable[[], float] = time.time
 
@@ -1240,6 +1242,58 @@ class ApiV1Service:
         except ResultCatalogError as exc:
             raise ApiV1Error("result_unavailable", str(exc), status_code=404) from exc
 
+    def create_result_upload(
+        self,
+        owner: str,
+        *,
+        run_ref: str,
+        archive_size: int,
+        archive_checksum: str,
+    ) -> dict[str, Any]:
+        return self._result_upload_call(
+            owner,
+            lambda service: service.create(
+                owner,
+                run_ref=run_ref,
+                archive_size=archive_size,
+                archive_checksum=archive_checksum,
+            ),
+        )
+
+    def get_result_upload(self, owner: str, session_id: str) -> dict[str, Any]:
+        return self._result_upload_call(owner, lambda service: service.get(owner, session_id))
+
+    def append_result_upload(
+        self,
+        owner: str,
+        session_id: str,
+        *,
+        offset: int,
+        data: bytes,
+    ) -> dict[str, Any]:
+        return self._result_upload_call(
+            owner,
+            lambda service: service.append(owner, session_id, offset=offset, data=data),
+        )
+
+    def finalize_result_upload(
+        self,
+        owner: str,
+        session_id: str,
+        *,
+        files: Iterable[Mapping[str, Any]],
+        retain_until: float = 0,
+    ) -> dict[str, Any]:
+        return self._result_upload_call(
+            owner,
+            lambda service: service.finalize(
+                owner,
+                session_id,
+                files=files,
+                retain_until=retain_until,
+            ),
+        )
+
     def create_artifact_upload(
         self,
         owner: str,
@@ -1526,6 +1580,23 @@ class ApiV1Service:
         try:
             return callback(self.runtime_bundle_upload_service_factory(owner))
         except RuntimeBundleUploadServiceError as exc:
+            raise ApiV1Error(exc.code, exc.message, status_code=exc.status_code) from exc
+
+    def _result_upload_call(
+        self,
+        owner: str,
+        callback: Callable[[ResultUploadService], dict[str, Any]],
+    ) -> dict[str, Any]:
+        if self.result_upload_service_factory is None:
+            raise ApiV1Error(
+                "result_upload_unavailable",
+                "Result upload service is unavailable",
+                status_code=503,
+                actions=[{"type": "retry", "label": "Retry after the result service is configured"}],
+            )
+        try:
+            return callback(self.result_upload_service_factory(owner))
+        except ResultUploadServiceError as exc:
             raise ApiV1Error(exc.code, exc.message, status_code=exc.status_code) from exc
 
     def _get_owned_job(self, owner: str, job_id: str) -> dict[str, Any]:

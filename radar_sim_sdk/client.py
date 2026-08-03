@@ -398,6 +398,92 @@ class RadarSimClient:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def create_result_upload(
+        self,
+        run_ref: str,
+        *,
+        archive_size: int,
+        archive_checksum: str,
+    ) -> dict[str, Any]:
+        """Create a resumable upload for a Windows-local result archive."""
+        return dict(
+            self._request(
+                "POST",
+                "/api/v1/result-uploads",
+                json={
+                    "run_ref": str(run_ref),
+                    "archive_size": int(archive_size),
+                    "archive_checksum": str(archive_checksum),
+                },
+            )
+        )
+
+    def get_result_upload(self, session_id: str) -> dict[str, Any]:
+        return dict(self._request("GET", f"/api/v1/result-uploads/{session_id}"))
+
+    def append_result_upload(self, session_id: str, offset: int, data: bytes) -> dict[str, Any]:
+        return dict(
+            self._request(
+                "PATCH",
+                f"/api/v1/result-uploads/{session_id}",
+                content=bytes(data),
+                headers={"Upload-Offset": str(int(offset))},
+            )
+        )
+
+    def finalize_result_upload(
+        self,
+        session_id: str,
+        *,
+        files: list[dict[str, Any]],
+        retain_until: float = 0,
+    ) -> dict[str, Any]:
+        return dict(
+            self._request(
+                "POST",
+                f"/api/v1/result-uploads/{session_id}/finalize",
+                json={"files": list(files), "retain_until": float(retain_until or 0)},
+            )
+        )
+
+    def upload_result_archive(
+        self,
+        source: str | Path,
+        *,
+        run_ref: str,
+        files: list[dict[str, Any]],
+        retain_until: float = 0,
+    ) -> dict[str, Any]:
+        """Transfer one immutable local result ZIP and register its evidence."""
+        path = Path(source).expanduser()
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("result archive is unavailable")
+        size = int(path.stat().st_size)
+        checksum = _sha256_path(path)
+        current = self.create_result_upload(
+            run_ref,
+            archive_size=size,
+            archive_checksum=checksum,
+        )
+        session_id = str(current.get("session_id") or "")
+        if not session_id:
+            raise ValueError("result upload session is unavailable")
+        received = int(current.get("received_bytes") or 0)
+        chunk_size = max(1, int(current.get("chunk_size") or 4 * 1024 * 1024))
+        with path.open("rb") as handle:
+            handle.seek(received)
+            while received < size:
+                data = handle.read(min(chunk_size, size - received))
+                if not data:
+                    raise ValueError("local result archive ended before the expected size")
+                current = self.append_result_upload(session_id, received, data)
+                received = int(current.get("received_bytes") or 0)
+        return self.finalize_result_upload(
+            session_id,
+            files=files,
+            retain_until=retain_until,
+        )
+
     def create_artifact_upload(self, build_evidence_ref: str, *, publish_path: str = "") -> ArtifactUpload:
         return ArtifactUpload.from_dict(
             self._request(

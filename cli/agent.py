@@ -1119,7 +1119,7 @@ def _run_v5_local_stage(
         elif stage_type == "run_simulation":
             result, returncode = _execute_v5_local_simulation(task, cancel_event.is_set)
         elif stage_type == "collect_results":
-            result = _execute_v5_local_collect(task)
+            result = _execute_v5_local_collect(task, client=client)
             returncode = 0
         elif stage_type == "finalize_manifest":
             result = _execute_v5_local_finalize(task)
@@ -1402,7 +1402,7 @@ def _execute_v5_local_simulation(task: dict, cancel_requested) -> tuple[dict, in
     return {"local_run_lease_ref": lease_ref, **result}, returncode
 
 
-def _execute_v5_local_collect(task: dict) -> dict:
+def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = None) -> dict:
     import time
 
     from core.agent_local_run import AgentLocalRunLeaseStore
@@ -1424,10 +1424,24 @@ def _execute_v5_local_collect(task: dict) -> dict:
         files=[str(item.get("relative_path") or "") for item in local_result["files"]],
         retain_until=time.time() + retain_days * 86400,
     )
+    central = published.public_dict
+    if client is not None and getattr(client, "_api_url", ""):
+        archive = default_result_catalog().resolve_archive(
+            published.ref,
+            owner=normalize_user(str(payload.get("owner") or "")),
+        )
+        uploaded = client.upload_result_archive(
+            archive,
+            run_ref=lease_ref,
+            files=[item.to_dict() for item in published.files],
+            retain_until=published.retain_until,
+            owner=str(payload.get("owner") or ""),
+        )
+        central = dict(uploaded.get("result") or central)
     return {
         "local_run_lease_ref": lease_ref,
-        "result_ref": published.ref,
-        "result": published.public_dict,
+        "result_ref": str(central.get("ref") or published.ref),
+        "result": central,
     }
 
 
@@ -2059,6 +2073,33 @@ class _ControlClient:
             token=self._api_token,
         ) as sdk:
             return sdk.upload_config_asset(kind, source)
+
+    def upload_result_archive(
+        self,
+        source: Path,
+        *,
+        run_ref: str,
+        files: list[dict],
+        retain_until: float = 0,
+        owner: str = "",
+    ) -> dict:
+        """Upload a completed Windows-local result ZIP to the Linux catalog."""
+        if not self._api_url:
+            raise ValueError("Agent v1 api-url is required for result upload")
+        from core.user import current_user
+        from radar_sim_sdk import RadarSimClient
+
+        with RadarSimClient(
+            self._api_url,
+            user=str(owner or current_user()),
+            token=self._api_token,
+        ) as sdk:
+            return sdk.upload_result_archive(
+                source,
+                run_ref=run_ref,
+                files=list(files),
+                retain_until=retain_until,
+            )
 
     def download_runtime_bundle(
         self,

@@ -1920,3 +1920,62 @@ systemd 管理的 server（`rsim-server.service`）+ fstab 持久挂载后，T3 
 - **前端 web**：`http://10.190.171.44:8765/`
 - **后端 API**：`http://10.190.171.44:8877/`
 - Windows 用户浏览器访问 8765，Cluster tab 提交仿真；本地仿真走"仿真"tab（需本机 agent）。
+
+## 薄适配层收敛：已有 Selena + Windows 本地仿真（2026-08-03）
+
+### 本轮边界（必须保持）
+
+本项目是 Linux 控制平面和成熟 Selena/Cluster 工具之间的薄适配层：
+
+- Linux 负责接收 YAML/SDK 请求、解析用户路径、调度阶段、记录状态、绑定 Windows/Cluster 节点和归档结果。
+- Windows 负责访问用户本地 Selena 文件夹、Runtime、MatFilter/Adapter、数据，以及在选择 local 时启动 Selena。
+- Cluster 负责已有 Selena 的云端仿真；Linux 只准备并提交任务，不实现 Selena 编译或仿真算法。
+- 不读取、不解释 Selena 内部业务报错；只关注外围阶段是否成功、任务是否提交、结果是否回传可下载。
+- 不把 ovrs25、BYD 或其他项目写死到用户 YAML。项目识别只能作为执行节点的内部提示，不能成为用户必填项或路由条件。
+
+### 已实现的外围修复
+
+1. Windows-full 本地 preflight 使用 Linux 解析后的 `config-asset://` 引用，不再把 Windows 原始 MatFilter 路径错误地交给 Agent，避免 `asset path is not authorized`。
+2. 本地 preflight 只做轻量输入/运行租约检查，不重复扫描或哈希整套 MF4；数据准备阶段已经留下不可变证据。
+3. 雷达参数探测只作为适配提示，按 MF4 目录缓存一次；不会把探测结果当成 Selena 仿真的业务判定。
+4. 新增 Windows 结果归档的分块上传链路：Agent 在本地生成 ZIP 后上传到 Linux 结果目录，Linux 校验压缩包和文件清单，再登记到统一 `ResultCatalog`。Web 和 SDK 因此拿到同一个可下载的 `result_ref`。
+5. SDK 新增 `RadarSimClient.upload_result_archive(...)` 以及结果上传会话方法；MCP/Skill 后续应复用该 SDK，不直接拼 HTTP。
+
+### 真实 BYD 本地仿真验收
+
+配置（已有 Selena，不编译）：
+
+- Selena：`C:\BYD_OVS_CB\ip_dc\build\ROS_PER_SIT_RPM_FCT_RECR\dc_tools\selena\core\RelWithDebInfo`
+- Runtime：`C:\tools\Runtime_For_byd_ovrs25_bl16rc71_al2.xml`
+- MatFilter：`C:\BYD_OVS_CB\reco_fw\tools\selena\matlab_transport_cfg\matlab_swx_.mdf.mat.filter`
+- 数据：`D:\data\byd\CRGVBYDPF-13086\0729\Gen5_2026-07-28_15-08_0115.MF4`
+
+实际任务：`job_3b81c31a37e0`
+
+- Linux 服务：`http://10.190.171.44:8877`，Windows-full Connector 在线，Cluster 能力在线。
+- 阶段：`resolve_spec`、`environment_check`、`prepare_data`、`preflight`、`run_simulation`、`collect_results`、`finalize_manifest` 全部 `succeeded`；已有 Selena 的 `prepare_source/build_selena/register_artifact` 按设计跳过。
+- 结果：1 个输出 MF4，大小 `720173848` 字节；Linux Manifest `status=succeeded`。
+- Manifest：`result_ref=result:sha256:0a2f52503a5e644e4c4124690b015d1308a4dcdad3555f3e82398bdbb4d50e70`。
+- 诊断：`outcome=succeeded`、`artifacts_available=true`、无 `result_reference_unavailable` 警告。
+- 下载验收：下载压缩包 `34455237` 字节，下载 SHA-256 与目录记录一致：`sha256:58512e9263cd31aa741d77ce22d598d65c71f64b6796a3602d5ddf1bd93b4dfe`。
+
+上一条 `job_e031e56eae35` 曾经仿真成功但结果只留在 Windows Agent，诊断为 `result_reference_unavailable`；该问题已由本轮结果上传链路修复，不能再把“Manifest 成功”误报为“用户可以下载”。
+
+### 部署记录
+
+- 当前 Linux systemd 用户服务工作目录：`/home/hoz2wx/radar-sim-v1-result-upload`。
+- 服务单元：`radar-sim-v1.service`，地址 `0.0.0.0:8877`，当前开发验证使用 `--insecure-no-auth`。
+- Windows Connector 安装目录：`C:\Users\HOZ2WX\AppData\Local\radar-sim\app`；已更新 Agent 和 SDK 后重启计划任务 `RadarSimConnector-HOZ2WX`。
+- 旧发布目录 `/home/hoz2wx/radar-sim-v1-56ad24a` 保留，便于回滚；新目录是独立复制，不依赖原目录硬链接。
+
+### 验证记录
+
+- 适配层回归：`98 passed`（API、SDK、现有 Selena 解析、Windows local flow、结果上传）。
+- 新增结果上传测试：`tests/test_result_upload_service.py`，覆盖分块上传、中心登记、SDK 查询和下载校验。
+- 目前不以 Selena 内部日志内容作为本项目验收条件；验收条件是外围阶段成功、结果 Manifest 成功、结果可下载且校验和一致。
+
+### MCP / Skill 预留约束
+
+- MCP/Skill 只调用 `RadarSimClient` 的 YAML 导入、校验、提交、事件查询、诊断和结果下载接口。
+- 不暴露 Agent ID、内部项目名、Runtime Bundle 内部路径、Windows 服务 URL 或令牌作为业务参数。
+- AI 后续只根据稳定的 `job-diagnosis`、阶段状态和 `result_ref` 做外围排障；`run_simulation` 内部失败原样归属于 Selena 运行结果，不在适配层推导业务结论。

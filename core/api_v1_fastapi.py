@@ -81,6 +81,29 @@ class CreateRuntimeBundleUploadRequest(CreateArtifactUploadRequest):
     pass
 
 
+class CreateResultUploadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_ref: str = Field(min_length=1, max_length=256)
+    archive_size: int = Field(gt=0)
+    archive_checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class ResultFileUploadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relative_path: str = Field(min_length=1, max_length=1024)
+    size: int = Field(ge=0)
+    checksum: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class FinalizeResultUploadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[ResultFileUploadRequest] = Field(min_length=1)
+    retain_until: float = Field(default=0, ge=0)
+
+
 class DatasetUploadFileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -727,6 +750,45 @@ def create_app(
     @app.post("/api/v1/runtime-bundle-uploads/{session_id}/finalize")
     def finalize_runtime_bundle_upload(request: Request, session_id: str):
         return service.finalize_runtime_bundle_upload(owner(request), session_id)
+
+    @app.post("/api/v1/result-uploads", status_code=201)
+    def create_result_upload(request: Request, body: CreateResultUploadRequest):
+        return service.create_result_upload(
+            user_or_agent_owner(request),
+            run_ref=body.run_ref,
+            archive_size=body.archive_size,
+            archive_checksum=body.archive_checksum,
+        )
+
+    @app.get("/api/v1/result-uploads/{session_id}")
+    def get_result_upload(request: Request, session_id: str):
+        return service.get_result_upload(user_or_agent_owner(request), session_id)
+
+    @app.patch("/api/v1/result-uploads/{session_id}")
+    async def append_result_upload(
+        request: Request,
+        session_id: str,
+        upload_offset: int = Header(alias="Upload-Offset", ge=0),
+    ):
+        return service.append_result_upload(
+            user_or_agent_owner(request),
+            session_id,
+            offset=upload_offset,
+            data=await request.body(),
+        )
+
+    @app.post("/api/v1/result-uploads/{session_id}/finalize")
+    def finalize_result_upload(
+        request: Request,
+        session_id: str,
+        body: FinalizeResultUploadRequest,
+    ):
+        return service.finalize_result_upload(
+            user_or_agent_owner(request),
+            session_id,
+            files=[item.model_dump() for item in body.files],
+            retain_until=body.retain_until,
+        )
 
     @app.post("/api/v1/dataset-uploads", status_code=201)
     def create_dataset_upload(request: Request, body: CreateDatasetUploadRequest):

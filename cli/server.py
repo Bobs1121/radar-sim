@@ -247,6 +247,7 @@ def _run_serve_v1(args) -> int:
         from core.runtime_bundle_upload_service import RuntimeBundleUploadService, trusted_runtime_bundle_evidence_from_control
         from core.config_assets import ConfigAssetStore
         from core.local_results import default_result_catalog
+        from core.result_upload_service import ResultUploadService
         uvicorn = importlib.import_module("uvicorn")
     except ImportError as exc:
         print(
@@ -377,6 +378,19 @@ def _run_serve_v1(args) -> int:
     result_catalog = default_result_catalog(
         extra_allowed_source_roots=cluster_result_roots()
     )
+    # Windows-full local runs create their immutable ZIP on the Agent. Keep a
+    # resumable upload store beside the central result catalog so Web/SDK can
+    # download the same result regardless of where Selena executed.
+    result_upload_store = ArtifactStore(
+        root=result_catalog.storage_root,
+        db_path=result_catalog.storage_root / ".store" / "result_uploads.db",
+        object_filename="result.zip",
+        storage_ref_prefix="shared://results/",
+    )
+    result_upload_service = ResultUploadService(result_upload_store, result_catalog)
+
+    def result_upload_service_factory(_owner: str) -> ResultUploadService:
+        return result_upload_service
 
     api_service = ApiV1Service(
         control_service_factory=factory,
@@ -387,6 +401,7 @@ def _run_serve_v1(args) -> int:
         runtime_bundle_upload_service_factory=runtime_bundle_upload_service_factory,
         config_asset_store=config_asset_store,
         result_catalog=result_catalog,
+        result_upload_service_factory=result_upload_service_factory,
         project_names_provider=lambda: __import__("core.config", fromlist=["list_projects"]).list_projects(),
     )
     app_kwargs = {"api_service": api_service}

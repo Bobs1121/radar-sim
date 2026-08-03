@@ -13,6 +13,7 @@ import math
 import os
 import re
 import sqlite3
+import shutil
 import stat
 import tempfile
 import threading
@@ -21,7 +22,7 @@ import unicodedata
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from core.user import normalize_user
 
@@ -179,6 +180,11 @@ class ResultCatalog:
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
+    @property
+    def storage_root(self) -> Path:
+        """Private server-side root used for immutable result archives."""
+        return self._storage_root
+
     def publish(
         self,
         *,
@@ -234,6 +240,87 @@ class ResultCatalog:
             return self.get(result_ref, owner=owner, now=created_at)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def import_archive(
+        self,
+        *,
+        owner: str,
+        run_ref: str,
+        archive_path: str | Path,
+        files: Iterable[ResultFileRef | Mapping[str, Any]],
+        archive_checksum: str,
+        archive_size: int,
+        retain_until: float = 0,
+    ) -> ResultRef:
+        """Register an archive uploaded by a trusted execution Agent.
+
+        Local Windows execution creates the deterministic archive on the
+        Windows node.  The control plane receives that archive through the
+        resumable result-upload API and registers it here without attempting to
+        interpret Selena output.  The ZIP entries are checked against the
+        public file evidence so the central download remains immutable.
+        """
+        owner = normalize_user(owner)
+        run_ref = str(run_ref or "").strip()
+        if not _RUN_REF_RE.fullmatch(run_ref):
+            raise ResultCatalogError("result run reference is invalid")
+        evidence: list[ResultFileRef] = []
+        for item in files or ():
+            if isinstance(item, ResultFileRef):
+                evidence.append(item)
+            elif isinstance(item, Mapping):
+                evidence.append(
+                    ResultFileRef(
+                        relative_path=str(item.get("relative_path") or ""),
+                        size=int(item.get("size") or 0),
+                        checksum=str(item.get("checksum") or ""),
+                    )
+                )
+            else:
+                raise ResultCatalogError("result file evidence is invalid")
+        evidence_tuple = tuple(evidence)
+        if not evidence_tuple:
+            raise ResultCatalogError("result must contain at least one file")
+        if len({item.relative_path.casefold() for item in evidence_tuple}) != len(evidence_tuple):
+            raise ResultCatalogError("result file paths must be case-insensitively unique")
+        checksum = str(archive_checksum or "").strip().lower()
+        size = int(archive_size)
+        if not _CHECKSUM_RE.fullmatch(checksum) or size <= 0:
+            raise ResultCatalogError("result archive evidence is invalid")
+        retention = float(retain_until)
+        if not math.isfinite(retention) or retention < 0:
+            raise ResultCatalogError("result retention is invalid")
+
+        source = Path(archive_path).expanduser()
+        _ensure_contained(self._storage_root, source)
+        _verify_archive_file(source, checksum, size)
+        _verify_archive_entries(source, evidence_tuple)
+
+        owner_key = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:24]
+        owner_root = self._storage_root / "content" / owner_key
+        owner_root.mkdir(parents=True, exist_ok=True)
+        canonical = owner_root / (checksum.removeprefix("sha256:") + ".zip")
+        if canonical.exists():
+            _verify_archive_file(canonical, checksum, size)
+        elif source.resolve() != canonical.resolve():
+            # Keep the upload-store copy available for idempotent retries. A
+            # later retention cleanup can remove duplicate upload copies.
+            shutil.copyfile(source, canonical)
+
+        digest_payload = "\0".join((owner, run_ref, checksum))
+        result_ref = "result:sha256:" + hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()
+        created_at = float(self._now_fn())
+        candidate = ResultRef(
+            ref=result_ref,
+            run_ref=run_ref,
+            files=tuple(sorted(evidence_tuple, key=lambda item: (item.relative_path.casefold(), item.relative_path))),
+            archive_checksum=checksum,
+            archive_size=size,
+            created_at=created_at,
+            retain_until=retention,
+        )
+        self._register(candidate, owner=owner, archive=canonical if canonical.exists() else source)
+        return self.get(result_ref, owner=owner, now=created_at)
 
     def get(self, result_ref: str, *, owner: str, now: float | None = None) -> ResultRef:
         row = self._row(result_ref, owner=owner)
@@ -497,6 +584,37 @@ def _source_signature(details: os.stat_result) -> tuple[int, int, int, int, int]
 def _verify_archive_file(path: Path, checksum: str, size: int) -> None:
     if path.is_symlink() or not path.is_file() or path.stat().st_size != size or _sha256_file(path) != checksum:
         raise ResultCatalogError("result archive content is unavailable")
+
+
+def _verify_archive_entries(path: Path, files: tuple[ResultFileRef, ...]) -> None:
+    """Verify ZIP names and streamed per-file evidence without extraction."""
+    expected = {item.relative_path.casefold(): item for item in files}
+    try:
+        with zipfile.ZipFile(path, "r", allowZip64=True) as archive:
+            infos = list(archive.infolist())
+            actual: dict[str, zipfile.ZipInfo] = {}
+            for info in infos:
+                if info.is_dir():
+                    raise ResultCatalogError("result archive contains a directory entry")
+                relative = _validate_relative_path(info.filename)
+                key = relative.casefold()
+                if key in actual:
+                    raise ResultCatalogError("result archive contains duplicate file entries")
+                actual[key] = info
+            if set(actual) != set(expected):
+                raise ResultCatalogError("result archive file evidence does not match archive entries")
+            for key, evidence in expected.items():
+                info = actual[key]
+                if int(info.file_size) != int(evidence.size):
+                    raise ResultCatalogError("result archive file size evidence does not match")
+                digest = hashlib.sha256()
+                with archive.open(info, "r") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                if "sha256:" + digest.hexdigest() != evidence.checksum:
+                    raise ResultCatalogError("result archive file checksum evidence does not match")
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+        raise ResultCatalogError("result archive content is invalid") from exc
 
 
 def _sha256_file(path: Path) -> str:

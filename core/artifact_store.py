@@ -318,6 +318,7 @@ class ArtifactStore:
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         else:
             self._db_path = str(db_path)
+            Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._init_schema()
 
@@ -803,6 +804,16 @@ class ArtifactStore:
                 }
             finally:
                 conn.close()
+
+    def finalized_location(self, session_id: str, *, owner: str = "") -> Path:
+        """Return a private physical path for a finalized upload session."""
+        session = self.get_session(session_id, owner=owner)
+        if session.status != "finalized":
+            raise ArtifactSessionError("upload session is not finalized")
+        target = _logical_to_physical(self._root, session.project, session.logical_path)
+        if not target.is_file() or target.is_symlink():
+            raise ArtifactSessionError("finalized upload content is unavailable")
+        return target
 
     def resolve_location(self, storage_ref: str, *, verify_checksum: bool = True) -> Path:
         """Resolve a finalized logical ref to a private, contained file path.
