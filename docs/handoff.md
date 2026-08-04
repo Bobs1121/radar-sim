@@ -15,7 +15,7 @@ description: 项目现状、架构、已知问题和后续 TODO
 - 纯净安装黑盒使用独立身份 `fresh-user-20260804`：从 Linux Web 一键安装 light 连接组件，提交已有 Selena 文件夹、本地 Runtime、本地 MatFilter 和一条新的本地 MF4，任务 `job_b38ca58d9ddf` 全流程成功。`resolve_spec` 打包 Selena/DLL/Runtime，`prepare_data` 上传 `443266984` bytes MF4，随后 Agent 可断开；Cluster Run `cluster-run:b56be79eed5b454892116ea8c47bbe93` 成功，结果 `result:sha256:7257c578a8143f06acf118b97a403103155ca8935bf1f299fc755a9f3da6d9e3`，1/1 数据成功。
 - 此次暴露的产品问题不是后端不会等待 Agent，而是 Web 在提交前把 `windows_path_access_required` 仅显示成普通配置错误；任务未创建时用户看不到任务详情中的“一键连接本机”。提交 `85dabf1` 在新建任务页根据执行目标、Selena 来源和 `C:/D:` 路径主动显示“一键连接本机”，已部署到 `http://10.190.171.44:8877/`。
 - 右上角状态已拆开：`Linux 服务已连接` 只表示浏览器可访问控制面；另行显示 `本机未连接`、`本机正在自动重连` 或 `本机已连接`，不再把服务连接误解成 Windows Agent。
-- 回归：`node --check radar_sim_web/static/app.js` 通过；`tests/test_api_v1_fastapi.py + tests/test_api_v1_service.py` 共 `74 passed`。
+- 回归：`node --check radar_sim_web/static/app.js` 通过；`tests/test_api_v1_fastapi.py + tests/test_api_v1_service.py` 共 `74 passed`；SDK 全文件 `tests/test_sdk.py` 为 `25 passed`，其中包含按当前 SDK 用户 scope 下载一次性 Windows 连接程序的验证。
 - 部署后复验：`GET /api/v1/health` 为 `ok=true`；`hoz2wx` 任务数为 `0`；`windows_light/windows_full` 均 `available=false, configured_count=0`，Cluster 两个角色均在线。无 Agent 校验相同本地路径配置稳定返回 `windows_path_access_required`，不会创建脏任务。
 
 ### 2026-08-04 Light Agent 上传黑盒验证与日志修复（最新）
