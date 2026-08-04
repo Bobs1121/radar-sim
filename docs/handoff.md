@@ -17,6 +17,14 @@ description: 项目现状、架构、已知问题和后续 TODO
 - 已验证一次性安装：自动检查 Python 3.12.10 和 VS2015 (v140)，不安装 VS；注册 `RadarSimConnector-HOZ2WX` 登录自启/断线重连。黑盒验证完成后已停止 Agent、删除计划任务和程序/凭证，保留 `%LOCALAPPDATA%\\radar-sim\\data`（62 个文件）。
 - 当前未宣称“本地 MatFilter + 未登记 Selena 文件夹”的完整仿真成功；该路径的 `resolve_spec` 曾长时间无可见进度并已取消，新增阶段日志用于后续定位，不能把它归因于 Cluster 仿真内核。
 
+### 2026-08-04 任务中心加载优化
+
+- 问题：任务中心默认请求 `limit=100`，服务端又为每条记录展开完整 Stage、ResolvedSpec 和 Runtime Bundle。当前用户库有 75 条历史任务时，响应约 `1 MB`，请求耗时约 `15 s`，页面长时间停在“正在加载任务”。
+- 修复提交：`729c819` 将无状态筛选的服务端数据库查询限制为请求页大小；`b60c488` 将 Web 任务中心限制为最近 `20` 条，并与能力快照并行请求。
+- 当前线上版本：`b60c488`，服务 `radar-sim-v1.service` active；日志已确认浏览器请求 `/api/v1/jobs?limit=20` 并返回 `200`。历史任务详情仍通过选择单条任务后调用 `/api/v1/jobs/{job_id}` 获取，不影响 SDK 详情接口。
+- 访问地址必须使用 Linux 服务：`http://10.190.171.44:8877/`。`127.0.0.1:8878` 是本机服务，不代表 Linux 控制面；如果浏览器仍停在旧地址或缓存旧脚本，需要重新打开 Linux 地址并刷新页面。
+- 当前无认证开发服务按 Linux 进程用户隔离任务，默认用户为 `hoz2wx`；SDK 使用 `X-Rsim-User` 创建的其他用户任务不会在默认身份的 Web 列表中出现。正式多用户发布前必须接入用户身份/令牌映射，不能依赖服务器 OS 用户作为最终产品身份。
+
 ### 2026-08-04 无 Windows Agent 的 Cluster 黑盒验证
 
 - 已在验证机卸载 Windows 连接组件：移除 `RadarSimConnector-HOZ2WX` 计划任务、监督进程、残留 Agent 进程、`app` 程序目录和本地凭证；用户代码仓、Selena、Runtime 和 `%LOCALAPPDATA%\\radar-sim\\data` 保留。
