@@ -66,6 +66,8 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "visual_studio_detected" in bootstrap
     assert "authentication_required" in bootstrap
     assert "no token is stored" in bootstrap
+    assert "radar_sim_source.pth" in bootstrap
+    assert "no pip or package-index access is required" in bootstrap
     assert "RegisterStartup" in bootstrap
     assert "New-ScheduledTaskAction" in bootstrap
     assert "New-ScheduledTaskTrigger -AtLogOn" in bootstrap

@@ -127,13 +127,34 @@ if (-not (Test-Path $VenvPy)) {
     & $Python -m venv $VenvDir
     if ($LASTEXITCODE -ne 0) { Fail "Failed to create .venv." }
 }
-if (-not $SkipDeps) {
+if ($Mode -eq "light") {
+    # A light Agent only polls the control plane and performs local path
+    # discovery, hashing and resumable uploads.  Those code paths use the
+    # Python standard library; requiring ``pip install -e .[sdk]`` here made
+    # a new user depend on a corporate package index (and its credentials)
+    # even though no third-party module was needed.  Put the downloaded
+    # source tree on the venv import path instead.  This also keeps one-click
+    # installation usable on an offline Windows workstation.
+    $sitePackages = (& $VenvPy -c "import sysconfig; print(sysconfig.get_paths()['purelib'])").Trim()
+    if (-not $sitePackages -or -not (Test-Path $sitePackages)) {
+        Fail "Could not locate the light Agent Python site-packages directory."
+    }
+    $sourcePathFile = Join-Path $sitePackages "radar_sim_source.pth"
+    Set-Content -LiteralPath $sourcePathFile -Value $RepoRoot -Encoding ASCII
+    & $VenvPy -c "import cli.agent, core.agent_policy, core.progress_parser" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Fail "The light Agent source package is incomplete. Reconnect this PC from the Linux Web entry."
+    }
+    Write-Ok "light Agent uses its bundled standard-library path; no pip or package-index access is required."
+} elseif (-not $SkipDeps) {
     & $VenvPy -m pip install --quiet --upgrade pip
-    $extra = if ($Mode -eq "full") { ".[v5,full]" } else { ".[sdk]" }
+    $extra = ".[v5,full]"
     & $VenvPy -m pip install --quiet -e $extra
-    if ($LASTEXITCODE -ne 0) { Fail "Failed to install $Mode dependencies." }
+    if ($LASTEXITCODE -ne 0) { Fail "Failed to install $Mode dependencies. Check the configured Python package index or install the required packages before retrying." }
+    Write-Ok "$Mode Python environment is ready."
+} else {
+    Write-Warn "$Mode dependency installation skipped by the operator."
 }
-Write-Ok "$Mode Python environment is ready."
 
 Write-Step "3/5 Persist the one-time connection configuration"
 New-Item -ItemType Directory -Force -Path $InstallRoot, $DataRoot | Out-Null
