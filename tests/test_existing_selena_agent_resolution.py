@@ -127,6 +127,35 @@ def test_configured_one_click_agent_does_not_claim_unmatched_existing_folder(tmp
     assert job["waiting"]["connection_state"] == "connected_but_path_unavailable"
 
 
+def test_owner_scoped_one_click_agent_reconfigures_new_existing_folder(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config, _binary, _runtime, _data = _existing_config(tmp_path, target="cluster")
+    config["selena"]["existing_path"] = "D:/alice/new-selena"
+    control.register_agent(
+        "alice-windows",
+        agent_id="alice-windows-1",
+        capabilities=list(DEFAULT_LIGHT_CAPABILITIES),
+        metadata={
+            "user": "alice",
+            "node_kind": "windows_agent",
+            "windows_mode": "light",
+            "auto_configure": True,
+            "workspace_bindings": [],
+            "asset_bindings": [],
+            # The Agent has already used another local data root.  A new
+            # project path for the same owner must not require reinstalling it.
+            "data_bindings": [{"id": "data-root:sha256:" + "a" * 24, "healthy": True}],
+        },
+    )
+
+    api.submit_user_run("alice", config_payload=config)
+    bound = control.bind_pending_run_config_resolution("alice-windows-1")
+
+    assert bound is not None
+    assert bound["payload"]["existing_path"] == "D:/alice/new-selena"
+
+
 def test_agent_uploads_local_simulation_assets_without_changing_user_config(tmp_path):
     mat_filter = tmp_path / "signals.filter"
     adapter = tmp_path / "adapter.txt"

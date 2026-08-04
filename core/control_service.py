@@ -789,11 +789,10 @@ class ControlService:
     def bind_pending_run_config_resolution(self, agent_id: str) -> Optional[dict[str, Any]]:
         """Bind one project-free resolver Stage by opaque workspace path id.
 
-        A one-click Agent may authorize its first local path, but only when it
-        has no existing healthy bindings.  Once a machine has bindings, it is
-        no longer a safe catch-all for arbitrary Windows paths: otherwise an
-        unrelated online Agent can claim a new user's job and fail immediately
-        when the submitted folder is not present on that machine.
+        A one-click Agent may authorize its first local path.  Once it has
+        bindings, it may also auto-configure a new path for the same owner;
+        the owner-scoped control database and registration identity prevent an
+        unrelated user's job from becoming a catch-all for this machine.
         """
         from core.agent_bindings import make_workspace_path_id
         from core.agent_asset_bindings import candidate_asset_binding_ids
@@ -832,7 +831,7 @@ class ControlService:
                 has_existing_bindings = bool(path_ids or asset_ids or data_ids)
                 rows = conn.execute(
                     """
-                    SELECT t.task_id,j.spec_json,j.resolved_spec_json
+                    SELECT t.task_id,j.spec_json,j.resolved_spec_json,j.owner
                     FROM tasks t
                     JOIN jobs j ON j.job_id=t.job_id
                     WHERE t.stage_type='resolve_spec'
@@ -848,6 +847,13 @@ class ControlService:
                 fallback: tuple[str, dict[str, Any]] | None = None
                 for row in rows:
                     spec = self._loads(row["spec_json"])
+                    job_owner = str(row["owner"] or "").strip().casefold()
+                    registered_owner = str(metadata.get("user") or "").strip().casefold()
+                    same_owner = bool(
+                        registered_owner
+                        and job_owner
+                        and registered_owner == job_owner
+                    )
                     selena = dict(spec.get("selena") or {})
                     resolved = self._loads(row["resolved_spec_json"])
                     selected_target = str(
@@ -861,9 +867,9 @@ class ControlService:
                     if source == "existing":
                         # A Windows-local path can only be validated on the
                         # Agent. One-click Agents explicitly opt into first
-                        # task path configuration, but an already configured
-                        # machine must not become a catch-all for another
-                        # user's local folders.
+                        # task path configuration; a later path is accepted
+                        # only when the registration belongs to this job's
+                        # owner (the control DB is owner-scoped as well).
                         if not auto_configure:
                             continue
                         payload = (
@@ -895,7 +901,10 @@ class ControlService:
                         ):
                             matched = payload
                             break
-                        if not has_existing_bindings and fallback is None:
+                        if (
+                            (not has_existing_bindings or same_owner)
+                            and fallback is None
+                        ):
                             fallback = payload
                         continue
                     if source != "build":
@@ -924,7 +933,11 @@ class ControlService:
                     if workspace_matches and asset_matches:
                         matched = payload
                         break
-                    if auto_configure and not has_existing_bindings and fallback is None:
+                    if (
+                        auto_configure
+                        and (not has_existing_bindings or same_owner)
+                        and fallback is None
+                    ):
                         fallback = payload
                 candidate = matched or fallback
             finally:
