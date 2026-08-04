@@ -926,11 +926,19 @@ class ApiV1Service:
         control = self._control(owner)
         safe_limit = max(1, min(int(limit or 50), 100))
         requested_status = str(status or "").strip()
+        # For the unfiltered task-center view the requested page size is also
+        # the database query limit.  The previous implementation always read
+        # 100 complete jobs, expanded every task and resolved Runtime Bundle,
+        # then discarded all but ``safe_limit``.  On a shared service this
+        # made the Web page appear stuck at "正在加载任务" while it serialized
+        # megabytes of historical job data.  Status filters still scan the
+        # larger window because needs_input is derived from Stage state rather
+        # than the raw job status.
         summaries = control.list_jobs(
             # v1 status can be derived from Stage state (for example a queued
             # control job with a blocked Stage is ``needs_input``), so filtering
             # the raw control status would return incorrect task-center pages.
-            limit=100,
+            limit=safe_limit if not requested_status else 100,
             owner=owner,
             status="",
             job_type_prefix="simulation.",

@@ -1,6 +1,11 @@
 "use strict";
 
 const API = "/api/v1";
+// The task center is a live overview, not the job-detail archive.  Fetch a
+// bounded recent page here; selecting a row still loads the complete job from
+// GET /jobs/{job_id}.  This prevents old Runtime Bundle/resolved-spec payloads
+// from blocking the first paint when a shared service has many historical jobs.
+const TASK_CENTER_PAGE_SIZE = 20;
 const state = {
   view: sessionStorage.getItem("rsimView") || "create",
   jobs: [],
@@ -538,7 +543,7 @@ async function loadJobs() {
   try {
     await refreshCapabilities().catch(() => state.capabilities);
     const filter = byId("statusFilter").value;
-    const page = await api(`/jobs?limit=100${filter ? `&status=${encodeURIComponent(filter)}` : ""}`);
+    const page = await api(`/jobs?limit=${TASK_CENTER_PAGE_SIZE}${filter ? `&status=${encodeURIComponent(filter)}` : ""}`);
     const jobs = page.jobs || [];
     const signature = JSON.stringify(jobs.map((job) => [job.id, job.status, job.progress, job.current_stage]));
     state.jobs = jobs;
