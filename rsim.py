@@ -118,7 +118,24 @@ def _register_cli_modules(subparsers):
     if not cli_dir.exists():
         return
 
-    for py_file in sorted(cli_dir.glob("*.py")):
+    # The Windows light Agent is deliberately standard-library-only.  Do not
+    # import unrelated interactive CLI modules (build/cluster/web/config) just
+    # to discover their subcommands: those modules pull optional PyYAML and
+    # other full-client dependencies and used to print a wall of warnings every
+    # time the background Agent reconnected.  The Agent command is the only
+    # parser surface needed in that process; full installs still register the
+    # complete CLI below.
+    requested = next(
+        (
+            str(arg).strip().lower()
+            for arg in sys.argv[1:]
+            if str(arg).strip().lower() in {"agent", "server", "web", "build", "run", "cluster"}
+        ),
+        "",
+    )
+    candidates = [cli_dir / "agent.py"] if requested == "agent" else sorted(cli_dir.glob("*.py"))
+
+    for py_file in candidates:
         if py_file.name.startswith("_"):
             continue
 

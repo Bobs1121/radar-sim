@@ -1924,6 +1924,16 @@ class ApiV1Service:
             }
             has_bindings = bool(workspace_ids or asset_ids or data_ids)
             auto_configure = metadata.get("auto_configure") is True
+            # A one-click Agent is owner-scoped.  Once it has successfully
+            # configured one workspace/data root, the same owner may submit a
+            # different local project or recording without reinstalling or
+            # manually registering another binding.  The Agent still cannot
+            # claim another owner's job because the metadata owner check above
+            # is enforced before this branch.  Existing bindings remain useful
+            # for path-specific matching, while auto-configuration is the
+            # safe fallback for this owner's new local paths.
+            if auto_configure and owner_token and registered_user == owner_token:
+                return True
             if auto_configure and not has_bindings:
                 return True
             # Legacy/manual Agents predate the binding advertisement.  Keep
