@@ -5,6 +5,44 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 # radar-sim 项目 Handoff
 
+## 0. 2026-08-04 当前发布交接（优先阅读）
+
+### 本轮目标与边界
+
+- 当前首要产品是一个 Linux 控制面：Web 与 Python SDK 共用 `/api/v1`，接收同一份 `UserRunConfig 2.0` YAML。
+- Linux 只做配置解析、路径/资产准备、Stage 编排、Cluster 调度、日志和结果归档；不在 Linux 编译 Selena，也不执行本地 Selena 仿真。
+- `source=existing + target=cluster` 且 Selena、Runtime、MatFilter、数据都在 Linux/Cluster 可访问位置时，**不需要 Windows Agent，也不需要 VS/编译依赖**。
+- 如果这些输入仍在 Windows 本地，只需要一次性安装并持久运行 light 文件访问/上传连接；只有 `source=build` 或 `target=local` 才需要对应的编译/full 能力。
+
+### 2026-08-04 新用户失败复盘与修复
+
+- 失败任务：`job_63b0b7c8844c`、`job_44dae55ce9d6`。
+- 失败 Stage：`resolve_spec`；错误：`existing Selena folder does not exist or is not a directory`。
+- 根因：新用户没有 Windows Agent，但共享控制面看见旧的 `agent-HOZ2WX-WX8-C-0001A`，旧逻辑允许已绑定 Agent 做 first-use fallback，导致陌生 Windows 路径被错误领取；不是 Selena 或 Cluster 内部仿真错误。
+- 修复提交：`9fe13d1`（路径绑定与用户 scope）+ `2d9614e`（Cluster 路由的 full Agent 防错）；之后追加了 Windows 能力按用户 scope 过滤和更明确的无 Agent 提示。
+- 当前防呆：匹配不到本次路径时任务在提交前/`resolve_spec` 阶段保持 `windows_path_access_required`，不再让错误路径进入 Agent 后才失败；共享 Cluster 节点仍可被所有用户调度。
+
+### Agent 一次配置规则
+
+- 一键安装将服务地址、用户 scope、部署模式和受限凭证持久化到 Windows 当前用户的 `%LOCALAPPDATA%\\radar-sim`，并注册登录自启/断线重连；后续 Web/SDK 任务不重复安装或填写 Agent。
+- 换电脑、换 Linux 服务地址、切换 full/light 或卸载后才重新连接；Visual Studio 始终由用户自行安装，Agent 只检测/提示并做脚本参数适配。
+- SDK 调用方在 Windows 上对已有 Selena + Cluster 可直接通过 `RadarSimClient` 上传本地目录、Runtime、资产和数据，不强制安装 Agent；SDK 调用方在 Linux 上只能使用共享/Linux 可读路径，不能读取 Windows `C:/`、`D:/`。
+
+### 代码、测试与线上证据
+
+- 重点代码：`core/api_v1.py`、`core/control_service.py`、`radar_sim_web/static/app.js`、`scripts/bootstrap.ps1`、`scripts/start_windows.ps1`。
+- 回归测试：`python -m pytest -q tests/test_api_v1_service.py tests/test_existing_selena_agent_resolution.py tests/test_api_v1_fastapi.py` → `82 passed, 1 warning`；`node --check radar_sim_web/static/app.js` 通过。
+- 线上服务：`http://10.190.171.44:8877`，systemd user service `radar-sim-v1.service`，当前单一监听进程，`GET /api/v1/health` 返回 200。
+- 新用户无 Agent 的实际验证：能力快照只显示 Cluster 可用、不显示他人的 Windows Agent；提交含 Windows 本地路径的 `existing + cluster` 配置返回 `windows_path_access_required`，并明确“不需要 Visual Studio 或编译依赖，只需要文件读取/上传连接”。
+- 线上发布以 `origin/main` 当前提交 `2d9614e` 为基线；未把用户的 `output/`、`.claude/` 等未跟踪诊断产物纳入提交。
+
+### 后续不得偏移
+
+1. 不要把 Windows Agent 当作所有用户的必需项；先判断路径是否已在 Cluster/Linux 可达。
+2. 不要让能力快照、旧 Agent 或项目名替代本次 YAML 的路径匹配。
+3. 不要把 VS、项目依赖、Agent ID、Token、Runtime Bundle 引用暴露到用户 YAML。
+4. 不要修改 Selena/Cluster 仿真内部判定；外围只负责正确接入、调度、传输、状态和结果真实性。
+
 ## 1. 项目定位
 
 radar-sim（命令行 `rsim`）是一个**雷达仿真辅助与数据分析工具**，面向 BYD 雷达项目的研发流程，覆盖：

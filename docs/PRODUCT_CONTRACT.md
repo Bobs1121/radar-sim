@@ -80,7 +80,9 @@ simulation:
 | Linux + Windows light Agent | Windows 本地编译、完整产物/必要数据上传；Linux 后续调度 Cluster | light 首版不支持本地仿真，不承担 Cluster 运行期 |
 | 完全不部署 / 没有 Windows | 在 Web/SDK 填写 Linux/共享存储可达的已有 Selena 文件夹，或从 Web/SDK 选择并上传；Linux 调度 Cluster | 不支持 Selena 编译，不支持本地仿真 |
 
-Windows Agent 安装必须一键完成。Visual Studio 由用户自行安装，Agent 负责识别可用 C++ toolset、校验并对 Selena 脚本的 VS 参数做最小适配，不代替用户安装 VS。其余可自动发现且安全的环境在第一次任务中自动配置并持久复用；环境缺失必须在任务执行前给出明确检查结果和处理动作。
+Windows Agent 安装必须一键完成，并且是当前 Windows 用户的一次性持久连接：服务地址、用户范围、部署模式和受限凭证写入本机安装目录，登录自启、断线重连和后续任务复用都由组件完成，不要求用户每次任务重新配置。只有换电脑、换 Linux 服务地址、切换 full/light 或主动卸载时才重新安装。Visual Studio 由用户自行安装，Agent 负责识别可用 C++ toolset、校验并对 Selena 脚本的 VS 参数做最小适配，不代替用户安装 VS。其余可自动发现且安全的环境在第一次任务中自动配置并持久复用；环境缺失必须在任务执行前给出明确检查结果和处理动作。
+
+Agent 不是所有用户的必需组件：`source=existing + target=cluster` 且 Selena、Runtime、MatFilter、数据均位于 Linux/Cluster 可访问位置时，Linux Web 和 SDK 均可直接提交；只有输入仍在 Windows 本地，或用户要求 Windows 编译/本地仿真时，才需要对应的 light/full 连接。SDK 调用方在 Windows 上运行时可以直接上传已有 Selena 目录和数据；SDK 调用方在 Linux 上运行时不能读取 Windows 本地盘，应改用共享路径或先连接实际存放文件的 Windows 电脑。
 
 ## 5. 任务编排与可视化验收
 

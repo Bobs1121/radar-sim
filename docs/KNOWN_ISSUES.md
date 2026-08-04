@@ -11,6 +11,7 @@
 - 只有“没有任何健康 workspace/data/asset binding 的全新 one-click Agent”才允许 first-use fallback；已有绑定的 Agent 必须命中本次任务的 opaque path/asset binding，不能抢占陌生路径。
 - Web/API 在 `resolve_spec` 阶段发现“Windows 在线但没有路径匹配”时，返回 `windows_path_access_required`，任务保持等待，不再伪装为可执行或直接失败；提示用户在存放文件的 Windows 电脑一键连接，或改用 Cluster 可访问路径。
 - 无鉴权测试服务的浏览器自动生成不可见的 `X-Rsim-User` scope；一键连接脚本把同一 scope 传给 Windows Agent，避免多个浏览器/用户共用默认 `hoz2wx` 数据库。
+- Windows 能力快照现在也按 Agent 注册的用户 scope 过滤；新用户不会因为共享控制库中存在别人的 Windows 电脑而误显示“本机已连接”。Linux executor 和 Cluster gateway 仍是共享调度资源。
 - 认证部署仍以 Bearer 用户身份为准；浏览器 scope 不出现在 YAML、SDK 业务配置或用户界面。
 
 **回归证据**：相关 API/Agent 测试通过；`node --check radar_sim_web/static/app.js` 通过。仿真内部逻辑未改动。
@@ -133,4 +134,3 @@ Linux UFW 需放行端口(8080 已放行;8877 需 `sudo ufw allow 8877/tcp`)。
 - **server create-job project 丢失 bug**：`rsim server create-job --project ovrs25` 和 `--payload-json '{"project":"x"}'` 的 project 曾被空 CLI 默认值覆盖，导致跨机投递无法传 project（违反「跨机投递优先传 project/dataset」约束）。`cli/server.py:_run_create_job` 改为 CLI 字段非空才覆盖 payload_json。回归测试 `tests/test_server_pyz.py::test_create_job_project_flag_lands_in_payload` / `test_create_job_payload_json_project_survives`。详见 HANDOFF.md。
 - **KI-3.1 server CLI UTF-8 打印**：见上。
 - **P1 可观测性 API**：`list_agents` 全链路（service/HTTP/CLI/web/remote client）补齐，runbook agent 注册验证步骤可用。见 DEVELOPMENT_PLAN.md P1。
-

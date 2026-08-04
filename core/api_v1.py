@@ -247,19 +247,32 @@ class ApiV1Service:
                 config.simulation.mat_filter,
             )
         )
-        if local_paths and has_windows_build:
+        compatible_local_agent = False
+        if local_paths:
             probe_job = {"owner": owner, "spec": config.to_dict()}
-            if not self._has_compatible_run_config_agent(
+            compatible_local_agent = self._has_compatible_run_config_agent(
                 probe_job,
                 owner,
                 selected_target=selected_target,
-            ):
-                block(
-                    "windows_path_access_required",
-                    "在线 Windows 电脑无法确认能访问本次配置中的本地路径；已有 Selena + Cluster 不需要安装编译依赖，但本地文件仍需要读取/上传连接。",
-                    "请在这些文件所在电脑一键连接，或将 Selena、Runtime、MatFilter 和数据放到 Cluster 可访问的共享位置。",
-                )
-        if selected_target == "cluster" and local_data and not has_windows_build:
+            )
+        if (
+            local_paths
+            and config.selena.source == "existing"
+            and selected_target == "cluster"
+            and not compatible_local_agent
+        ):
+            block(
+                "windows_path_access_required",
+                "当前没有已连接且能访问本次配置本地路径的 Windows 电脑；已有 Selena + Cluster 不需要安装 Visual Studio 或编译依赖，只需要文件读取/上传连接。",
+                "请在 Selena、Runtime、MatFilter 或数据所在电脑一键连接文件访问组件，或将这些路径放到 Cluster 可直接访问的共享位置。",
+            )
+        elif local_paths and has_windows_build and not compatible_local_agent:
+            block(
+                "windows_path_access_required",
+                "当前已连接的 Windows 电脑无法确认能访问本次配置中的本地路径；请连接实际存放文件的电脑。",
+                "请在这些文件所在电脑一键连接，或将输入放到当前执行节点可访问的位置。",
+            )
+        if selected_target == "cluster" and local_data and not has_windows_build and not local_paths:
             block(
                 "windows_data_access_unavailable",
                 "当前数据位于本机，云端仿真前需要 Windows 电脑验证并上传数据。",
@@ -269,7 +282,7 @@ class ApiV1Service:
         if config.selena.source == "existing":
             existing_visible = self._server_visible_path(config.selena.existing_path).is_dir()
             runtime_visible = self._server_visible_path(config.selena.runtime_xml).is_file()
-            if not (existing_visible and runtime_visible) and not has_windows_build:
+            if not (existing_visible and runtime_visible) and not has_windows_build and not local_paths:
                 block(
                     "windows_selena_access_unavailable",
                     "现有 Selena 产物和 Runtime XML 需要由已连接的 Windows 电脑读取并打包；这条路径不需要安装 Visual Studio 或编译依赖。",
@@ -659,6 +672,7 @@ class ApiV1Service:
                 "platform_gateway_count": 0,
             },
         }
+        owner_token = str(owner or "").strip().casefold()
         for agent in self._control(owner).list_agents():
             metadata = dict(agent.get("metadata") or {})
             node_kind = str(metadata.get("node_kind") or metadata.get("node.kind") or "")
@@ -667,6 +681,14 @@ class ApiV1Service:
                 key = "windows_full"
             elif node_kind == "windows_agent":
                 key = "windows_light"
+            # Windows connections are user-local.  The service intentionally
+            # keeps one shared control DB for Cluster scheduling, so do not
+            # expose another user's laptop as available to this scope.  Cluster
+            # roles (Linux executor and gateway) remain shared infrastructure.
+            if key:
+                registered_user = str(metadata.get("user") or "").strip().casefold()
+                if registered_user and owner_token and registered_user != owner_token:
+                    continue
             if key:
                 summary[key]["configured_count"] += 1
             last = float(agent.get("last_heartbeat") or 0.0)

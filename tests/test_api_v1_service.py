@@ -160,6 +160,29 @@ def test_execution_capabilities_reports_configured_windows_reconnecting(tmp_path
     }
 
 
+def test_execution_capabilities_do_not_expose_another_users_windows_agent(tmp_path):
+    control = ControlService(tmp_path / "capabilities.db", now_fn=lambda: 100)
+    api = ApiV1Service(control_service_factory=lambda owner: control, now_fn=lambda: 100)
+    control.register_agent(
+        "other-user-windows",
+        agent_id="other-user-windows",
+        capabilities=["build.selena"],
+        metadata={"node_kind": "windows_agent", "user": "other-user"},
+    )
+    control.register_agent(
+        "shared-linux",
+        agent_id="shared-linux",
+        capabilities=["cluster.prepare"],
+        metadata={"node_kind": "linux_executor"},
+    )
+
+    capabilities = api.execution_capabilities("new-user")["capabilities"]
+
+    assert capabilities["windows_light"]["available"] is False
+    assert capabilities["windows_light"]["configured_count"] == 0
+    assert capabilities["cluster"]["linux_executor_count"] == 1
+
+
 def test_v1_task_center_lists_only_owner_v1_jobs_with_progress_and_filter(tmp_path):
     shared = ControlService(tmp_path / "shared.db")
     api = ApiV1Service(control_service_factory=lambda owner: shared)

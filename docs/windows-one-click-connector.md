@@ -10,6 +10,8 @@
 
 默认 `light` 模式只承担本机路径访问、Selena 编译、数据/产物上传，随后由 Linux 调度 Cluster 仿真。只有用户选择本地仿真能力时，Web 才下载 `full` 模式入口。
 
+这不是“每个任务安装一次”的临时程序：安装成功后会在当前 Windows 用户下保存服务地址、用户范围和部署模式，注册登录自启/断线重连。之后同一台电脑上的 Web 和 SDK 任务都复用这条连接，不要求用户反复填写 Agent、服务器地址或路径绑定。只有换电脑、换 Linux 服务地址、切换 full/light 能力或主动卸载时才需要重新连接；新任务的代码/数据路径由任务 YAML 提供，连接组件自动做一次性授权和健康检查。
+
 ## 服务端发布闭环
 
 `scripts/linux_deploy.sh` 会在启动服务前构建 `dist/rsim-windows-connector.zip`。同一个 `serve-v1` 进程提供：
@@ -37,3 +39,34 @@
 - 认证开启时，一键连接接口返回 `409 connector_pairing_required`，不会把长期 Token 写入下载脚本或业务 YAML。下一 Sprint 需要实现短期、单次使用的设备配对协议后再开放。
 - SHA-256 能发现传输损坏和服务端包文件被意外替换；HTTP 无法抵抗同时篡改包与响应头的主动中间人。跨不受信网络时必须使用 HTTPS 或后续加入签名清单。
 - 公司禁用 `winget` 且没有 Python 时，用户仍需从公司软件中心安装 Python，这是当前唯一保留的本机运行时前置条件。
+
+## 不使用 Web 时的 SDK 入口
+
+SDK 只是 Linux 控制面的调用客户端，不会把编译器或 Selena 仿真引擎偷偷安装到调用机。依赖按调用位置区分：
+
+| SDK 调用位置 | `existing + cluster` 且输入可访问 | 需要本机 Windows 路径/编译/本地仿真 |
+|---|---|---|
+| Linux/服务器 | `python -m pip install "radar-sim[sdk]"`；共享路径或 Linux 可读路径即可，完全不需要 Windows 组件 | 把输入放到 Cluster 可访问共享位置，或在实际存放文件的 Windows 电脑一键连接 `light/full`；Linux 不读取 `C:/`、`D:/` |
+| Windows 集成产品 | 同样安装 `radar-sim[sdk]`；SDK 会将本地已有 Selena 目录、Runtime、可选资产和 Cluster 数据按需上传 | `source=build` 或 `target=local` 时，先一次性连接对应 `light/full` 组件；SDK 进程本身不承担持续编译/本地仿真调度 |
+
+在没有 Web 的 SDK 集成中，仍可从 Linux 服务下载同一个一次性连接入口（当前可信内网、未开启认证的服务）：
+
+```powershell
+$h = @{ "X-Rsim-User" = "alice" }
+Invoke-WebRequest `
+  -Headers $h `
+  -Uri "http://linux-rsim:8877/api/v1/windows-connector/connect.cmd?mode=light" `
+  -OutFile "$env:TEMP\RadarSim-连接本机.cmd"
+& "$env:TEMP\RadarSim-连接本机.cmd"
+```
+
+完成一次连接后，SDK 只需要提交原来的 YAML：
+
+```python
+from radar_sim_sdk import RadarSimClient
+
+with RadarSimClient("http://linux-rsim:8877", user="alice") as client:
+    job = client.submit_yaml("run.yaml", idempotency_key="issue-123-run-1")
+```
+
+认证开启的正式部署不把长期 Token 写进 YAML；应使用管理员提供的短期配对入口。当前 Sprint 的无认证内网入口已验证上述 SDK/脚本路径，认证配对协议仍是后续发布项。
