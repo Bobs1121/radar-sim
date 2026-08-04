@@ -230,16 +230,26 @@ def _run_task(
             raise AgentPolicyError("agent node policy forbids this task type")
         if is_v2_resolution:
             resolution_source = str((task.get("payload") or {}).get("source") or "build")
+            client.append_logs(
+                task_id,
+                [
+                    "[agent] validating the user-selected Selena inputs"
+                    if resolution_source == "existing"
+                    else "[agent] recognizing the user-selected workspace"
+                ],
+            )
             recognition = (
                 _resolve_existing_v2_run_config(task)
                 if resolution_source == "existing"
                 else _resolve_v2_run_config(dict(task.get("payload") or {}))
             )
+            client.append_logs(task_id, ["[agent] local Selena/runtime evidence prepared"])
             recognition["config_assets"] = _upload_resolution_config_assets(
                 dict(task.get("payload") or {}),
                 client=client,
                 owner=str(task.get("owner") or ""),
             )
+            client.append_logs(task_id, ["[agent] local MatFilter/Adapter assets uploaded or reused"])
             if resolution_source == "existing":
                 imported = client.import_existing_runtime_bundle(
                     recognition,
@@ -248,6 +258,7 @@ def _run_task(
                 recognition["registered_runtime_bundle"] = dict(
                     imported.get("runtime_bundle") or {}
                 )
+                client.append_logs(task_id, ["[agent] Selena Runtime Bundle uploaded and registered"])
             client.heartbeat(
                 agent_id,
                 status="busy",

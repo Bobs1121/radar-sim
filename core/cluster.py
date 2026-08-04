@@ -353,7 +353,7 @@ def list_cluster_jobs(config: dict[str, Any], *, limit: int = 20) -> list[dict[s
 
 
 def _unc_to_local(cluster: dict[str, Any], p: str) -> str:
-    """Translate a Windows UNC path to the local SMB mount on non-Windows.
+    r"""Translate a Windows UNC path to the local SMB mount on non-Windows.
 
     Uses cluster.linux_mount_map. No-op on Windows or when no map is configured.
     Selects the longest matching prefix to avoid the share-name ambiguity
