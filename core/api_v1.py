@@ -234,6 +234,31 @@ class ApiV1Service:
             )
 
         local_data = classify_data_path(config.data.path) == "agent"
+        local_paths = any(
+            classify_data_path(str(value or "")) == "agent"
+            for value in (
+                config.data.path,
+                config.selena.code_path,
+                config.selena.selena_build_script,
+                config.selena.package_build_script,
+                config.selena.existing_path,
+                config.selena.runtime_xml,
+                config.simulation.adapter_file,
+                config.simulation.mat_filter,
+            )
+        )
+        if local_paths and has_windows_build:
+            probe_job = {"owner": owner, "spec": config.to_dict()}
+            if not self._has_compatible_run_config_agent(
+                probe_job,
+                owner,
+                selected_target=selected_target,
+            ):
+                block(
+                    "windows_path_access_required",
+                    "在线 Windows 电脑无法确认能访问本次配置中的本地路径；已有 Selena + Cluster 不需要安装编译依赖，但本地文件仍需要读取/上传连接。",
+                    "请在这些文件所在电脑一键连接，或将 Selena、Runtime、MatFilter 和数据放到 Cluster 可访问的共享位置。",
+                )
         if selected_target == "cluster" and local_data and not has_windows_build:
             block(
                 "windows_data_access_unavailable",
@@ -1712,7 +1737,10 @@ class ApiV1Service:
                     )
             elif (
                 target != "local"
-                and capabilities["windows_light"]["available"]
+                and (
+                    capabilities["windows_light"]["available"]
+                    or capabilities["windows_full"]["available"]
+                )
                 and any(
                     classify_data_path(str(value or "")) == "agent"
                     for value in (
