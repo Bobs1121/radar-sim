@@ -7,6 +7,16 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 ## 0. 2026-08-04 当前发布交接（优先阅读）
 
+### 2026-08-04 Light Agent 上传黑盒验证与日志修复（最新）
+
+- 发布提交：`0ffec87`，已部署到 `http://10.190.171.44:8877`；服务 `radar-sim-v1.service` 为 `active`，`GET /api/v1/health` 返回 `ok=true`。
+- Windows 一键包已重新构建并通过 HTTP 下载校验：`535537` bytes，SHA-256 `40c69f34469e834efeb715ba78cf38e4da230aba3d7418bee886bdde23952e19`。
+- `No module named yaml`/`cli.web` 循环加载噪声已通过 Agent 专用 CLI 注册路径消除；轻量 Agent 不再要求 PyYAML、pip 或包索引。
+- `core/cluster.py` 的 UNC 路径示例改为原始 docstring，修复 `SyntaxWarning: invalid escape sequence '\\s'`；已用 Windows 安装包内 Python 执行 `python -W error -m py_compile` 通过。
+- 新用户黑盒任务 `job_e9574b80faca`：无 Agent 时在提交前返回 `windows_path_access_required`；安装 light Agent 后 `prepare_data` 成功，发现并上传 `1` 个 MF4，大小 `392930344` bytes，事件包含 `local dataset upload completed; Agent may now disconnect`。最终任务未进入仿真，唯一失败原因为用户 MatFilter 未上传/不在授权共享路径：`mat_filter must be uploaded or selected from an authorized shared path`，不是 Agent 上传失败。
+- 已验证一次性安装：自动检查 Python 3.12.10 和 VS2015 (v140)，不安装 VS；注册 `RadarSimConnector-HOZ2WX` 登录自启/断线重连。黑盒验证完成后已停止 Agent、删除计划任务和程序/凭证，保留 `%LOCALAPPDATA%\\radar-sim\\data`（62 个文件）。
+- 当前未宣称“本地 MatFilter + 未登记 Selena 文件夹”的完整仿真成功；该路径的 `resolve_spec` 曾长时间无可见进度并已取消，新增阶段日志用于后续定位，不能把它归因于 Cluster 仿真内核。
+
 ### 2026-08-04 无 Windows Agent 的 Cluster 黑盒验证
 
 - 已在验证机卸载 Windows 连接组件：移除 `RadarSimConnector-HOZ2WX` 计划任务、监督进程、残留 Agent 进程、`app` 程序目录和本地凭证；用户代码仓、Selena、Runtime 和 `%LOCALAPPDATA%\\radar-sim\\data` 保留。
@@ -44,7 +54,7 @@ description: 项目现状、架构、已知问题和后续 TODO
 - 回归测试：路径/绑定/SDK 组合 → `82 passed, 3 skipped, 1 warning`；V1 服务/路由组合 → `85 passed, 1 warning`；`node --check radar_sim_web/static/app.js` 通过。
 - 线上服务：`http://10.190.171.44:8877`，systemd user service `radar-sim-v1.service`，当前单一监听进程，`GET /api/v1/health` 返回 200。
 - 新用户无 Agent 的实际验证：能力快照只显示 Cluster 可用、不显示他人的 Windows Agent；提交含 Windows 本地路径的 `existing + cluster` 配置返回 `windows_path_access_required`，并明确“不需要 Visual Studio 或编译依赖，只需要文件读取/上传连接”。
-- 线上发布以 `origin/main` 当前提交 `6967938` 为基线；未把用户的 `output/`、`.claude/` 等未跟踪诊断产物纳入提交。
+- 线上发布以 `codex/new-branch` 提交 `0ffec87` 为基线；未把用户的 `output/`、`.claude/` 等未跟踪诊断产物纳入提交。
 
 ### 后续不得偏移
 
