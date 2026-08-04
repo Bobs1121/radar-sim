@@ -1998,3 +1998,16 @@ SDK 通过 `RadarSimClient.submit_run(..., target=cluster)` 直连 Linux 服务�
 - 任务可恢复：失败阶段保留 `retry_stage` 动作，不需要重新上传或编译。Cluster Manager 恢复后应直接重试 `task_523e7784af3d`。
 
 调用方式的注意事项：本机 SDK 大文件上传必须使用直连客户端（`trust_env=False`），否则会误走系统 HTTP 代理，造成数据准备阶段长时间无任务记录；这不是 Linux 服务或仿真失败。
+
+### Cluster 重置后恢复验证（2026-08-04）
+
+Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的已准备输入，直接重试失败的 `environment_check` 阶段（第 3 次尝试），没有重新上传 MF4、Runtime 或 Selena，也没有编译。
+
+- `SZHRADAR01:8123` 恢复可连接；Linux API health、Linux executor 和 Cluster gateway 均在线。
+- `environment_check`、`prepare_data`、`preflight`、`run_simulation`、`collect_results`、`finalize_manifest` 全部 succeeded；已有 Selena 的 `resolve_spec/build_selena/register_artifact` 继续 skipped。
+- Cluster run：`cluster-run:1bf39c2286064d129207f6ba961c3ce2`。
+- Manifest：`status=succeeded`，`result_ref=result:sha256:8a83fed56c8b9cd3632c296e8d008e63276bd0819f2f0987f0da319f7b17fd1e`，任务 1/1 完成。
+- 输出 MF4：`190983120` 字节；结果目录共 6 个文件，ResultCatalog 总大小 `191017483` 字节。
+- 下载验收：`output/job_d2c7917f0c90-result.zip`，大小 `9294890` 字节，SHA-256 `sha256:546e8fc5ac17765aa91d7ab4003c95e9484e078804d46012f9725831a7b2ec41`，与服务端目录一致。
+
+结论：Cluster 服务恢复后，用户提供的本地已有 Selena + Runtime + 单条 MF4 数据可以通过 Linux SDK 调度到云端并得到可下载结果；流程不依赖项目名，也不触发本地编译。
