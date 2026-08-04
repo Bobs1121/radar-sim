@@ -541,9 +541,13 @@ async function loadJobs() {
   const list = byId("jobList");
   if (!state.jobs.length) list.innerHTML = '<div class="empty-state">正在加载任务</div>';
   try {
-    await refreshCapabilities().catch(() => state.capabilities);
+    // Capabilities only affect the waiting badge.  Fetch them alongside the
+    // job page so a slow capability snapshot cannot delay the first task-list
+    // paint by another network round trip.
+    const capabilitiesRequest = refreshCapabilities().catch(() => state.capabilities);
     const filter = byId("statusFilter").value;
     const page = await api(`/jobs?limit=${TASK_CENTER_PAGE_SIZE}${filter ? `&status=${encodeURIComponent(filter)}` : ""}`);
+    await capabilitiesRequest;
     const jobs = page.jobs || [];
     const signature = JSON.stringify(jobs.map((job) => [job.id, job.status, job.progress, job.current_stage]));
     state.jobs = jobs;
