@@ -685,6 +685,15 @@ def test_existing_bundle_cluster_route_is_assigned_without_windows(tmp_path):
     assert stages["run_simulation"]["required_agent_id"] == CLUSTER_GATEWAY_AGENT_ID
     assert stages["collect_results"]["required_agent_id"] == LINUX_STAGE_AGENT_ID
     assert stages["finalize_manifest"]["required_agent_id"] == LINUX_STAGE_AGENT_ID
+    public = api._job_response(
+        control.get_job(job["id"]),
+        execution_capabilities={
+            "windows_full": {"available": False, "count": 0, "configured_count": 0},
+            "windows_light": {"available": False, "count": 0, "configured_count": 0},
+            "cluster": {"available": True, "count": 1, "linux_executor_count": 1},
+        },
+    )
+    assert public["waiting"] is None
 
 
 def test_existing_bundle_local_data_path_creates_agent_upload_stage(tmp_path):

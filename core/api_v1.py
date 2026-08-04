@@ -1740,9 +1740,37 @@ class ApiV1Service:
         execution = dict(decisions.get("execution") or {})
         target = str(execution.get("selected_target") or simulation.get("target") or "auto")
         source = str(selena.get("source") or selena.get("mode") or "auto")
+        selena_decision = dict(decisions.get("selena") or {})
+        registered_runtime_bundle = bool(
+            source == "existing"
+            and (
+                str(selena_decision.get("code") or "") == "registered_runtime_bundle_selected"
+                or str(selena_decision.get("action") or "") == "use_runtime_bundle"
+                or isinstance(selena_decision.get("runtime_bundle"), dict)
+            )
+        )
         capabilities = execution_capabilities or self.execution_capabilities(
             str(job.get("owner") or (job.get("metadata") or {}).get("owner") or "")
         )["capabilities"]
+
+        # Once an existing Selena Bundle has already been prepared by the SDK,
+        # its Windows-local folder and Runtime XML are no longer inputs to the
+        # pending Cluster stages.  Only still-local data/assets should require
+        # a Windows connection.  Without this distinction the create response
+        # briefly reports a misleading Windows wait while the Linux stage is
+        # already queued and about to run.
+        local_path_values = [
+            data.get("path"),
+            simulation.get("adapter_file"),
+            simulation.get("mat_filter"),
+        ]
+        if not registered_runtime_bundle:
+            local_path_values.extend(
+                [
+                    selena.get("existing_path"),
+                    selena.get("runtime_xml"),
+                ]
+            )
 
         # A Windows capability is not enough for a local-path task.  The
         # connected machine must either advertise the exact opaque binding or
@@ -1765,13 +1793,7 @@ class ApiV1Service:
                 )
                 and any(
                     classify_data_path(str(value or "")) == "agent"
-                    for value in (
-                        data.get("path"),
-                        selena.get("existing_path"),
-                        selena.get("runtime_xml"),
-                        simulation.get("adapter_file"),
-                        simulation.get("mat_filter"),
-                    )
+                    for value in local_path_values
                 )
                 and not self._has_compatible_run_config_agent(job, owner, selected_target=target)
             ):
@@ -1798,16 +1820,7 @@ class ApiV1Service:
         elif (
             target != "local"
             and stage_type in {"resolve_spec", "environment_check", "prepare_data", "register_artifact"}
-            and any(
-                classify_data_path(str(value or "")) == "agent"
-                for value in (
-                    data.get("path"),
-                    selena.get("existing_path"),
-                    selena.get("runtime_xml"),
-                    simulation.get("adapter_file"),
-                    simulation.get("mat_filter"),
-                )
-            )
+            and any(classify_data_path(str(value or "")) == "agent" for value in local_path_values)
             and not (
                 capabilities["windows_light"]["available"]
                 or capabilities["windows_full"]["available"]
