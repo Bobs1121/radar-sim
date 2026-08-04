@@ -1,8 +1,17 @@
 # radar-sim v5 Active Handoff
 
-> 最近更新：2026-07-29
+> 最近更新：2026-08-04
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
+
+## 0.0.1 GitHub 与 Linux 清理交付（2026-08-04）
+
+- 可用版本提交 `a224d53` 已推送到 GitHub：`origin/main` 与 `origin/codex/new-branch` 均指向该提交。
+- 本地发布门禁：`git diff --check`、`compileall` 通过；核心定向套件首次并行运行 `285 passed, 2 failed, 1 skipped`，两个失败均为 Windows 临时目录 `PermissionError [WinError 5]`，单独串行重跑均通过。全量套件 180 秒无输出超时，不能表述为全量通过。
+- `10.190.171.44` 当前只保留 `/home/hoz2wx/radar-sim-v1-result-upload` 作为 systemd 服务工作目录，以及 `/home/hoz2wx/.rsim-v1-git-smoke` 任务、结果、数据集和 Bundle 数据；健康检查 `ok=true`，Cluster 与 Windows full 能力在线。
+- 已停止旧 `127.0.0.1:8898` 残留服务；已删除旧 `radar-sim-v1-*` 发布目录、旧 bundle/tar/zip 和当前发布目录的 `build/output/results/__pycache__/.pytest_cache` 临时内容。
+- `/home/hoz2wx/radar-sim` 未删除：该目录包含未提交的用户修改和本地数据路径，按工作区保护规则保留，不能当作可安全清理的发布副本。
+- 本次没有切换现有 `radar-sim-v1.service` 的运行版本，只清理冗余物并保持当前入口稳定；若要让服务严格运行 `a224d53`，需要另行执行带 Linux release gate 的原子切换。
 
 ## 0. 文档职责
 
