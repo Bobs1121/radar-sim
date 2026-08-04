@@ -14,5 +14,4 @@ if errorlevel 1 (
 )
 echo.
 echo This PC is connected. You may close this window and return to the Web page.
-ping 127.0.0.1 -n 4 >nul
 exit /b 0

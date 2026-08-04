@@ -96,6 +96,7 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "--disable-interactivity" in connector
     assert "Software Center" in connector
     assert "timeout /t" not in launcher
+    assert "127.0.0.1" not in launcher
 
 
 def test_linux_release_builds_same_origin_windows_connector_bundle():
