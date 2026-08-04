@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Callable
 
-from core.agent_bindings import default_agent_binding_db_path
+from core.agent_store_paths import default_agent_binding_db_path
 from core.path_normalization import path_token, normalize_path_text
 
 
@@ -110,12 +110,21 @@ class AgentDataBindingStore:
                 """
                 INSERT INTO data_root_bindings(binding_id,project,root_path,created_at,updated_at)
                 VALUES (?,?,?,?,?)
-                ON CONFLICT(binding_id) DO UPDATE SET updated_at=excluded.updated_at
+                ON CONFLICT(project, root_path) DO UPDATE SET updated_at=excluded.updated_at
                 """,
                 (binding_id, project, str(root), now, now),
             )
+            # Keep the durable ID when an older Agent version registered the
+            # same (project, root) with a previous normalization algorithm.
+            # One-click retries must be idempotent across connector upgrades;
+            # returning the newly computed ID would make ``get`` fail and
+            # strand the task before the resumable upload can start.
+            row = conn.execute(
+                "SELECT binding_id FROM data_root_bindings WHERE project=? AND root_path=?",
+                (project, str(root)),
+            ).fetchone()
             conn.commit()
-        return self.get(binding_id, project=project)
+        return self.get(str(row["binding_id"] if row else binding_id), project=project)
 
     def get(self, binding_id: str, *, project: str = "") -> DataRootBinding:
         if not _ID_RE.fullmatch(str(binding_id or "")):

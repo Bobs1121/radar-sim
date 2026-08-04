@@ -21,6 +21,7 @@ from typing import Any
 
 from core.agent_artifact_staging import AgentArtifactStagingError, AuthorizedRoots
 from core.path_normalization import path_token
+from core.agent_store_paths import default_agent_binding_db_path
 
 
 class AgentBindingError(ValueError):
@@ -122,27 +123,6 @@ def _validate_project_token(value: str) -> None:
         raise AgentBindingError("project must not contain leading or trailing whitespace")
     if value in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
         raise AgentBindingError("project must be a logical token, not a path")
-
-
-# ---------------------------------------------------------------------------
-# Default db path
-# ---------------------------------------------------------------------------
-
-def default_agent_binding_db_path() -> Path:
-    """Return the default local SQLite path for agent bindings.
-
-    Preference:
-    1. ``RSIM_HOME/agent/bindings.db`` if ``RSIM_HOME`` is set.
-    2. ``~/.rsim/agent/bindings.db`` otherwise.
-
-    Never uses the repository CWD.
-    """
-    rsim_home = os.environ.get("RSIM_HOME", "").strip()
-    if rsim_home:
-        base = Path(rsim_home).expanduser() / "agent"
-    else:
-        base = Path.home() / ".rsim" / "agent"
-    return base / "bindings.db"
 
 
 # ---------------------------------------------------------------------------

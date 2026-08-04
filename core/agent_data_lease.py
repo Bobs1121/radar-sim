@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.agent_data_bindings import AgentDataBindingStore
-from core.agent_bindings import default_agent_binding_db_path
+from core.agent_store_paths import default_agent_binding_db_path
 from core.datasets import DatasetDiscoveryCancelled, DatasetFileRef, discover_dataset_files
 
 

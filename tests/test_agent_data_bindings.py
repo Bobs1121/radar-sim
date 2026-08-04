@@ -25,6 +25,18 @@ def test_data_root_binding_is_path_free_public_and_authorizes_descendant(tmp_pat
     ) == target.resolve()
 
 
+def test_register_is_idempotent_for_one_click_retry(tmp_path: Path):
+    root = tmp_path / "data"
+    root.mkdir()
+    store = AgentDataBindingStore(tmp_path / "bindings.db", now_fn=lambda: 10)
+
+    first = store.register(project="ovrs25", root_path=root)
+    second = store.register(project="ovrs25", root_path=root)
+
+    assert second.binding_id == first.binding_id
+    assert second.root_path == first.root_path
+
+
 def test_data_root_binding_rejects_sibling_and_project_mismatch(tmp_path: Path):
     root = tmp_path / "data"
     root.mkdir()

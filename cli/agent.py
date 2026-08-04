@@ -686,33 +686,32 @@ def _release_v5_source_lease(lease_ref: str) -> None:
 
 def _public_workspace_bindings() -> list[dict]:
     """Advertise healthy logical bindings without exposing local paths."""
-    from core.agent_bindings import AgentBindingError, AgentBindingStore
-
     try:
+        from core.agent_bindings import AgentBindingError, AgentBindingStore
         return [binding.public_dict for binding in AgentBindingStore().list()]
-    except (AgentBindingError, OSError):
+    except (ModuleNotFoundError, OSError, ValueError) as exc:
         # Agent registration must remain available so the Web can show the
-        # machine and guide one-time binding repair.
+        # machine and guide one-time binding repair.  The light Agent may be
+        # running without optional YAML/configuration dependencies; workspace
+        # metadata is not needed for a data-upload-only task.
         return []
 
 
 def _public_data_bindings() -> list[dict]:
     """Advertise path-free authorized MF4 roots for central Stage matching."""
-    from core.agent_data_bindings import AgentDataBindingError, AgentDataBindingStore
-
     try:
+        from core.agent_data_bindings import AgentDataBindingError, AgentDataBindingStore
         return [binding.public_dict for binding in AgentDataBindingStore().list()]
-    except (AgentDataBindingError, OSError):
+    except (ModuleNotFoundError, OSError, ValueError):
         return []
 
 
 def _public_asset_bindings() -> list[dict]:
     """Advertise path-free configuration asset roots."""
-    from core.agent_asset_bindings import AgentAssetBindingError, AgentAssetBindingStore
-
     try:
+        from core.agent_asset_bindings import AgentAssetBindingError, AgentAssetBindingStore
         return [binding.public_dict for binding in AgentAssetBindingStore().list()]
-    except (AgentAssetBindingError, OSError):
+    except (ModuleNotFoundError, OSError, ValueError):
         return []
 
 
@@ -2184,7 +2183,6 @@ class _ControlClient:
             raise ValueError("Agent v1 api-url is required for dataset upload")
         from core.datasets import DatasetDiscoveryCancelled
         from core.user import current_user
-        from radar_sim_sdk import RadarSimClient
 
         cancelled = cancel_requested or (lambda: False)
         if cancelled():
@@ -2200,49 +2198,107 @@ class _ControlClient:
         source = lease.source_path
         root = source if source.is_dir() else source.parent
         transfer_owner = str(owner or current_user())
-        with RadarSimClient(self._api_url, user=transfer_owner, token=self._token) as agent_sdk:
-            session = agent_sdk.create_agent_dataset_upload(
-                lease.project,
-                manifest,
-                evidence_ref=evidence_ref,
-                agent_id=agent_id,
-            )
-        with RadarSimClient(self._api_url, user=transfer_owner, token=self._api_token) as sdk:
-            current = session
-            total = len(session.files)
-            for index, upload_file in enumerate(session.files, start=1):
-                if cancelled():
-                    raise DatasetDiscoveryCancelled("dataset upload cancelled")
-                path = source if source.is_file() else root.joinpath(*Path(upload_file.relative_path).parts)
-                with path.open("rb") as handle:
-                    handle.seek(upload_file.received_bytes)
-                    offset = upload_file.received_bytes
-                    while offset < upload_file.expected_size:
-                        if cancelled():
-                            raise DatasetDiscoveryCancelled("dataset upload cancelled")
-                        data = handle.read(min(current.chunk_size, upload_file.expected_size - offset))
-                        if not data:
-                            raise ValueError("leased data file ended during upload")
-                        current = sdk.append_dataset_upload(
-                            current.session_id,
-                            upload_file.file_id,
-                            offset,
-                            data,
-                        )
-                        state = next(item for item in current.files if item.file_id == upload_file.file_id)
-                        offset = state.received_bytes
-                if cancelled():
-                    raise DatasetDiscoveryCancelled("dataset upload cancelled")
-                self.append_logs(task_id, [f"[agent] uploaded MF4 {index}/{total}"])
+        # Keep the light Agent independent of the optional public SDK stack.
+        # The SDK imports Pydantic/httpx; local data upload only needs the
+        # small JSON + resumable-byte HTTP contract implemented below.
+        session = self._dataset_request(
+            "POST",
+            "/api/v1/agent-dataset-uploads",
+            owner=transfer_owner,
+            token=self._token,
+            agent_id=agent_id,
+            payload={"project": lease.project, "files": manifest, "evidence_ref": evidence_ref},
+        )
+        current = session
+        session_id = str(session.get("session_id") or "")
+        chunk_size = int(session.get("chunk_size") or 0)
+        files = list(session.get("files") or [])
+        if not session_id or chunk_size <= 0 or not files:
+            raise ValueError("dataset upload session is incomplete")
+        total = len(files)
+        for index, upload_file in enumerate(files, start=1):
             if cancelled():
                 raise DatasetDiscoveryCancelled("dataset upload cancelled")
-            uploaded = sdk.finalize_dataset_upload(session.session_id)
+            relative_path = str(upload_file.get("relative_path") or "")
+            file_id = str(upload_file.get("file_id") or "")
+            expected_size = int(upload_file.get("expected_size") or 0)
+            offset = int(upload_file.get("received_bytes") or 0)
+            if not file_id or expected_size < 0:
+                raise ValueError("dataset upload file evidence is incomplete")
+            path = source if source.is_file() else root.joinpath(*Path(relative_path).parts)
+            with path.open("rb") as handle:
+                handle.seek(offset)
+                while offset < expected_size:
+                    if cancelled():
+                        raise DatasetDiscoveryCancelled("dataset upload cancelled")
+                    data = handle.read(min(chunk_size, expected_size - offset))
+                    if not data:
+                        raise ValueError("leased data file ended during upload")
+                    current = self._dataset_request(
+                        "PATCH",
+                        f"/api/v1/dataset-uploads/{urllib.parse.quote(session_id, safe='')}/files/{urllib.parse.quote(file_id, safe='')}",
+                        owner=transfer_owner,
+                        token=self._api_token,
+                        upload_offset=offset,
+                        data=data,
+                    )
+                    state = next(
+                        item for item in (current.get("files") or [])
+                        if str(item.get("file_id") or "") == file_id
+                    )
+                    offset = int(state.get("received_bytes") or 0)
+            if cancelled():
+                raise DatasetDiscoveryCancelled("dataset upload cancelled")
+            self.append_logs(task_id, [f"[agent] uploaded MF4 {index}/{total}"])
+        if cancelled():
+            raise DatasetDiscoveryCancelled("dataset upload cancelled")
+        uploaded = self._dataset_request(
+            "POST",
+            f"/api/v1/dataset-uploads/{urllib.parse.quote(session_id, safe='')}/finalize",
+            owner=transfer_owner,
+            token=self._api_token,
+        )
         return {
-            "dataset": dict(uploaded.dataset),
-            "data_path": uploaded.data_path,
-            "upload_session_id": uploaded.session.session_id,
-            "reused": bool(uploaded.reused),
+            "dataset": dict(uploaded.get("dataset") or {}),
+            "data_path": str(uploaded.get("data_path") or ""),
+            "upload_session_id": str((uploaded.get("session") or {}).get("session_id") or session_id),
+            "reused": bool(uploaded.get("reused", False)),
         }
+
+    def _dataset_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        owner: str,
+        token: str = "",
+        agent_id: str = "",
+        upload_offset: int | None = None,
+        payload: dict | None = None,
+        data: bytes | None = None,
+    ) -> dict:
+        """Call the v1 dataset upload API using only urllib/std-lib types."""
+        headers = {
+            "Accept": "application/json",
+            "X-Rsim-User": str(owner or ""),
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if agent_id:
+            headers["X-Rsim-Agent-ID"] = str(agent_id)
+        if upload_offset is not None:
+            headers["Upload-Offset"] = str(int(upload_offset))
+        body = data
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(self._api_url + path, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{method} {path} failed: {exc.code} {body_text}") from exc
 
     def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
         from core.user import USER_HEADER, current_user
