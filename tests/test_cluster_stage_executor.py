@@ -601,9 +601,9 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
     (private_job / "output" / "inputout.MF4").write_bytes(b"simulated-output")
 
     monkeypatch.setattr("core.cluster.check_cluster_environment", lambda _cfg: [SimpleNamespace(name="manager", ok=True)])
-    monkeypatch.setattr(
-        "core.preflight.run_preflight",
-        lambda _cfg: SimpleNamespace(
+    def diagnostic_preflight(run_config):
+        assert not run_config.get("_strict_runtime_data_signals")
+        return SimpleNamespace(
             ok=False,
             checks=[
                 SimpleNamespace(
@@ -613,8 +613,9 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
                     detail="project-only signal is absent",
                 )
             ],
-        ),
-    )
+        )
+
+    monkeypatch.setattr("core.preflight.run_preflight", diagnostic_preflight)
     monkeypatch.setattr(
         "core.cluster.prepare_cluster_job",
         lambda *_args, **_kwargs: SimpleNamespace(

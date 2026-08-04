@@ -391,11 +391,11 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     sim["input_mf4"] = str(data_location)
 
     from core.preflight import run_preflight
-    # Runtime/MF4 inspection records compatibility evidence for the task
-    # centre. It is deliberately non-blocking: a static MF4 catalog cannot
-    # model every generated DataPlayer representation. Selena/Cluster result
-    # collection remains the source of truth for execution success.
-    config["_strict_runtime_data_signals"] = True
+    # Do not parse a potentially multi-gigabyte MF4 merely to collect optional
+    # Runtime/DataPlayer diagnostics.  The user-selected Runtime and data are
+    # trusted here; Selena/Cluster result collection is the execution truth.
+    # This keeps the Linux control plane a thin scheduler and prevents one
+    # preflight worker from retaining the whole uploaded measurement in RAM.
     preflight = run_preflight(config)
 
     from core.cluster import prepare_cluster_job

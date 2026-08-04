@@ -351,6 +351,43 @@ def test_environment_check_is_node_local_and_does_not_spawn(monkeypatch):
     ]
 
 
+def test_resolve_spec_reports_unexpected_setup_error_instead_of_staying_running(monkeypatch):
+    class FakeClient:
+        def __init__(self):
+            self.logs = []
+            self.results = []
+
+        def append_logs(self, _task_id, lines):
+            self.logs.extend(lines)
+
+        def submit_result(self, _task_id, **kwargs):
+            self.results.append(kwargs)
+
+    monkeypatch.setattr(
+        agent_module,
+        "_resolve_existing_v2_run_config",
+        lambda _task: (_ for _ in ()).throw(ModuleNotFoundError("optional parser missing")),
+    )
+    client = FakeClient()
+    task = {
+        "task_id": "stage-resolve",
+        "task_type": "resolve_spec",
+        "stage_type": "resolve_spec",
+        "payload": {"source": "existing"},
+    }
+
+    assert agent_module._run_task(
+        client,
+        "agent-a",
+        task,
+        heartbeat_interval=1,
+        node_kind="windows_agent",
+    ) == 1
+    assert client.results[-1]["status"] == "failed"
+    assert client.results[-1]["result"]["error"] == "optional parser missing"
+    assert any("task setup error" in line for line in client.logs)
+
+
 def test_register_artifact_uses_explicit_uploader_without_spawning(monkeypatch):
     class FakeClient:
         def __init__(self):

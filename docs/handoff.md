@@ -7,6 +7,17 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 ## 0. 2026-08-04 当前发布交接（优先阅读）
 
+### 2026-08-04 `job_e026d3e5b82e` 卡住复盘与多用户边界（最新）
+
+- 任务使用已有 Selena、本地 Runtime/MatFilter 和一条本地 MF4，目标为 Cluster。最初卡在 Windows `resolve_spec`：一键安装的 light Connector 为了离线可装不安装 PyYAML，但填写代码仓/编译脚本后会进入可选产品识别模块，该模块顶层导入 PyYAML，异常又未进入 Agent 的终态上报路径，造成守护进程反复重启、Stage 长期显示 `running`。
+- 修复一：已有 Selena 的产品识别只作为可选追踪信息；缺少可选解析依赖时，自动退回由 Selena.exe、同目录 DLL 和 Runtime XML 形成的稳定通用身份，不阻断上传或仿真。
+- 修复二：Agent 任务准备阶段的所有普通异常都会提交明确失败结果，不再让“进程已退出、Stage 仍运行”的假卡死持续发生。
+- 修复三：Cluster 主链不再为可选 Runtime/DataPlayer 诊断读取整条 MF4。此次 943286760-byte MF4 曾使 Linux 服务常驻内存约 1.3 GB、预检长时间无进度；现在只保留轻量接入检查，用户选择的 Runtime/数据默认可信，最终以 Selena/Cluster 的输出和 `result.ini` 为准。
+- 恢复后同一任务未重新提交：`resolve_spec` 第 4 次尝试成功，Selena Bundle、Runtime、MatFilter 与 943286760-byte MF4 上传成功；Cluster Run `cluster-run:0ad973b1acca4334bbe9c965837cca7a` 完成，`success_count=1`、`fail_count=0`，结果 `result:sha256:0860f031dc8237643a08675a4df31393fe62a02d52c6e06f7cb4ea8a051eaa4f`，包含输出 MF4、`result.ini`、`selena.log` 等 6 个公开文件。
+- 多用户规则：Windows Connector 与提交任务的 owner 绑定；另一台电脑/另一个浏览器身份不能领取当前用户的本地路径任务，也看不到其任务结果。Cluster executor 是共享资源，但任务、数据集、Bundle 与结果仍按 owner 校验。当前 `--insecure-no-auth` 只适合内网验证，浏览器本地身份不是正式账号体系；面向广泛多用户发布前必须接入统一登录/令牌映射。同一 Windows 账号被两个不同浏览器身份轮流安装 Connector 仍可能发生重绑定，不能作为正式共享电脑方案。
+- Linux 用户不注册“Linux Agent”。Linux 只通过 Web/SDK 使用控制面：若 Selena Bundle、Runtime、MatFilter 和数据已经是 Cluster/共享存储可访问资源，则完全不需要 Windows Connector；若任一输入位于某台 Windows 的 `C:/D:`，必须在那台 Windows 上一次性连接 light Connector；需要编译或本地仿真时也必须使用 Windows，Linux 本身不支持 Selena 编译/执行。
+- 回归：`tests/test_agent_cli_policy.py + tests/test_existing_selena.py + tests/test_cluster_stage_executor.py` 共 `62 passed`。
+
 ### 2026-08-04 纯净新用户环境与端到端验证（最新）
 
 - 已把验证机恢复为真正的新用户状态：删除 `%LOCALAPPDATA%\\radar-sim` 整个目录（程序、数据缓存、凭据、安装信息全部删除）、`RadarSimConnector-HOZ2WX` 计划任务和所有 Radar Sim Agent 进程；用户代码仓、Selena 产物、MF4 数据和 Visual Studio 未动。

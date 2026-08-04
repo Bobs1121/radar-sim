@@ -391,10 +391,12 @@ def _run_task(
                 )
         else:
             command = _build_task_command(task)
-    except (KeyError, TypeError, ValueError, FileNotFoundError, OSError) as exc:
+    except Exception as exc:
         # FileNotFoundError / OSError: agent has no local config or repo for
-        # the requested project. Report as failed so the task doesn't stay
-        # stuck in "running" forever (PRD §12 agent resilience).
+        # the requested project.  Unexpected optional-dependency/import errors
+        # must follow the same terminal path: otherwise the Agent supervisor
+        # restarts the process while the claimed Stage remains "running".
+        # Report every setup failure so the task never waits forever.
         message = (
             "[agent] Runtime Bundle cache failed"
             if is_runtime_bundle_cache

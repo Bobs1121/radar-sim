@@ -278,7 +278,11 @@ def _best_effort_product_evidence(callback) -> tuple[str, str] | None:
     """Discard optional recognition errors; file validation remains strict."""
     try:
         return callback()
-    except (ExistingSelenaError, OSError, ValueError):
+    except (ExistingSelenaError, ImportError, OSError, ValueError):
+        # The one-click light connector deliberately has no package-index
+        # dependency.  Optional workspace/product recognition may import an
+        # adapter reader backed by PyYAML, but an existing Selena bundle must
+        # remain usable from its executable, DLLs and Runtime XML alone.
         return None
 
 

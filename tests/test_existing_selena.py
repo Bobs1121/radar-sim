@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import core.existing_selena as existing_selena_module
 from core.existing_selena import (
     ExistingSelenaError,
     ExistingSelenaResult,
@@ -251,6 +252,28 @@ def test_existing_selena_ignores_conflicting_optional_product_evidence(tmp_path)
         code_path="D:/bydod25fr/byd",
         selena_build_script="D:/bydod25fr/byd/apl/byd/selena/jenkins_selena_build.bat",
         package_build_script="D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat",
+        created_at=_now(),
+    )
+    assert result.internal_project.startswith("workspace-")
+    assert result.adapter_key == "generic:existing-selena"
+
+
+def test_existing_selena_light_connector_does_not_require_optional_yaml(tmp_path, monkeypatch):
+    ex, rx = _mk(tmp_path, name="neutral_runtime", nested=True)
+
+    def missing_optional_dependency(**_kwargs):
+        raise ModuleNotFoundError("No module named 'yaml'")
+
+    monkeypatch.setattr(
+        existing_selena_module,
+        "_recognize_workspace_product",
+        missing_optional_dependency,
+    )
+    result = import_existing_selena(
+        ex,
+        rx,
+        code_path="D:/workspace",
+        selena_build_script="D:/workspace/build_selena.bat",
         created_at=_now(),
     )
     assert result.internal_project.startswith("workspace-")
