@@ -13,6 +13,14 @@ Web、Python SDK、未来 Skill/MCP 只使用同一套 `/api/v1`，不得复制�
 5. `manifest()` 获取运行清单。
 6. `list_results()` / `get_result()` / `download_result()` 获取结果。
 
+当任务需要读取 Windows 本地路径或执行 Windows 编译/本地仿真时，SDK 集成方可先调用
+`RadarSimClient.download_windows_connector(destination, mode="light"|"full")` 下载同源的一键连接入口，
+并由实际的 Windows 用户执行一次。该方法不在 Linux 上执行 PowerShell，也不把 Agent Token 写入 YAML；
+安装后的连接由 Windows 登录自启和监督进程持久复用。若电脑关机、睡眠或尚未登录，SDK/Web 只能等待连接恢复，
+不能远程唤醒电源。`existing + cluster` 且输入已在 Cluster 可访问位置时不需要调用此方法。
+
+用户 YAML 中的文件路径统一由 `/api/v1` 规范化；Skill/MCP 不应自行替换斜杠或解析 Windows/UNC，直接转发用户输入。
+
 ## Diagnosis 契约
 
 HTTP：`GET /api/v1/jobs/{job_id}/diagnosis`
