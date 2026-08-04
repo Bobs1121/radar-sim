@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import base64
 import os
 import platform as platform_mod
 import queue
@@ -2013,8 +2014,6 @@ class _ControlClient:
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for existing Selena import")
         from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
-        from core.user import current_user
-        from radar_sim_sdk import RadarSimClient
 
         evidence_ref = str(recognition.get("build_evidence_ref") or "")
         lease = AgentRuntimeBundleLeaseStore().get(
@@ -2028,12 +2027,16 @@ class _ControlClient:
             "archive_checksum": lease.archive_checksum,
             "archive_size": lease.archive_size,
         }
-        with RadarSimClient(
-            self._api_url,
-            user=str(owner or current_user()),
-            token=self._api_token,
-        ) as sdk:
-            return sdk.import_existing_runtime_bundle(metadata, lease.archive_path)
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        return self._api_binary_request(
+            "POST",
+            "/api/v1/existing-selena-imports",
+            owner=owner,
+            content=lease.archive_path.read_bytes(),
+            headers={"X-Rsim-Existing-Metadata": encoded},
+        )
 
     def download_config_asset(self, asset_id: str, *, kind: str) -> Path:
         """Cache one owner-scoped Adapter/MatFilter on this authenticated Agent."""
@@ -2063,15 +2066,16 @@ class _ControlClient:
         """Upload one Agent-local Adapter/MatFilter under the task owner."""
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for configuration asset upload")
-        from core.user import current_user
-        from radar_sim_sdk import RadarSimClient
-
-        with RadarSimClient(
-            self._api_url,
-            user=str(owner or current_user()),
-            token=self._api_token,
-        ) as sdk:
-            return sdk.upload_config_asset(kind, source)
+        return self._api_binary_request(
+            "POST",
+            "/api/v1/config-assets",
+            owner=owner,
+            content=source.read_bytes(),
+            headers={
+                "X-Asset-Kind": str(kind),
+                "X-Asset-Filename": source.name,
+            },
+        )
 
     def upload_result_archive(
         self,
@@ -2293,6 +2297,38 @@ class _ControlClient:
             body = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self._api_url + path, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{method} {path} failed: {exc.code} {body_text}") from exc
+
+    def _api_binary_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        owner: str = "",
+        content: bytes = b"",
+        headers: dict[str, str] | None = None,
+    ) -> dict:
+        """Call a v1 upload endpoint without importing the optional SDK stack."""
+        from core.user import current_user
+
+        request_headers = {
+            "Accept": "application/json",
+            "X-Rsim-User": str(owner or current_user()),
+        }
+        if self._api_token:
+            request_headers["Authorization"] = f"Bearer {self._api_token}"
+        request_headers.update({str(key): str(value) for key, value in (headers or {}).items()})
+        request = urllib.request.Request(
+            self._api_url + path,
+            data=bytes(content),
+            headers=request_headers,
+            method=method,
+        )
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
