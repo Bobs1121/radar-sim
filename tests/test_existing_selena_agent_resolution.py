@@ -2,6 +2,7 @@ import json
 
 from cli.agent import _resolve_existing_v2_run_config, _run_task, _upload_resolution_config_assets
 from core.agent_policy import DEFAULT_FULL_CAPABILITIES, DEFAULT_LIGHT_CAPABILITIES
+from core.agent_bindings import make_workspace_path_id
 from core.api_v1 import ApiV1Service
 from core.control_service import ControlService
 from core.stage_binder import bind_existing_runtime_resolution
@@ -93,6 +94,37 @@ def test_existing_cluster_resolve_can_bind_light_agent(tmp_path):
         "jenkins_selena_build.bat"
     )
     assert bound["payload"]["package_build_script"].endswith("package.bat")
+
+
+def test_configured_one_click_agent_does_not_claim_unmatched_existing_folder(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config, _binary, _runtime, _data = _existing_config(tmp_path, target="cluster")
+    config["selena"]["code_path"] = "D:/new-user/repo"
+    control.register_agent(
+        "old-windows",
+        agent_id="old-windows-1",
+        capabilities=list(DEFAULT_LIGHT_CAPABILITIES),
+        metadata={
+            "node_kind": "windows_agent",
+            "windows_mode": "light",
+            "auto_configure": True,
+            "workspace_bindings": [
+                {
+                    "path_id": make_workspace_path_id("D:/old-user/repo"),
+                    "healthy": True,
+                }
+            ],
+            "asset_bindings": [],
+            "data_bindings": [],
+        },
+    )
+
+    job = api.submit_user_run("alice", config_payload=config)
+
+    assert control.bind_pending_run_config_resolution("old-windows-1") is None
+    assert job["waiting"]["reason"] == "windows_path_access_required"
+    assert job["waiting"]["connection_state"] == "connected_but_path_unavailable"
 
 
 def test_agent_uploads_local_simulation_assets_without_changing_user_config(tmp_path):

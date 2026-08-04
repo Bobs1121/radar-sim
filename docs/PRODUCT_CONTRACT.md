@@ -70,6 +70,8 @@ simulation:
 
 `target=auto` 不是第五种业务：调度器根据 Selena/data 路径可达性、在线能力和执行环境，在上述本地或 Cluster 路径中做选择，并把选择原因展示给用户。
 
+补充边界：`source=existing + target=cluster` 不进入编译环境依赖链，不要求用户安装 Visual Studio、CMake 或项目软件包依赖。若 Selena、Runtime、MatFilter 和数据已经位于 Cluster/Linux 可访问位置，完全不需要 Windows 组件；若其中任一路径只在用户 Windows 本地，则只需要轻量 Windows 连接组件完成读取和上传，不执行编译，也不检查编译依赖。
+
 ## 4. 部署形态
 
 | 部署形态 | 能力 | 明确不支持 |

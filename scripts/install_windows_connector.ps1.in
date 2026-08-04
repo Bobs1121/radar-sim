@@ -7,6 +7,14 @@ $ServerUrl = [Text.Encoding]::UTF8.GetString(
     [Convert]::FromBase64String("__RSIM_SERVER_URL_BASE64__")
 ).TrimEnd('/')
 $Mode = "__RSIM_WINDOWS_MODE__"
+$Owner = ""
+try {
+    if ($env:RSIM_OWNER_B64) {
+        $Owner = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:RSIM_OWNER_B64))
+    } else {
+        $Owner = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("__RSIM_OWNER_BASE64__"))
+    }
+} catch { $Owner = "" }
 $Base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME "AppData\Local" }
 $InstallRoot = Join-Path $Base "radar-sim"
 $AppRoot = Join-Path $InstallRoot "app"
@@ -90,7 +98,7 @@ try {
     New-Item -ItemType Directory -Force -Path $AppRoot | Out-Null
     Copy-Item -Path (Join-Path $Expanded '*') -Destination $AppRoot -Recurse -Force
     & (Join-Path $AppRoot "scripts\bootstrap.ps1") -Mode $Mode -ControlPlane linux `
-        -ServerUrl $ServerUrl -InstallRoot $InstallRoot -RegisterStartup -Start
+        -ServerUrl $ServerUrl -Owner $Owner -InstallRoot $InstallRoot -RegisterStartup -Start
     if ($LASTEXITCODE -ne 0) { Fail "The local component installation did not complete." }
 
     Write-Host "`nThis PC is connected. Return to the Web page and continue the task." -ForegroundColor Green

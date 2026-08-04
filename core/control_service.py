@@ -787,7 +787,14 @@ class ControlService:
             return None
 
     def bind_pending_run_config_resolution(self, agent_id: str) -> Optional[dict[str, Any]]:
-        """Bind one project-free resolver Stage by opaque workspace path id."""
+        """Bind one project-free resolver Stage by opaque workspace path id.
+
+        A one-click Agent may authorize its first local path, but only when it
+        has no existing healthy bindings.  Once a machine has bindings, it is
+        no longer a safe catch-all for arbitrary Windows paths: otherwise an
+        unrelated online Agent can claim a new user's job and fail immediately
+        when the submitted folder is not present on that machine.
+        """
         from core.agent_bindings import make_workspace_path_id
         from core.agent_asset_bindings import candidate_asset_binding_ids
 
@@ -815,6 +822,14 @@ class ControlService:
                     and item.get("healthy") is True
                     and str(item.get("id") or "").startswith("asset-root:sha256:")
                 }
+                data_ids = {
+                    str(item.get("id") or "")
+                    for item in metadata.get("data_bindings") or []
+                    if isinstance(item, dict)
+                    and item.get("healthy") is True
+                    and str(item.get("id") or "").startswith("data-root:sha256:")
+                }
+                has_existing_bindings = bool(path_ids or asset_ids or data_ids)
                 rows = conn.execute(
                     """
                     SELECT t.task_id,j.spec_json,j.resolved_spec_json
@@ -846,7 +861,9 @@ class ControlService:
                     if source == "existing":
                         # A Windows-local path can only be validated on the
                         # Agent. One-click Agents explicitly opt into first
-                        # task path configuration.
+                        # task path configuration, but an already configured
+                        # machine must not become a catch-all for another
+                        # user's local folders.
                         if not auto_configure:
                             continue
                         payload = (
@@ -878,7 +895,7 @@ class ControlService:
                         ):
                             matched = payload
                             break
-                        if fallback is None:
+                        if not has_existing_bindings and fallback is None:
                             fallback = payload
                         continue
                     if source != "build":
@@ -907,7 +924,7 @@ class ControlService:
                     if workspace_matches and asset_matches:
                         matched = payload
                         break
-                    if auto_configure and fallback is None:
+                    if auto_configure and not has_existing_bindings and fallback is None:
                         fallback = payload
                 candidate = matched or fallback
             finally:

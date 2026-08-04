@@ -10,6 +10,8 @@
 | 有 Windows 编译环境，不做本地仿真 | `light` | 本机授权代码路径编译，上传 Runtime Bundle | Cluster；上传完成后不依赖用户电脑在线 |
 | 有 Windows 本地仿真环境 | `full` | 本机编译或已有 Runtime Bundle | 本地；需要平台 Cluster 时仍由 Linux 中央入口调度 |
 
+`已有 Selena + Cluster` 是例外的轻量路径：它不需要 VS/编译脚本依赖。如果所有 Selena、Runtime、MatFilter 和数据路径都能被 Cluster 访问，用户不安装 Windows 组件；如果路径是 Windows 本地，则仅安装“文件访问/上传”连接组件，组件本身不承担编译。
+
 `light` 的策略不是 UI 约定：Agent capability policy 会拒绝 `simulation.local`、Cluster runtime/gateway、run/collect/finalize 等能力。`full` 才能声明本地仿真能力。Linux 永不声明 Selena build capability。
 
 ## Linux 一键部署

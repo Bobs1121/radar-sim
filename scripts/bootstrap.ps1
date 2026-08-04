@@ -41,6 +41,7 @@ param(
     [string]$AgentId = "",
     [string]$AgentToken = "",
     [string]$ApiToken = "",
+    [string]$Owner = "",
     [string]$InstallRoot = "",
     [switch]$SkipDeps,
     [switch]$SkipCheck,
@@ -140,6 +141,11 @@ $existing = $null
 if (Test-Path $ConfigPath) {
     try { $existing = Get-Content -Raw -Encoding UTF8 $ConfigPath | ConvertFrom-Json } catch { }
 }
+if (-not $Owner -and $existing -and $existing.owner) {
+    $Owner = [string]$existing.owner
+}
+$Owner = [string]$Owner.Trim()
+if ($Owner) { $env:RSIM_USER = $Owner }
 if (-not $AgentId) {
     $AgentId = if ($existing.agent_id) { [string]$existing.agent_id } else { "agent-$env:USERNAME-$env:COMPUTERNAME" }
 }
@@ -194,6 +200,7 @@ $installConfig = [ordered]@{
     control_plane = $ControlPlane
     server_url = $ServerUrl.TrimEnd('/')
     agent_id = $AgentId
+    owner = $Owner
     repo_root = $RepoRoot
     data_root = $DataRoot
     auth_file = ""
@@ -309,6 +316,7 @@ if (-not $SkipCheck) {
             Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/health" -TimeoutSec 5 | Out-Null
             $headers = @{}
             if ($AgentToken) { $headers.Authorization = "Bearer $AgentToken" }
+            if ($Owner) { $headers["X-Rsim-User"] = $Owner }
             $registration = @{
                 name = "$env:COMPUTERNAME-installer-check"
                 agent_id = $AgentId

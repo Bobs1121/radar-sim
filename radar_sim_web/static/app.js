@@ -13,6 +13,10 @@ const state = {
   capabilities: null,
   connectorAwait: null,
   accessToken: sessionStorage.getItem("rsimAccessToken") || "",
+  // In the no-auth test deployment, keep each browser's control-plane scope
+  // separate.  The value is opaque and is never shown as a business field;
+  // authenticated deployments ignore it in favor of the Bearer identity.
+  userId: browserUserId(),
   authenticationRequired: false,
   dataFolderFiles: [],
   uploadedDataPath: "",
@@ -35,6 +39,7 @@ class ApiError extends Error {
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
+  if (state.userId) headers.set("X-Rsim-User", state.userId);
   if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
   if (options.json !== undefined) headers.set("Content-Type", "application/json");
   const response = await fetch(`${API}${path}`, {
@@ -49,6 +54,22 @@ async function api(path, options = {}) {
     throw new ApiError(response.status, payload);
   }
   return payload;
+}
+
+function browserUserId() {
+  const key = "rsimBrowserUserId";
+  try {
+    const current = localStorage.getItem(key) || "";
+    if (/^web-[a-f0-9]{24,64}$/i.test(current)) return current;
+    const random = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
+      ? globalThis.crypto.randomUUID().replaceAll("-", "")
+      : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+    const value = `web-${random.slice(0, 32)}`;
+    localStorage.setItem(key, value);
+    return value;
+  } catch {
+    return "";
+  }
 }
 
 function showAuthenticationEntry(message = "需要访问令牌") {
@@ -609,12 +630,25 @@ function windowsWaitState(job, candidateStage = null) {
   const spec = job.spec || {};
   const source = spec.selena?.source || spec.selena?.mode || "auto";
   const target = selectedExecutionTarget(job);
-  const serverWaiting = job.waiting?.reason === "windows_connection_required" ? job.waiting : null;
-  if (serverWaiting && !hasWindowsCapability(serverWaiting.mode)) {
+  const serverWaiting = ["windows_connection_required", "windows_path_access_required"].includes(job.waiting?.reason)
+    ? job.waiting : null;
+  const pathMismatch = serverWaiting?.reason === "windows_path_access_required";
+  if (serverWaiting && (pathMismatch || !hasWindowsCapability(serverWaiting.mode))) {
     const full = serverWaiting.mode === "full";
     const build = !full && source === "build";
-    const reconnecting = serverWaiting.connection_state === "reconnecting"
-      || hasConfiguredWindows(serverWaiting.mode);
+    const reconnecting = !pathMismatch && (serverWaiting.connection_state === "reconnecting"
+      || hasConfiguredWindows(serverWaiting.mode));
+    if (pathMismatch) {
+      return {
+        mode: serverWaiting.mode,
+        reconnecting: false,
+        title: "当前在线电脑无法访问这些路径",
+        capability: "需要连接存放配置和数据的 Windows 电脑",
+        shortCapability: "本地路径访问能力",
+        reason: serverWaiting.message
+          || "当前在线的 Windows 电脑无法确认能访问本任务的本地路径。请在文件所在电脑一键连接，或改用 Cluster 可访问的共享路径。",
+      };
+    }
     return {
       mode: serverWaiting.mode,
       reconnecting,
@@ -627,7 +661,7 @@ function windowsWaitState(job, candidateStage = null) {
         ? "你选择了本地仿真，运行 Selena 和收集结果需要由这台 Windows 电脑完成。"
         : build
           ? "任务会编译当前代码工作区，再把 Selena 产物交给 Cluster；代码和编译脚本只在你的 Windows 电脑上可访问。"
-          : "配置中包含 Windows 本地路径，需要由这台电脑准备 Selena、Runtime 或数据，再交给 Cluster。",
+          : "已有 Selena 不需要安装 Visual Studio 或编译依赖；如果 Selena、Runtime、MatFilter 或数据在本机，只需连接本机完成读取/上传。全部路径放在 Cluster 可访问共享位置时，可以完全不安装 Windows 组件。",
     };
   }
   const paths = [
@@ -867,6 +901,7 @@ async function downloadWindowsConnector(jobId, mode, button, status) {
   status.textContent = "正在生成与当前服务匹配的安装程序…";
   try {
     const headers = new Headers();
+    if (state.userId) headers.set("X-Rsim-User", state.userId);
     if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
     const response = await fetch(`${API}/windows-connector/connect.cmd?mode=${encodeURIComponent(mode)}`, { headers });
     if (!response.ok) {

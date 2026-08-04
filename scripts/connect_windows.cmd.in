@@ -3,6 +3,7 @@ setlocal
 chcp 65001 >nul 2>nul
 set "RSIM_SERVER_B64=__RSIM_SERVER_URL_BASE64__"
 set "RSIM_CONNECTOR_MODE=__RSIM_WINDOWS_MODE__"
+set "RSIM_OWNER_B64=__RSIM_OWNER_BASE64__"
 echo Connecting this PC to radar-sim...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { $u=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:RSIM_SERVER_B64)); $f=Join-Path $env:TEMP ('connect-radar-sim-'+[Guid]::NewGuid().ToString('N')+'.ps1'); Invoke-WebRequest -UseBasicParsing -Uri ($u+'/api/v1/windows-connector/install.ps1?mode='+$env:RSIM_CONNECTOR_MODE) -OutFile $f -TimeoutSec 60; & $f; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE} } catch { Write-Host $_.Exception.Message -ForegroundColor Red; exit 1 } finally { if($f){Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue} }"
 if errorlevel 1 (

@@ -30,6 +30,7 @@ $RsimEntry = Join-Path $RepoRoot "rsim.py"
 if (-not (Test-Path $RsimEntry)) { throw "radar-sim entry point is missing; reconnect this PC from Web." }
 
 $env:RSIM_HOME = [string]$config.data_root
+$env:RSIM_USER = [string]$config.owner
 $env:RSIM_AGENT_TOKEN = [string]$secrets.agent_token
 $env:RSIM_API_TOKEN = [string]$secrets.api_token
 $serverUrl = ([string]$config.server_url).TrimEnd('/')

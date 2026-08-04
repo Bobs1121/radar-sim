@@ -41,7 +41,7 @@ def public_server_url(request_base_url: str) -> str:
     return candidate
 
 
-def render_installer(*, template: Path, server_url: str, mode: str) -> str:
+def render_installer(*, template: Path, server_url: str, mode: str, owner: str = "") -> str:
     if mode not in {"light", "full"}:
         raise WindowsConnectorError("connector mode must be light or full")
     try:
@@ -49,15 +49,16 @@ def render_installer(*, template: Path, server_url: str, mode: str) -> str:
     except OSError as exc:
         raise WindowsConnectorError("Windows connector installer template is unavailable") from exc
     encoded_url = base64.b64encode(server_url.encode("utf-8")).decode("ascii")
+    encoded_owner = base64.b64encode(str(owner or "").encode("utf-8")).decode("ascii")
     rendered = source.replace("__RSIM_SERVER_URL_BASE64__", encoded_url).replace(
         "__RSIM_WINDOWS_MODE__", mode,
-    )
+    ).replace("__RSIM_OWNER_BASE64__", encoded_owner)
     # Windows PowerShell 5.1 requires a BOM to reliably parse non-ASCII user
     # guidance in a downloaded UTF-8 script.
     return rendered if rendered.startswith("\ufeff") else "\ufeff" + rendered
 
 
-def render_launcher(*, template: Path, server_url: str, mode: str) -> str:
+def render_launcher(*, template: Path, server_url: str, mode: str, owner: str = "") -> str:
     if mode not in {"light", "full"}:
         raise WindowsConnectorError("connector mode must be light or full")
     try:
@@ -65,9 +66,10 @@ def render_launcher(*, template: Path, server_url: str, mode: str) -> str:
     except OSError as exc:
         raise WindowsConnectorError("Windows connector launcher template is unavailable") from exc
     encoded_url = base64.b64encode(server_url.encode("utf-8")).decode("ascii")
+    encoded_owner = base64.b64encode(str(owner or "").encode("utf-8")).decode("ascii")
     return source.replace("__RSIM_SERVER_URL_BASE64__", encoded_url).replace(
         "__RSIM_WINDOWS_MODE__", mode,
-    )
+    ).replace("__RSIM_OWNER_BASE64__", encoded_owner)
 
 
 __all__ = [

@@ -1,5 +1,20 @@
 # 已知问题（后续维护）
 
+## KI-0: 新用户本地路径被错误投递到旧 Windows Agent — 已修复
+
+**现象（2026-08-04）**：最新两个任务 `job_63b0b7c8844c`、`job_44dae55ce9d6` 均在 `resolve_spec` 阶段立即失败，错误为 `existing Selena folder does not exist or is not a directory`。两个任务的 Windows 本地路径均不在当前在线 Agent 上；任务仍被绑定到 `agent-HOZ2WX-WX8-C-0001A`，随后所有下游阶段被 `UPSTREAM_FAILED` 取消。
+
+**根因**：控制面只看到了“有一个 Windows Agent 在线”，而 `bind_pending_run_config_resolution()` 对 `auto_configure=true` 的 Agent 使用了无条件 first-use fallback。已配置过其他工作区的 Agent 也因此成为任意新任务的候选节点；Linux 无法在本地直接验证 Windows 路径，导致错误在 Agent 执行后才暴露。
+
+**修复**：
+
+- 只有“没有任何健康 workspace/data/asset binding 的全新 one-click Agent”才允许 first-use fallback；已有绑定的 Agent 必须命中本次任务的 opaque path/asset binding，不能抢占陌生路径。
+- Web/API 在 `resolve_spec` 阶段发现“Windows 在线但没有路径匹配”时，返回 `windows_path_access_required`，任务保持等待，不再伪装为可执行或直接失败；提示用户在存放文件的 Windows 电脑一键连接，或改用 Cluster 可访问路径。
+- 无鉴权测试服务的浏览器自动生成不可见的 `X-Rsim-User` scope；一键连接脚本把同一 scope 传给 Windows Agent，避免多个浏览器/用户共用默认 `hoz2wx` 数据库。
+- 认证部署仍以 Bearer 用户身份为准；浏览器 scope 不出现在 YAML、SDK 业务配置或用户界面。
+
+**回归证据**：相关 API/Agent 测试通过；`node --check radar_sim_web/static/app.js` 通过。仿真内部逻辑未改动。
+
 ## KI-1: 云端仿真（Cluster）端到端 — 已验证通过（历史 job），当前 cluster 排队
 
 **状态**：✅ 端到端链路已由历史 job `cloud_batch_0117`（2026-07-01 18:16）真实跑通。当前用相同数据+配置新提交的 `e2e_pass_cbna_0117` 因 cluster worker 排队未即时跑完（非 rsim bug）。
@@ -118,5 +133,4 @@ Linux UFW 需放行端口(8080 已放行;8877 需 `sudo ufw allow 8877/tcp`)。
 - **server create-job project 丢失 bug**：`rsim server create-job --project ovrs25` 和 `--payload-json '{"project":"x"}'` 的 project 曾被空 CLI 默认值覆盖，导致跨机投递无法传 project（违反「跨机投递优先传 project/dataset」约束）。`cli/server.py:_run_create_job` 改为 CLI 字段非空才覆盖 payload_json。回归测试 `tests/test_server_pyz.py::test_create_job_project_flag_lands_in_payload` / `test_create_job_payload_json_project_survives`。详见 HANDOFF.md。
 - **KI-3.1 server CLI UTF-8 打印**：见上。
 - **P1 可观测性 API**：`list_agents` 全链路（service/HTTP/CLI/web/remote client）补齐，runbook agent 注册验证步骤可用。见 DEVELOPMENT_PLAN.md P1。
-
 

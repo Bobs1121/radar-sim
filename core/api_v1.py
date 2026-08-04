@@ -247,8 +247,8 @@ class ApiV1Service:
             if not (existing_visible and runtime_visible) and not has_windows_build:
                 block(
                     "windows_selena_access_unavailable",
-                    "现有 Selena 产物和 Runtime XML 需要由已连接的 Windows 电脑读取并打包。",
-                    "在保存该 Selena 文件夹的电脑完成一键连接，或改用 Linux 可访问的共享位置。",
+                    "现有 Selena 产物和 Runtime XML 需要由已连接的 Windows 电脑读取并打包；这条路径不需要安装 Visual Studio 或编译依赖。",
+                    "在保存该 Selena 文件夹的电脑一键连接文件访问组件，或改用 Linux/Cluster 可访问的共享位置。",
                 )
 
         if selected_target == "cluster" and classify_data_path(config.data.path) == "shared":
@@ -1697,6 +1697,39 @@ class ApiV1Service:
             str(job.get("owner") or (job.get("metadata") or {}).get("owner") or "")
         )["capabilities"]
 
+        # A Windows capability is not enough for a local-path task.  The
+        # connected machine must either advertise the exact opaque binding or
+        # be a genuinely fresh one-click Agent with no prior bindings.  This
+        # prevents an unrelated configured laptop from looking "ready" and
+        # then failing on the first folder existence check.
+        if stage_type == "resolve_spec":
+            owner = str(job.get("owner") or (job.get("metadata") or {}).get("owner") or "")
+            if target == "local" and capabilities["windows_full"]["available"]:
+                if not self._has_compatible_run_config_agent(job, owner, selected_target="local"):
+                    return self._path_match_waiting(
+                        mode="full",
+                        capabilities=capabilities,
+                    )
+            elif (
+                target != "local"
+                and capabilities["windows_light"]["available"]
+                and any(
+                    classify_data_path(str(value or "")) == "agent"
+                    for value in (
+                        data.get("path"),
+                        selena.get("existing_path"),
+                        selena.get("runtime_xml"),
+                        simulation.get("adapter_file"),
+                        simulation.get("mat_filter"),
+                    )
+                )
+                and not self._has_compatible_run_config_agent(job, owner, selected_target=target)
+            ):
+                return self._path_match_waiting(
+                    mode="light",
+                    capabilities=capabilities,
+                )
+
         mode = ""
         message = ""
         if target == "local" and not capabilities["windows_full"]["available"]:
@@ -1755,6 +1788,118 @@ class ApiV1Service:
             "action": {
                 "type": "wait_windows_reconnect" if reconnecting else "connect_windows",
                 "label": "Wait for automatic reconnection" if reconnecting else "Connect this Windows computer",
+                "mode": mode,
+            },
+        }
+
+    def _has_compatible_run_config_agent(
+        self,
+        job: dict[str, Any],
+        owner: str,
+        *,
+        selected_target: str,
+    ) -> bool:
+        """Return whether an online Windows Agent can safely claim resolve_spec.
+
+        Matching is deliberately path-free on the wire: the server computes
+        the same opaque IDs as the Agent advertises.  A fresh one-click Agent
+        is accepted only when it has no healthy bindings, so an old configured
+        machine cannot claim another user's arbitrary local folders.
+        """
+        from core.agent_bindings import make_workspace_path_id
+        from core.agent_asset_bindings import candidate_asset_binding_ids
+
+        spec = dict(job.get("spec") or (job.get("payload") or {}).get("spec") or {})
+        selena = dict(spec.get("selena") or {})
+        source = str(selena.get("source") or selena.get("mode") or "")
+        code_path = str(selena.get("code_path") or "").strip()
+        runtime_xml = str(selena.get("runtime_xml") or "").strip()
+        simulation = dict(spec.get("simulation") or {})
+        asset_candidates: set[str] = set()
+        for value in (
+            runtime_xml,
+            selena.get("existing_path"),
+            simulation.get("adapter_file"),
+            simulation.get("mat_filter"),
+        ):
+            asset_candidates.update(candidate_asset_binding_ids(str(value or "")))
+        expected_path_id = make_workspace_path_id(code_path) if code_path else ""
+        owner_token = str(owner or "").strip().casefold()
+        now = float(self.now_fn())
+        for agent in self._control(owner).list_agents():
+            metadata = dict(agent.get("metadata") or {})
+            node_kind = str(metadata.get("node_kind") or metadata.get("node.kind") or "")
+            if node_kind not in {"windows_agent", "windows_full"}:
+                continue
+            if selected_target == "local" and node_kind != "windows_full":
+                continue
+            if str(agent.get("status") or "") == "offline":
+                continue
+            last_heartbeat = float(agent.get("last_heartbeat") or 0.0)
+            if last_heartbeat and now - last_heartbeat > 120:
+                continue
+            registered_user = str(metadata.get("user") or "").strip().casefold()
+            if registered_user and owner_token and registered_user != owner_token:
+                continue
+            workspace_ids = {
+                str(item.get("path_id") or "")
+                for item in metadata.get("workspace_bindings") or []
+                if isinstance(item, dict)
+                and item.get("healthy") is True
+            }
+            asset_ids = {
+                str(item.get("id") or "")
+                for item in metadata.get("asset_bindings") or []
+                if isinstance(item, dict)
+                and item.get("healthy") is True
+            }
+            data_ids = {
+                str(item.get("id") or "")
+                for item in metadata.get("data_bindings") or []
+                if isinstance(item, dict)
+                and item.get("healthy") is True
+            }
+            has_bindings = bool(workspace_ids or asset_ids or data_ids)
+            auto_configure = metadata.get("auto_configure") is True
+            if auto_configure and not has_bindings:
+                return True
+            # Legacy/manual Agents predate the binding advertisement.  Keep
+            # their explicit registration compatible; the stricter guard is
+            # for the one-click auto-configured pool that caused this failure.
+            if not auto_configure and not has_bindings:
+                return True
+            if source == "existing":
+                if expected_path_id and expected_path_id in workspace_ids:
+                    return True
+                if asset_candidates.intersection(asset_ids):
+                    return True
+                continue
+            if source == "build":
+                workspace_match = bool(expected_path_id and expected_path_id in workspace_ids)
+                asset_match = bool(asset_candidates.intersection(asset_ids))
+                if workspace_match and asset_match:
+                    return True
+        return False
+
+    @staticmethod
+    def _path_match_waiting(*, mode: str, capabilities: dict[str, Any]) -> dict[str, Any]:
+        configured = bool(
+            capabilities.get("windows_light", {}).get("configured_count")
+            or capabilities.get("windows_full", {}).get("configured_count")
+        )
+        return {
+            "reason": "windows_path_access_required",
+            "mode": mode,
+            "stage": "resolve_spec",
+            "missing_capability": "windows_full" if mode == "full" else "windows_light",
+            "connection_state": "connected_but_path_unavailable" if configured else "not_configured",
+            "message": (
+                "在线 Windows 连接已存在，但无法确认它能访问本任务的本地路径。"
+                "请在文件所在电脑一键连接，或改用 Cluster 可直接访问的共享路径。"
+            ),
+            "action": {
+                "type": "connect_windows",
+                "label": "连接存放文件的 Windows 电脑",
                 "mode": mode,
             },
         }

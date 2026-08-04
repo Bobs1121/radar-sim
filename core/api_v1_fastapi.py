@@ -349,6 +349,7 @@ def create_app(
                 template=root / "scripts" / "install_windows_connector.ps1.in",
                 server_url=server_url,
                 mode=mode,
+                owner=owner(request),
             )
         except WindowsConnectorError as exc:
             raise ApiV1Error(
@@ -380,6 +381,7 @@ def create_app(
                 template=root / "scripts" / "connect_windows.cmd.in",
                 server_url=server_url,
                 mode=mode,
+                owner=owner(request),
             )
         except WindowsConnectorError as exc:
             raise ApiV1Error(
