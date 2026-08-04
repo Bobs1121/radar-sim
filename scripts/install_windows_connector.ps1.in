@@ -25,6 +25,23 @@ $Expanded = Join-Path $WorkRoot "package"
 function Step([string]$message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
 function Fail([string]$message) { Write-Host "`nConnection failed: $message" -ForegroundColor Red; exit 1 }
 
+function Get-Sha256([string]$Path) {
+    # Do not depend on the PowerShell Utility module here.  A launcher started
+    # from PowerShell 7 can put its module directory ahead of Windows
+    # PowerShell 5.1's module path, where the usual PowerShell hash command is
+    # not available.  The
+    # .NET implementation is present on every supported Windows host.
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        return ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        $sha.Dispose()
+    }
+}
+
 function Find-Python310 {
     foreach ($candidate in @("python", "py")) {
         try {
@@ -85,7 +102,7 @@ try {
     if ($expectedHash -notmatch '^sha256:[0-9a-f]{64}$') {
         Fail "The service did not provide a valid package checksum."
     }
-    $actualHash = "sha256:" + (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actualHash = "sha256:" + (Get-Sha256 -Path $Archive)
     if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
         Fail "The downloaded package checksum does not match the service."
     }

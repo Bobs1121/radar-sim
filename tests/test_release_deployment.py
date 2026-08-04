@@ -91,9 +91,10 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "supervisor will keep retrying" in starter
     assert "-not $Supervise" in starter
     assert "X-Content-SHA256" in (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
-    assert "Get-FileHash" in (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
-    assert "/api/v1/capabilities" in bootstrap
     connector = (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
+    assert "Get-Sha256" in connector
+    assert "Get-FileHash" not in connector
+    assert "/api/v1/capabilities" in bootstrap
     launcher = (ROOT / "scripts" / "connect_windows.cmd.in").read_text(encoding="utf-8")
     assert "Python.Python.3.12" in connector
     assert "--silent" in connector
