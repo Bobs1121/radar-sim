@@ -7,6 +7,14 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 ## 0. 2026-08-04 当前发布交接（优先阅读）
 
+### 2026-08-04 无 Windows Agent 的 Cluster 黑盒验证
+
+- 已在验证机卸载 Windows 连接组件：移除 `RadarSimConnector-HOZ2WX` 计划任务、监督进程、残留 Agent 进程、`app` 程序目录和本地凭证；用户代码仓、Selena、Runtime 和 `%LOCALAPPDATA%\\radar-sim\\data` 保留。
+- 复用 `job_d2c7917f0c90` 的用户配置，以已登记的 Selena Bundle 和 Cluster 数据集通过 Linux API 模拟 SDK 提交，生成 `job_4938c5511c4a`。
+- 无 Windows Agent 时实际流程：`resolve_spec`/`prepare_source`/`build_selena`/`register_artifact` 跳过；`environment_check`、`prepare_data`、`preflight`、`run_simulation`、`collect_results`、`finalize_manifest` 全部成功。
+- 结果：`status=succeeded`，Cluster Run `cluster-run:46a382a648ec424ebf0b94c53958f2f6`，结果引用 `result:sha256:7f9389a4e786c0f6d0d5821be43c7a98019870cf594d191fe2e75962341eb047`，结果压缩包可下载并包含 MF4、`selena.log`、`result.ini` 等文件。
+- 观察到并修复一个提交响应时序问题：已准备 Bundle 且数据/资产在 Cluster 时，初始响应曾短暂误报 Windows 等待；`6967938` 后仅仍在 Windows 本地的数据或资产才触发等待。
+
 ### 本轮目标与边界
 
 - 当前首要产品是一个 Linux 控制面：Web 与 Python SDK 共用 `/api/v1`，接收同一份 `UserRunConfig 2.0` YAML。
@@ -36,7 +44,7 @@ description: 项目现状、架构、已知问题和后续 TODO
 - 回归测试：路径/绑定/SDK 组合 → `82 passed, 3 skipped, 1 warning`；V1 服务/路由组合 → `85 passed, 1 warning`；`node --check radar_sim_web/static/app.js` 通过。
 - 线上服务：`http://10.190.171.44:8877`，systemd user service `radar-sim-v1.service`，当前单一监听进程，`GET /api/v1/health` 返回 200。
 - 新用户无 Agent 的实际验证：能力快照只显示 Cluster 可用、不显示他人的 Windows Agent；提交含 Windows 本地路径的 `existing + cluster` 配置返回 `windows_path_access_required`，并明确“不需要 Visual Studio 或编译依赖，只需要文件读取/上传连接”。
-- 线上发布以 `origin/main` 当前提交 `4ca30e4` 为基线；未把用户的 `output/`、`.claude/` 等未跟踪诊断产物纳入提交。
+- 线上发布以 `origin/main` 当前提交 `6967938` 为基线；未把用户的 `output/`、`.claude/` 等未跟踪诊断产物纳入提交。
 
 ### 后续不得偏移
 
