@@ -43,6 +43,9 @@ nav { display: flex; align-self: stretch; gap: 4px; }
 .api-state { justify-self: end; color: var(--muted); font-size: 12px; }
 .api-state.ok { color: var(--success); }
 .api-state.error { color: var(--danger); }
+.api-state.local-offline { color: var(--warning); }
+.api-state.local-reconnecting { color: var(--warning); }
+.connection-state-group { display: grid; justify-items: end; gap: 1px; min-width: 118px; }
 .connection-tools { justify-self: end; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .auth-entry { display: flex; align-items: center; gap: 6px; }
 .auth-entry label { color: var(--muted); font-size: 12px; white-space: nowrap; }
@@ -169,6 +172,7 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
 .windows-connect-callout .callout-reassurance { color: #765b2a; font-size: 12px; }
 .windows-connect-actions { display: grid; justify-items: end; gap: 7px; }
 .windows-connect-actions small { max-width: 230px; color: #765b2a; text-align: right; }
+.create-windows-connect-callout { margin-top: 0; }
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 24px; margin-top: 22px; }
 .detail-section h3 { margin: 0 0 12px; font-size: 15px; }
 .stage-list { display: grid; gap: 8px; }

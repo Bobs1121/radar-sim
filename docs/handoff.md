@@ -7,6 +7,16 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 ## 0. 2026-08-04 当前发布交接（优先阅读）
 
+### 2026-08-04 纯净新用户环境与端到端验证（最新）
+
+- 已把验证机恢复为真正的新用户状态：删除 `%LOCALAPPDATA%\\radar-sim` 整个目录（程序、数据缓存、凭据、安装信息全部删除）、`RadarSimConnector-HOZ2WX` 计划任务和所有 Radar Sim Agent 进程；用户代码仓、Selena 产物、MF4 数据和 Visual Studio 未动。
+- Linux 控制库中已删除该电脑最后一条 Windows Agent 注册，当前 Windows Agent 数为 `0`；保留 Linux Stage executor 和 Cluster gateway。删除前备份：`/home/hoz2wx/.rsim-v1-git-smoke/artifacts/.store/control_v1.db.before-new-user-agent-cleanup-20260804173637`。
+- `hoz2wx` 的旧任务历史已清空（75 个 job、750 个 task 及其事件/日志）；其他用户任务未删除。清理前基线 `job_d2c7917f0c90` 已保存到本地 `output/`，数据库也有独立备份。
+- 纯净安装黑盒使用独立身份 `fresh-user-20260804`：从 Linux Web 一键安装 light 连接组件，提交已有 Selena 文件夹、本地 Runtime、本地 MatFilter 和一条新的本地 MF4，任务 `job_b38ca58d9ddf` 全流程成功。`resolve_spec` 打包 Selena/DLL/Runtime，`prepare_data` 上传 `443266984` bytes MF4，随后 Agent 可断开；Cluster Run `cluster-run:b56be79eed5b454892116ea8c47bbe93` 成功，结果 `result:sha256:7257c578a8143f06acf118b97a403103155ca8935bf1f299fc755a9f3da6d9e3`，1/1 数据成功。
+- 此次暴露的产品问题不是后端不会等待 Agent，而是 Web 在提交前把 `windows_path_access_required` 仅显示成普通配置错误；任务未创建时用户看不到任务详情中的“一键连接本机”。当前修复在新建任务页根据执行目标、Selena 来源和 `C:/D:` 路径主动显示“一键连接本机”。
+- 右上角状态已拆开：`Linux 服务已连接` 只表示浏览器可访问控制面；另行显示 `本机未连接`、`本机正在自动重连` 或 `本机已连接`，不再把服务连接误解成 Windows Agent。
+- 回归：`node --check radar_sim_web/static/app.js` 通过；`tests/test_api_v1_fastapi.py + tests/test_api_v1_service.py` 共 `74 passed`。
+
 ### 2026-08-04 Light Agent 上传黑盒验证与日志修复（最新）
 
 - 发布提交：`0ffec87`，已部署到 `http://10.190.171.44:8877`；服务 `radar-sim-v1.service` 为 `active`，`GET /api/v1/health` 返回 `ok=true`。

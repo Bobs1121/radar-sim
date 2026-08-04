@@ -91,7 +91,7 @@ async function saveAccessToken() {
   else sessionStorage.removeItem("rsimAccessToken");
   try {
     await refreshCapabilities();
-    byId("apiState").textContent = "服务已连接";
+    byId("apiState").textContent = "Linux 服务已连接";
     byId("apiState").className = "api-state ok";
     if (state.view === "tasks") await loadJobs();
   } catch (error) {
@@ -112,6 +112,21 @@ function hasConfiguredWindows(mode, capabilities = state.capabilities) {
     || Number(snapshot.windows_full?.configured_count || 0) > 0;
 }
 
+function updateConnectionStates(capabilities = state.capabilities) {
+  const local = byId("windowsState");
+  if (!local) return;
+  const snapshot = capabilities?.capabilities || capabilities || {};
+  const connected = Boolean(snapshot.windows_light?.available || snapshot.windows_full?.available);
+  const configured = Number(snapshot.windows_light?.configured_count || 0) > 0
+    || Number(snapshot.windows_full?.configured_count || 0) > 0;
+  local.textContent = connected
+    ? "本机已连接"
+    : configured ? "本机正在自动重连" : "本机未连接";
+  local.className = connected
+    ? "api-state ok"
+    : configured ? "api-state local-reconnecting" : "api-state local-offline";
+}
+
 async function refreshCapabilities() {
   if (state.capabilitiesRequestInFlight) return state.capabilities;
   state.capabilitiesRequestInFlight = true;
@@ -119,6 +134,8 @@ async function refreshCapabilities() {
     const previous = state.capabilities;
     const current = await api("/capabilities");
     state.capabilities = current;
+    updateConnectionStates(current);
+    updateCreateWindowsCallout();
     const waiting = state.connectorAwait;
     if (waiting && !hasWindowsCapability(waiting.mode, previous) && hasWindowsCapability(waiting.mode, current)) {
       state.connectorAwait = null;
@@ -128,6 +145,59 @@ async function refreshCapabilities() {
   } finally {
     state.capabilitiesRequestInFlight = false;
   }
+}
+
+function createFormWindowsRequirement() {
+  const target = selectedValue("target") || "auto";
+  const source = byId("selenaSource")?.value || "build";
+  const paths = [
+    "dataPath", "codePath", "selenaBuildScript", "packageBuildScript",
+    "existingPath", "runtimeXml", "adapterFile", "matFilter",
+  ].map((id) => byId(id)?.value || "");
+  const usesWindowsPath = paths.some(isWindowsLocalPath);
+  if (target === "local" && !hasWindowsCapability("full")) {
+    return {
+      mode: "full",
+      title: "本地仿真需要连接这台电脑",
+      capability: "缺少本地仿真能力",
+      reason: "运行 Selena 和收集结果需要由这台 Windows 电脑完成。",
+    };
+  }
+  if (source === "build" && !hasWindowsCapability("light")) {
+    return {
+      mode: "light",
+      title: "本地编译需要连接这台电脑",
+      capability: "缺少本机编译和文件访问能力",
+      reason: "代码仓和编译脚本只在 Windows 电脑上可访问；完成一次连接后由 Linux 自动调度编译和上传。",
+    };
+  }
+  if (usesWindowsPath && !hasWindowsCapability("light")) {
+    return {
+      mode: "light",
+      title: "本地文件需要连接这台电脑",
+      capability: "缺少本机文件访问和上传能力",
+      reason: "配置包含 C:/ 或 D:/ 本地路径，需要这台电脑读取 Selena、Runtime、MatFilter 或数据并交给 Cluster。已有 Selena 不需要 Visual Studio。",
+    };
+  }
+  return null;
+}
+
+function updateCreateWindowsCallout() {
+  const panel = byId("createWindowsCallout");
+  if (!panel) return;
+  const requirement = createFormWindowsRequirement();
+  panel.hidden = !requirement;
+  panel.dataset.mode = requirement?.mode || "";
+  if (!requirement) return;
+  byId("createWindowsTitle").textContent = requirement.title;
+  byId("createWindowsCapability").textContent = requirement.capability;
+  byId("createWindowsReason").textContent = requirement.reason;
+  const configured = hasConfiguredWindows(requirement.mode);
+  const button = byId("connectWindowsFromCreate");
+  button.textContent = configured ? "重新连接本机" : "一键连接本机";
+  byId("createWindowsStatus").textContent = configured
+    ? "本机已经配置过，通常会自动恢复；长时间未连接时可重新下载连接程序"
+    : "安装一次，后续开机自动连接";
 }
 
 async function uploadConfigAsset(kind, file, targetId) {
@@ -340,6 +410,7 @@ function updateConditionalFields() {
   byId("workspaceEvidenceHint").textContent = source === "build"
     ? "本地编译需要代码仓和 Selena 编译脚本；软件包脚本可选，用于补充依赖线索。"
     : "以下代码仓和脚本为可选识别证据；填写后系统会与 Selena/Runtime 交叉校验，不一致时阻止任务。";
+  updateCreateWindowsCallout();
 }
 
 function updateRouteSummary() {
@@ -357,6 +428,7 @@ function updateRouteSummary() {
   byId("finalSelenaSummary").textContent = `Selena 来源：${source === "existing" ? "已有产物" : "本地编译"}`;
   byId("routeSummary").textContent = `${selenaText}，${targetText}`;
   updateImportedSelectionWarning(target, source);
+  updateCreateWindowsCallout();
 }
 
 function updateImportedSelectionWarning(target, source) {
@@ -1148,6 +1220,7 @@ async function initialize() {
   byId("adapterUpload").addEventListener("change", (event) => uploadConfigAsset("adapter", event.target.files[0], "adapterFile"));
   byId("chooseMatFilter").addEventListener("click", () => byId("matFilterUpload").click());
   byId("matFilterUpload").addEventListener("change", (event) => uploadConfigAsset("mat_filter", event.target.files[0], "matFilter"));
+  byId("simulationForm").addEventListener("input", updateCreateWindowsCallout);
   byId("simulationForm").addEventListener("submit", submitCurrentSpec);
   byId("validateSpec").addEventListener("click", () => validateCurrentSpec().catch(() => {}));
   byId("importYaml").addEventListener("click", () => byId("yamlFile").click());
@@ -1156,6 +1229,11 @@ async function initialize() {
   byId("refreshJobs").addEventListener("click", loadJobs);
   byId("statusFilter").addEventListener("change", loadJobs);
   byId("saveToken").addEventListener("click", saveAccessToken);
+  byId("connectWindowsFromCreate").addEventListener("click", () => {
+    const button = byId("connectWindowsFromCreate");
+    const status = byId("createWindowsStatus");
+    downloadWindowsConnector("", byId("createWindowsCallout").dataset.mode || "light", button, status);
+  });
   byId("accessToken").addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveAccessToken();
   });
@@ -1174,11 +1252,12 @@ async function initialize() {
         await saveAccessToken();
       }
     } else {
-      byId("apiState").textContent = health.ok ? "服务已连接" : "服务异常";
+      byId("apiState").textContent = health.ok ? "Linux 服务已连接" : "Linux 服务异常";
       byId("apiState").className = `api-state ${health.ok ? "ok" : "error"}`;
+      if (health.ok) await refreshCapabilities();
     }
   } catch (error) {
-    byId("apiState").textContent = "服务连接失败";
+    byId("apiState").textContent = "Linux 服务连接失败";
     byId("apiState").className = "api-state error";
     showToast(error.message, 5000);
   }

@@ -27,7 +27,10 @@
         <input id="accessToken" type="password" autocomplete="off" placeholder="粘贴个人令牌">
         <button type="button" class="button secondary" id="saveToken">连接</button>
       </div>
-      <div class="api-state" id="apiState" role="status">正在连接服务</div>
+      <div class="connection-state-group" aria-label="服务连接状态">
+        <div class="api-state" id="apiState" role="status">正在连接 Linux 服务</div>
+        <div class="api-state local-state" id="windowsState" role="status">正在检查本机连接</div>
+      </div>
     </div>
   </header>
 
@@ -157,6 +160,19 @@
             </div>
           </section>
 
+          <section id="createWindowsCallout" class="windows-connect-callout create-windows-connect-callout" role="status" hidden>
+            <div>
+              <span class="callout-eyebrow">首次使用准备</span>
+              <h3 id="createWindowsTitle">需要连接这台电脑</h3>
+              <strong id="createWindowsCapability">缺少本机文件访问能力</strong>
+              <p id="createWindowsReason">当前配置需要读取 Windows 本地路径。</p>
+              <p class="callout-reassurance">只需安装一次，后续开机自动连接；不会要求你配置 Agent、服务地址或令牌。</p>
+            </div>
+            <div class="windows-connect-actions">
+              <button type="button" class="button primary" id="connectWindowsFromCreate">一键连接本机</button>
+              <small id="createWindowsStatus">安装完成后可直接继续检查和提交当前配置</small>
+            </div>
+          </section>
           <div id="formError" class="notice error" role="alert" hidden></div>
           <div class="submit-bar">
             <div>
