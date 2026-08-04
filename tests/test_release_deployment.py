@@ -86,6 +86,8 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "Get-ConnectorProcessId" in bootstrap
     assert "The background connector did not stay running" in bootstrap
     assert "NO_PROXY" in starter
+    assert "supervisor will keep retrying" in starter
+    assert "-not $Supervise" in starter
     assert "X-Content-SHA256" in (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
     assert "Get-FileHash" in (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
     assert "/api/v1/capabilities" in bootstrap

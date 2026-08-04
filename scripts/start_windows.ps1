@@ -82,13 +82,22 @@ if ([string]$config.mode -eq "full" -and $controlPlane -eq "local") {
     if ($server) { Write-Host "Full Web/API started: $serverUrl/ (PID $($server.Id))." -ForegroundColor Green }
     if (-not $NoBrowser) { Start-Process "$serverUrl/" }
 } else {
+    $controlPlaneHealthy = $false
     try {
         Invoke-RestMethod -Method Get -Uri "$serverUrl/api/v1/health" -TimeoutSec 5 | Out-Null
+        $controlPlaneHealthy = $true
     } catch {
-        throw "Linux control plane is unavailable: $serverUrl"
+        if (-not $Supervise) {
+            throw "Linux control plane is unavailable: $serverUrl"
+        }
+        Write-Warning "Linux control plane is temporarily unavailable: $serverUrl. The supervisor will keep retrying."
     }
-    Write-Host "$($config.mode) Agent will use Linux control plane: $serverUrl/" -ForegroundColor Green
-    if (-not $NoBrowser) { Start-Process "$serverUrl/" }
+    if ($controlPlaneHealthy) {
+        Write-Host "$($config.mode) Agent will use Linux control plane: $serverUrl/" -ForegroundColor Green
+    } else {
+        Write-Host "$($config.mode) Agent is starting in reconnect mode for Linux control plane: $serverUrl/" -ForegroundColor Yellow
+    }
+    if (-not $NoBrowser -and $controlPlaneHealthy) { Start-Process "$serverUrl/" }
 }
 
 if ($Background) {
