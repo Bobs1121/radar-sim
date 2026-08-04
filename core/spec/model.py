@@ -8,27 +8,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from core.spec.yaml_codec import dump_yaml, load_yaml_mapping
+from core.path_normalization import normalize_path_text
 
 SelenaMode = Literal["auto", "current_workspace", "branch", "existing"]
 SimulationTarget = Literal["auto", "local", "cluster"]
 
 
 def _normalize_path(value: str) -> str:
-    text = value.strip().replace("\\", "/")
-    scheme_sep = "://"
-    if scheme_sep in text:
-        scheme, rest = text.split(scheme_sep, 1)
-        return f"{scheme}{scheme_sep}{re.sub('/+', '/', rest)}"
-    is_unc = text.startswith("//")
-    collapsed = re.sub("/+", "/", text)
-    return f"/{collapsed}" if is_unc and not collapsed.startswith("//") else collapsed
+    return normalize_path_text(value)
 
 
 def _non_empty(value: str, field_name: str) -> str:

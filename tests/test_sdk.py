@@ -41,6 +41,18 @@ def test_sdk_validate_and_submit_share_spec_hash_with_web_json(tmp_path):
     assert sdk.submit(spec, dry_run=True, idempotency_key="sdk-key").id == job.id
 
 
+def test_sdk_downloads_one_time_windows_connector_for_current_scope(tmp_path):
+    sdk, _ = make_sdk(tmp_path)
+    target = sdk.download_windows_connector(tmp_path, mode="light")
+
+    assert target.name == "RadarSim-Connect-Windows.cmd"
+    content = target.read_text(encoding="utf-8")
+    assert "install.ps1?mode=" in content
+    assert "RSIM_CONNECTOR_MODE=light" in content
+    assert "__RSIM_SERVER_URL_BASE64__" not in content
+    assert "__RSIM_OWNER_BASE64__" not in content
+
+
 def test_sdk_and_web_share_project_free_run_config_contract(tmp_path):
     sdk, _ = make_sdk(tmp_path)
     config = UserRunConfig.from_dict(run_config_dict())

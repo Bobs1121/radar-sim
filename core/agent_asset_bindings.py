@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable
 
 from core.agent_bindings import default_agent_binding_db_path
+from core.path_normalization import normalize_path_text, path_token
 
 
 class AgentAssetBindingError(ValueError):
@@ -38,7 +39,7 @@ def make_asset_binding_id(root_path: str) -> str:
 
 def candidate_asset_binding_ids(asset_path: str) -> tuple[str, ...]:
     """Return exact parent/ancestor root IDs without exposing any path."""
-    text = str(asset_path or "").strip()
+    text = normalize_path_text(asset_path)
     windows = PureWindowsPath(text)
     if windows.is_absolute() and windows.drive:
         path = windows
@@ -196,9 +197,7 @@ class AgentAssetBindingStore:
 
 
 def _normalized_path_token(value: str) -> str:
-    text = str(value or "").strip().replace("\\", "/")
-    text = re.sub(r"/+", "/", text).rstrip("/")
-    return os.path.normcase(text).casefold()
+    return path_token(value)
 
 
 def _is_contained(root: Path, target: Path) -> bool:

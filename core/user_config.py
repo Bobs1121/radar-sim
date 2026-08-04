@@ -11,23 +11,17 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from core.spec.yaml_codec import dump_yaml, load_yaml_mapping
+from core.path_normalization import normalize_path_text
 
 
 def _path(value: str) -> str:
-    text = str(value or "").strip().replace("\\", "/")
-    if text.startswith("//"):
-        return "//" + re.sub(r"/+", "/", text[2:])
-    if "://" in text:
-        scheme, rest = text.split("://", 1)
-        return scheme + "://" + re.sub(r"/+", "/", rest)
-    return re.sub(r"/+", "/", text)
+    return normalize_path_text(value)
 
 
 class _Frozen(BaseModel):

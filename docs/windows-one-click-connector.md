@@ -32,6 +32,8 @@
 - 后台监督进程负责初次网络不可用时持续重连，并用用户级互斥锁避免重复启动。
 - 安装完成必须由 `/api/v1/capabilities` 确认对应 Windows 能力上线，不能只依靠安装探测注册判断成功。
 - Linux 服务地址会自动加入连接进程的 `NO_PROXY`，避免公司代理错误接管内网 IP。
+- 电脑重启后，用户登录 Windows 即由已注册的计划任务启动连接；不需要重新下载、重新配对或重新填写 YAML。
+- 电脑关机、睡眠、尚未登录或网络隔离时，Linux/Web/SDK 不能远程启动本机进程或唤醒电源；任务保持“等待连接/自动重连”，电脑恢复并登录后由连接组件继续。
 
 ## 当前限制和安全边界
 
@@ -49,16 +51,27 @@ SDK 只是 Linux 控制面的调用客户端，不会把编译器或 Selena 仿�
 | Linux/服务器 | `python -m pip install "radar-sim[sdk]"`；共享路径或 Linux 可读路径即可，完全不需要 Windows 组件 | 把输入放到 Cluster 可访问共享位置，或在实际存放文件的 Windows 电脑一键连接 `light/full`；Linux 不读取 `C:/`、`D:/` |
 | Windows 集成产品 | 同样安装 `radar-sim[sdk]`；SDK 会将本地已有 Selena 目录、Runtime、可选资产和 Cluster 数据按需上传 | `source=build` 或 `target=local` 时，先一次性连接对应 `light/full` 组件；SDK 进程本身不承担持续编译/本地仿真调度 |
 
-在没有 Web 的 SDK 集成中，仍可从 Linux 服务下载同一个一次性连接入口（当前可信内网、未开启认证的服务）：
+在没有 Web 的 SDK 集成中，优先使用 SDK 下载同一个一次性连接入口（当前可信内网、未开启认证的服务）：
+
+```python
+from pathlib import Path
+from radar_sim_sdk import RadarSimClient
+
+with RadarSimClient("http://linux-rsim:8877", user="alice") as client:
+    launcher = client.download_windows_connector(
+        Path(r"C:\Temp\RadarSim-Connect-Windows.cmd"),
+        mode="light",       # 本地编译/上传；本地仿真使用 full
+    )
+    print(launcher)
+```
+
+然后只在实际的 Windows 电脑上执行一次下载的 `.cmd`：
 
 ```powershell
-$h = @{ "X-Rsim-User" = "alice" }
-Invoke-WebRequest `
-  -Headers $h `
-  -Uri "http://linux-rsim:8877/api/v1/windows-connector/connect.cmd?mode=light" `
-  -OutFile "$env:TEMP\RadarSim-连接本机.cmd"
-& "$env:TEMP\RadarSim-连接本机.cmd"
+& "C:\Temp\RadarSim-Connect-Windows.cmd"
 ```
+
+如果集成方不方便调用 SDK，也可以用同样的 `Invoke-WebRequest` 请求下载脚本；两种方式生成的内容完全相同。
 
 完成一次连接后，SDK 只需要提交原来的 YAML：
 

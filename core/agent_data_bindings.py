@@ -14,6 +14,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Callable
 
 from core.agent_bindings import default_agent_binding_db_path
+from core.path_normalization import path_token, normalize_path_text
 
 
 class AgentDataBindingError(ValueError):
@@ -37,7 +38,7 @@ def make_data_binding_id(project: str, root_path: str) -> str:
 
 def candidate_data_binding_ids(project: str, data_path: str) -> tuple[str, ...]:
     """Return exact/ancestor IDs central can compare to path-free adverts."""
-    text = str(data_path or "").strip()
+    text = normalize_path_text(data_path)
     path = PureWindowsPath(text)
     if not path.is_absolute() or not path.drive:
         return ()
@@ -184,9 +185,7 @@ class AgentDataBindingStore:
 
 
 def _normalized_path_token(value: str) -> str:
-    text = str(value or "").strip().replace("\\", "/")
-    text = re.sub(r"/+", "/", text).rstrip("/")
-    return os.path.normcase(text).casefold()
+    return path_token(value)
 
 
 def _is_contained(root: Path, target: Path) -> bool:

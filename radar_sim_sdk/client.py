@@ -77,6 +77,44 @@ class RadarSimClient:
         """Check server health and API version."""
         return dict(self._request("GET", "/api/v1/health"))
 
+    def download_windows_connector(
+        self,
+        destination: str | Path,
+        *,
+        mode: str = "light",
+    ) -> Path:
+        """Download the one-time Windows connector launcher for this SDK scope.
+
+        The returned ``.cmd`` is intentionally not executed by the SDK.  A
+        Windows integration can run it once (or hand it to its installer),
+        while a Linux-only integration simply keeps using shared/Cluster paths
+        and never calls this method.  The request carries the same user and
+        bearer headers as normal SDK calls, so the generated launcher is bound
+        to the caller's control-plane scope.
+        """
+        normalized_mode = str(mode or "light").strip().lower()
+        if normalized_mode not in {"light", "full"}:
+            raise ValueError("Windows connector mode must be 'light' or 'full'")
+        target = Path(destination).expanduser()
+        if target.exists() and target.is_dir():
+            target = target / "RadarSim-Connect-Windows.cmd"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + ".part")
+        try:
+            with self._client.stream(
+                "GET",
+                "/api/v1/windows-connector/connect.cmd",
+                params={"mode": normalized_mode},
+            ) as response:
+                self._raise_for_status(response)
+                with temporary.open("wb") as handle:
+                    for chunk in response.iter_bytes():
+                        handle.write(chunk)
+            temporary.replace(target)
+            return target
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def validate(self, spec: SimulationSpec | dict[str, Any]) -> ValidationResult:
         return ValidationResult.from_dict(self._request("POST", "/api/v1/validate", json=self._spec_payload(spec)))
 

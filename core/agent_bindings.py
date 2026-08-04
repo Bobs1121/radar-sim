@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from core.agent_artifact_staging import AgentArtifactStagingError, AuthorizedRoots
+from core.path_normalization import path_token
 
 
 class AgentBindingError(ValueError):
@@ -41,7 +42,7 @@ def make_workspace_binding_id(project: str, workspace_path: str) -> str:
     if not workspace_path:
         return ""
     _validate_project_token(str(project or ""))
-    normalized_path = re.sub(r"/+", "/", workspace_path.replace("\\", "/")).rstrip("/").casefold()
+    normalized_path = path_token(workspace_path)
     payload = "\0".join([str(project or "").strip(), normalized_path])
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return f"workspace:sha256:{digest[:24]}"
@@ -49,7 +50,7 @@ def make_workspace_binding_id(project: str, workspace_path: str) -> str:
 
 def make_workspace_path_id(workspace_path: str) -> str:
     """Project-independent opaque path id for project-free dispatch matching."""
-    normalized_path = re.sub(r"/+", "/", str(workspace_path or "").strip().replace("\\", "/")).rstrip("/").casefold()
+    normalized_path = path_token(workspace_path)
     if not normalized_path:
         return ""
     return "workspace-path:sha256:" + hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()[:24]

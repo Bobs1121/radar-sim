@@ -25,16 +25,18 @@ description: 项目现状、架构、已知问题和后续 TODO
 ### Agent 一次配置规则
 
 - 一键安装将服务地址、用户 scope、部署模式和受限凭证持久化到 Windows 当前用户的 `%LOCALAPPDATA%\\radar-sim`，并注册登录自启/断线重连；后续 Web/SDK 任务不重复安装或填写 Agent。
+- 电脑重启后，用户登录 Windows 即由计划任务（受策略限制时为 Startup 目录回退）启动监督进程；电脑关机、睡眠或尚未登录时不承诺远程唤醒，Web/SDK 只保持等待，连接恢复后任务自动继续。
 - 换电脑、换 Linux 服务地址、切换 full/light 或卸载后才重新连接；Visual Studio 始终由用户自行安装，Agent 只检测/提示并做脚本参数适配。
 - SDK 调用方在 Windows 上对已有 Selena + Cluster 可直接通过 `RadarSimClient` 上传本地目录、Runtime、资产和数据，不强制安装 Agent；SDK 调用方在 Linux 上只能使用共享/Linux 可读路径，不能读取 Windows `C:/`、`D:/`。
+- Web/SDK 的用户路径统一做跨平台规范化：`D:\\x\\..\\y`、`D:/y`、重复分隔符以及 `\\\\server\\share`/`//server/share` 会生成同一匹配形式；URI（如 `shared://`、`dataset://`）保留其逻辑语义，不按本地文件系统折叠。
 
 ### 代码、测试与线上证据
 
 - 重点代码：`core/api_v1.py`、`core/control_service.py`、`radar_sim_web/static/app.js`、`scripts/bootstrap.ps1`、`scripts/start_windows.ps1`。
-- 回归测试：`python -m pytest -q tests/test_api_v1_service.py tests/test_existing_selena_agent_resolution.py tests/test_api_v1_fastapi.py` → `82 passed, 1 warning`；`node --check radar_sim_web/static/app.js` 通过。
+- 回归测试：路径/绑定/SDK 组合 → `82 passed, 3 skipped, 1 warning`；V1 服务/路由组合 → `85 passed, 1 warning`；`node --check radar_sim_web/static/app.js` 通过。
 - 线上服务：`http://10.190.171.44:8877`，systemd user service `radar-sim-v1.service`，当前单一监听进程，`GET /api/v1/health` 返回 200。
 - 新用户无 Agent 的实际验证：能力快照只显示 Cluster 可用、不显示他人的 Windows Agent；提交含 Windows 本地路径的 `existing + cluster` 配置返回 `windows_path_access_required`，并明确“不需要 Visual Studio 或编译依赖，只需要文件读取/上传连接”。
-- 线上发布以 `origin/main` 当前提交 `6e3bcfe` 为基线；未把用户的 `output/`、`.claude/` 等未跟踪诊断产物纳入提交。
+- 线上发布以 `origin/main` 当前提交 `d17d725` 为基线（本轮路径与 SDK 连接入口提交完成后更新）；未把用户的 `output/`、`.claude/` 等未跟踪诊断产物纳入提交。
 
 ### 后续不得偏移
 
