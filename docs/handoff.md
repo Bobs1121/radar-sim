@@ -36,7 +36,7 @@ description: 项目现状、架构、已知问题和后续 TODO
 - 回归测试：路径/绑定/SDK 组合 → `82 passed, 3 skipped, 1 warning`；V1 服务/路由组合 → `85 passed, 1 warning`；`node --check radar_sim_web/static/app.js` 通过。
 - 线上服务：`http://10.190.171.44:8877`，systemd user service `radar-sim-v1.service`，当前单一监听进程，`GET /api/v1/health` 返回 200。
 - 新用户无 Agent 的实际验证：能力快照只显示 Cluster 可用、不显示他人的 Windows Agent；提交含 Windows 本地路径的 `existing + cluster` 配置返回 `windows_path_access_required`，并明确“不需要 Visual Studio 或编译依赖，只需要文件读取/上传连接”。
-- 线上发布以 `origin/main` 当前提交 `367d770` 为基线；未把用户的 `output/`、`.claude/` 等未跟踪诊断产物纳入提交。
+- 线上发布以 `origin/main` 当前提交 `4ca30e4` 为基线；未把用户的 `output/`、`.claude/` 等未跟踪诊断产物纳入提交。
 
 ### 后续不得偏移
 
