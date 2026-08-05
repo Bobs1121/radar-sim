@@ -112,3 +112,9 @@ def test_linux_release_builds_same_origin_windows_connector_bundle():
     deploy = (ROOT / "scripts" / "linux_deploy.sh").read_text(encoding="utf-8")
     assert "build_windows_connector_bundle.py" in deploy
     assert "rsim-windows-connector.zip" in deploy
+
+
+def test_windows_installer_checks_capability_in_paired_owner_scope():
+    installer = (ROOT / "scripts" / "bootstrap.ps1").read_text(encoding="utf-8")
+    assert '$capabilityHeaders["X-Rsim-User"] = $Owner' in installer
+    assert "-Headers $capabilityHeaders -TimeoutSec 5" in installer

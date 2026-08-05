@@ -420,10 +420,14 @@ if ($Start) {
     Write-Ok "The connector is running (PID $connectorPid)."
     if (-not $UseLocalControl) {
         $capabilityName = if ($Mode -eq "full") { "windows_full" } else { "windows_light" }
+        $capabilityHeaders = @{}
+        if ($Owner) { $capabilityHeaders["X-Rsim-User"] = $Owner }
         $connected = $false
         foreach ($attempt in 1..30) {
             try {
-                $snapshot = Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/capabilities" -TimeoutSec 5
+                $snapshot = Invoke-RestMethod -Method Get `
+                    -Uri "$ServerUrl/api/v1/capabilities" `
+                    -Headers $capabilityHeaders -TimeoutSec 5
                 if ([bool]$snapshot.capabilities.$capabilityName.available) {
                     $connected = $true
                     break
