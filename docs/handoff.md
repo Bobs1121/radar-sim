@@ -5,9 +5,9 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 # radar-sim 项目 Handoff
 
-## 0A. 2026-08-05 控制面/数据面分离改造 checkpoint（进行中，接手者先读）
+## 0A. 2026-08-05 控制面/数据面分离改造发布记录（已上线，接手者先读）
 
-> 状态：**代码 checkpoint 已提交并推送，真实黑盒验收仍在收口，生产 8877 尚未切换**。本节记录 2026-08-05 当前共享工作区的真实进度，优先级高于下方所有历史“上传到 Linux”描述。下方旧记录只用于解释历史问题，不能作为当前实施合同。
+> 状态：**代码已提交推送，真实 Cluster 黑盒成功，生产 8877 已切换至 `eff321a`**。本节记录 2026-08-05 当前共享工作区的真实进度，优先级高于下方所有历史“上传到 Linux”描述。下方旧记录只用于解释历史问题，不能作为当前实施合同。
 
 ### 2026-08-05 真实直传黑盒最新现场（额度/上下文中断时从这里接续）
 
@@ -29,8 +29,12 @@ description: 项目现状、架构、已知问题和后续 TODO
 - 上述发布阻塞项已定位并完成代码修复，尚待真实重跑：历史/当前 MF4（443,266,984 bytes）、Runtime、MatFilter、9 个 Selena exe/DLL 的 size/SHA-256 全部一致；worker 脚本除 Job 路径外语义完全一致。唯一业务配置差异是历史 `radar=RadarRL, mountingPosition=CRL`，当前为空；当前 paramconfig 因此缺少 `source=RadarRL` 与 `userparam=mountingPosition=CRL`，Selena 退化选择 `RadarFC` 后失败。
 - 通用修复不增加 YAML 字段：数据拥有端（Python SDK 或 Windows Agent）从 MF4 acquisition source group 顺序推导 Radar；真实 `...17-22_0118.MF4` 同时含 `[RadarRL, RadarRR]`，与历史成熟行为一致选择第一个 `RadarRL/CRL`，仅在无 acquisition source 时回退安装位置信号。SDK/Agent 只把 `radar_source/radar_mounting_position` 放入 dataset TransferPlan metadata；API 白名单归一化后投影到 owner/job-bound transfer resource；Cluster 薄适配只写 Config，不在 Linux 打开 MF4。公共 YAML、项目识别和文件传输合同均未扩大。
 - 修复后主代理无并发修改地完成组合回归：`315 passed, 2 skipped, 1 warning`（75.39s），目标模块 `py_compile`、`git diff --check` 通过。真实本机 MF4 helper 输出 `{'radar_source': 'RadarRL', 'radar_mounting_position': 'CRL'}`。下一步必须部署到隔离 8879，新建 Job 并确认生成 Config/paramconfig 与最终 business status succeeded；在这之前仍不得切生产 8877。
-- 接续时先检查/关闭残留：SSH tunnel tool cell `1397`（`127.0.0.1:18881 -> 127.0.0.1:8879`）仍可能运行；隔离 v4 服务仍 active。不要删除生产 `/home/hoz2wx/.rsim-v1-cluster.env`，不要输出其中 secret。完成验收后停止隔离 unit/tunnel，再备份并切换生产。
-- 发布门禁仍是：定向回归通过；同一真实配置完成 Cluster submit/collect/finalize；记录 Linux 进程 RSS/网卡增量不随约 1 GB 文件正文增长；更新本节；再 commit/push；最后才带备份切换 8877。
+- **真实重跑及生产发布已完成**：提交 `eff321a Preserve inferred radar context in direct transfers` 已推送。隔离 8879 通过 SDK 提交 `job_444f050a55c4`（owner `direct-acceptance-20260805-fixed`），无需 Windows Agent；MF4、完整 Selena 目录、Runtime、MatFilter 均从本机直接写 Cluster 数据面。最终任务与 Cluster run `cluster-run:afc9405404d94c978164be7e8614f2c8` 均 `succeeded`，结果 `result:sha256:56a08eb906ae83fad339bb714189e3d31d5de109fcc1ad15b1b8c2df7cbfed88`，6 files，总结果 239,086,595 bytes；下载包 `output/job_444f050a55c4-result.zip` 为 12,173,265 bytes。
+- 新任务生成的 `Config.cfg` 已确认 `radar="RadarRL"`、`mountingPosition="CRL"`，输入输出规模与历史成功任务一致；诊断 API 返回 `job_succeeded`、`artifacts_available=true`、`consistency.state=consistent`。这是真实 business success，不只是外围 Stage 成功。
+- 生产 `radar-sim-v1.service:8877` 已切到 `/home/hoz2wx/radar-sim-direct-eff321a`，继续使用原 `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke` 和原 EnvironmentFile；生产 deployment 已加入 direct-transfer 双命名空间。外部 `http://10.190.171.44:8877/` 返回 200，health 正常，SDK `validate_run` 返回 `valid=True`、Cluster 10-step plan。旧任务/数据库未清空。
+- 回滚材料位于 `/home/hoz2wx/radar-sim-release-backups/20260805-eff321a/{radar-sim-v1.service,deployment.yaml}`；旧生产代码目录 `/home/hoz2wx/radar-sim-v1-result-upload` 保留。隔离 v5 已停止，旧隔离代码包/临时 tar/部署脚本已清理；验收 RSIM_HOME 与 Cluster 结果证据保留，避免删除任务审计数据。
+- 收尾状态：SSH tunnel cell `1397` 已结束/超时关闭，隔离 v5 已停止，生产 8877 独立可访问。后续不要删除生产 `/home/hoz2wx/.rsim-v1-cluster.env`，也不要在日志或 handoff 中输出其中 secret。
+- 发布门禁已通过：定向回归、同一真实配置 Cluster submit/collect/finalize、Linux 不读取约 1 GB 文件正文、结果下载、handoff、commit/push 和带备份切换 8877 均完成。
 
 ### 本轮不可改变的目标
 
