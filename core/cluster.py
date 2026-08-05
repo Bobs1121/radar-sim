@@ -259,6 +259,12 @@ def check_cluster_environment(config: dict[str, Any], *, profile: str = "") -> l
         manager,
         CheckItem("Submit path", (python_ok and submit_mode == "client") or (submit_mode == "xmlrpc" and manager.ok), submit_mode,
                   severity="info" if ((python_ok and submit_mode == "client") or (submit_mode == "xmlrpc" and manager.ok)) else "error"),
+        CheckItem(
+            "Cluster submission credential",
+            bool(str(cluster.get("kill_password") or "").strip()),
+            "configured" if str(cluster.get("kill_password") or "").strip() else "not configured",
+            severity="info" if str(cluster.get("kill_password") or "").strip() else "error",
+        ),
         _mf4_source_reader_item(),
     ]
 

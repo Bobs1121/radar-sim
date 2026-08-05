@@ -19,6 +19,8 @@ description: 项目现状、架构、已知问题和后续 TODO
   2. SDK/Agent 每复制 1 MiB 就 POST 一次 `/progress`，文件正文虽不经过 Linux，但控制请求过密。必须按时间/百分比/字节阈值节流并保证最终态。当前修复子任务：`throttle_transfer_progress`。
 - 首轮 SDK 提交进程 cell `1409` 已终止，证据任务 `job_9360a14cbda7` 已在完整 Manifest 落库后主动取消，避免旧 DAG 永久占用；SSH tunnel cell `1397` 仍用于隔离验收（接续环境若保留 cell，结束时需 terminate）。修复后必须用新的 idempotency key 重跑，不能复用旧任务来伪造通过。
 - 两项代码修复已落盘并经主代理组合回归：`306 passed, 2 skipped, 1 warning`（`61.82s`），关键模块 `py_compile` 和 `git diff --check` 通过。修复后阶段合同是：提交前 `current_stage=prepare_data` 且 Web 无 Connector 时仍显示连接提示；四个 role Manifest 完成后 `current_stage=environment_check`、`waiting=None`，Linux 执行器继续。SDK/Agent 共享 core 节流器；本地 callback 保留逐 chunk，HTTP 只在首条、约 1 秒/5%/64 MiB 任一阈值、校验后最终态上报。
+- 第二轮隔离黑盒使用提交 `0b5fe39`、owner `direct-acceptance-20260805-v2`、任务 `job_6eca01c46a43`。无 Windows Agent，四个真实 TransferPlan 全部完成；`resolve_spec/register_artifact` skipped，`prepare_data/environment_check/preflight` succeeded，证明 DAG 修复和数据面有效。首次 `run_simulation` 失败是隔离 systemd unit 未继承生产使用的 `/home/hoz2wx/.rsim-v1-cluster.env`；生产 8877 已配置，隔离 v3 后续只引用该 EnvironmentFile，未读取/输出 secret。
+- 凭据补齐后重试，Cluster 明确拒绝 `datafile_path`：生成的 Config.cfg 将 `\\abtvdfs2...` 折叠成 `\abtvdfs2...`。根因是 Linux 上 `os.path.commonpath()` 把 UNC 双前导 `//` 当 POSIX path 折叠为 `/`。已改为 Windows/UNC 显式使用 `ntpath.commonpath`，POSIX 保持原逻辑，并补单/多 entry、不同 UNC share/drive 测试；另新增 Cluster credential 早期预检，只报告 configured/not configured，缺失时在 `environment_check` 给出部署动作而不是提交时 generic failure。主代理合并回归：`219 passed, 1 warning`，py_compile/diff-check 通过。下一步部署新提交，重跑 preflight 或新 Job 验证 Config.cfg 双斜杠并完成真实 Cluster。
 - 发布门禁仍是：定向回归通过；同一真实配置完成 Cluster submit/collect/finalize；记录 Linux 进程 RSS/网卡增量不随约 1 GB 文件正文增长；更新本节；再 commit/push；最后才带备份切换 8877。
 
 ### 本轮不可改变的目标

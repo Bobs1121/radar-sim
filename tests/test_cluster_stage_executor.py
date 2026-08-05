@@ -578,6 +578,39 @@ def test_cluster_environment_failure_keeps_dependency_detail_and_retry_action(mo
     )
 
 
+def test_cluster_environment_missing_submission_credential_is_actionable(monkeypatch):
+    context = SimpleNamespace(config_loader=lambda _identity: {"cluster": {}})
+    monkeypatch.setattr(
+        "core.cluster_stage_executor._bundle",
+        lambda _context, _job: SimpleNamespace(
+            internal_project="workspace-anonymous123",
+            manifest=SimpleNamespace(id="selena-bundle:sha256:" + "2" * 64),
+        ),
+    )
+    monkeypatch.setattr(
+        "core.cluster.check_cluster_environment",
+        lambda _config: [
+            SimpleNamespace(
+                name="Cluster submission credential",
+                ok=False,
+                severity="error",
+                detail="not configured",
+            )
+        ],
+    )
+
+    with pytest.raises(ClusterStageExecutionError) as excinfo:
+        execute_cluster_environment(context, _job())
+
+    assert excinfo.value.code == "CLUSTER_ENVIRONMENT_UNAVAILABLE"
+    assert "RSIM_CLUSTER_KILL_PASSWORD" in str(excinfo.value)
+    assert "not configured" in str(excinfo.value)
+    assert "deployment-secret" not in str(excinfo.value)
+    assert excinfo.value.actions == (
+        {"type": "retry_stage", "label": "Retry environment check"},
+    )
+
+
 def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tmp_path: Path, monkeypatch):
     control = ControlService(tmp_path / "control.db")
     runtime_output = tmp_path / "build"

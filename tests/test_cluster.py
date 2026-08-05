@@ -696,6 +696,48 @@ def test_cluster_secret_comes_from_deployment_env_and_dry_run_is_redacted(tmp_pa
     assert command[-1] == "deployment-secret"
 
 
+def test_cluster_environment_reports_submission_credential_status_without_secret(tmp_path, monkeypatch):
+    import core.cluster as cluster_mod
+
+    config = _cluster_config(tmp_path)
+    config["cluster"].pop("kill_password")
+    monkeypatch.delenv("RSIM_CLUSTER_KILL_PASSWORD", raising=False)
+    monkeypatch.setattr(
+        cluster_mod,
+        "_manager_item",
+        lambda _cluster: cluster_mod.CheckItem("Manager XML-RPC port", True, "host:8123"),
+    )
+
+    missing = {
+        item.name: item for item in cluster_mod.check_cluster_environment(config)
+    }["Cluster submission credential"]
+
+    assert missing.ok is False
+    assert missing.severity == "error"
+    assert missing.detail == "not configured"
+
+    config["cluster"]["kill_password"] = "deployment-config-secret"
+    deployment_configured = {
+        item.name: item for item in cluster_mod.check_cluster_environment(config)
+    }["Cluster submission credential"]
+
+    assert deployment_configured.ok is True
+    assert deployment_configured.severity == "info"
+    assert deployment_configured.detail == "configured"
+    assert "deployment-config-secret" not in str(deployment_configured)
+
+    config["cluster"].pop("kill_password")
+    monkeypatch.setenv("RSIM_CLUSTER_KILL_PASSWORD", "deployment-secret")
+    configured = {
+        item.name: item for item in cluster_mod.check_cluster_environment(config)
+    }["Cluster submission credential"]
+
+    assert configured.ok is True
+    assert configured.severity == "info"
+    assert configured.detail == "configured"
+    assert "deployment-secret" not in str(configured)
+
+
 def test_get_cluster_web_status_preserves_readable_state(tmp_path, monkeypatch):
     import core.cluster as cluster_mod
 

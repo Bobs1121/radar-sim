@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import ntpath
 import os
 import re
 import threading
@@ -394,6 +395,15 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
 def _public_environment_error_detail(item: Any) -> str:
     """Keep deployment paths private while preserving actionable OS errors."""
     detail = str(getattr(item, "detail", "") or "").strip()
+    if (
+        str(getattr(item, "name", "") or "").strip() == "Cluster submission credential"
+        and detail.casefold() == "not configured"
+    ):
+        # The check item deliberately exposes only configured/not configured;
+        # add the deployment action here without ever including the secret.
+        from core.cluster import CLUSTER_KILL_PASSWORD_ENV
+
+        return f"not configured; set {CLUSTER_KILL_PASSWORD_ENV} in the deployment environment"
     marker = "(unavailable after "
     index = detail.find(marker)
     if index >= 0:
@@ -1412,13 +1422,34 @@ def _dataset_worker_root(
     # A direct dataset is a collection.  Use the common root of *all* entries
     # so prepare_cluster_job receives one directory containing every MF4,
     # rather than silently packaging only the first manifest entry.
-    try:
-        common = os.path.commonpath(roots)
-    except ValueError:
-        common = roots[0]
-    if "\\" in first_style and "/" not in first_style:
-        common = common.replace("/", "\\")
+    # ``os.path`` follows the executor host.  On Linux it treats a Windows
+    # UNC path as a POSIX path and collapses the required two leading
+    # separators (``//server/share`` -> ``/server/share``).  Select the
+    # Windows path implementation explicitly for UNC/drive roots so the
+    # value written to Config.cfg remains worker-valid on every host.
+    windows_style = [
+        path.startswith(("\\\\", "//")) or bool(ntpath.splitdrive(path.replace("/", "\\"))[0])
+        for path in (str(item[2] or "").strip() for item in entries)
+    ]
+    if any(windows_style):
+        if not all(windows_style):
+            raise ValueError("worker paths mix Windows and POSIX path styles")
+        common = ntpath.commonpath([root.replace("/", "\\") for root in roots])
+        # ntpath keeps a trailing separator for a UNC share root.  It is not
+        # part of the directory identity and would make the rendered root
+        # differ from the path used for a nested entry.
+        unc_drive, unc_tail = ntpath.splitdrive(common)
+        if unc_drive.startswith("\\\\"):
+            common = common.rstrip("\\/")
+        elif not (len(unc_drive) == 2 and unc_drive[1] == ":" and unc_tail in {"\\", "/"}):
+            common = common.rstrip("\\/")
+        if first_style.startswith("//") or "/" in first_style and "\\" not in first_style:
+            common = common.replace("\\", "/")
     else:
+        try:
+            common = os.path.commonpath(roots)
+        except ValueError:
+            common = roots[0]
         common = common.replace("\\", "/")
     return common or roots[0]
 

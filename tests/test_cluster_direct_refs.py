@@ -181,6 +181,36 @@ def test_dataset_worker_root_preserves_all_manifest_entries() -> None:
     assert _dataset_worker_root(entries) == "//cluster/share/iso"
 
 
+def test_dataset_worker_root_preserves_backslash_unc_for_single_and_multiple_entries() -> None:
+    unc_root = r"\\abtvdfs2.de.bosch.com\ismdfs\loc\szh\Isilon3\Cluster"
+    single = [
+        (_resource("dataset", [], root=unc_root), _entry("data/a.MF4", 1, "a"), unc_root + r"\iso\data\a.MF4"),
+    ]
+    multiple = [
+        (_resource("dataset", [], root=unc_root), _entry("data/a.MF4", 1, "a"), unc_root + r"\iso\data\a.MF4"),
+        (_resource("dataset", [], root=unc_root), _entry("data/b.MF4", 2, "b"), unc_root + r"\iso\data\b.MF4"),
+    ]
+    assert _dataset_worker_root(single) == unc_root + r"\iso"
+    assert _dataset_worker_root(multiple) == unc_root + r"\iso"
+
+
+def test_dataset_worker_root_rejects_different_unc_share_or_drive() -> None:
+    with pytest.raises(ValueError):
+        _dataset_worker_root(
+            [
+                (_resource("dataset", [], root=r"\\host\share-a"), _entry("a.MF4", 1, "a"), r"\\host\share-a\a.MF4"),
+                (_resource("dataset", [], root=r"\\host\share-b"), _entry("b.MF4", 1, "b"), r"\\host\share-b\b.MF4"),
+            ]
+        )
+    with pytest.raises(ValueError):
+        _dataset_worker_root(
+            [
+                (_resource("dataset", [], root=r"C:\cluster"), _entry("a.MF4", 1, "a"), r"C:\cluster\a.MF4"),
+                (_resource("dataset", [], root=r"D:\cluster"), _entry("b.MF4", 1, "b"), r"D:\cluster\b.MF4"),
+            ]
+        )
+
+
 def test_cluster_preflight_direct_refs_skips_linux_archive_and_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     probe = tmp_path / "probe"
     for path, content in (
