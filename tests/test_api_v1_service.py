@@ -92,6 +92,24 @@ def make_api(tmp_path):
     return ApiV1Service(control_service_factory=factory), services
 
 
+def test_api_registration_stamps_trusted_windows_owner(tmp_path):
+    control = ControlService(tmp_path / "shared.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+
+    api.register_agent(
+        "alice",
+        name="alice-windows",
+        agent_id="alice-windows",
+        hostname="alice-pc",
+        platform="windows",
+        capabilities=["data.upload"],
+        metadata={"node_kind": "windows_agent", "user": "bob"},
+    )
+
+    agent = next(item for item in control.list_agents() if item["agent_id"] == "alice-windows")
+    assert agent["metadata"]["user"] == "alice"
+
+
 def test_execution_capabilities_require_both_cluster_roles_and_hide_agent_details(tmp_path):
     control = ControlService(tmp_path / "capabilities.db", now_fn=lambda: 100)
     api = ApiV1Service(control_service_factory=lambda owner: control, now_fn=lambda: 100)

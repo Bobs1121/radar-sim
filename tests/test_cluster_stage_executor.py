@@ -26,6 +26,33 @@ from core.runtime_bundle_catalog import RuntimeBundleCatalog, RuntimeBundleRecor
 from core.local_results import ResultCatalog
 
 
+def test_busy_cluster_stage_keeps_heartbeating_for_other_users(monkeypatch):
+    heartbeats = []
+
+    class FakeControl:
+        def heartbeat(self, agent_id, *, status, current_task_id):
+            heartbeats.append((agent_id, status, current_task_id, time.monotonic()))
+            return {}
+
+    executor = ClusterStageExecutor(
+        FakeControl(),
+        SimpleNamespace(),
+        heartbeat_interval=0.02,
+    )
+
+    def blocking_stage(_agent_id, _task):
+        time.sleep(0.16)
+
+    monkeypatch.setattr(executor, "_execute_one", blocking_stage)
+    executor._run_one(
+        "linux-v2-stage-executor",
+        {"task_id": "task-busy", "stage_type": "prepare_data"},
+    )
+
+    assert len(heartbeats) >= 3
+    assert all(item[:3] == ("linux-v2-stage-executor", "busy", "task-busy") for item in heartbeats)
+
+
 def _job():
     return {
         "job_id": "job-demo",

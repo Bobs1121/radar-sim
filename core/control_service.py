@@ -675,7 +675,7 @@ class ControlService:
                     return None
                 rows = conn.execute(
                     """
-                    SELECT t.task_id, t.payload_json
+                    SELECT t.task_id, t.payload_json, j.owner
                     FROM tasks t
                     JOIN jobs j ON j.job_id=t.job_id
                     WHERE t.stage_type='environment_check'
@@ -688,7 +688,11 @@ class ControlService:
                     (INTERNAL_V1_SCHEDULER_AGENT_ID,),
                 ).fetchall()
                 candidate = None
+                registered_owner = str(metadata.get("user") or "").strip().casefold()
                 for row in rows:
+                    job_owner = str(row["owner"] or "").strip().casefold()
+                    if job_owner and registered_owner and registered_owner != job_owner:
+                        continue
                     payload = self._loads(row["payload_json"])
                     key = (
                         str(payload.get("project") or "").strip(),
@@ -742,7 +746,7 @@ class ControlService:
                     return None
                 rows = conn.execute(
                     """
-                    SELECT t.task_id,t.payload_json,j.spec_json
+                    SELECT t.task_id,t.payload_json,j.spec_json,j.owner
                     FROM tasks t
                     JOIN jobs j ON j.job_id=t.job_id
                     WHERE t.stage_type='environment_check'
@@ -755,7 +759,11 @@ class ControlService:
                     (INTERNAL_V1_SCHEDULER_AGENT_ID,),
                 ).fetchall()
                 candidate: tuple[str, str] | None = None
+                registered_owner = str(metadata.get("user") or "").strip().casefold()
                 for row in rows:
+                    job_owner = str(row["owner"] or "").strip().casefold()
+                    if job_owner and registered_owner and registered_owner != job_owner:
+                        continue
                     payload = self._loads(row["payload_json"])
                     if payload.get("dispatch_scope") != "runtime_bundle_cache":
                         continue
@@ -854,6 +862,8 @@ class ControlService:
                         and job_owner
                         and registered_owner == job_owner
                     )
+                    if job_owner and registered_owner and not same_owner:
+                        continue
                     selena = dict(spec.get("selena") or {})
                     resolved = self._loads(row["resolved_spec_json"])
                     selected_target = str(
@@ -988,7 +998,7 @@ class ControlService:
                         advertised.setdefault(project, set()).add(binding_id)
                 rows = conn.execute(
                     """
-                    SELECT t.task_id,t.payload_json
+                    SELECT t.task_id,t.payload_json,j.owner
                     FROM tasks t
                     JOIN jobs j ON j.job_id=t.job_id
                     WHERE t.stage_type='prepare_data'
@@ -1005,7 +1015,11 @@ class ControlService:
                 ).fetchall()
                 candidate: tuple[str, str] | None = None
                 auto_candidate = ""
+                registered_owner = str(metadata.get("user") or "").strip().casefold()
                 for row in rows:
+                    job_owner = str(row["owner"] or "").strip().casefold()
+                    if job_owner and registered_owner and registered_owner != job_owner:
+                        continue
                     payload = self._loads(row["payload_json"])
                     if payload.get("dispatch_scope") != "data_upload":
                         continue
@@ -1300,16 +1314,23 @@ class ControlService:
                 # task stealing.
                 rows = conn.execute(
                     """
-                    SELECT task_id, job_id, task_type, stage_type, order_index, dependencies_json
-                    FROM tasks
-                    WHERE status='queued'
-                      AND (assigned_agent_id = '' OR assigned_agent_id = ?)
-                      AND (required_agent_id = '' OR required_agent_id = ?)
-                    ORDER BY created_at ASC, order_index ASC, task_id ASC
+                    SELECT t.task_id, t.job_id, t.task_type, t.stage_type,
+                           t.order_index, t.dependencies_json, j.owner
+                    FROM tasks t
+                    JOIN jobs j ON j.job_id=t.job_id
+                    WHERE t.status='queued'
+                      AND (t.assigned_agent_id = '' OR t.assigned_agent_id = ?)
+                      AND (t.required_agent_id = '' OR t.required_agent_id = ?)
+                    ORDER BY t.created_at ASC, t.order_index ASC, t.task_id ASC
                     """,
                     (agent_id, agent_id),
                 ).fetchall()
+                registered_owner = str(agent_metadata.get("user") or "").strip().casefold()
                 for row in rows:
+                    if agent_node_kind in {"windows_agent", "windows_full"}:
+                        job_owner = str(row["owner"] or "").strip().casefold()
+                        if job_owner and registered_owner and registered_owner != job_owner:
+                            continue
                     if not self._agent_can_claim_task(
                         agent_node_kind, row["task_type"], str(row["stage_type"] or ""), capabilities
                     ):

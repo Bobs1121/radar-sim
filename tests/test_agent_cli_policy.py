@@ -298,6 +298,24 @@ def test_poll_retry_delay_is_exponential_and_bounded():
     assert agent_module._poll_retry_delay(1, 0.01) == 1.0
 
 
+def test_poll_outage_warning_starts_after_three_consecutive_failures():
+    assert agent_module._poll_failure_is_reportable(
+        1, now=10.0, last_reported_at=0.0
+    ) is False
+    assert agent_module._poll_failure_is_reportable(
+        2, now=20.0, last_reported_at=0.0
+    ) is False
+    assert agent_module._poll_failure_is_reportable(
+        3, now=30.0, last_reported_at=0.0
+    ) is True
+    assert agent_module._poll_failure_is_reportable(
+        4, now=80.0, last_reported_at=30.0
+    ) is False
+    assert agent_module._poll_failure_is_reportable(
+        5, now=90.0, last_reported_at=30.0
+    ) is True
+
+
 def test_environment_check_is_node_local_and_does_not_spawn(monkeypatch):
     class FakeClient:
         def __init__(self):

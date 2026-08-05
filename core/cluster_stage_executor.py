@@ -73,10 +73,18 @@ class ClusterStageContext:
 class ClusterStageExecutor:
     """Two-role in-process executor for one explicit ControlService database."""
 
-    def __init__(self, control, context: ClusterStageContext, *, poll_interval: float = 1.0) -> None:
+    def __init__(
+        self,
+        control,
+        context: ClusterStageContext,
+        *,
+        poll_interval: float = 1.0,
+        heartbeat_interval: float = 10.0,
+    ) -> None:
         self.control = control
         self.context = context
         self.poll_interval = max(float(poll_interval), 0.05)
+        self.heartbeat_interval = max(float(heartbeat_interval), 0.05)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -116,6 +124,48 @@ class ClusterStageExecutor:
                 self._stop.wait(self.poll_interval)
 
     def _run_one(self, agent_id: str, task: dict[str, Any]) -> None:
+        """Run a Stage while keeping the shared Cluster role visibly online.
+
+        Cluster stages can spend minutes preparing data or waiting for results.
+        The executor loop cannot heartbeat during that blocking call, so a
+        separate heartbeat is required.  Otherwise the capability endpoint
+        mistakes a busy shared worker for an offline one and rejects another
+        user's submission instead of queueing it.
+        """
+        task_id = str(task.get("task_id") or "")
+        stop_heartbeat = threading.Event()
+
+        def heartbeat() -> None:
+            while not stop_heartbeat.is_set() and not self._stop.is_set():
+                try:
+                    self.control.heartbeat(
+                        agent_id,
+                        status="busy",
+                        current_task_id=task_id,
+                    )
+                except Exception:
+                    _LOG.warning(
+                        "Cluster Stage heartbeat failed: agent=%s task=%s",
+                        agent_id,
+                        task_id,
+                        exc_info=True,
+                    )
+                if stop_heartbeat.wait(self.heartbeat_interval):
+                    break
+
+        thread = threading.Thread(
+            target=heartbeat,
+            daemon=True,
+            name=f"{agent_id}-heartbeat",
+        )
+        thread.start()
+        try:
+            return self._execute_one(agent_id, task)
+        finally:
+            stop_heartbeat.set()
+            thread.join(timeout=max(1.0, self.heartbeat_interval * 2.0))
+
+    def _execute_one(self, agent_id: str, task: dict[str, Any]) -> None:
         task_id = str(task.get("task_id") or "")
         stage_type = str(task.get("stage_type") or task.get("task_type") or "")
         job = self.control.get_job(str(task.get("job_id") or ""))

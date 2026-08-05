@@ -1,8 +1,19 @@
 # radar-sim v5 Active Handoff
 
-> 最近更新：2026-08-04
+> 最近更新：2026-08-05
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
+
+## 0.0.2 多用户 Connector 与 Cluster 并发修复（2026-08-05）
+
+- 现场现象：新电脑连接 Windows Connector 时，Web 返回 `cluster_service_unavailable`；同时已有用户任务 `job_d8493e583b94` 正在执行。该任务最终 `succeeded`，不是 Cluster 网关实际离线。
+- 根因一：`ClusterStageExecutor` 只在领取阶段前刷新心跳，耗时 Stage 执行期间不刷新；超过 120 秒后，能力接口把“共享执行器忙碌”误判为“Cluster 离线”，拒绝其他用户提交而不是让任务排队。
+- 根因二：v2 已使用共享 Control DB，但部分 Windows 自动绑定仍保留旧的“每用户独立 DB”假设；首次路径自动配置存在跨 owner 选择候选 Stage 的风险。
+- 修复：所有 Cluster Stage 执行期间由独立线程持续刷新对应 Linux/Gateway 角色心跳；Windows 注册 owner 由 API 身份覆盖客户端 metadata；`resolve_spec`、环境、Runtime Bundle 缓存、数据上传和最终 claim 均加入 Windows owner 约束；Linux executor/gateway 继续作为全用户共享资源。
+- 现场验证：新电脑 `WX-C-005JG` 与原电脑 `WX8-C-0001A` 同时保持轮询；两个真实 owner 各自只看到 1 个自己的 light Connector，第三个全新 owner 看到 0 个 Windows Connector；三者都看到同一组 `linux_executor=1`、`platform_gateway=1`、`cluster.available=true`；任务列表分别为 `0/2/0`，未串任务。
+- Connector 日志降噪：一次短暂重启/网络抖动不再输出 `[WARN]`；连续 3 次轮询失败才进入可见断连状态，之后每 60 秒至多报告一次，恢复时才打印恢复信息。服务端仍保留完整访问日志。
+- 验证门禁：多用户/Agent/API/Cluster 定向套件 `134 passed, 1 warning`；全量套件曾在 185 秒超时且无最终汇总，因此不得表述为全量通过。
+- 部署：Linux `10.190.171.44:8877` 已更新三项服务端修复并重启，两个 Connector 均自动恢复轮询。更新后的 Connector ZIP 已覆盖服务端 `dist/rsim-windows-connector.zip`，SHA-256 为 `25aa0df5a77dc999ea53459d6106430f52d91131a89a6f25bcfff2f184ed058e`；已安装旧 Connector 不影响自动重连，仅仍可能显示一次瞬时断连警告。
 
 ## 0.0.1 GitHub 与 Linux 清理交付（2026-08-04）
 

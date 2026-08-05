@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from core.control_service import ControlService
+from core.control_service import ControlService, INTERNAL_V1_SCHEDULER_AGENT_ID
 
 
 def make_service(tmp_path):
@@ -27,6 +27,61 @@ def test_create_job_register_agent_and_claim_task(tmp_path):
     claimed_job = service.get_job(job["job_id"])
     assert claimed_job["status"] == "running"
     assert claimed_job["tasks"][0]["assigned_agent_id"] == agent["agent_id"]
+
+
+def test_windows_agent_never_claims_another_owners_task_in_shared_db(tmp_path):
+    service = make_service(tmp_path)
+    bob = service.create_job("local.check", owner="bob")
+    alice = service.create_job("local.check", owner="alice")
+    service.register_agent(
+        "alice-windows",
+        agent_id="alice-windows",
+        node_kind="windows_agent",
+        capabilities=["local.check"],
+        metadata={"node_kind": "windows_agent", "user": "alice"},
+    )
+
+    claimed = service.claim_next_task("alice-windows")
+
+    assert claimed is not None
+    assert claimed["job_id"] == alice["job_id"]
+    assert service.get_job(bob["job_id"])["status"] == "queued"
+
+
+def test_auto_configuring_windows_agent_does_not_bind_other_owners_data(tmp_path):
+    service = make_service(tmp_path)
+    bob = service.create_job(
+        "simulation.run_config.v2",
+        owner="bob",
+        tasks=[
+            {
+                "task_type": "prepare_data",
+                "stage_type": "prepare_data",
+                "assigned_agent_id": INTERNAL_V1_SCHEDULER_AGENT_ID,
+                "payload": {
+                    "dispatch_scope": "data_upload",
+                    "project": "anonymous",
+                    "data_path": "D:/bob/data/input.mf4",
+                },
+            }
+        ],
+    )
+    service.register_agent(
+        "alice-windows",
+        agent_id="alice-windows",
+        node_kind="windows_agent",
+        capabilities=["data.local.read", "data.upload"],
+        metadata={
+            "node_kind": "windows_agent",
+            "user": "alice",
+            "auto_configure": True,
+            "data_bindings": [],
+        },
+    )
+
+    assert service.bind_pending_data_stage("alice-windows") is None
+    stage = service.get_job(bob["job_id"])["stages"][0]
+    assert stage["assigned_agent_id"] == INTERNAL_V1_SCHEDULER_AGENT_ID
 
 
 def test_logs_and_result_flow_updates_job(tmp_path):

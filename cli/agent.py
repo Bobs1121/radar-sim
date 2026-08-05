@@ -177,7 +177,11 @@ def run(args, config):
         except Exception as exc:
             poll_failure_count += 1
             now = time.monotonic()
-            if poll_failure_count == 1 or now - last_poll_failure_log_at >= 60.0:
+            if _poll_failure_is_reportable(
+                poll_failure_count,
+                now=now,
+                last_reported_at=last_poll_failure_log_at,
+            ):
                 print(
                     f"[WARN] Linux control plane is temporarily unreachable "
                     f"(attempt {poll_failure_count}): {exc}; reconnecting automatically",
@@ -188,12 +192,15 @@ def run(args, config):
                 return 1
             time.sleep(_poll_retry_delay(poll_failure_count, poll_interval))
             continue
+        # A single missed poll is normal during a short deployment/network
+        # handoff. Only announce recovery if an outage warning was shown.
         if poll_failure_count:
-            print(
-                f"[INFO] Linux control plane connection restored after "
-                f"{poll_failure_count} failed poll(s)",
-                file=sys.stderr,
-            )
+            if last_poll_failure_log_at:
+                print(
+                    f"[INFO] Linux control plane connection restored after "
+                    f"{poll_failure_count} failed poll(s)",
+                    file=sys.stderr,
+                )
             poll_failure_count = 0
             last_poll_failure_log_at = 0.0
         task = claim.get("task")
@@ -218,6 +225,21 @@ def _poll_retry_delay(failure_count: int, poll_interval: float) -> float:
     base = max(float(poll_interval or 0.0), 1.0)
     exponent = min(max(int(failure_count) - 1, 0), 4)
     return min(base * (2 ** exponent), 30.0)
+
+
+def _poll_failure_is_reportable(
+    failure_count: int,
+    *,
+    now: float,
+    last_reported_at: float,
+) -> bool:
+    """Hide brief control-plane jitter but keep persistent outages visible."""
+    count = max(int(failure_count), 0)
+    if count < 3:
+        return False
+    if count == 3 or float(last_reported_at) <= 0:
+        return True
+    return float(now) - float(last_reported_at) >= 60.0
 
 
 def _run_task(

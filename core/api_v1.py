@@ -1177,11 +1177,23 @@ class ApiV1Service:
         self, owner: str, *, name: str, agent_id: str, hostname: str,
         platform: str, capabilities: list[str], metadata: dict[str, Any],
     ) -> dict[str, Any]:
-        control = self._control(self._owner(owner))
+        owner = self._owner(owner)
+        control = self._control(owner)
+        trusted_metadata = dict(metadata or {})
+        node_kind = str(
+            trusted_metadata.get("node_kind")
+            or trusted_metadata.get("node.kind")
+            or ""
+        )
+        # Windows execution is user-local.  In the shared control database the
+        # owner must come from the authenticated/pairing identity, never from a
+        # client-supplied metadata field.
+        if node_kind in {"windows_agent", "windows_full"}:
+            trusted_metadata["user"] = owner
         return control.register_agent(
             name, agent_id=agent_id, hostname=hostname, platform=platform,
-            capabilities=capabilities, metadata=metadata,
-            node_kind=str(metadata.get("node_kind") or metadata.get("node.kind") or ""),
+            capabilities=capabilities, metadata=trusted_metadata,
+            node_kind=node_kind,
         )
 
     def poll_agent(self, owner: str, agent_id: str) -> dict[str, Any]:
