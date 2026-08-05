@@ -240,8 +240,13 @@ def test_cluster_preflight_direct_refs_skips_linux_archive_and_copy(tmp_path: Pa
         id="dataset:sha256:" + "c" * 64,
         source_kind="agent_upload",
     )
+    dataset_resource = _resource("dataset", [_entry("data/one.MF4", 7, "dataset")])
+    dataset_resource["radar"] = {
+        "source": "RadarRL",
+        "mounting_position": "CRL",
+    }
     resources = {
-        "dataset": _resource("dataset", [_entry("data/one.MF4", 7, "dataset")]),
+        "dataset": dataset_resource,
         "runtime_bundle": _resource(
             "runtime_bundle",
             [_entry("selena/Selena.exe", 8, "exe"), _entry("selena/Runtime.xml", 8, "xml")],
@@ -292,6 +297,8 @@ def test_cluster_preflight_direct_refs_skips_linux_archive_and_copy(tmp_path: Pa
     assert captured["kwargs"]["copy_selena"] is False
     assert captured["config"]["_cluster_zero_copy"] is True
     assert captured["config"]["_cluster_skip_mf4_probe"] is True
+    assert captured["config"]["simulation"]["source"] == "RadarRL"
+    assert captured["config"]["simulation"]["mounting_position"] == "CRL"
 
 
 def _preflight_capture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, bundle, dataset, config, context):

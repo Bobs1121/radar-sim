@@ -177,6 +177,53 @@ def test_manifest_roles_complete_stage_only_after_all_resources(tmp_path: Path) 
     }
 
 
+def test_manifest_projects_whitelisted_dataset_radar_metadata(tmp_path: Path) -> None:
+    client, control = _api(tmp_path)
+    response = client.post("/api/v1/run-jobs", json={"config": _config(tmp_path)}, headers={USER_HEADER: "alice"})
+    job_id = response.json()["job_id"]
+    stage = next(item for item in control.get_job(job_id)["stages"] if item["stage_type"] == "prepare_data")
+    plan_response = client.post(
+        f"/api/v1/jobs/{job_id}/stages/{stage['stage_id']}/transfers",
+        json={
+            "source_role": "dataset",
+            "items": [{"relative_path": "recording.MF4", "size": 1}],
+            "source_fingerprints": {
+                "radar_source": "RadarRL",
+                "radar_mounting_position": "CRL",
+                "untrusted_path": "D:/must-not-project",
+            },
+        },
+        headers={USER_HEADER: "alice"},
+    )
+    assert plan_response.status_code == 201
+    plan = plan_response.json()
+    digest = hashlib.sha256(b"x").hexdigest()
+    completed = client.post(
+        f"/api/v1/transfers/{plan['transfer_id']}/manifest",
+        json={
+            "entries": [{
+                "relative_path": "recording.MF4",
+                "size": 1,
+                "checksum": digest,
+                "target_logical_ref": make_storage_ref(
+                    digest,
+                    transfer_id=plan["transfer_id"],
+                    relative_path="recording.MF4",
+                ),
+            }],
+        },
+        headers={USER_HEADER: "alice"},
+    )
+    assert completed.status_code == 200
+    current = control.get_job(job_id)
+    resources = current["resolved_spec"]["decisions"]["transfers"]["resources"]
+    assert resources["dataset"]["radar"] == {
+        "source": "RadarRL",
+        "mounting_position": "CRL",
+    }
+    assert current["resolved_spec"]["decisions"]["data"]["dataset"]["radar"] == resources["dataset"]["radar"]
+
+
 def test_build_direct_stage_never_treats_source_workspace_as_runtime_bundle(tmp_path: Path) -> None:
     client, control = _api(tmp_path)
     config = _config(tmp_path)

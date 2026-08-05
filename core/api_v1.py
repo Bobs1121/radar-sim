@@ -36,6 +36,7 @@ from core.user_config import UserRunConfig
 from core.user import control_db_path_for_user, current_user, normalize_user
 from core.datasets import classify_data_path
 from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID, CLUSTER_GATEWAY_AGENT_ID
+from core.simulation import normalize_radar_metadata
 from core.local_results import ResultCatalog, ResultCatalogError
 from core.result_upload_service import ResultUploadService, ResultUploadServiceError
 from core.transfer_service import (
@@ -1340,24 +1341,32 @@ class ApiV1Service:
             if manifest.transfer_id != str(transfer_id or ""):
                 raise ValueError("manifest transfer_id does not match route")
             result = transfer.receive_manifest(manifest, owner=self._owner(owner))
+            radar_metadata = (
+                normalize_radar_metadata(plan.source_fingerprints)
+                if plan.source_role == "dataset"
+                else {}
+            )
+            transfer_projection = {
+                "transfer_id": manifest.transfer_id,
+                "source_role": plan.source_role,
+                "entries": [
+                    {
+                        "relative_path": entry.relative_path,
+                        "size": entry.size,
+                        "sha256": entry.sha256,
+                        "storage_ref": entry.storage_ref,
+                    }
+                    for entry in manifest.entries
+                ],
+            }
+            if radar_metadata:
+                transfer_projection["radar"] = radar_metadata
             completed_job = self._control(self._owner(owner)).complete_transfer_stage(
                 manifest.job_id or plan.job_id,
                 plan.stage_id,
                 owner=self._owner(owner),
                 source_role=plan.source_role,
-                transfer={
-                    "transfer_id": manifest.transfer_id,
-                    "source_role": plan.source_role,
-                    "entries": [
-                        {
-                            "relative_path": entry.relative_path,
-                            "size": entry.size,
-                            "sha256": entry.sha256,
-                            "storage_ref": entry.storage_ref,
-                        }
-                        for entry in manifest.entries
-                    ],
-                },
+                transfer=transfer_projection,
             )
             completed_stage = next(
                 (

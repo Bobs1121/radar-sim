@@ -18,8 +18,9 @@ from core.api_v1 import ApiV1Service
 from core.config_assets import ConfigAssetStore
 from core.local_results import ResultCatalog
 from core.http_auth import HttpTokenAuthenticator
+from core.simulation import detect_radar_transfer_metadata
 from radar_sim_sdk import RadarSimApiError, RadarSimClient, SimulationSpec, UserRunConfig
-from radar_sim_sdk.client import _trust_environment_proxy
+from radar_sim_sdk.client import _dataset_transfer_fingerprints, _trust_environment_proxy
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
 from tests.test_api_v1_service import run_config_dict, spec_dict
 
@@ -80,6 +81,41 @@ def test_sdk_without_explicit_user_gets_stable_machine_scoped_identity(monkeypat
     assert seen[0] == seen[1]
     assert seen[0].startswith("sdk-")
     assert len(seen[0]) == 28
+
+
+def test_sdk_dataset_transfer_fingerprints_project_rl_to_radar_rl(monkeypatch, tmp_path: Path):
+    source = tmp_path / "dataset"
+    source.mkdir()
+    (source / "recording.MF4").write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation.detect_radar_transfer_metadata",
+        lambda _path: {"radar_source": "RadarRL", "radar_mounting_position": "CRL"},
+    )
+
+    fingerprints = _dataset_transfer_fingerprints(
+        source,
+        [{"relative_path": "recording.MF4"}],
+    )
+
+    assert fingerprints == {"radar_source": "RadarRL", "radar_mounting_position": "CRL"}
+
+
+def test_radar_transfer_metadata_prefers_first_acquisition_source(monkeypatch, tmp_path: Path):
+    mf4 = tmp_path / "recording.MF4"
+    mf4.write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation.discover_radar_acquisition_sources",
+        lambda _path: ["RadarRL", "RadarRR"],
+    )
+    monkeypatch.setattr(
+        "core.simulation.detect_radar_orientation",
+        lambda _path: pytest.fail("orientation fallback must not run when acquisition sources exist"),
+    )
+
+    assert detect_radar_transfer_metadata(str(mf4)) == {
+        "radar_source": "RadarRL",
+        "radar_mounting_position": "CRL",
+    }
 
 
 def test_sdk_bypasses_environment_proxy_for_private_control_plane():
@@ -728,7 +764,7 @@ def test_sdk_run_preparation_does_not_create_legacy_linux_uploads(tmp_path, monk
     assert payload == config.to_dict()
 
 
-def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_path):
+def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_path, monkeypatch):
     """One SDK call executes every local role through metadata-only routes."""
 
     data = tmp_path / "measurements"
@@ -747,6 +783,10 @@ def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_pa
     adapter.write_bytes(b"adapter=SDK_DIRECT_TRANSFER")
     target = tmp_path / "cluster-target"
     target.mkdir()
+    monkeypatch.setattr(
+        "core.simulation.detect_radar_transfer_metadata",
+        lambda _path: {"radar_source": "RadarRL", "radar_mounting_position": "CRL"},
+    )
 
     config = run_config_dict()
     config["selena"] = {
@@ -761,6 +801,7 @@ def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_pa
         "mat_filter": str(mat_filter),
     }
     plans: dict[str, TransferPlan] = {}
+    submitted_fingerprints: dict[str, dict] = {}
     progress: list[tuple[str, dict]] = []
     manifests: list[dict] = []
     forbidden_body = sentinel
@@ -793,6 +834,7 @@ def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_pa
             payload = __import__("json").loads(body.decode("utf-8"))
             assert set(payload) == {"source_role", "items", "source_fingerprints"}
             role = str(payload["source_role"])
+            submitted_fingerprints[role] = dict(payload["source_fingerprints"])
             transfer_id = generate_opaque_id(prefix=role)
             owner_scope = generate_owner_scope("alice", "job-sdk-direct")
             items = tuple(TransferPlanItem.from_dict(item) for item in payload["items"])
@@ -831,6 +873,8 @@ def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_pa
 
     assert job.status == "succeeded"
     assert set(plans) == {"dataset", "runtime_bundle", "runtime_xml", "mat_filter", "adapter"}
+    assert submitted_fingerprints["dataset"]["radar_source"] == "RadarRL"
+    assert submitted_fingerprints["dataset"]["radar_mounting_position"] == "CRL"
     assert {item[0] for item in progress} == {
         plan.transfer_id for plan in plans.values()
     }

@@ -162,6 +162,133 @@ def classify_radar_position(x_pos: float, y_pos: float, threshold: float = 0.05)
     return None
 
 
+def canonical_radar_source(value: Any) -> str:
+    """Return one of the four supported corner acquisition source names."""
+
+    folded = str(value or "").strip().casefold()
+    for position, mapping in RADAR_POSITION_MAP.items():
+        source = mapping["source"]
+        if source.casefold() == folded:
+            return source
+    return ""
+
+
+def discover_radar_acquisition_sources(mf4_path: str) -> list[str]:
+    """Read valid MF4 acquisition sources in deterministic group order.
+
+    This helper is intentionally small and local to the data-owning process.
+    The Linux direct-transfer executor must consume its result as metadata and
+    must not call it for a worker-visible path.
+    """
+
+    path = str(mf4_path or "").strip()
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        from asammdf import MDF
+    except (ImportError, OSError):
+        return []
+    try:
+        mdf = MDF(path, memory="minimum")
+    except Exception:
+        return []
+    found: list[str] = []
+    try:
+        for group in getattr(mdf, "groups", ()) or ():
+            channel_group = getattr(group, "channel_group", None)
+            if channel_group is None and isinstance(group, dict):
+                channel_group = group.get("channel_group")
+            acquisition = getattr(channel_group, "acq_source", None)
+            raw_source = getattr(acquisition, "path", "")
+            source = canonical_radar_source(raw_source)
+            if source and source not in found:
+                found.append(source)
+    except Exception:
+        return []
+    finally:
+        try:
+            mdf.close()
+        except Exception:
+            pass
+    return found
+
+
+def normalize_radar_metadata(value: Any) -> dict[str, str]:
+    """Whitelist transfer radar metadata and derive a consistent mapping.
+
+    The wire format uses flat source-fingerprint keys, while the projected
+    transfer resource uses ``source``/``mounting_position``.  Unknown or
+    inconsistent values are ignored rather than turning orientation into a
+    new transfer barrier.
+    """
+
+    raw = dict(value or {}) if isinstance(value, dict) else {}
+    source = canonical_radar_source(
+        raw.get("radar_source") or raw.get("source") or raw.get("radar")
+    )
+    mounting = str(
+        raw.get("radar_mounting_position")
+        or raw.get("mounting_position")
+        or ""
+    ).strip().upper()
+    by_mounting = {
+        mapping["mounting_position"].upper(): mapping["source"]
+        for mapping in RADAR_POSITION_MAP.values()
+    }
+    if not source and mounting in by_mounting:
+        source = by_mounting[mounting]
+    if not source:
+        return {}
+    return {
+        "source": source,
+        "mounting_position": next(
+            mapping["mounting_position"]
+            for mapping in RADAR_POSITION_MAP.values()
+            if mapping["source"] == source
+        ),
+    }
+
+
+def _first_dataset_mf4(path: str) -> str:
+    candidate = Path(str(path or "").strip())
+    try:
+        if candidate.is_file() and candidate.suffix.casefold() == ".mf4":
+            return str(candidate)
+        if candidate.is_dir():
+            files = sorted(
+                (item for item in candidate.rglob("*") if item.is_file() and item.suffix.casefold() == ".mf4"),
+                key=lambda item: item.as_posix().casefold(),
+            )
+            return str(files[0]) if files else ""
+    except (OSError, RuntimeError):
+        return ""
+    return ""
+
+
+def detect_radar_transfer_metadata(path: str) -> dict[str, str]:
+    """Infer flat radar metadata for a local direct-transfer dataset."""
+
+    mf4_path = _first_dataset_mf4(path)
+    if not mf4_path:
+        return {}
+    sources = discover_radar_acquisition_sources(mf4_path)
+    if sources:
+        source = sources[0]
+    else:
+        try:
+            detection = detect_radar_orientation(mf4_path)
+        except Exception:
+            detection = None
+        source = canonical_radar_source((detection or {}).get("source"))
+    metadata = normalize_radar_metadata({"radar_source": source})
+    if not metadata:
+        return {}
+    return {
+        "radar_source": metadata["source"],
+        "radar_mounting_position": metadata["mounting_position"],
+    }
+
+
 def _extract_first_scalar(signal: Any) -> Optional[float]:
     values = getattr(signal, "samples", None)
     if values is None:

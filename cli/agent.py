@@ -1062,6 +1062,30 @@ def _scan_direct_transfer_items(source_root: Path, *, source_role: str) -> list[
     return items
 
 
+def _dataset_transfer_fingerprints(
+    source_root: Path,
+    items: list[dict],
+) -> dict[str, str]:
+    """Infer optional radar metadata from the first local MF4."""
+
+    first_mf4 = next(
+        (
+            source_root / str(item.get("relative_path") or "")
+            for item in items
+            if str(item.get("relative_path") or "").casefold().endswith(".mf4")
+        ),
+        None,
+    )
+    if first_mf4 is None:
+        return {}
+    try:
+        from core.simulation import detect_radar_transfer_metadata
+
+        return dict(detect_radar_transfer_metadata(str(first_mf4)))
+    except Exception:
+        return {}
+
+
 def _direct_transfer_asset(
     client: "_ControlClient",
     task: dict,
@@ -1095,6 +1119,11 @@ def _direct_transfer_asset(
     plan_value = payload.get("transfer_plans") or {}
     plan = plan_value.get(source_role) if isinstance(plan_value, dict) else None
     if not plan:
+        fingerprints = (
+            _dataset_transfer_fingerprints(source_root, items)
+            if source_role == "dataset"
+            else {}
+        )
         plan = client.issue_transfer_plan(
             owner=owner,
             job_id=str(task.get("job_id") or ""),
@@ -1102,7 +1131,7 @@ def _direct_transfer_asset(
             mode="shared_copy",
             source_role=source_role,
             items=items,
-            source_fingerprints={},
+            source_fingerprints=fingerprints,
         )
     manifest = client.execute_transfer_plan(
         plan,
@@ -1301,6 +1330,10 @@ def _run_v5_prepare_data(
                 for item in lease.files
             ]
             payload_plan = dict(payload.get("transfer_plan") or {})
+            radar_fingerprints = _dataset_transfer_fingerprints(
+                lease.source_path if lease.source_path.is_dir() else lease.source_path.parent,
+                items,
+            )
             plan = payload_plan or client.issue_transfer_plan(
                 owner=owner,
                 job_id=str(task.get("job_id") or ""),
@@ -1308,7 +1341,7 @@ def _run_v5_prepare_data(
                 mode="shared_copy",
                 source_role="dataset",
                 items=items,
-                source_fingerprints={"evidence_ref": evidence_ref},
+                source_fingerprints={"evidence_ref": evidence_ref, **radar_fingerprints},
             )
             manifest = client.execute_transfer_plan(
                 plan,
@@ -2696,7 +2729,10 @@ class _ControlClient:
             mode="shared_copy",
             source_role="dataset",
             items=items,
-            source_fingerprints={"evidence_ref": evidence_ref},
+            source_fingerprints={
+                "evidence_ref": evidence_ref,
+                **_dataset_transfer_fingerprints(root, items),
+            },
         )
         manifest = self.execute_transfer_plan(
             plan,

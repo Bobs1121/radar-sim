@@ -33,6 +33,7 @@ from core.datasets import (
 from core.runtime_bundle_archive import extract_runtime_bundle_archive
 from core.runtime_bundle_catalog import RuntimeBundleCatalog, RuntimeBundleRecord
 from core.shared_namespace import SharedNamespaceRegistry, looks_like_shared_path
+from core.simulation import normalize_radar_metadata
 from core.user import normalize_user
 from core.local_results import ResultCatalog
 from core.agent_policy import (
@@ -663,6 +664,13 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         config.setdefault("cluster", {})["selena_exe"] = str(exe)
     config.setdefault("build", {})["selena_branch"] = bundle_branch
     sim = config.setdefault("simulation", {})
+    dataset_radar = _dataset_radar_metadata(transfer_resources.get("dataset", []))
+    if dataset_radar:
+        # Direct-transfer metadata was derived on the data-owning SDK/Agent.
+        # Linux only projects the validated values into Config.cfg; it never
+        # opens the worker-visible MF4 to rediscover them.
+        sim["source"] = dataset_radar["source"]
+        sim["mounting_position"] = dataset_radar["mounting_position"]
     sim["runtime_xml"] = str(runtime_xml)
     sim["adapter_file"] = str(adapter) if adapter is not None else ""
     sim["matfilefilter"] = str(mat_filter) if mat_filter is not None else ""
@@ -1157,6 +1165,19 @@ def _dataset_ref_from_transfer_resources(
         "created_at": time.time(),
     }
     return _dataset_ref_from_metadata(metadata, owner=owner)
+
+
+def _dataset_radar_metadata(resources: list[dict[str, Any]]) -> dict[str, str]:
+    """Return the first validated radar projection from dataset resources."""
+
+    for resource in resources:
+        if not isinstance(resource, dict):
+            continue
+        for key in ("radar", "radar_metadata", "source_fingerprints"):
+            metadata = normalize_radar_metadata(resource.get(key))
+            if metadata:
+                return metadata
+    return {}
 
 
 _TRANSFER_RESOURCE_ROLES = ("dataset", "runtime_bundle", "runtime_xml", "mat_filter", "adapter")

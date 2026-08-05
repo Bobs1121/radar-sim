@@ -6,7 +6,12 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from cli import agent as agent_module
-from cli.agent import _ControlClient, _raw_sha256, _scan_direct_transfer_items
+from cli.agent import (
+    _ControlClient,
+    _dataset_transfer_fingerprints,
+    _raw_sha256,
+    _scan_direct_transfer_items,
+)
 from cli.agent import _direct_transfer_asset
 from core.datasets import DatasetFileRef
 from core.direct_transfer import (
@@ -41,9 +46,11 @@ class _RoleTransferClient(_FakeTransferClient):
         super().__init__(None)  # type: ignore[arg-type]
         self.target = target
         self.plans: list[tuple[str, list[dict]]] = []
+        self.fingerprints: dict[str, dict] = {}
 
     def issue_transfer_plan(self, *, owner, job_id, stage_id, mode, source_role, items, source_fingerprints=None, ttl_seconds=86400.0):
         self.plans.append((source_role, list(items)))
+        self.fingerprints[source_role] = dict(source_fingerprints or {})
         transfer_id = generate_opaque_id()
         scope = generate_owner_scope(owner, job_id)
         return TransferPlan(
@@ -85,6 +92,23 @@ def test_agent_scan_preserves_complete_directory_and_normalizes_checksums(tmp_pa
     assert all(item["checksum"] == "" for item in items)
     assert _raw_sha256("sha256:" + "a" * 64) == "a" * 64
     assert _raw_sha256("b" * 64) == "b" * 64
+
+
+def test_agent_dataset_transfer_fingerprints_project_rl_to_radar_rl(monkeypatch, tmp_path: Path):
+    source = tmp_path / "dataset"
+    source.mkdir()
+    (source / "recording.MF4").write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation.detect_radar_transfer_metadata",
+        lambda _path: {"radar_source": "RadarRL", "radar_mounting_position": "CRL"},
+    )
+
+    fingerprints = _dataset_transfer_fingerprints(
+        source,
+        [{"relative_path": "recording.MF4"}],
+    )
+
+    assert fingerprints == {"radar_source": "RadarRL", "radar_mounting_position": "CRL"}
 
 
 def test_agent_execute_plan_writes_bytes_and_only_reports_metadata(tmp_path: Path):
@@ -245,6 +269,30 @@ def test_agent_transfers_selena_and_each_config_asset_as_independent_role(tmp_pa
     ]
     runtime_items = next(items for role, items in client.plans if role == "runtime_bundle")
     assert {item["relative_path"] for item in runtime_items} == {"Selena.exe", "core.dll"}
+
+
+def test_agent_dataset_transfer_plan_carries_radar_fingerprints(monkeypatch, tmp_path: Path):
+    dataset = tmp_path / "dataset.MF4"
+    dataset.write_bytes(b"mf4")
+    target = tmp_path / "cluster"
+    target.mkdir()
+    client = _RoleTransferClient(target)
+    monkeypatch.setattr(
+        "core.simulation.detect_radar_transfer_metadata",
+        lambda _path: {"radar_source": "RadarRL", "radar_mounting_position": "CRL"},
+    )
+
+    _direct_transfer_asset(
+        client,
+        {"job_id": "job-dataset", "task_id": "stage-dataset", "payload": {}},
+        owner="alice",
+        source_role="dataset",
+        source_path=str(dataset),
+        cancel_check=lambda: False,
+    )
+
+    assert client.fingerprints["dataset"]["radar_source"] == "RadarRL"
+    assert client.fingerprints["dataset"]["radar_mounting_position"] == "CRL"
 
 
 def test_agent_mixed_shared_dataset_skips_lease_and_transfers_only_local_assets(monkeypatch, tmp_path: Path):

@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.simulation import normalize_radar_metadata
+
 TERMINAL_TASK_STATUSES = {"succeeded", "failed", "cancelled", "skipped"}
 TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
 SUCCESS_TASK_STATUSES = {"succeeded", "skipped"}
@@ -1138,6 +1140,13 @@ class ControlService:
             "status": "resolved",
             "entries": entries,
         }
+        radar_metadata = normalize_radar_metadata(
+            (transfer or {}).get("radar")
+            or (transfer or {}).get("radar_metadata")
+            or (transfer or {}).get("source_fingerprints")
+        )
+        if radar_metadata:
+            resource["radar"] = radar_metadata
         with self._lock:
             conn = self._conn()
             try:
@@ -1183,16 +1192,19 @@ class ControlService:
                     if str(item.get("storage_ref") or "")
                 ]
                 if role == "dataset":
+                    dataset_projection = {
+                        "id": f"dataset:sha256:{transfer_digest}",
+                        "source_kind": "direct_transfer",
+                        "file_count": file_count,
+                        "total_size": total_size,
+                        "storage_refs": storage_refs,
+                    }
+                    if radar_metadata:
+                        dataset_projection["radar"] = radar_metadata
                     decisions["data"] = {
                         "status": "resolved",
                         "route": "direct_transfer",
-                        "dataset": {
-                            "id": f"dataset:sha256:{transfer_digest}",
-                            "source_kind": "direct_transfer",
-                            "file_count": file_count,
-                            "total_size": total_size,
-                            "storage_refs": storage_refs,
-                        },
+                        "dataset": dataset_projection,
                     }
                 elif role == "runtime_bundle":
                     decisions["selena"] = {

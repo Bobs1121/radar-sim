@@ -280,12 +280,17 @@ class RadarSimClient:
         for source_role, source_path in sources:
             try:
                 source_root, items = _scan_sdk_transfer_items(source_path, source_role=source_role)
+                plan_fingerprints = dict(fingerprints)
+                if source_role == "dataset":
+                    plan_fingerprints.update(
+                        _dataset_transfer_fingerprints(source_root, items)
+                    )
                 plan = self.issue_transfer_plan(
                     job_id=job.id,
                     stage_id=stage_id,
                     source_role=source_role,
                     items=items,
-                    source_fingerprints=fingerprints,
+                    source_fingerprints=plan_fingerprints,
                 )
                 self.execute_transfer_plan(
                     plan,
@@ -1298,6 +1303,30 @@ def _scan_sdk_transfer_items(
             }
         )
     return root, items
+
+
+def _dataset_transfer_fingerprints(
+    source_root: Path,
+    items: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Add source-side radar metadata without making transfer mandatory."""
+
+    first_mf4 = next(
+        (
+            source_root / str(item.get("relative_path") or "")
+            for item in items
+            if str(item.get("relative_path") or "").casefold().endswith(".mf4")
+        ),
+        None,
+    )
+    if first_mf4 is None:
+        return {}
+    try:
+        from core.simulation import detect_radar_transfer_metadata
+
+        return dict(detect_radar_transfer_metadata(str(first_mf4)))
+    except Exception:
+        return {}
 
 
 def _quote_path_token(value: str) -> str:
