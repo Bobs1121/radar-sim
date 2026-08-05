@@ -63,6 +63,7 @@ $DataRoot = Join-Path $InstallRoot "data"
 $VenvDir = Join-Path $RepoRoot ".venv"
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
 $StartScript = Join-Path $PSScriptRoot "start_windows.ps1"
+$WatchdogScript = Join-Path $PSScriptRoot "watch_windows_connector.ps1"
 
 function Write-Step($message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
 function Write-Ok($message) { Write-Host "    OK  $message" -ForegroundColor Green }
@@ -264,11 +265,15 @@ $installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
 if ($RegisterStartup) {
     Write-Step "Register automatic startup and reconnect"
     $taskName = "RadarSimConnector-$env:USERNAME"
+    $watchdogTaskName = "$taskName-Watchdog"
     $taskArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" -InstallRoot `"$InstallRoot`" -Supervise -NoBrowser"
     # A reinstall must replace the running code, not leave the previous
     # supervisor holding the single-instance mutex until the next logon.
     if ($existing -and [string]$existing.startup_method -eq "scheduled_task" -and $existing.startup_name) {
         Stop-ScheduledTask -TaskName ([string]$existing.startup_name) -ErrorAction SilentlyContinue
+    }
+    if ($existing -and $existing.watchdog_name) {
+        Unregister-ScheduledTask -TaskName ([string]$existing.watchdog_name) -Confirm:$false -ErrorAction SilentlyContinue
     }
     $connectorPidPath = Join-Path $InstallRoot "connector.pid"
     if (Test-Path $connectorPidPath) {
@@ -283,29 +288,37 @@ if ($RegisterStartup) {
     try {
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
         $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
-        # RestartOnFailure covers ordinary non-zero exits.  A console close,
-        # policy stop or Task Scheduler interruption may not be classified as
-        # a restartable failure, so a low-frequency trigger also repairs a
-        # stopped connector without bothering an already-running instance.
-        $repairTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-            -RepetitionInterval (New-TimeSpan -Minutes 5)
-        $triggers = @($logonTrigger, $repairTrigger)
         $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
             -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
             -ExecutionTimeLimit ([TimeSpan]::Zero) `
-            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $logonTrigger `
             -Settings $settings -Description "radar-sim Windows connector" -Force | Out-Null
+        $watchdogArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$WatchdogScript`" -InstallRoot `"$InstallRoot`" -ConnectorTaskName `"$taskName`""
+        $watchdogAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $watchdogArgs
+        $watchdogTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
+            -RepetitionInterval (New-TimeSpan -Minutes 2)
+        $watchdogSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 1) `
+            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName $watchdogTaskName -Action $watchdogAction `
+            -Trigger $watchdogTrigger -Settings $watchdogSettings `
+            -Description "radar-sim Windows connector watchdog" -Force | Out-Null
         $installConfig["startup_method"] = "scheduled_task"
         $installConfig["startup_name"] = $taskName
+        $installConfig["watchdog_name"] = $watchdogTaskName
         Write-Ok "This PC will reconnect automatically after sign-in or a process failure."
     } catch {
+        Unregister-ScheduledTask -TaskName $watchdogTaskName -Confirm:$false -ErrorAction SilentlyContinue
         $startupDir = [Environment]::GetFolderPath("Startup")
         $startupFile = Join-Path $startupDir "RadarSimConnector.cmd"
         $command = "@echo off`r`npowershell.exe $taskArgs`r`n"
         Set-Content -LiteralPath $startupFile -Value $command -Encoding ASCII
         $installConfig["startup_method"] = "startup_folder"
         $installConfig["startup_name"] = $startupFile
+        $installConfig["watchdog_name"] = ""
         Write-Warn "Scheduled Task is blocked; registered the current-user Startup fallback."
     }
     $installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
@@ -418,6 +431,13 @@ if ($Start) {
         Fail "The background connector did not stay running. Re-run this installer or contact the service administrator."
     }
     Write-Ok "The connector is running (PID $connectorPid)."
+    if ($RegisterStartup -and $installConfig["startup_method"] -eq "scheduled_task") {
+        $watchdog = Get-ScheduledTask -TaskName ([string]$installConfig["watchdog_name"]) -ErrorAction SilentlyContinue
+        if (-not $watchdog) {
+            Fail "The background watchdog was not registered. Re-run this installer or contact the service administrator."
+        }
+        Write-Ok "The independent reconnect watchdog is registered."
+    }
     if (-not $UseLocalControl) {
         $capabilityName = if ($Mode -eq "full") { "windows_full" } else { "windows_light" }
         $capabilityHeaders = @{}

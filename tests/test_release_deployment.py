@@ -71,8 +71,9 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "RegisterStartup" in bootstrap
     assert "New-ScheduledTaskAction" in bootstrap
     assert "New-ScheduledTaskTrigger -AtLogOn" in bootstrap
-    assert "RepetitionInterval (New-TimeSpan -Minutes 5)" in bootstrap
-    assert "$triggers = @($logonTrigger, $repairTrigger)" in bootstrap
+    assert 'watchdogTaskName = "$taskName-Watchdog"' in bootstrap
+    assert "RepetitionInterval (New-TimeSpan -Minutes 2)" in bootstrap
+    assert "watch_windows_connector.ps1" in bootstrap
     assert "-StartWhenAvailable" in bootstrap
     assert "-RestartCount 999" in bootstrap
     assert "-AllowStartIfOnBatteries" in bootstrap
@@ -82,6 +83,11 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "orphanAgentPids" in starter
     assert "Get-CimInstance Win32_Process" in starter
     assert "connector.pid" in starter
+    assert "connector.log" in starter
+    watchdog = (ROOT / "scripts" / "watch_windows_connector.ps1").read_text(encoding="utf-8")
+    assert "Test-ConnectorSupervisor" in watchdog
+    assert "Start-ScheduledTask -TaskName $ConnectorTaskName" in watchdog
+    assert "watchdog.log" in watchdog
     assert '$RsimEntry = Join-Path $RepoRoot "rsim.py"' in starter
     assert '$RsimEntry, "agent"' in starter
     assert '"rsim.py", "agent"' not in starter

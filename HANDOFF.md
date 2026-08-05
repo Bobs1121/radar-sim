@@ -13,8 +13,9 @@
 - 现场验证：新电脑 `WX-C-005JG` 与原电脑 `WX8-C-0001A` 同时保持轮询；两个真实 owner 各自只看到 1 个自己的 light Connector，第三个全新 owner 看到 0 个 Windows Connector；三者都看到同一组 `linux_executor=1`、`platform_gateway=1`、`cluster.available=true`；任务列表分别为 `0/2/0`，未串任务。
 - Connector 日志降噪：一次短暂重启/网络抖动不再输出 `[WARN]`；连续 3 次轮询失败才进入可见断连状态，之后每 60 秒至多报告一次，恢复时才打印恢复信息。服务端仍保留完整访问日志。
 - 一键安装确认修复：安装器启动 Connector 后的 `/api/v1/capabilities` 确认请求原先漏带 `X-Rsim-User`，在共享服务上会检查 Linux 默认 owner 并可能误报 30 秒连接失败；现已固定使用配对 owner。
+- 持久化修复：新电脑 `10.190.164.73` 在 `03:00:25` 后无任何 `poll/heartbeat/log/result` 请求，且用户确认没有休眠、断网或手工中止，证明原单一计划任务的重复触发没有完成自愈。新版一键安装增加独立 `RadarSimConnector-<user>-Watchdog`，每 2 分钟验证监督进程的 PID 与命令行，缺失时停止假运行实例并重新启动 Connector；Connector 与 Watchdog 分别写入 `%LOCALAPPDATA%\radar-sim\logs\connector.log` 和 `watchdog.log`，各自按大小轮转。
 - 验证门禁：多用户/Agent/API/Cluster 定向套件 `134 passed, 1 warning`；全量套件曾在 185 秒超时且无最终汇总，因此不得表述为全量通过。
-- 部署：Linux `10.190.171.44:8877` 已更新三项服务端修复并重启，两个 Connector 当时均自动恢复轮询。更新后的 Connector ZIP 已覆盖服务端 `dist/rsim-windows-connector.zip`，SHA-256 为 `e18a8ff4eced9f25c00aab60163c795039330a4a1265319c6bebab32894dcfe4`；已安装旧 Connector 不影响自动重连，仅仍可能显示一次瞬时断连警告。
+- 部署：Linux `10.190.171.44:8877` 已更新三项服务端修复并重启。带独立 Watchdog、owner 确认和日志降噪的 Connector ZIP 已覆盖服务端 `dist/rsim-windows-connector.zip`，SHA-256 为 `c7b5959817024d7c105fa07858748e0d94019c4651aa71979bf1bd8e954cbacf`。已安装旧 Connector 不会自动获得 Watchdog，需要在测试阶段从 Web 再执行一次“一键连接”；安装器保留 owner 与已有本地配置，不要求重新填写 YAML。
 
 ## 0.0.1 GitHub 与 Linux 清理交付（2026-08-04）
 

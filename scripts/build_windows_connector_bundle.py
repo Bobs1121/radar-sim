@@ -45,7 +45,13 @@ def _files() -> list[Path]:
             and not path.name.endswith(".pyc")
         )
     selected = sorted(set(files), key=lambda item: item.relative_to(ROOT).as_posix())
-    required = {"rsim.py", "setup.py", "scripts/bootstrap.ps1", "scripts/start_windows.ps1"}
+    required = {
+        "rsim.py",
+        "setup.py",
+        "scripts/bootstrap.ps1",
+        "scripts/start_windows.ps1",
+        "scripts/watch_windows_connector.ps1",
+    }
     included = {path.relative_to(ROOT).as_posix() for path in selected}
     absent = sorted(required - included)
     if absent:

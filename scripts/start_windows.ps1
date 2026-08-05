@@ -144,19 +144,33 @@ if ($Supervise) {
         }
     }
     $connectorPidPath = Join-Path $InstallRoot "connector.pid"
+    $logRoot = Join-Path $InstallRoot "logs"
+    $agentLog = Join-Path $logRoot "connector.log"
+    New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+    if ((Test-Path $agentLog) -and (Get-Item $agentLog).Length -gt 2097152) {
+        Move-Item -LiteralPath $agentLog -Destination ($agentLog + ".1") -Force
+    }
     Set-Content -LiteralPath $connectorPidPath -Value ([string]$PID) -Encoding ASCII
+    Add-Content -LiteralPath $agentLog -Encoding UTF8 `
+        -Value ("{0:o} Connector supervisor started (PID {1})." -f (Get-Date), $PID)
     try {
         while ($true) {
             try {
-                & $venvPy @agentArgs
+                & $venvPy @agentArgs *>> $agentLog
                 $exitCode = $LASTEXITCODE
+                Add-Content -LiteralPath $agentLog -Encoding UTF8 `
+                    -Value ("{0:o} Connector child stopped with exit {1}; restarting." -f (Get-Date), $exitCode)
                 Write-Warning "The connector stopped (exit $exitCode); reconnecting in 5 seconds."
             } catch {
+                Add-Content -LiteralPath $agentLog -Encoding UTF8 `
+                    -Value ("{0:o} Connector child start failed: {1}" -f (Get-Date), $_.Exception.Message)
                 Write-Warning "The connector could not start: $($_.Exception.Message); reconnecting in 5 seconds."
             }
             Start-Sleep -Seconds 5
         }
     } finally {
+        Add-Content -LiteralPath $agentLog -Encoding UTF8 `
+            -Value ("{0:o} Connector supervisor is exiting." -f (Get-Date))
         try {
             if ((Get-Content -Raw -Encoding ASCII $connectorPidPath -ErrorAction SilentlyContinue).Trim() -eq [string]$PID) {
                 Remove-Item -LiteralPath $connectorPidPath -Force -ErrorAction SilentlyContinue
