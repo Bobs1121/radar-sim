@@ -648,6 +648,73 @@ def test_sdk_direct_transfer_adapter_uses_metadata_only_control_requests(tmp_pat
     assert all(b"mf4" not in body for _, _, body in seen)
 
 
+def test_sdk_direct_transfer_throttles_http_but_not_local_callback(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    payload = b"x" * 100
+    path = source / "large.MF4"
+    path.write_bytes(payload)
+    target = tmp_path / "cluster-target"
+    target.mkdir()
+    transfer_id = generate_opaque_id()
+    owner_scope = generate_owner_scope("alice", "job-throttle-sdk")
+    item = TransferPlanItem(
+        source_role="dataset",
+        relative_path=path.name,
+        size=len(payload),
+        checksum=__import__("hashlib").sha256(payload).hexdigest(),
+        mtime_ns=path.stat().st_mtime_ns,
+    )
+    plan = TransferPlan(
+        transfer_id=transfer_id,
+        owner_scope=owner_scope,
+        job_id="job-throttle-sdk",
+        stage_id="stage-throttle-sdk",
+        mode="shared_copy",
+        source_role="dataset",
+        client_target_root=str(target),
+        relative_root=build_isolated_relative_root(owner_scope, "job-throttle-sdk", transfer_id),
+        items=(item,),
+        expires_at=10_000_000_000,
+        owner="alice",
+    )
+    seen: list[tuple[str, str, bytes]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, request.content))
+        if request.url.path.endswith("/progress"):
+            return httpx.Response(200, json={"status": "in_progress"})
+        if request.url.path.endswith("/manifest"):
+            return httpx.Response(200, json={"status": "completed"})
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+    local = []
+    manifest = sdk.execute_transfer_plan(
+        plan,
+        source,
+        progress_callback=local.append,
+        chunk_size=1,
+        allow_local_test=True,
+    )
+
+    progress = [
+        __import__("json").loads(body.decode("utf-8"))
+        for _method, path_name, body in seen
+        if path_name.endswith("/progress")
+    ]
+    assert manifest.total_bytes == len(payload)
+    assert len(local) == len(payload)
+    assert len(progress) < len(local)
+    assert progress[0]["bytes_transferred"] == 1
+    assert progress[-1]["bytes_transferred"] == len(payload)
+
+
 def test_sdk_run_preparation_does_not_create_legacy_linux_uploads(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     config = UserRunConfig.from_dict(run_config_dict())

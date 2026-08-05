@@ -21,6 +21,7 @@ import httpx
 from core.direct_transfer import (
     TransferManifest,
     TransferPlan,
+    _TransferProgressReporter,
     execute_transfer,
 )
 from core.transfer_service import TransferProgress
@@ -439,11 +440,20 @@ class RadarSimClient:
         It can be used by a Windows Agent or a Linux SDK process that has a
         mounted Cluster share.  Callers without such access should leave the
         plan pending and surface ``needs-agent`` instead of uploading bytes
-        to this SDK's HTTP endpoint.
+        to this SDK's HTTP endpoint.  ``progress_callback`` receives every
+        chunk-level local progress event; control-plane ``/progress`` posts
+        are throttled independently and always finish with a verified total.
         """
         signed = plan if isinstance(plan, TransferPlan) else TransferPlan.from_dict(dict(plan))
         per_file: dict[str, int] = {}
         total = sum(item.size for item in signed.items)
+
+        def publish(progress: TransferProgress) -> None:
+            # Progress is metadata-only and is throttled by the reporter; the
+            # copy/checksum loop itself remains chunk-granular.
+            self.report_transfer_progress(progress)
+
+        reporter = _TransferProgressReporter(publish, progress_callback)
 
         def report(relative_path: str, processed: int, file_total: int) -> None:
             per_file[relative_path] = int(processed)
@@ -455,12 +465,7 @@ class RadarSimClient:
                 updated_at=time.time(),
                 owner_scope=signed.owner_scope,
             )
-            # Progress is metadata-only and is part of the SDK adapter's
-            # default contract.  A caller callback is an additional local
-            # notification, not a replacement for the control-plane update.
-            self.report_transfer_progress(progress)
-            if progress_callback is not None:
-                progress_callback(progress)
+            reporter.emit(progress)
 
         manifest = execute_transfer(
             signed,
@@ -471,6 +476,21 @@ class RadarSimClient:
             cancel_callback=cancel_check,
             progress_callback=report,
             chunk_size=int(chunk_size),
+        )
+        final_file = (
+            manifest.entries[-1].relative_path
+            if manifest.entries
+            else (signed.items[-1].relative_path if signed.items else "")
+        )
+        reporter.finish(
+            TransferProgress(
+                signed.transfer_id,
+                total,
+                total,
+                final_file,
+                updated_at=time.time(),
+                owner_scope=signed.owner_scope,
+            )
         )
         self.report_transfer_manifest(manifest)
         return manifest

@@ -12,10 +12,12 @@ from core.datasets import DatasetFileRef
 from core.direct_transfer import (
     TransferPlan,
     TransferPlanItem,
+    _TransferProgressReporter,
     build_isolated_relative_root,
     generate_opaque_id,
     generate_owner_scope,
 )
+from core.transfer_service import TransferProgress
 
 
 class _FakeTransferClient(_ControlClient):
@@ -127,6 +129,79 @@ def test_agent_execute_plan_writes_bytes_and_only_reports_metadata(tmp_path: Pat
     assert manifest.transfer_id == transfer_id
     assert client.progress
     assert client.manifest == manifest
+
+
+def test_agent_execute_plan_throttles_http_but_keeps_local_chunk_callbacks(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+    file = source / "large.MF4"
+    file.write_bytes(b"x" * 100)
+    target = tmp_path / "target"
+    target.mkdir()
+    transfer_id = generate_opaque_id()
+    owner_scope = generate_owner_scope("alice", "job-throttle")
+    item = TransferPlanItem(
+        source_role="dataset",
+        relative_path=file.name,
+        size=100,
+        checksum=__import__("hashlib").sha256(file.read_bytes()).hexdigest(),
+        mtime_ns=file.stat().st_mtime_ns,
+    )
+    plan = TransferPlan(
+        transfer_id=transfer_id,
+        owner_scope=owner_scope,
+        job_id="job-throttle",
+        stage_id="stage-throttle",
+        mode="shared_copy",
+        source_role="dataset",
+        client_target_root=str(target),
+        relative_root=build_isolated_relative_root(owner_scope, "job-throttle", transfer_id),
+        items=(item,),
+        expires_at=10_000_000_000,
+        owner="alice",
+    )
+    client = _FakeTransferClient(plan)
+    local: list[TransferProgress] = []
+
+    manifest = client.execute_transfer_plan(
+        plan,
+        source_root=source,
+        owner="alice",
+        progress_callback=local.append,
+        chunk_size=1,
+        allow_local_test=True,
+    )
+
+    assert manifest.total_bytes == 100
+    assert len(local) == 100  # every one-byte kernel event remains local
+    assert len(client.progress) < len(local)  # HTTP progress is throttled
+    assert client.progress[0].bytes_transferred == 1
+    assert client.progress[-1].bytes_transferred == 100
+
+
+def test_transfer_progress_callback_is_per_event_while_http_updates_are_throttled():
+    """Local rendering stays smooth while control-plane progress is sparse."""
+
+    network: list[TransferProgress] = []
+    local: list[TransferProgress] = []
+    reporter = _TransferProgressReporter(
+        network.append,
+        local.append,
+        # Keep this deterministic: only the first and forced terminal update
+        # should publish for the small sequence below.
+        min_interval_sec=10_000.0,
+        min_fraction=0.5,
+        min_bytes=10_000,
+        clock=lambda: 0.0,
+    )
+    for completed in (1, 2, 3, 4):
+        reporter.emit(
+            TransferProgress("transfer:test", completed, 100, "one.MF4")
+        )
+    reporter.finish(TransferProgress("transfer:test", 100, 100, "one.MF4"))
+
+    assert [progress.bytes_transferred for progress in local] == [1, 2, 3, 4, 100]
+    assert [progress.bytes_transferred for progress in network] == [1, 100]
 
 
 def test_agent_transfers_selena_and_each_config_asset_as_independent_role(tmp_path: Path):

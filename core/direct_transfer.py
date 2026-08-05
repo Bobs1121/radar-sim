@@ -27,6 +27,9 @@ SOURCE_ROLES = frozenset(
 TRANSFER_STATUSES = frozenset(
     {"pending", "in_progress", "completed", "failed", "cancelled", "skipped_shared", "skipped_local"}
 )
+_TRANSFER_PROGRESS_MIN_INTERVAL_SEC = 1.0
+_TRANSFER_PROGRESS_MIN_FRACTION = 0.05
+_TRANSFER_PROGRESS_MIN_BYTES = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _OPAQUE_RE = re.compile(r"^[A-Za-z0-9:_-]{8,256}$")
 _WINDOWS_RESERVED_NAMES = frozenset(
@@ -54,6 +57,106 @@ class SourceChangedError(DirectTransferError):
 
 class GatewayUnavailableError(DirectTransferError):
     """The optional gateway adapter is not part of the P0 kernel."""
+
+
+class _TransferProgressReporter:
+    """Separate per-chunk local notifications from throttled HTTP updates.
+
+    ``execute_transfer`` deliberately reports every copied chunk so callers
+    can render a smooth local progress indicator.  Sending each event to the
+    control plane is unnecessarily expensive for large files, however.  The
+    first update is sent immediately; later updates are sent when at least
+    one of the elapsed-time, percentage, or byte thresholds is met.  The
+    ``finish`` method always publishes the post-verification terminal state.
+
+    The optional thresholds/clock are injectable for focused tests; SDK and
+    Agent production callers use the conservative defaults above.
+    """
+
+    def __init__(
+        self,
+        publish: Callable[[Any], Any],
+        local_callback: Callable[[Any], None] | None = None,
+        *,
+        min_interval_sec: float = _TRANSFER_PROGRESS_MIN_INTERVAL_SEC,
+        min_fraction: float = _TRANSFER_PROGRESS_MIN_FRACTION,
+        min_bytes: int = _TRANSFER_PROGRESS_MIN_BYTES,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self._publish = publish
+        self._local_callback = local_callback
+        self._min_interval_sec = max(0.0, float(min_interval_sec))
+        self._min_fraction = max(0.0, float(min_fraction))
+        self._min_bytes = max(0, int(min_bytes))
+        self._clock = clock or time.monotonic
+        self._last_published: Any | None = None
+        self._last_published_at: float | None = None
+        self._latest: Any | None = None
+
+    @staticmethod
+    def _snapshot(progress: Any) -> tuple[str, int, int, str, str, str]:
+        """Return progress fields excluding volatile timestamps."""
+
+        return (
+            str(progress.transfer_id),
+            int(progress.bytes_transferred),
+            int(progress.bytes_total),
+            str(progress.current_file or ""),
+            str(progress.status),
+            str(progress.owner_scope or ""),
+        )
+
+    def _should_publish(self, progress: Any, now: float) -> bool:
+        previous = self._last_published
+        if previous is None:
+            return True
+        if self._min_interval_sec <= 0.0 or self._last_published_at is None:
+            elapsed = float("inf")
+        else:
+            elapsed = max(0.0, float(now) - self._last_published_at)
+        bytes_delta = int(progress.bytes_transferred) - int(previous.bytes_transferred)
+        if bytes_delta >= self._min_bytes:
+            return True
+        if elapsed >= self._min_interval_sec:
+            return True
+        total = int(progress.bytes_total)
+        if total > 0 and (bytes_delta / total) >= self._min_fraction:
+            return True
+        return False
+
+    def _publish_now(self, progress: Any, now: float) -> None:
+        self._publish(progress)
+        self._last_published = progress
+        self._last_published_at = float(now)
+
+    def emit(self, progress: Any) -> None:
+        """Handle one kernel event and notify local callbacks every time."""
+
+        now = float(self._clock())
+        self._latest = progress
+        if self._should_publish(progress, now):
+            # Preserve the adapter's historical ordering: a control-plane
+            # failure aborts the transfer before its local callback is called.
+            self._publish_now(progress, now)
+        if self._local_callback is not None:
+            self._local_callback(progress)
+
+    def finish(self, progress: Any) -> None:
+        """Publish a verified terminal snapshot and notify local listeners once."""
+
+        now = float(self._clock())
+        previous = self._latest
+        self._latest = progress
+        # ``execute_transfer`` normally emits a chunk event at exactly
+        # ``bytes_total``.  Avoid a duplicate local callback in that common
+        # case, while synthesising one for empty/resumed files.  Publish first
+        # so a callback exception cannot prevent terminal control-plane state.
+        self._publish_now(progress, now)
+        if (
+            self._local_callback is not None
+            and (previous is None or self._snapshot(previous) != self._snapshot(progress))
+        ):
+            self._local_callback(progress)
 
 
 def _digest_token(value: str, length: int = 32) -> str:

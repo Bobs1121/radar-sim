@@ -2365,13 +2365,27 @@ class _ControlClient:
         chunk_size: int = 1024 * 1024,
         allow_local_test: bool = False,
     ):
-        """Copy one signed plan directly and publish only metadata."""
-        from core.direct_transfer import TransferPlan, execute_transfer
+        """Copy one signed plan directly and publish only metadata.
+
+        ``progress_callback`` receives every chunk-level local event.  The
+        Linux ``/progress`` metadata stream is throttled separately and is
+        forced to a verified total before the manifest is submitted.
+        """
+        from core.direct_transfer import (
+            TransferPlan,
+            _TransferProgressReporter,
+            execute_transfer,
+        )
         from core.transfer_service import TransferProgress
 
         signed = plan if isinstance(plan, TransferPlan) else TransferPlan.from_dict(dict(plan.get("plan") or plan))
         per_file: dict[str, int] = {}
         total = sum(item.size for item in signed.items)
+
+        def publish(progress: TransferProgress) -> None:
+            self.report_transfer_progress(progress, owner=owner)
+
+        reporter = _TransferProgressReporter(publish, progress_callback)
 
         def report(relative_path: str, processed: int, _file_total: int) -> None:
             per_file[relative_path] = int(processed)
@@ -2383,9 +2397,7 @@ class _ControlClient:
                 updated_at=time.time(),
                 owner_scope=signed.owner_scope,
             )
-            self.report_transfer_progress(progress, owner=owner)
-            if progress_callback is not None:
-                progress_callback(progress)
+            reporter.emit(progress)
 
         manifest = execute_transfer(
             signed,
@@ -2396,6 +2408,21 @@ class _ControlClient:
             cancel_callback=cancel_check,
             progress_callback=report,
             chunk_size=int(chunk_size),
+        )
+        final_file = (
+            manifest.entries[-1].relative_path
+            if manifest.entries
+            else (signed.items[-1].relative_path if signed.items else "")
+        )
+        reporter.finish(
+            TransferProgress(
+                signed.transfer_id,
+                total,
+                total,
+                final_file,
+                updated_at=time.time(),
+                owner_scope=signed.owner_scope,
+            )
         )
         self.report_transfer_manifest(manifest, owner=owner)
         return manifest

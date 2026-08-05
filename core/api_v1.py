@@ -417,6 +417,20 @@ class ApiV1Service:
             resolved_spec["decisions"] = decisions
             resolved_spec["status"] = "partial"
             recognition_status = "registered_bundle"
+
+        # An existing Selena folder supplied from the source-side client is a
+        # direct-transfer resource, not a Windows Agent resolution task.  Once
+        # the Connector has copied the runtime bundle (and the other local
+        # roles) to the Cluster data plane, Linux can validate the Cluster
+        # environment and continue.  Keep this narrow: a build source still
+        # needs Windows recognition/build, and a registered bundle keeps its
+        # catalog/cache semantics below.
+        direct_transfer_existing_cluster = bool(
+            selected_target == "cluster"
+            and config.selena.source == "existing"
+            and selected_runtime_bundle is None
+            and classify_data_path(str(config.selena.existing_path or "")) == "agent"
+        )
         for task in task_specs:
             stage_type = str(task.get("stage_type") or "")
             if task.get("stage_type") == "resolve_spec":
@@ -434,6 +448,12 @@ class ApiV1Service:
                     task["status"] = "skipped"
                     task["initial_status"] = "skipped"
                     task["skip_reason"] = "registered_runtime_bundle_selected"
+                elif direct_transfer_existing_cluster:
+                    # Recognition is represented by the source-side transfer
+                    # manifests; there is no Windows resolver to wait for.
+                    task["status"] = "skipped"
+                    task["initial_status"] = "skipped"
+                    task["skip_reason"] = "runtime_bundle_direct_transfer"
             if (
                 config.selena.source == "existing"
                 and stage_type == "register_artifact"
@@ -449,6 +469,12 @@ class ApiV1Service:
                     if selected_runtime_bundle is not None
                     else "existing_selena_kept_on_local_full_agent"
                 )
+            elif direct_transfer_existing_cluster and stage_type == "register_artifact":
+                # The direct-transfer manifest is the artifact registration
+                # evidence for this route; do not release a Windows task.
+                task["status"] = "skipped"
+                task["initial_status"] = "skipped"
+                task["skip_reason"] = "runtime_bundle_direct_transfer"
             if selected_runtime_project:
                 payload = dict(task.get("payload") or {})
                 payload["internal_project"] = selected_runtime_project
@@ -488,7 +514,7 @@ class ApiV1Service:
                 if (
                     stage_type == "environment_check"
                     and config.selena.source == "existing"
-                    and selected_runtime_bundle is not None
+                    and (selected_runtime_bundle is not None or direct_transfer_existing_cluster)
                 ):
                     task["assigned_agent_id"] = LINUX_STAGE_AGENT_ID
                     task["required_agent_id"] = LINUX_STAGE_AGENT_ID
@@ -508,6 +534,22 @@ class ApiV1Service:
                 elif stage_type == "run_simulation":
                     task["assigned_agent_id"] = CLUSTER_GATEWAY_AGENT_ID
                     task["required_agent_id"] = CLUSTER_GATEWAY_AGENT_ID
+
+        if direct_transfer_existing_cluster:
+            # ``dependencies=[]`` means "all earlier tasks" in ControlService,
+            # so prepare_data explicitly depends on the already-skipped
+            # resolver.  Environment must wait for the source-side transfer
+            # barrier; after it succeeds, the normal Linux -> Cluster chain
+            # remains unchanged.
+            for task in task_specs:
+                stage_type = str(task.get("stage_type") or "")
+                if stage_type == "prepare_data":
+                    task["dependencies"] = ["resolve_spec"]
+                    payload = dict(task.get("payload") or {})
+                    payload.setdefault("project", "run-config-v2")
+                    task["payload"] = payload
+                elif stage_type == "environment_check":
+                    task["dependencies"] = ["prepare_data"]
         # A cluster job with any Windows-local input is represented by the
         # existing ``prepare_data`` Stage, but its data-plane dispatch scope is
         # explicit and never the legacy Linux ``data_upload`` path.  The
@@ -2130,36 +2172,57 @@ class ApiV1Service:
         target = str(execution.get("selected_target") or simulation.get("target") or "auto")
         source = str(selena.get("source") or selena.get("mode") or "auto")
         selena_decision = dict(decisions.get("selena") or {})
-        registered_runtime_bundle = bool(
-            source == "existing"
-            and (
-                str(selena_decision.get("code") or "") == "registered_runtime_bundle_selected"
-                or str(selena_decision.get("action") or "") == "use_runtime_bundle"
-                or isinstance(selena_decision.get("runtime_bundle"), dict)
-            )
-        )
         capabilities = execution_capabilities or self.execution_capabilities(
             str(job.get("owner") or (job.get("metadata") or {}).get("owner") or "")
         )["capabilities"]
 
-        # Once an existing Selena Bundle has already been prepared by the SDK,
-        # its Windows-local folder and Runtime XML are no longer inputs to the
-        # pending Cluster stages.  Only still-local data/assets should require
-        # a Windows connection.  Without this distinction the create response
-        # briefly reports a misleading Windows wait while the Linux stage is
-        # already queued and about to run.
-        local_path_values = [
-            data.get("path"),
-            simulation.get("adapter_file"),
-            simulation.get("mat_filter"),
+        # Filter local inputs independently by the direct-transfer role that
+        # has already received a resolved Manifest.  A direct runtime bundle
+        # decision itself is not enough: dataset/Runtime XML/MatFilter/Adapter
+        # may still be local and must keep the source-side wait visible.
+        transfer_resources = dict((decisions.get("transfers") or {}).get("resources") or {})
+
+        def transfer_role_resolved(role: str) -> bool:
+            value = transfer_resources.get(role)
+            if isinstance(value, dict):
+                return str(value.get("status") or "") == "resolved"
+            if isinstance(value, list):
+                return any(
+                    isinstance(item, dict) and str(item.get("status") or "") == "resolved"
+                    for item in value
+                )
+            return False
+
+        local_inputs = [
+            ("dataset", data.get("path")),
+            ("adapter", simulation.get("adapter_file")),
+            ("mat_filter", simulation.get("mat_filter")),
         ]
-        if not registered_runtime_bundle:
-            local_path_values.extend(
+        catalog_runtime_bundle = bool(
+            source == "existing"
+            and (
+                str(selena_decision.get("code") or "") == "registered_runtime_bundle_selected"
+                or str(selena_decision.get("action") or "") == "use_runtime_bundle"
+            )
+        )
+        if source == "existing" and not catalog_runtime_bundle:
+            local_inputs.extend(
                 [
-                    selena.get("existing_path"),
-                    selena.get("runtime_xml"),
+                    ("runtime_bundle", selena.get("existing_path")),
+                    ("runtime_xml", selena.get("runtime_xml")),
                 ]
             )
+        elif source == "build":
+            # Build+Cluster still uses the Windows resolver/build branch, but
+            # its explicitly selected Runtime XML can also be a direct local
+            # input and must retain the old path-access check.
+            local_inputs.append(("runtime_xml", selena.get("runtime_xml")))
+        local_path_values = [
+            value
+            for role, value in local_inputs
+            if classify_data_path(str(value or "")) == "agent"
+            and not transfer_role_resolved(role)
+        ]
 
         # A Windows capability is not enough for a local-path task.  The
         # connected machine must either advertise the exact opaque binding or
@@ -2404,6 +2467,29 @@ class ApiV1Service:
 
     @staticmethod
     def _current_stage(stages: list[dict[str, Any]]) -> str:
+        # A queued stage may be listed before the actually claimable stage in
+        # the fixed ten-stage representation.  Prefer a queued stage whose
+        # explicit dependencies have reached a success state; this makes a
+        # direct-transfer ``prepare_data`` barrier visible before the Linux
+        # environment stage without changing ordinary resolver-first jobs.
+        statuses = {
+            str(stage.get("stage_id") or stage.get("task_id") or ""): str(stage.get("status") or "")
+            for stage in stages
+        }
+
+        def ready(stage: dict[str, Any]) -> bool:
+            dependencies = list(stage.get("dependencies") or [])
+            if not dependencies:
+                return True
+            return all(statuses.get(str(dependency)) in {"succeeded", "skipped"} for dependency in dependencies)
+
+        for desired in ("running", "cancel_requested", "blocked", "queued"):
+            for stage in stages:
+                if str(stage.get("status") or "") == desired and (
+                    desired != "queued" or ready(stage)
+                ):
+                    return str(stage.get("stage_type") or stage.get("task_type") or "")
+        # Preserve the previous fallback for malformed/legacy dependency data.
         for desired in ("running", "cancel_requested", "blocked", "queued"):
             for stage in stages:
                 if str(stage.get("status") or "") == desired:

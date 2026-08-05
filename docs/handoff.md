@@ -7,7 +7,19 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 ## 0A. 2026-08-05 控制面/数据面分离改造 checkpoint（进行中，接手者先读）
 
-> 状态：**尚未交付、尚未提交、尚未部署**。本节记录 2026-08-05 当前共享工作区的真实进度，优先级高于下方所有历史“上传到 Linux”描述。下方旧记录只用于解释历史问题，不能作为当前实施合同。
+> 状态：**代码 checkpoint 已提交并推送，真实黑盒验收仍在收口，生产 8877 尚未切换**。本节记录 2026-08-05 当前共享工作区的真实进度，优先级高于下方所有历史“上传到 Linux”描述。下方旧记录只用于解释历史问题，不能作为当前实施合同。
+
+### 2026-08-05 真实直传黑盒最新现场（额度/上下文中断时从这里接续）
+
+- 已提交并推送 `codex/new-branch`：`26354a9 Implement direct client-to-cluster data plane`。生产 `radar-sim-v1.service:8877` 没有被覆盖；验收使用隔离目录 `/home/hoz2wx/radar-sim-direct-26354a9`、隔离 `RSIM_HOME=/home/hoz2wx/.rsim-direct-acceptance`、隔离服务 `radar-sim-direct-acceptance.service:8879`。
+- 部署方双命名空间已实际验证为同一数据面：Windows 写入 `\\abtvdfs2.de.bosch.com\ismdfs\loc\szh\Isilon3\Cluster\radar-sim\direct-transfer`，Linux 只从 `/mnt/cluster/loc/szh/Isilon3/Cluster/radar-sim/direct-transfer` 探测；`/mnt/cluster` 是 `//abtvdfs2.de.bosch.com/ismdfs` 的 CIFS mount。Linux 防火墙未修改，本机通过 SSH tunnel `127.0.0.1:18881 -> server 127.0.0.1:8879` 调用隔离控制面。
+- 真实输入：392,930,344-byte MF4、670,780,294-byte 完整 Selena 目录（19 files，含 exe/DLL/PDB/ILK）、98,780-byte Runtime XML、5,726-byte MatFilter。SDK 任务 `job_9360a14cbda7` 的四个 TransferPlan 均已 `completed`，`resolved_spec.decisions.transfers.resources` 已出现 `dataset/runtime_bundle/runtime_xml/mat_filter`；证明文件由 Windows 直接写 Cluster 共享盘，Linux API 只收 plan/progress/manifest。
+- 此次黑盒暴露两个外围缺陷，**尚未允许发布**：
+  1. `source=existing + target=cluster + direct runtime_bundle` 完成直传后，旧 DAG 仍保留 `resolve_spec`、`register_artifact` 为 queued，`environment_check` 依赖 resolve，导致任务错误显示 `windows_connection_required`。正确 DAG 应以 `prepare_data` 作为直传屏障，随后 Linux `environment_check -> preflight -> Cluster`；existing 直传不得再要求 Windows Agent。当前修复子任务：`fix_existing_cluster_dag`。
+  2. SDK/Agent 每复制 1 MiB 就 POST 一次 `/progress`，文件正文虽不经过 Linux，但控制请求过密。必须按时间/百分比/字节阈值节流并保证最终态。当前修复子任务：`throttle_transfer_progress`。
+- 首轮 SDK 提交进程 cell `1409` 已终止，证据任务 `job_9360a14cbda7` 已在完整 Manifest 落库后主动取消，避免旧 DAG 永久占用；SSH tunnel cell `1397` 仍用于隔离验收（接续环境若保留 cell，结束时需 terminate）。修复后必须用新的 idempotency key 重跑，不能复用旧任务来伪造通过。
+- 两项代码修复已落盘并经主代理组合回归：`306 passed, 2 skipped, 1 warning`（`61.82s`），关键模块 `py_compile` 和 `git diff --check` 通过。修复后阶段合同是：提交前 `current_stage=prepare_data` 且 Web 无 Connector 时仍显示连接提示；四个 role Manifest 完成后 `current_stage=environment_check`、`waiting=None`，Linux 执行器继续。SDK/Agent 共享 core 节流器；本地 callback 保留逐 chunk，HTTP 只在首条、约 1 秒/5%/64 MiB 任一阈值、校验后最终态上报。
+- 发布门禁仍是：定向回归通过；同一真实配置完成 Cluster submit/collect/finalize；记录 Linux 进程 RSS/网卡增量不随约 1 GB 文件正文增长；更新本节；再 commit/push；最后才带备份切换 8877。
 
 ### 本轮不可改变的目标
 
