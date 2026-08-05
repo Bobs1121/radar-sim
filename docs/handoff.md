@@ -7,6 +7,14 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 ## 0. 2026-08-04 当前发布交接（优先阅读）
 
+### 2026-08-05 远程 Linux 调用端与 Windows Connector 断线恢复（最新）
+
+- “Linux 用户”指其他 Linux 工作站上的用户：数据可能位于该工作站的 `/home/...`，用户通过网络访问中央 Linux Web/SDK。此类用户不注册 Linux Agent，也不能把远程工作站路径当成中央服务器路径。
+- SDK 是首选入口：`RadarSimClient.submit_yaml()` 会在调用端探测可读的 POSIX 本地路径，先通过分块上传接口写入中央共享存储，再把本次提交中的 `data.path` 自动换成 `dataset://...`；调用者的 YAML 仍只填写原始数据路径。独立挂载的共享/Cluster 路径不会被重复上传。
+- Web 受浏览器沙箱限制，不能凭文本框中的 `/home/user/data` 直接读取文件；Linux 用户应使用页面的文件夹选择器。浏览器分块上传完成后同样生成 `dataset://...`。如果只手输远程 Linux 本地路径而未选择文件，页面必须提示“选择本机数据文件夹或使用 SDK 上传”，不能提示安装 Windows Connector。
+- Windows 日志中的连续 `agent poll failed` 经现场核对不是 Linux 服务持续宕机：8877 监听正常，服务端记录该 Agent 曾每 3 秒稳定返回 200，之后本机计划任务以 `-1073741510`（控制台中断）退出并停在 `Ready`。修复后轮询采用最长 30 秒指数退避，失败日志最多约每分钟一条，恢复时输出一次明确提示。
+- 一键安装的计划任务除“登录启动”和“普通失败重启”外，新增每 5 分钟低频修复触发器。运行中的单实例不会重复启动；若用户关闭窗口、策略终止或 Task Scheduler 未把退出识别为可重启失败，组件会在 5 分钟内恢复。
+
 ### 2026-08-04 `job_e026d3e5b82e` 卡住复盘与多用户边界（最新）
 
 - 任务使用已有 Selena、本地 Runtime/MatFilter 和一条本地 MF4，目标为 Cluster。最初卡在 Windows `resolve_spec`：一键安装的 light Connector 为了离线可装不安装 PyYAML，但填写代码仓/编译脚本后会进入可选产品识别模块，该模块顶层导入 PyYAML，异常又未进入 Agent 的终态上报路径，造成守护进程反复重启、Stage 长期显示 `running`。

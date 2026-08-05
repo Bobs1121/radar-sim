@@ -290,6 +290,14 @@ def test_light_execution_defense_reports_failure_without_spawning(monkeypatch):
     assert any("policy forbids" in line for line in client.logs)
 
 
+def test_poll_retry_delay_is_exponential_and_bounded():
+    assert agent_module._poll_retry_delay(1, 3.0) == 3.0
+    assert agent_module._poll_retry_delay(2, 3.0) == 6.0
+    assert agent_module._poll_retry_delay(3, 3.0) == 12.0
+    assert agent_module._poll_retry_delay(99, 3.0) == 30.0
+    assert agent_module._poll_retry_delay(1, 0.01) == 1.0
+
+
 def test_environment_check_is_node_local_and_does_not_spawn(monkeypatch):
     class FakeClient:
         def __init__(self):

@@ -76,13 +76,13 @@
             </div>
             <label class="field">
               <span>数据路径</span>
-              <input id="dataPath" name="dataPath" required placeholder="D:/measurements/run 或 //server/share/run">
-              <small>系统递归检索路径下的输入 MF4，不要求固定目录层级。共享路径由 Cluster 直读，本机路径调度到已授权的 Windows Agent。</small>
+              <input id="dataPath" name="dataPath" required placeholder="D:/measurements、/home/user/data 或 //server/share">
+              <small>系统递归检索输入 MF4。Windows 本地路径由连接组件读取；远程 Linux 本地路径由 SDK 自动上传，或在 Web 选择本机文件夹；共享路径由 Cluster 直读。</small>
             </label>
             <div class="folder-picker">
               <button type="button" class="button secondary" id="chooseDataFolder">选择本机文件夹</button>
               <input id="dataFolderInput" type="file" webkitdirectory directory multiple hidden>
-              <span id="dataUploadState">没有 Windows Agent 时，可直接选择浏览器本机文件夹；提交时自动上传。</span>
+              <span id="dataUploadState">Windows 或 Linux 用户都可选择浏览器本机文件夹；提交时自动上传。</span>
             </div>
             <div class="upload-progress" id="dataUploadProgress" hidden>
               <div><span>正在准备 Cluster 可访问的数据</span><strong id="dataUploadPercent">0%</strong></div>
@@ -232,6 +232,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" hidden></div>
-  <script src="/console/app.js?v=20260804-new-user" defer></script>
+  <script src="/console/app.js?v=20260805-linux-client" defer></script>
 </body>
 </html>

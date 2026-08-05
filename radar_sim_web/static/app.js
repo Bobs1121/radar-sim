@@ -311,6 +311,7 @@ function applyRunConfig(config) {
   state.uploadedDataPath = "";
   state.selectedFolderLabel = "";
   byId("dataPath").value = config.data?.path || "";
+  updateDataUploadHint();
   byId("selenaSource").value = config.selena?.source || "build";
   byId("codePath").value = config.selena?.code_path || "";
   byId("selenaBranch").value = config.selena?.branch || "";
@@ -343,6 +344,15 @@ function chooseDataFolder(fileList) {
   state.selectedFolderLabel = folder;
   byId("dataPath").value = folder;
   byId("dataUploadState").textContent = `已选择 ${files.length} 个 MF4；提交或校验时自动上传`;
+}
+
+function updateDataUploadHint() {
+  const value = byId("dataPath")?.value.trim() || "";
+  const status = byId("dataUploadState");
+  if (!status || state.dataFolderFiles.length || state.uploadedDataPath) return;
+  status.textContent = value.startsWith("/") && !value.startsWith("//")
+    ? "如果这是当前 Linux 电脑的本地路径，请选择本机文件夹上传；如果是中央服务或 Cluster 挂载路径，可直接保留。"
+    : "Windows 或 Linux 用户都可选择浏览器本机文件夹；提交时自动上传。";
 }
 
 async function ensureSelectedDataUploaded() {
@@ -1213,7 +1223,7 @@ async function initialize() {
       state.dataFolderFiles = [];
       state.uploadedDataPath = "";
       state.selectedFolderLabel = "";
-      byId("dataUploadState").textContent = "没有 Windows Agent 时，可直接选择浏览器本机文件夹；提交时自动上传。";
+      updateDataUploadHint();
     }
   });
   byId("chooseAdapter").addEventListener("click", () => byId("adapterUpload").click());

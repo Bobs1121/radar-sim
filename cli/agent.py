@@ -169,15 +169,33 @@ def run(args, config):
     agent_id = agent["agent_id"]
     poll_interval = float(getattr(args, "poll_interval", 3.0) or 3.0)
     once = bool(getattr(args, "once", False))
+    poll_failure_count = 0
+    last_poll_failure_log_at = 0.0
     while True:
         try:
             claim = client.poll(agent_id)
         except Exception as exc:
-            print(f"[WARN] agent poll failed: {exc}", file=sys.stderr)
+            poll_failure_count += 1
+            now = time.monotonic()
+            if poll_failure_count == 1 or now - last_poll_failure_log_at >= 60.0:
+                print(
+                    f"[WARN] Linux control plane is temporarily unreachable "
+                    f"(attempt {poll_failure_count}): {exc}; reconnecting automatically",
+                    file=sys.stderr,
+                )
+                last_poll_failure_log_at = now
             if once:
                 return 1
-            time.sleep(poll_interval)
+            time.sleep(_poll_retry_delay(poll_failure_count, poll_interval))
             continue
+        if poll_failure_count:
+            print(
+                f"[INFO] Linux control plane connection restored after "
+                f"{poll_failure_count} failed poll(s)",
+                file=sys.stderr,
+            )
+            poll_failure_count = 0
+            last_poll_failure_log_at = 0.0
         task = claim.get("task")
         if not task:
             if once:
@@ -193,6 +211,13 @@ def run(args, config):
         )
         if once:
             return exit_code
+
+
+def _poll_retry_delay(failure_count: int, poll_interval: float) -> float:
+    """Bound reconnect traffic while keeping transient recovery responsive."""
+    base = max(float(poll_interval or 0.0), 1.0)
+    exponent = min(max(int(failure_count) - 1, 0), 4)
+    return min(base * (2 ** exponent), 30.0)
 
 
 def _run_task(

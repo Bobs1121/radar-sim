@@ -71,12 +71,16 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "RegisterStartup" in bootstrap
     assert "New-ScheduledTaskAction" in bootstrap
     assert "New-ScheduledTaskTrigger -AtLogOn" in bootstrap
+    assert "RepetitionInterval (New-TimeSpan -Minutes 5)" in bootstrap
+    assert "$triggers = @($logonTrigger, $repairTrigger)" in bootstrap
     assert "-StartWhenAvailable" in bootstrap
     assert "-RestartCount 999" in bootstrap
     assert "-AllowStartIfOnBatteries" in bootstrap
     assert "-DontStopIfGoingOnBatteries" in bootstrap
     assert "-Supervise" in starter
     assert "Threading.Mutex" in starter
+    assert "orphanAgentPids" in starter
+    assert "Get-CimInstance Win32_Process" in starter
     assert "connector.pid" in starter
     assert '$RsimEntry = Join-Path $RepoRoot "rsim.py"' in starter
     assert '$RsimEntry, "agent"' in starter

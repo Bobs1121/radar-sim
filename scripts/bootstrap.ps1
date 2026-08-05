@@ -282,12 +282,19 @@ if ($RegisterStartup) {
     }
     try {
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
+        $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
+        # RestartOnFailure covers ordinary non-zero exits.  A console close,
+        # policy stop or Task Scheduler interruption may not be classified as
+        # a restartable failure, so a low-frequency trigger also repairs a
+        # stopped connector without bothering an already-running instance.
+        $repairTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+            -RepetitionInterval (New-TimeSpan -Minutes 5)
+        $triggers = @($logonTrigger, $repairTrigger)
         $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
             -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
             -ExecutionTimeLimit ([TimeSpan]::Zero) `
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers `
             -Settings $settings -Description "radar-sim Windows connector" -Force | Out-Null
         $installConfig["startup_method"] = "scheduled_task"
         $installConfig["startup_name"] = $taskName

@@ -121,6 +121,28 @@ if ($Supervise) {
         Write-Host "This PC is already connected." -ForegroundColor Green
         return
     }
+    # Task Scheduler can regard a console-close exit as terminal while a
+    # child Python launcher remains orphaned.  A later repair trigger then
+    # owns the mutex but would otherwise start a duplicate Agent with the same
+    # logical id.  Once this supervisor owns the mutex, remove only Agent
+    # processes launched from this exact installation before starting one.
+    $entryPath = [IO.Path]::GetFullPath($RsimEntry).ToLowerInvariant()
+    $orphanAgentPids = @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $line = [string]$_.CommandLine
+                $normalized = $line.Replace('/', '\').ToLowerInvariant()
+                $normalized.Contains($entryPath.Replace('/', '\')) -and
+                    $normalized -match '\sagent(?:\s|$)'
+            } |
+            Select-Object -ExpandProperty ProcessId
+    )
+    if ($orphanAgentPids.Count -gt 0) {
+        Stop-Process -Id $orphanAgentPids -Force -ErrorAction SilentlyContinue
+        foreach ($orphanPid in $orphanAgentPids) {
+            Wait-Process -Id $orphanPid -Timeout 5 -ErrorAction SilentlyContinue
+        }
+    }
     $connectorPidPath = Join-Path $InstallRoot "connector.pid"
     Set-Content -LiteralPath $connectorPidPath -Value ([string]$PID) -Encoding ASCII
     try {
