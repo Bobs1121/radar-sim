@@ -66,7 +66,10 @@ class DatasetStoreQuota:
     max_owner_reserved_bytes: int = 20 * 1024**4
     max_owner_active_sessions: int = 10
     min_free_bytes: int = 1024**3
-    chunk_size: int = 4 * 1024**2
+    # Large MF4 inputs are common.  Four-megabyte chunks made every gigabyte
+    # upload pay hundreds of HTTP/SQLite round trips; 16 MiB keeps resumability
+    # while remaining bounded for concurrent users and FastAPI request bodies.
+    chunk_size: int = 16 * 1024**2
     session_ttl_seconds: float = 24 * 3600.0
 
     def __post_init__(self) -> None:

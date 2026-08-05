@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from core.data import iter_mf4_inputs, scan_data_file
 from core.shared_namespace import SharedNamespaceError, SharedNamespaceRegistry
@@ -44,6 +44,10 @@ class DatasetFileRef:
     checksum: str = ""
     signal_status: str = "not-scanned"
     mtime_ns: int = 0
+    # Optional path-free ref for one direct-transfer entry.  DatasetRef is a
+    # collection handle; preserving each entry ref avoids collapsing a
+    # multi-MF4 transfer into the first file's storage reference.
+    storage_ref: str = ""
 
     def __post_init__(self) -> None:
         relative = str(self.relative_path or "").strip().replace("\\", "/")
@@ -69,11 +73,19 @@ class DatasetFileRef:
         mtime_ns = int(self.mtime_ns or 0)
         if mtime_ns < 0:
             raise DatasetError("dataset file mtime is invalid")
+        storage_ref = str(self.storage_ref or "").strip()
+        if storage_ref and not (
+            storage_ref.startswith("cluster-staging://")
+            or storage_ref.startswith("shared://")
+            or storage_ref.startswith("shared-path:sha256:")
+        ):
+            raise DatasetError("dataset file storage reference is invalid")
         object.__setattr__(self, "relative_path", posix.as_posix())
         object.__setattr__(self, "size", size)
         object.__setattr__(self, "checksum", checksum)
         object.__setattr__(self, "signal_status", status)
         object.__setattr__(self, "mtime_ns", mtime_ns)
+        object.__setattr__(self, "storage_ref", storage_ref)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,7 +110,7 @@ class DatasetRef:
         owner = normalize_user(self.owner)
         if not project or not owner:
             raise DatasetError("dataset project and owner are required")
-        if self.source_kind not in {"shared_path", "central_upload", "agent_upload"}:
+        if self.source_kind not in {"shared_path", "central_upload", "agent_upload", "direct_transfer"}:
             raise DatasetError("dataset source kind is invalid")
         if self.accessibility not in {"cluster", "shared"}:
             raise DatasetError("dataset accessibility is invalid")
@@ -106,6 +118,11 @@ class DatasetRef:
         if not (
             storage_ref.startswith("shared://datasets/")
             or storage_ref.startswith("shared-path:sha256:")
+            # A direct-transfer manifest is already a path-free Cluster
+            # reference.  It is intentionally accepted as a DatasetRef
+            # storage namespace; the physical probe path remains deployment
+            # state and is never serialized into the public ref.
+            or storage_ref.startswith("cluster-staging://")
         ):
             raise DatasetError("dataset storage reference is invalid")
         files = tuple(self.files or ())
@@ -207,6 +224,7 @@ def resolve_data_reference(
     project: str,
     data_path: str,
     required_signals: Iterable[str] = (),
+    metadata_only: bool = False,
 ) -> DataResolution:
     text = str(data_path or "").strip()
     if _DATASET_URI_RE.fullmatch(text.lower()):
@@ -229,6 +247,7 @@ def resolve_data_reference(
             project=project,
             source_path=text,
             required_signals=required_signals,
+            metadata_only=metadata_only,
         )
     if route == "agent":
         return DataResolution(
@@ -402,6 +421,136 @@ class DatasetCatalog:
             conn.commit()
         return self.get(dataset_id, owner=owner, project=project)
 
+    def register_transfer_manifest(
+        self,
+        *,
+        project: str,
+        owner: str,
+        manifest: Any = None,
+        files: Iterable[Any] = (),
+        storage_ref: str = "",
+        source_kind: str = "direct_transfer",
+        source_path: str = "",
+        probe_path: str = "",
+        worker_root: str = "",
+        server_probe_root: str = "",
+        relative_root: str = "",
+        transfer_id: str = "",
+    ) -> DatasetRef:
+        """Register a completed direct-transfer manifest without opening files.
+
+        The transfer kernel owns byte movement and Manifest validation.  This
+        catalog method only converts its path-free entries into the existing
+        :class:`DatasetRef` shape and persists deployment-private worker/probe
+        locations supplied by the scheduler.  In particular, it never scans
+        MF4 contents or computes a checksum on the Linux control plane.
+        ``manifest`` may be a ``TransferManifest`` instance or its dictionary
+        representation; duck typing keeps this module independent of the
+        transfer service implementation.
+        """
+
+        def field(value: Any, name: str, default: Any = "") -> Any:
+            if isinstance(value, Mapping):
+                return value.get(name, default)
+            return getattr(value, name, default)
+
+        raw_entries = list(field(manifest, "entries", ()) or ()) if manifest is not None else list(files or ())
+        if not raw_entries:
+            raise DatasetError("transfer manifest must contain at least one file")
+
+        normalized_files: list[DatasetFileRef] = []
+        entry_refs: list[str] = []
+        for raw in raw_entries:
+            if isinstance(raw, DatasetFileRef):
+                item = raw
+            else:
+                relative = str(field(raw, "relative_path", "") or "")
+                digest = str(field(raw, "checksum", "") or field(raw, "sha256", "") or "").strip().lower()
+                if digest and not digest.startswith("sha256:"):
+                    digest = "sha256:" + digest
+                item = DatasetFileRef(
+                    relative_path=relative,
+                    size=int(field(raw, "size", 0) or 0),
+                    checksum=digest,
+                    signal_status=str(field(raw, "signal_status", "not-scanned") or "not-scanned"),
+                    mtime_ns=int(field(raw, "mtime_ns", 0) or 0),
+                    storage_ref=str(field(raw, "storage_ref", "") or field(raw, "target_logical_ref", "") or "").strip(),
+                )
+            normalized_files.append(item)
+            entry_ref = str(field(raw, "storage_ref", "") or field(raw, "target_logical_ref", "") or "").strip()
+            if entry_ref:
+                entry_refs.append(entry_ref)
+
+        fingerprint = dataset_fingerprint(normalized_files)
+        owner_key = normalize_user(owner)
+        source_kind = str(source_kind or "direct_transfer").strip().lower()
+        if source_kind not in {"direct_transfer", "agent_upload", "central_upload", "shared_path"}:
+            raise DatasetError("transfer dataset source kind is invalid")
+
+        transfer_value = str(transfer_id or field(manifest, "transfer_id", "") or "").strip()
+        ref = str(storage_ref or "").strip()
+        if not ref and entry_refs:
+            # A multi-file transfer has one ref per entry.  Keep a stable
+            # dataset-level logical ref while preserving every entry ref in
+            # DatasetFileRef metadata only when the caller separately stores
+            # the Manifest.  The generated ref remains path-free.
+            ref = entry_refs[0] if len(entry_refs) == 1 else ""
+        if not ref:
+            ref = "cluster-staging://dataset/sha256/" + fingerprint.split(":", 1)[-1]
+        if not (
+            ref.startswith("shared://datasets/")
+            or ref.startswith("shared-path:sha256:")
+            or ref.startswith("cluster-staging://")
+        ):
+            raise DatasetError("transfer dataset storage reference is invalid")
+
+        def join_root(root: str, suffix: str) -> str:
+            base, tail = str(root or "").strip(), str(suffix or "").strip().replace("\\", "/").strip("/")
+            if not base:
+                return ""
+            if not tail:
+                return base
+            return base.rstrip("\\/") + ("\\" if "\\" in base and "/" not in base else "/") + tail.replace("/", "\\" if "\\" in base and "/" not in base else "/")
+
+        worker_root = str(worker_root or "").strip()
+        probe_root = str(server_probe_root or "").strip()
+        source_location = str(source_path or "").strip() or join_root(worker_root, relative_root)
+        probe_location = str(probe_path or "").strip() or join_root(probe_root, relative_root)
+        digest_material = "\0".join(
+            (str(project), owner_key, ref, fingerprint, transfer_value, source_location)
+        )
+        dataset_id = "dataset:sha256:" + hashlib.sha256(digest_material.encode("utf-8")).hexdigest()
+        created = float(self._now_fn())
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO datasets(
+                    dataset_id, project, owner, source_kind, accessibility,
+                    storage_ref, source_location, probe_location, files_json,
+                    source_fingerprint, created_at
+                ) VALUES (?, ?, ?, ?, 'cluster', ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(dataset_id) DO NOTHING
+                """,
+                (
+                    dataset_id,
+                    str(project),
+                    owner_key,
+                    source_kind,
+                    ref,
+                    source_location,
+                    probe_location,
+                    json.dumps([item.to_dict() for item in normalized_files], sort_keys=True),
+                    fingerprint,
+                    created,
+                ),
+            )
+            conn.commit()
+        return self.get(dataset_id, owner=owner_key, project=str(project))
+
+    # Short aliases used by stage binders and thin control-plane adapters.
+    register_transfer = register_transfer_manifest
+    register_manifest = register_transfer_manifest
+
     def get(self, dataset_id: str, *, owner: str, project: str = "") -> DatasetRef:
         if not _ID_RE.fullmatch(str(dataset_id or "")):
             raise DatasetError("dataset id is invalid")
@@ -460,10 +609,15 @@ def resolve_shared_data(
     project: str,
     source_path: str,
     required_signals: Iterable[str] = (),
+    metadata_only: bool = False,
 ) -> DataResolution:
     try:
         mapping = registry.resolve(source_path)
-        files = discover_dataset_files(Path(mapping.central_probe_path), required_signals, checksum=False)
+        files = (
+            discover_dataset_metadata(Path(mapping.central_probe_path))
+            if metadata_only
+            else discover_dataset_files(Path(mapping.central_probe_path), required_signals, checksum=False)
+        )
         dataset = catalog.register_shared(
             project=project,
             owner=owner,
@@ -479,6 +633,36 @@ def resolve_shared_data(
             "shared",
             action=str(exc),
         )
+
+
+def discover_dataset_metadata(source: Path) -> tuple[DatasetFileRef, ...]:
+    """Inventory MF4 files by filesystem metadata only.
+
+    This is the Cluster/Linux path: existence, size and mtime are enough to
+    register a shared or direct-transfer DatasetRef.  No MF4 bytes are read,
+    parsed or archived here.
+    """
+
+    source = Path(source)
+    root = source if source.is_dir() else source.parent
+    results: list[DatasetFileRef] = []
+    for path in iter_mf4_inputs(source, limit=0):
+        try:
+            info = path.stat()
+        except OSError as exc:
+            raise DatasetError("dataset file is unavailable") from exc
+        relative = path.name if source.is_file() else path.relative_to(root).as_posix()
+        results.append(
+            DatasetFileRef(
+                relative_path=relative,
+                size=int(info.st_size),
+                signal_status="not-scanned",
+                mtime_ns=int(info.st_mtime_ns),
+            )
+        )
+    if not results:
+        raise DatasetError("no input MF4 files were found")
+    return tuple(results)
 
 
 def _sha256_file(
@@ -510,6 +694,7 @@ __all__ = [
     "dataset_fingerprint",
     "dataset_id_from_uri",
     "dataset_uri",
+    "discover_dataset_metadata",
     "discover_dataset_files",
     "resolve_shared_data",
     "resolve_data_reference",

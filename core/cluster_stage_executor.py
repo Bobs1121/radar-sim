@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 import re
 import threading
 import time
@@ -19,7 +20,15 @@ from typing import Any, Callable
 from core.artifact_store import ArtifactStore
 from core.cluster_runs import ClusterResultRef, ClusterRunRef, ClusterRunStore
 from core.config_assets import ConfigAssetStore, is_config_asset_ref
-from core.datasets import DatasetCatalog, DatasetRef, dataset_id_from_uri, resolve_data_reference
+from core.datasets import (
+    DatasetCatalog,
+    DatasetError,
+    DatasetFileRef,
+    DatasetRef,
+    dataset_fingerprint,
+    dataset_id_from_uri,
+    resolve_data_reference,
+)
 from core.runtime_bundle_archive import extract_runtime_bundle_archive
 from core.runtime_bundle_catalog import RuntimeBundleCatalog, RuntimeBundleRecord
 from core.shared_namespace import SharedNamespaceRegistry, looks_like_shared_path
@@ -63,11 +72,32 @@ class ClusterStageContext:
     config_loader: Callable[[str], dict[str, Any]]
     result_catalog: ResultCatalog | None = None
     now_fn: Callable[[], float] = time.time
+    # Deployment-only Linux namespace used to probe completed direct-transfer
+    # objects.  It is never serialized into a public Stage result.
+    server_probe_root: str | Path = ""
+    # Optional owner-aware resolver (normally backed by TransferService).  It
+    # may return a probe Path for one storage_ref after validating owner and
+    # manifest binding.  The executor only performs stat/size checks on it.
+    storage_ref_resolver: Callable[..., Any] | None = None
+    # The production server may inject the TransferService itself; deriving
+    # both callbacks here prevents a context construction site from silently
+    # dropping owner-aware storage resolution.
+    transfer_service: Any | None = None
 
     def __post_init__(self) -> None:
         root = Path(self.work_root).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         object.__setattr__(self, "work_root", root)
+        service = self.transfer_service
+        if service is not None:
+            if self.storage_ref_resolver is None:
+                resolver = getattr(service, "resolve_storage_ref", None)
+                if callable(resolver):
+                    object.__setattr__(self, "storage_ref_resolver", resolver)
+            if not str(self.server_probe_root or "").strip():
+                probe_root = getattr(service, "server_probe_root", "")
+                if str(probe_root or "").strip():
+                    object.__setattr__(self, "server_probe_root", str(probe_root))
 
 
 class ClusterStageExecutor:
@@ -178,6 +208,11 @@ class ClusterStageExecutor:
                 self._record_dataset(job, result)
             elif stage_type == "preflight":
                 result = execute_cluster_preflight(self.context, job)
+                if result.get("dataset"):
+                    # All-shared jobs may skip prepare_data.  Persist the
+                    # metadata-only DatasetRef before later finalize/manifest
+                    # stages consume the resolved specification.
+                    self._record_dataset(job, result)
             elif stage_type == "run_simulation":
                 run_ref = str(_stage_result(job, "preflight").get("cluster_run_ref") or "")
                 result = execute_cluster_submit(self.context, job, run_ref)
@@ -243,10 +278,12 @@ class ClusterStageExecutor:
     def _record_dataset(self, job: dict[str, Any], result: dict[str, Any]) -> None:
         resolved = dict(job.get("resolved_spec") or {})
         decisions = dict(resolved.get("decisions") or {})
+        route = str(result.get("data_route") or "central").strip().lower()
+        code = "shared_dataset_resolved" if route == "shared" else "central_dataset_resolved"
         decisions["data"] = {
-            "status": "resolved", "code": "central_dataset_resolved", "route": "central",
+            "status": "resolved", "code": code, "route": route or "central",
             "action": "", "dataset": dict(result.get("dataset") or {}),
-            "evidence": {"reason": "trusted_central_resolution"},
+            "evidence": {"reason": "metadata_only_cluster_resolution" if route == "shared" else "trusted_central_resolution"},
         }
         resolved["decisions"] = decisions
         resolved["status"] = "resolved" if str((decisions.get("selena") or {}).get("status") or "") == "resolved" else "partial"
@@ -259,7 +296,13 @@ def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> d
     spec = dict(job.get("spec") or {})
     data_path = str((spec.get("data") or {}).get("path") or "")
     if data_path.lower().startswith("dataset://"):
-        dataset = context.dataset_catalog.get(dataset_id_from_uri(data_path), owner=owner)
+        try:
+            dataset = context.dataset_catalog.get(dataset_id_from_uri(data_path), owner=owner)
+        except (DatasetError, AttributeError):
+            # A direct-transfer synthetic DatasetRef may be path-free and not
+            # inserted into the legacy catalog; rehydrate its metadata instead
+            # of inventing a physical catalog location.
+            dataset = _dataset(context, job, owner=owner)
         return {
             "dataset": dataset.to_dict(),
             "dataset_id": dataset.id,
@@ -274,6 +317,10 @@ def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> d
         project=project,
         data_path=data_path,
         required_signals=(),
+        # Linux Cluster resolution is metadata-only.  The worker-side
+        # direct-transfer/data-plane contract permits existence/size probes
+        # but forbids opening/parsing MF4 bytes during prepare_data.
+        metadata_only=True,
     )
     if outcome.status != "resolved" or outcome.dataset is None:
         raise ClusterStageExecutionError(outcome.action or "Dataset must be uploaded before Cluster execution")
@@ -286,9 +333,25 @@ def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> d
 
 def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any]) -> dict[str, Any]:
     """Check only central/Gateway prerequisites; Linux never checks build tools."""
-    bundle = _bundle(context, job)
-    project = bundle.internal_project
-    config = context.config_loader(project)
+    transfer_resources = _transfer_resources(job)
+    bundle = None
+    if transfer_resources:
+        # A completed direct transfer is already the Selena/data identity for
+        # this Stage.  Do not require a RuntimeBundle catalog row (or inspect
+        # an archive) just to check the deployment's Cluster manager.
+        project = "run-config-v2"
+        config = context.config_loader(project)
+        bundle_id = str(
+            (((job.get("resolved_spec") or {}).get("decisions") or {}).get("selena") or {})
+            .get("runtime_bundle", {})
+            .get("id")
+            or ""
+        )
+    else:
+        bundle = _bundle(context, job)
+        project = bundle.internal_project
+        bundle_id = bundle.manifest.id
+        config = context.config_loader(project)
     from core.cluster import check_cluster_environment
 
     checks = check_cluster_environment(config)
@@ -323,7 +386,7 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
                 {"name": item.name, "ok": bool(item.ok)}
                 for item in checks if item.name not in superseded
             ],
-            "runtime_bundle_id": bundle.manifest.id,
+            "runtime_bundle_id": bundle_id,
         }
     }
 
@@ -348,17 +411,85 @@ def _public_environment_item_name(item: Any) -> str:
 
 def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any]) -> dict[str, Any]:
     owner = _owner(job)
-    bundle = _bundle(context, job)
+    transfer_resources = _transfer_resources(job)
+    # ``prepare_data`` is intentionally skippable for an all-shared job.  If
+    # that leaves decisions.data absent, resolve the logical/shared reference
+    # here before creating a Cluster run so every later Stage has a DatasetRef.
+    resolved_data_result: dict[str, Any] | None = None
+    decisions = dict((job.get("resolved_spec") or {}).get("decisions") or {})
+    data_decision = dict(decisions.get("data") or {})
+    data_path = str(((job.get("spec") or {}).get("data") or {}).get("path") or "").strip()
+    if not str((data_decision.get("dataset") or {}).get("id") or ""):
+        if data_path.lower().startswith("dataset://") or data_path.startswith(("//", "\\\\")):
+            resolved_data_result = resolve_cluster_data(context, job)
+            resolved = dict(job.get("resolved_spec") or {})
+            resolved_decisions = dict(resolved.get("decisions") or {})
+            resolved_decisions["data"] = {
+                "status": "resolved",
+                "code": "shared_dataset_resolved",
+                "route": "shared" if not data_path.lower().startswith("dataset://") else "central",
+                "action": "",
+                "dataset": dict(resolved_data_result.get("dataset") or {}),
+                "evidence": {"reason": "metadata_only_cluster_resolution"},
+            }
+            resolved["decisions"] = resolved_decisions
+            job["resolved_spec"] = resolved
     dataset = _dataset(context, job, owner=owner)
-    project = bundle.internal_project
+    direct_runtime = bool(transfer_resources.get("runtime_bundle"))
+    # Dataset/runtime_xml transfers do not invalidate a registered/shared
+    # Selena bundle.  Only a direct runtime_bundle can be prepared without
+    # consulting its catalog row.
+    bundle = None if direct_runtime else _bundle(context, job)
+    if bundle is not None:
+        project = bundle.internal_project
+        bundle_source = getattr(getattr(bundle, "manifest", None), "source", None)
+        bundle_branch = str(getattr(bundle_source, "branch", "") or "")
+        bundle_id = str(getattr(getattr(bundle, "manifest", None), "id", "") or "")
+        bundle_storage_ref = str(getattr(bundle, "storage_ref", "") or "")
+    else:
+        # Direct resource manifests are sufficient to run this adapter.  The
+        # catalog may not contain a RuntimeBundle row yet; use deployment-wide
+        # Cluster infrastructure as the project-independent config identity.
+        project = "run-config-v2"
+        bundle_decision = dict(
+            (((job.get("resolved_spec") or {}).get("decisions") or {}).get("selena") or {})
+            .get("runtime_bundle", {})
+        )
+        bundle_branch = str(
+            (dict(bundle_decision.get("source") or {}).get("branch") or "")
+        ).strip()
+        bundle_id = str(bundle_decision.get("id") or "").strip()
+        bundle_storage_ref = str(bundle_decision.get("storage_ref") or "").strip()
     config = copy.deepcopy(context.config_loader(project))
     # Project adapters and legacy profiles may carry a historical source such
     # as RadarFC.  The public v1 YAML has no source field, so that value is not
     # user intent and must not outrank MF4 acquisition metadata.
     config["_cluster_source_explicit"] = False
     # V2 run parameters belong to the submitted task, never to product
-    # recognition.  The loader supplies only deployment-wide infrastructure.
+    # recognition.  Keep the task's explicit runtime XML/Selena path before
+    # removing legacy project defaults below: a shared Selena source may be
+    # selected without a direct-transfer runtime_bundle resource.
+    spec = dict(job.get("spec") or {})
+    spec_selena = dict(spec.get("selena") or {})
+    simulation = dict(spec.get("simulation") or {})
+    resolved_assets = dict(
+        ((job.get("resolved_spec") or {}).get("decisions") or {}).get("simulation_assets") or {}
+    )
     project_simulation = config.setdefault("simulation", {})
+    configured_runtime_xml = str(
+        spec_selena.get("runtime_xml")
+        or resolved_assets.get("runtime_xml")
+        or simulation.get("runtime_xml")
+        or project_simulation.get("runtime_xml")
+        or dict(config.get("assets") or {}).get("runtime_xml")
+        or dict(config.get("cluster") or {}).get("runtime_xml")
+        or ""
+    ).strip()
+    configured_selena_exe = str(
+        dict(config.get("cluster") or {}).get("selena_exe")
+        or dict(config.get("selena") or {}).get("exe")
+        or ""
+    ).strip()
     for key in (
         "source",
         "mounting_position",
@@ -373,58 +504,143 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     for key in ("runtime_xml", "adapter_file", "matfilefilter", "config_template"):
         project_assets.pop(key, None)
     job_id = str(job.get("job_id") or "")
-    private_root = context.work_root / _safe_token(job_id)
-    runtime_root = private_root / "runtime-bundle"
-    archive = context.runtime_store.resolve_location(bundle.storage_ref)
-    extracted = extract_runtime_bundle_archive(
-        archive,
-        runtime_root,
-        manifest=bundle.manifest,
-        archive_checksum=bundle.archive_checksum,
-    )
-    entrypoint_ref = next(
-        (item for item in bundle.manifest.files if item.role == "entrypoint"),
-        None,
-    )
-    runtime_ref = next(
-        (item for item in bundle.manifest.files if item.role == "runtime_config"),
-        None,
-    )
-    exe = extracted.get(entrypoint_ref.relative_path) if entrypoint_ref is not None else None
-    runtime_xml = extracted.get(runtime_ref.relative_path) if runtime_ref is not None else None
-    if exe is None or runtime_xml is None:
-        raise ClusterStageExecutionError("Runtime Bundle is incomplete")
-
-    simulation = dict((job.get("spec") or {}).get("simulation") or {})
-    resolved_assets = dict(
-        ((job.get("resolved_spec") or {}).get("decisions") or {}).get("simulation_assets") or {}
-    )
     registry = SharedNamespaceRegistry.from_config(config)
+    transfer_resources = _transfer_resources(job)
+    direct_refs = bool(transfer_resources)
+
+    # A completed direct transfer is already a Cluster-visible runtime/data
+    # tree.  Validate its references against the deployment probe namespace by
+    # stat/size only, then hand worker-visible paths to the mature Cluster
+    # packager with both copy switches disabled.
+    transfer_paths: dict[str, list[tuple[dict[str, Any], dict[str, Any], str]]] = {}
+    if direct_refs:
+        transfer_paths = _validate_transfer_resources(context, job, config)
+
+    if not direct_refs:
+        # Compatibility path for pre-transfer jobs.  New Cluster jobs must
+        # never enter this branch: it reads/extracts the archive on Linux.
+        private_root = context.work_root / _safe_token(job_id)
+        runtime_root = private_root / "runtime-bundle"
+        archive = context.runtime_store.resolve_location(bundle.storage_ref)
+        extracted = extract_runtime_bundle_archive(
+            archive,
+            runtime_root,
+            manifest=bundle.manifest,
+            archive_checksum=bundle.archive_checksum,
+        )
+        entrypoint_ref = next(
+            (item for item in bundle.manifest.files if item.role == "entrypoint"),
+            None,
+        )
+        runtime_ref = next(
+            (item for item in bundle.manifest.files if item.role == "runtime_config"),
+            None,
+        )
+        exe = extracted.get(entrypoint_ref.relative_path) if entrypoint_ref is not None else None
+        runtime_xml = extracted.get(runtime_ref.relative_path) if runtime_ref is not None else None
+        if exe is None or runtime_xml is None:
+            raise ClusterStageExecutionError("Runtime Bundle is incomplete")
+    else:
+        # Each resource role is independent.  A direct dataset may use a
+        # registered/shared Selena directory, and a direct Selena bundle may
+        # use a shared/registered dataset.  Do not make the presence of one
+        # transfer role force all other roles through the transfer path.
+        runtime_entries = transfer_paths.get("runtime_bundle", [])
+        entrypoint = None
+        if runtime_entries:
+            entrypoint = next(
+                (item for item in runtime_entries if _resource_entry_role(item[1]) == "entrypoint"),
+                None,
+            )
+            # The transfer resource entries may not carry a role; align them
+            # directly by filename.  Direct runtime resources are complete
+            # enough to execute even when no catalog RuntimeBundle exists.
+            # A manifest can be supplied without role annotations.  Selena's
+            # executable is selected case-insensitively from all entries.
+            if entrypoint is None:
+                exe_candidates = [
+                    item for item in runtime_entries
+                    if Path(str(_entry_value(item[1], "relative_path"))).name.casefold() == "selena.exe"
+                ]
+                if exe_candidates:
+                    entrypoint = exe_candidates[0]
+            if entrypoint is None:
+                raise ClusterStageExecutionError(
+                    "Runtime Bundle transfer manifest has no Selena executable",
+                    code="CLUSTER_RUNTIME_BUNDLE_REF_UNAVAILABLE",
+                )
+            exe = Path(entrypoint[2])
+        elif configured_selena_exe:
+            # Shared/registered Selena is already worker-visible.  Keep this
+            # path as a worker reference; do not resolve or archive its bytes
+            # on Linux.
+            exe = Path(configured_selena_exe)
+        else:
+            raise ClusterStageExecutionError(
+                "Runtime Bundle reference is unavailable",
+                code="CLUSTER_RUNTIME_BUNDLE_REF_UNAVAILABLE",
+            )
+
+        # Runtime XML is a first-class resource, independent of the Selena
+        # executable directory.  Prefer its own direct-transfer entry; old
+        # manifests that bundled runtime_config remain a compatibility
+        # fallback only.
+        runtime_xml_entries = transfer_paths.get("runtime_xml", [])
+        if runtime_xml_entries:
+            runtime_xml = Path(runtime_xml_entries[0][2])
+        elif configured_runtime_xml:
+            runtime_xml = Path(configured_runtime_xml)
+        else:
+            runtime_xml_entry = next(
+                (
+                    item for item in runtime_entries
+                    if _resource_entry_role(item[1]) == "runtime_config"
+                    or str(_entry_value(item[1], "relative_path")).casefold().endswith(".xml")
+                ),
+                None,
+            ) if runtime_entries else None
+            if runtime_xml_entry is None:
+                raise ClusterStageExecutionError(
+                    "Runtime XML reference is unavailable",
+                    code="CLUSTER_RUNTIME_XML_REF_UNAVAILABLE",
+                )
+            runtime_xml = Path(runtime_xml_entry[2])
+
     adapter_value = str(
         resolved_assets.get("adapter_file") or simulation.get("adapter_file") or ""
     ).strip()
-    adapter = (
-        _resolve_config_asset(context, registry, owner, "adapter", adapter_value)
-        if adapter_value
-        else None
-    )
+    if transfer_paths.get("adapter"):
+        adapter = Path(transfer_paths["adapter"][0][2])
+    else:
+        adapter = (
+            _resolve_config_asset(context, registry, owner, "adapter", adapter_value)
+            if adapter_value
+            else None
+        )
     mat_filter_value = (
         resolved_assets["mat_filter"]
         if "mat_filter" in resolved_assets
         else simulation.get("mat_filter", "")
     )
-    mat_filter = (
-        _resolve_config_asset(
-            context,
-            registry,
-            owner,
-            "mat_filter",
-            mat_filter_value,
+    if transfer_paths.get("mat_filter"):
+        mat_filter = Path(transfer_paths["mat_filter"][0][2])
+    else:
+        mat_filter = (
+            _resolve_config_asset(
+                context,
+                registry,
+                owner,
+                "mat_filter",
+                mat_filter_value,
+            )
+            if str(mat_filter_value or "").strip()
+            else None
         )
-        if str(mat_filter_value or "").strip()
-        else None
-    )
-    data_location = context.dataset_catalog.resolve_location(dataset.id, owner=owner)
+    direct_dataset = bool(transfer_paths.get("dataset"))
+    if direct_dataset:
+        data_location = _dataset_worker_root(transfer_paths["dataset"])
+    else:
+        data_location = context.dataset_catalog.resolve_location(dataset.id, owner=owner)
 
     config.setdefault("_meta", {})["project"] = project
     # The bundle identity is trace metadata only.  It must not activate
@@ -433,43 +649,71 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     config.setdefault("paths", {})["build_output"] = str(exe.parent)
     config.setdefault("selena", {})["exe_pattern"] = "{executable_name}"
     config["selena"]["executable_name"] = exe.name
-    config.setdefault("build", {})["selena_branch"] = bundle.manifest.source.branch
+    if direct_refs:
+        config.setdefault("cluster", {})["selena_exe"] = str(exe)
+    config.setdefault("build", {})["selena_branch"] = bundle_branch
     sim = config.setdefault("simulation", {})
     sim["runtime_xml"] = str(runtime_xml)
     sim["adapter_file"] = str(adapter) if adapter is not None else ""
     sim["matfilefilter"] = str(mat_filter) if mat_filter is not None else ""
     sim["input_mf4"] = str(data_location)
+    if direct_refs:
+        # Tell the existing Cluster adapter that all bytes are already in the
+        # worker-visible data plane.  It must not copy assets, infer a radar
+        # source by opening MF4, or inspect a project branch on Linux.
+        config["_cluster_zero_copy"] = True
+        config["_cluster_skip_mf4_probe"] = True
+        config["_cluster_source_explicit"] = True
 
-    from core.preflight import run_preflight
-    # Do not parse a potentially multi-gigabyte MF4 merely to collect optional
-    # Runtime/DataPlayer diagnostics.  The user-selected Runtime and data are
-    # trusted here; Selena/Cluster result collection is the execution truth.
-    # This keeps the Linux control plane a thin scheduler and prevents one
-    # preflight worker from retaining the whole uploaded measurement in RAM.
-    preflight = run_preflight(config)
+    if direct_refs:
+        # Direct-transfer references are already validated by the manifest and
+        # bounded probe.  Running the legacy preflight would read MF4 bytes (or
+        # inspect project branches) on Linux, so keep only an explicit
+        # metadata-level diagnostic marker.
+        preflight = type("TransferPreflight", (), {"ok": True, "checks": ()})()
+    else:
+        from core.preflight import run_preflight
+        # Compatibility path only.  New Cluster direct-transfer jobs skip this
+        # body entirely so Linux never parses a potentially huge MF4.
+        preflight = run_preflight(config)
 
     from core.cluster import prepare_cluster_job
     package = prepare_cluster_job(
         config,
         input_path=str(data_location),
         run_id=_safe_token(job_id),
-        copy_data=dataset.source_kind != "shared_path",
-        copy_selena=True,
+        copy_data=False if direct_dataset or dataset.source_kind == "shared_path" else True,
+        copy_selena=False if direct_refs else True,
     )
     local_job_root = Path(package.manifest_path).parent
+    if not bundle_id:
+        # A direct transfer can arrive before the catalog synthetic decision
+        # is persisted.  Keep the private ClusterRun lease valid without
+        # inventing a public RuntimeBundle body.
+        transfer_id = str(
+            (transfer_resources.get("runtime_bundle") or transfer_resources.get("runtime_xml") or [{}])[0]
+            .get("transfer_id")
+            or "direct-runtime"
+        )
+        token = re.sub(r"[^A-Za-z0-9_.:-]+", "-", transfer_id).strip("-.")[:120] or "direct-runtime"
+        bundle_id = "direct-runtime:" + token
+    if not bundle_storage_ref:
+        bundle_storage_ref = "shared://selena-bundles/direct/" + re.sub(
+            r"[^A-Za-z0-9_.-]+", "-", bundle_id
+        ).strip("-.")
     run = context.run_store.create_run(
         owner=owner,
         control_job_id=job_id,
         project=project,
         dataset_id=dataset.id,
-        artifact_id=bundle.manifest.id,
-        artifact_storage_ref=bundle.storage_ref,
+        artifact_id=bundle_id,
+        artifact_storage_ref=bundle_storage_ref,
         profile=package.profile,
         job_dir=str(local_job_root),
         config_path=package.config_path,
         output_location=str(local_job_root / "output"),
     )
-    return {
+    result_payload = {
         "cluster_run": run.to_dict(),
         "cluster_run_ref": run.ref,
         "preflight": {
@@ -490,6 +734,12 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
             ],
         },
     }
+    if resolved_data_result is not None:
+        # Path-free DatasetRef metadata lets the owning executor persist the
+        # data decision when prepare_data was skipped by the all-shared DAG.
+        result_payload["dataset"] = dict(resolved_data_result.get("dataset") or {})
+        result_payload["data_route"] = "shared" if not data_path.lower().startswith("dataset://") else "central"
+    return result_payload
 
 
 def execute_cluster_submit(context: ClusterStageContext, job: dict[str, Any], run_ref: str) -> dict[str, Any]:
@@ -778,6 +1028,10 @@ def _project(context: ClusterStageContext, job: dict[str, Any]) -> str:
 
 def _data_project(context: ClusterStageContext, job: dict[str, Any]) -> str:
     """Resolve the hidden project before a concurrent Selena build finishes."""
+    if _transfer_resources(job):
+        # Direct resources do not require a catalog RuntimeBundle row.  Shared
+        # namespace resolution still uses deployment-wide infrastructure.
+        return "run-config-v2"
     decision = dict(((job.get("resolved_spec") or {}).get("decisions") or {}).get("selena") or {})
     if str((decision.get("runtime_bundle") or {}).get("id") or ""):
         return _project(context, job)
@@ -790,14 +1044,383 @@ def _data_project(context: ClusterStageContext, job: dict[str, Any]) -> str:
 
 def _dataset(context: ClusterStageContext, job: dict[str, Any], *, owner: str) -> DatasetRef:
     decision = dict(((job.get("resolved_spec") or {}).get("decisions") or {}).get("data") or {})
-    dataset_id = str((decision.get("dataset") or {}).get("id") or "")
+    metadata = dict(decision.get("dataset") or {})
+    dataset_id = str(metadata.get("id") or "")
     if not dataset_id:
         data_path = str(((job.get("spec") or {}).get("data") or {}).get("path") or "")
         if data_path.startswith("dataset://"):
             dataset_id = dataset_id_from_uri(data_path)
     if not dataset_id:
-        raise ClusterStageExecutionError("DatasetRef is not resolved")
-    return context.dataset_catalog.get(dataset_id, owner=owner)
+        metadata = {}
+    if dataset_id:
+        try:
+            return context.dataset_catalog.get(dataset_id, owner=owner)
+        except (DatasetError, AttributeError):
+            # Direct-transfer synthetic decisions intentionally do not insert
+            # a fake physical location into the legacy catalog.  Rehydrate
+            # their path-free DatasetRef metadata directly instead.
+            if metadata:
+                try:
+                    return _dataset_ref_from_metadata(metadata, owner=owner)
+                except ClusterStageExecutionError:
+                    # A partial decision may carry only the logical id while
+                    # the completed transfer entries contain the file list.
+                    # Fall through and reconstruct from those entries.
+                    pass
+    transfer_resources = _transfer_resources(job)
+    if transfer_resources.get("dataset"):
+        return _dataset_ref_from_transfer_resources(
+            transfer_resources["dataset"],
+            owner=owner,
+            project="run-config-v2",
+            dataset_id=dataset_id,
+        )
+    raise ClusterStageExecutionError("DatasetRef is not resolved")
+
+
+def _dataset_ref_from_metadata(metadata: dict[str, Any], *, owner: str) -> DatasetRef:
+    raw_files = list(metadata.get("files") or ())
+    files: list[DatasetFileRef] = []
+    for raw in raw_files:
+        if isinstance(raw, DatasetFileRef):
+            files.append(raw)
+            continue
+        if not isinstance(raw, dict):
+            continue
+        checksum = str(raw.get("checksum") or raw.get("sha256") or "").strip().lower()
+        if checksum and not checksum.startswith("sha256:"):
+            checksum = "sha256:" + checksum
+        files.append(
+            DatasetFileRef(
+                relative_path=str(raw.get("relative_path") or ""),
+                size=int(raw.get("size") or 0),
+                checksum=checksum,
+                signal_status=str(raw.get("signal_status") or "not-scanned"),
+                mtime_ns=int(raw.get("mtime_ns") or 0),
+                storage_ref=str(raw.get("storage_ref") or raw.get("target_logical_ref") or ""),
+            )
+        )
+    if not files:
+        raise ClusterStageExecutionError("DatasetRef metadata is incomplete")
+    fingerprint = str(metadata.get("source_fingerprint") or dataset_fingerprint(files)).lower()
+    dataset_id = str(metadata.get("id") or "").strip()
+    if not dataset_id:
+        import hashlib
+        dataset_id = "dataset:sha256:" + hashlib.sha256(
+            (str(owner) + "\0" + fingerprint).encode("utf-8")
+        ).hexdigest()
+    storage_ref = str(metadata.get("storage_ref") or "").strip()
+    if not storage_ref:
+        storage_ref = "cluster-staging://dataset/sha256/" + fingerprint.split(":", 1)[-1]
+    return DatasetRef(
+        id=dataset_id,
+        project=str(metadata.get("project") or "run-config-v2"),
+        owner=str(metadata.get("owner") or owner),
+        source_kind=str(metadata.get("source_kind") or "direct_transfer"),
+        accessibility=str(metadata.get("accessibility") or "cluster"),
+        storage_ref=storage_ref,
+        files=tuple(files),
+        created_at=float(metadata.get("created_at") or time.time()),
+        source_fingerprint=fingerprint,
+    )
+
+
+def _dataset_ref_from_transfer_resources(
+    resources: list[dict[str, Any]],
+    *,
+    owner: str,
+    project: str,
+    dataset_id: str = "",
+) -> DatasetRef:
+    raw_files: list[dict[str, Any]] = []
+    for resource in resources:
+        for raw in list(resource.get("entries") or []):
+            if isinstance(raw, dict):
+                raw_files.append(raw)
+    metadata = {
+        "id": dataset_id,
+        "project": project,
+        "owner": owner,
+        "source_kind": "direct_transfer",
+        "accessibility": "cluster",
+        "files": raw_files,
+        "created_at": time.time(),
+    }
+    return _dataset_ref_from_metadata(metadata, owner=owner)
+
+
+_TRANSFER_RESOURCE_ROLES = ("dataset", "runtime_bundle", "runtime_xml", "mat_filter", "adapter")
+
+
+def _transfer_resources(job: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Read the bounded ``resolved_spec.decisions.transfers`` shape.
+
+    The control plane owns conversion from TransferManifest to this shape.  A
+    resource is either one mapping or a list of mappings (for multiple assets
+    with the same role); arbitrary nested dictionaries are intentionally not
+    interpreted here.
+    """
+
+    decisions = dict((job.get("resolved_spec") or {}).get("decisions") or {})
+    transfers = decisions.get("transfers")
+    if not isinstance(transfers, dict):
+        return {}
+    raw_resources = transfers.get("resources")
+    if not isinstance(raw_resources, dict):
+        return {}
+    resources: dict[str, list[dict[str, Any]]] = {}
+    for role in _TRANSFER_RESOURCE_ROLES:
+        raw = raw_resources.get(role)
+        if isinstance(raw, dict):
+            resources[role] = [dict(raw)]
+        elif isinstance(raw, list):
+            values = [dict(item) for item in raw if isinstance(item, dict)]
+            if values:
+                resources[role] = values
+    return resources
+
+
+def _transfer_probe_root(context: ClusterStageContext, config: dict[str, Any]) -> str:
+    value = str(context.server_probe_root or "").strip()
+    if value:
+        return value
+    cluster = dict(config.get("cluster") or {})
+    return str(cluster.get("server_probe_root") or cluster.get("probe_root") or "").strip()
+
+
+def _resource_relative_root(resource: dict[str, Any]) -> str:
+    return str(
+        resource.get("relative_root")
+        or resource.get("probe_relative_root")
+        or resource.get("target_relative_root")
+        or ""
+    ).strip().replace("\\", "/").strip("/")
+
+
+def _join_resource_path(root: str, relative: str) -> str:
+    base = str(root or "").strip()
+    suffix = str(relative or "").strip().replace("\\", "/").strip("/")
+    if not base:
+        return ""
+    if not suffix:
+        return base
+    separator = "\\" if "\\" in base and "/" not in base else "/"
+    return base.rstrip("\\/") + separator + suffix.replace("/", separator)
+
+
+def _entry_value(entry: dict[str, Any], *names: str, default: Any = "") -> Any:
+    for name in names:
+        value = entry.get(name)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _resolve_probe_entry(
+    context: ClusterStageContext,
+    config: dict[str, Any],
+    job: dict[str, Any],
+    resource: dict[str, Any],
+    entry: dict[str, Any],
+) -> Path:
+    owner = _owner(job)
+    storage_ref = str(_entry_value(entry, "storage_ref", "target_logical_ref")).strip()
+    expected_size = int(_entry_value(entry, "size", default=0) or 0)
+    if not storage_ref:
+        raise ClusterStageExecutionError(
+            "Transfer manifest entry has no storage reference",
+            code="CLUSTER_STORAGE_REF_INVALID",
+        )
+    resolver = context.storage_ref_resolver
+    if resolver is not None:
+        try:
+            try:
+                resolved = resolver(
+                    storage_ref,
+                    owner=owner,
+                    expected_size=expected_size,
+                    require_exists=True,
+                )
+            except TypeError:
+                try:
+                    # TransferService.resolve_storage_ref intentionally
+                    # accepts only (storage_ref, *, owner, require_exists).
+                    resolved = resolver(
+                        storage_ref,
+                        owner=owner,
+                        require_exists=True,
+                    )
+                except TypeError:
+                    try:
+                        resolved = resolver(storage_ref, owner=owner)
+                    except TypeError:
+                        # Keep compatibility with small test/deployment
+                        # resolvers that expose positional owner/size args.
+                        resolved = resolver(storage_ref, owner, expected_size)
+        except Exception as exc:
+            raise ClusterStageExecutionError(
+                "Cluster storage reference is unavailable",
+                code="CLUSTER_STORAGE_UNAVAILABLE",
+            ) from exc
+        candidate = Path(str(resolved))
+    else:
+        root = _transfer_probe_root(context, config)
+        relative_root = _resource_relative_root(resource)
+        relative_path = str(_entry_value(entry, "relative_path")).strip().replace("\\", "/")
+        if not root or not relative_path:
+            raise ClusterStageExecutionError(
+                "Cluster storage probe is not configured",
+                code="CLUSTER_STORAGE_PROBE_UNAVAILABLE",
+            )
+        candidate = Path(_join_resource_path(_join_resource_path(root, relative_root), relative_path))
+
+    # Probe is deliberately bounded to existence/size metadata.  Do not hash,
+    # parse or archive the object on Linux.
+    try:
+        root_text = _transfer_probe_root(context, config)
+        if root_text:
+            root_path = Path(root_text).resolve(strict=False)
+            candidate.resolve(strict=False).relative_to(root_path)
+        if candidate.is_symlink() or not candidate.is_file():
+            raise OSError("not a regular file")
+        if int(candidate.stat().st_size) != expected_size:
+            raise OSError("size mismatch")
+    except (OSError, ValueError) as exc:
+        raise ClusterStageExecutionError(
+            "Cluster storage object is unavailable or has an unexpected size",
+            code="CLUSTER_STORAGE_UNAVAILABLE",
+        ) from exc
+    return candidate
+
+
+def _resolve_worker_entry(
+    resource: dict[str, Any],
+    entry: dict[str, Any],
+    probe_path: Path,
+    *,
+    config: dict[str, Any] | None = None,
+) -> str:
+    relative = str(_entry_value(entry, "relative_path")).strip().replace("\\", "/")
+    # Deployment may provide a worker-visible root alongside the probe root.
+    # Keep this private and use it only to render Config.cfg for Windows
+    # workers; it is never returned in the public Stage result.
+    worker_root = str(
+        resource.get("worker_root")
+        or resource.get("client_target_root")
+        or resource.get("target_root")
+        or ""
+    ).strip()
+    if worker_root:
+        return _join_resource_path(_join_resource_path(worker_root, _resource_relative_root(resource)), relative)
+    worker_path = str(resource.get("worker_path") or resource.get("target_path") or "").strip()
+    if worker_path and len(resource.get("entries") or []) == 1:
+        return worker_path
+    # A shared mount can use the probe path directly when the same path is
+    # visible to workers.  This fallback is intentionally private and only
+    # affects the generated Config.cfg.
+    storage_ref = str(_entry_value(entry, "storage_ref", "target_logical_ref")).strip()
+    probe_text = str(probe_path)
+    # Never leak a Linux-only probe path into Config.cfg.  A UNC probe is also
+    # worker-visible and can safely be reused; otherwise retain the logical ref
+    # until the deployment-specific Cluster adapter expands it.
+    if probe_text.startswith("\\\\") or probe_text.startswith("//"):
+        return probe_text
+    # The Linux executor may have a deployment mount map that translates its
+    # probe root back to the UNC root consumed by Cluster Windows workers.
+    # Reconstruct this mapping for every runtime entry so exe and DLLs remain
+    # in one worker-visible directory even when no resource worker_root is
+    # serialized in the public manifest.
+    cluster = dict((config or {}).get("cluster") or {})
+    for unc_prefix, mount in dict(cluster.get("linux_mount_map") or {}).items():
+        mount_text = str(mount or "").rstrip("\\/")
+        if mount_text and probe_text.casefold().startswith(mount_text.casefold() + os.sep):
+            suffix = probe_text[len(mount_text):].replace("/", "\\")
+            return str(unc_prefix).rstrip("\\/") + suffix
+        if mount_text and probe_text.casefold() == mount_text.casefold():
+            return str(unc_prefix).rstrip("\\/")
+    return storage_ref
+
+
+def _validate_transfer_resources(
+    context: ClusterStageContext,
+    job: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, list[tuple[dict[str, Any], dict[str, Any], str]]]:
+    paths: dict[str, list[tuple[dict[str, Any], dict[str, Any], str]]] = {}
+    for role, resources in _transfer_resources(job).items():
+        for resource in resources:
+            if str(resource.get("status") or "resolved").strip().lower() != "resolved":
+                raise ClusterStageExecutionError(
+                    f"Transfer manifest for {role} is not resolved",
+                    code="CLUSTER_STORAGE_REF_UNAVAILABLE",
+                )
+            entries = resource.get("entries")
+            if not isinstance(entries, list) or not entries:
+                raise ClusterStageExecutionError(
+                    f"Transfer manifest for {role} is empty",
+                    code="CLUSTER_STORAGE_REF_INVALID",
+                )
+            for raw_entry in entries:
+                if not isinstance(raw_entry, dict):
+                    raise ClusterStageExecutionError(
+                        f"Transfer manifest entry for {role} is invalid",
+                        code="CLUSTER_STORAGE_REF_INVALID",
+                    )
+                entry = dict(raw_entry)
+                probe = _resolve_probe_entry(context, config, job, resource, entry)
+                worker = _resolve_worker_entry(resource, entry, probe, config=config)
+                paths.setdefault(role, []).append((resource, entry, worker))
+    return paths
+
+
+def _resource_entry_role(entry: dict[str, Any]) -> str:
+    return str(entry.get("role") or "").strip().lower()
+
+
+def _match_runtime_manifest_entry(
+    bundle: RuntimeBundleRecord,
+    runtime_entries: list[tuple[dict[str, Any], dict[str, Any], str]],
+    role: str,
+) -> tuple[dict[str, Any], dict[str, Any], str] | None:
+    manifest_file = next((item for item in bundle.manifest.files if item.role == role), None)
+    if manifest_file is None:
+        return None
+    for item in runtime_entries:
+        if str(_entry_value(item[1], "relative_path")).replace("\\", "/").casefold() == manifest_file.relative_path.casefold():
+            return item
+    return None
+
+
+def _dataset_worker_root(
+    entries: list[tuple[dict[str, Any], dict[str, Any], str]],
+) -> str:
+    if not entries:
+        return ""
+    roots: list[str] = []
+    first_style = str(entries[0][2] or "")
+    for _resource, entry, path in entries:
+        worker_path = str(path or "").strip()
+        relative = str(_entry_value(entry, "relative_path")).replace("\\", "/").strip("/")
+        normalized = worker_path.replace("\\", "/")
+        suffix = "/" + relative
+        if relative and normalized.casefold().endswith(suffix.casefold()):
+            roots.append(normalized[: -len(suffix)] or "/")
+        else:
+            roots.append(normalized.rsplit("/", 1)[0] if "/" in normalized else normalized)
+    if not roots:
+        return ""
+    # A direct dataset is a collection.  Use the common root of *all* entries
+    # so prepare_cluster_job receives one directory containing every MF4,
+    # rather than silently packaging only the first manifest entry.
+    try:
+        common = os.path.commonpath(roots)
+    except ValueError:
+        common = roots[0]
+    if "\\" in first_style and "/" not in first_style:
+        common = common.replace("/", "\\")
+    else:
+        common = common.replace("\\", "/")
+    return common or roots[0]
 
 
 def _resolve_config_asset(

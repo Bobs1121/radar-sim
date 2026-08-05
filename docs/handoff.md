@@ -5,7 +5,122 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 # radar-sim 项目 Handoff
 
+## 0A. 2026-08-05 控制面/数据面分离改造 checkpoint（进行中，接手者先读）
+
+> 状态：**尚未交付、尚未提交、尚未部署**。本节记录 2026-08-05 当前共享工作区的真实进度，优先级高于下方所有历史“上传到 Linux”描述。下方旧记录只用于解释历史问题，不能作为当前实施合同。
+
+### 本轮不可改变的目标
+
+- 权威产品合同是 `docs/PRODUCT_CONTRACT.md`，实施计划是 `docs/CONTROL_DATA_PLANE_PLAN.md`。Linux 只能处理 YAML/JSON、Job/Stage/Event、心跳、TransferPlan、进度、Manifest 和逻辑引用；MF4、Selena.exe/DLL、Runtime、MatFilter、Adapter 正文不得经过 Linux Web/API 或落到 Linux 私有 staging。
+- Cluster 目标：共享路径原地引用；Windows/Linux SDK 或 Windows Connector 持有的本地文件直接写入部署方管理的 Cluster UNC/共享 staging。`source=existing` 传完整 Selena 目录，不只传 exe。`source=build` 只能传编译后的实际产物目录，绝不能传代码仓。
+- 本地仿真：本机可读输入零传输；Windows full 原地编译/执行。Linux 与 Cluster 不产生输入文件副作用。不同资源来源必须独立解析，不能按项目、盘符或“任一资源直传则全部直传”做分支。
+- Web 和 Python SDK 共用 `/api/v1` 和同一份 `UserRunConfig 2.0`。后续 MCP/Skill 只能包装控制面 API，不能承载文件正文。
+
+### 当前已落盘的实现（仍需整体回归）
+
+1. `core/direct_transfer.py` + `core/transfer_service.py`
+   - canonical `TransferPlan`/`TransferManifest`，部署双命名空间 `client_target_root`（客户端 UNC）与 `server_probe_root`（Linux mount）；客户端 Plan 不含 probe root。
+   - owner/Job/Stage 隔离、不可猜测相对根、路径越界/设备路径/符号链接防护、`.partial` 续传、取消、源 size/mtime 校验、流式 SHA-256、原子发布、Manifest 幂等。
+   - `ClusterWorkspaceWhitelist.from_config()` 已支持 `cluster.direct_transfer.{client_target_root,server_probe_root}`；Windows 测试机也能校验 POSIX probe path。
+2. Linux Transfer API（`core/api_v1.py`、`core/api_v1_fastapi.py`、`core/control_service.py`、`cli/server.py`，正在收尾）
+   - 路由固定为：`POST /api/v1/jobs/{job}/stages/{stage}/transfers`、`GET /api/v1/transfers/{id}`、`POST .../progress`、`POST .../manifest`、`POST .../cancel`。
+   - owner 来自认证上下文；job/stage/root/mode 不允许客户端 body 自报。一个 `prepare_data` Stage 可等待 dataset/runtime_bundle/runtime_xml/mat_filter/adapter 多个 role，全部 Manifest 到齐才完成。
+   - Manifest 投影到 `resolved_spec.decisions.transfers.resources`；dataset/runtime_bundle 同时生成 path-free、稳定的内部 `decisions.data`/`decisions.selena` 引用，避免结果清单继续依赖 Linux 中央上传目录。
+   - 没有部署直传根时稳定返回/阻断 `cluster_direct_transfer_unavailable`，不得退回 legacy `dataset-uploads`、runtime bundle upload 或 config asset body upload。
+3. SDK/Windows Connector（`radar_sim_sdk/client.py`、`cli/agent.py`，正在收尾）
+   - SDK/Agent 复用 `core.execute_transfer`，控制请求只发清单、进度和 Manifest；现有 Selena 目录、Runtime、MatFilter、Adapter 和 MF4 分 role 申请 Plan。
+   - `RadarSimClient.submit_run(..., auto_transfer=True)` 已开始实现“提交 Job 后，本机可读时自动直传；不可达时保持可恢复等待”，不再隐式调用 Linux body upload。
+   - Agent 新 Cluster 路径不再调用旧 artifact/runtime/dataset/config body upload；本地仿真路径保持零上传。
+4. Cluster 薄适配（`core/cluster_stage_executor.py`、`core/cluster.py`、`core/datasets.py`，正在收尾）
+   - `ClusterStageContext` 可注入 `TransferService.resolve_storage_ref`/`server_probe_root`；Linux 对文件只做 owner-bound resolve + `stat/size`，不哈希、不解析 MF4、不归档 Selena。
+   - 直传资源调用成熟 `prepare_cluster_job` 时使用零复制开关；数据、Selena、Runtime、MatFilter、Adapter 按 role 独立选择 direct/shared/catalog 来源。
+
+### 已由主代理复核的测试证据
+
+- `python -m pytest tests/test_direct_transfer.py tests/test_transfer_service.py -q`：`51 passed, 2 skipped`。
+- `python -m pytest tests/test_control_data_plane_contract.py tests/test_direct_transfer.py tests/test_transfer_service.py tests/test_direct_transfer_clients.py -q`：`60 passed, 2 skipped, 1 warning`。
+- `python -m pytest tests/test_sdk.py tests/test_api_v1_service.py tests/test_api_v1_fastapi.py tests/test_control_service.py -q`：`125 passed, 1 warning`。
+- 上述通过只证明内核、API/SDK 定向合同；**不等于真实 Cluster 端到端完成**。
+
+### 2026-08-05 合并收敛后的最新验证（晚于下一节的 5 个历史红项）
+
+- 三个 Luna 切片合并后，主代理运行 direct/transfer/control/API/SDK/Agent/Cluster/Dataset/V1 入口组合回归：`278 passed, 2 skipped, 1 warning`，耗时 `59.51s`。
+- 旧 `tests/test_agent_cli_policy.py` 中 4 条 Linux body upload 断言已改为 direct-transfer policy；主代理复核：`24 passed`。没有为了测试恢复 `_upload_v5_artifact` 或 `upload_data_lease`。
+- Cluster 组合（含 server executor）主代理复核：`80 passed`。`DatasetRef.source_kind` 已正式加入 `direct_transfer`，不再用 `agent_upload` 冒充直传来源。
+- SDK/Agent/V1 直传组合主代理复核：`49 passed, 1 warning`；旧不可达测试代码已删除，不再断言 `/existing-selena-imports`、dataset/config body upload。
+- 关键生产模块 `py_compile` 通过，`git diff --check` 通过（只有 Windows CRLF 转换提示）。
+- 尝试完整 `python -m pytest -q`，在 `304s` 命令门限内未完成且无最终摘要，被外层命令超时终止。该结果既不是失败证据，也不是全绿证据；接手者如需发布必须在更长门限下重新跑并保存输出。
+- **仍未完成发布门禁**：尚未在 `10.190.171.44` 配置真实 direct-transfer UNC/probe mount，尚未用真实大 MF4/完整 Selena 做“客户端直写 Cluster、Linux API 字节不增长、真实 Cluster 成功”的黑盒。因此当前仍不得提交部署或宣称最终交付。
+
+### 已解决的上一轮主回归红项（保留根因，避免回归）
+
+最近一次命令：
+
+```text
+python -m pytest tests/test_cluster_direct_refs.py tests/test_cluster_stage_executor.py tests/test_cluster.py tests/test_datasets.py tests/test_server_cluster_executor.py tests/test_v1_cluster_yaml_sdk.py -q
+```
+
+当时结果：`5 failed, 77 passed, 1 warning`。以下五项现已解决；保留当时根因供回归：
+
+1. `test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter`：`finalize_manifest` 报 `DatasetRef is unavailable for manifest`。已通过 preflight 前 metadata-only resolve/回写及 direct synthetic decision 修复。
+2. `test_linux_service_imports_a_server_visible_shared_selena_path`：已改为共享引用/元数据合同，Linux 不再归档正文。
+3. `test_linux_service_maps_authorized_unc_selena_to_its_mount`：已改为 UNC zero-copy 路由验证。
+4. `test_submit_cluster_yaml_is_one_call_and_prepares_all_local_inputs`：已改为一次 SDK 调用完成 TransferPlan/Manifest，明确禁止 body upload。
+5. `test_one_sdk_call_reaches_cluster_submission_with_existing_selena`：已拆成 SDK 一次调用完成 direct manifests 与 direct refs 进入 Cluster preflight 两项验收；无不可达 legacy block。
+
+### 已发现并已下达修复、必须复查的组合问题
+
+- `source=build` 不能把 `config.selena.code_path` 当 runtime bundle；只允许 `register_artifact` 从真实编译输出传完整 Selena 目录。
+- shared dataset + 本地 Runtime/MatFilter/Adapter：Agent 不能无条件创建本地 DatasetLease；没有 local dataset role 时只传本地配置 role。
+- local dataset + shared Selena，以及 shared dataset + local Selena：资源必须独立路由；不能因存在任一 transfer resource 就要求全部资源直传。
+- Existing Selena 目录通常只有 exe/DLL，用户的 `runtime_xml` 是独立必填资源；Cluster preflight 优先使用 `transfers.resources.runtime_xml`，不能要求 Runtime XML 一定在 bundle manifest 内。
+- Direct runtime 的 `environment_check` 不能先调用旧 RuntimeBundle catalog；应使用全局/通用 Cluster 配置只检查调度环境，并从 direct entries 中大小写不敏感定位 `Selena.exe`。
+- SDK 缺少 Cluster 共享访问时提示必须跨平台；Linux SDK 不能固定提示安装 Windows Agent。
+- 大 MF4 不能“预扫描 SHA-256 + 复制时再 SHA-256”。Plan item checksum 可空，扫描只收集 path/size/mtime，复制流一次计算 Manifest SHA-256。
+
+### 接手后的严格顺序
+
+1. 先等/检查三个 Luna 子任务的最终结果：`integrate_control_plane`、`integrate_clients`、`integrate_cluster_refs`；不要相信局部通过，重跑上述主回归。
+2. 解决全部五个红项，再运行：
+   - direct/control/client 定向测试；
+   - API/SDK/Control 回归；
+   - Cluster/Dataset 回归；
+   - 与 Agent policy、本地仿真、发布脚本相关测试；
+   - 最后完整 `pytest`（若时间允许，记录所有既有失败和本轮失败的区分）。
+3. 合同审计：新 `UserRunConfig` Cluster 任务不得调用 `/dataset-uploads`、`/runtime-bundle-uploads`、`/existing-selena-imports`、`/config-assets` 上传正文；本地仿真不得创建 TransferPlan/Cluster staging。
+4. 部署前在目标 Linux 配置 `cluster.direct_transfer.client_target_root` 与 `server_probe_root`，确认 Windows/SDK 能写 UNC、Linux 只读 mount。不得用 `workspace_root` 静默回退。
+5. 用真实大 MF4 + 完整 Selena 文件夹 + 独立 Runtime/MatFilter/Adapter 做黑盒：确认目标共享目录出现正确 bytes；Linux API 入站字节/内存不随 MF4 大小增长；Manifest 后 Windows 可离线；真实 Cluster 结果成功。
+6. 真实验证通过后才更新本节为“已交付”，再提交、推送、部署。不要把当前 dirty worktree 或局部测试直接发布。
+
+### 工作区卫生
+
+- 当前工作树包含本轮改造以及之前用户/其他 Agent 的改动，不能 `reset --hard`、不能整体 checkout。
+- 本轮新增的核心文件目前可能仍是 untracked：`core/direct_transfer.py`、`core/transfer_service.py`、`tests/test_direct_transfer.py`、`tests/test_transfer_service.py`、`tests/test_direct_transfer_clients.py`、`tests/test_control_plane_transfer_api.py`、`tests/test_cluster_direct_refs.py`、`docs/CONTROL_DATA_PLANE_PLAN.md`、`tests/test_control_data_plane_contract.py`。
+- `.claude/`、`.playwright-cli/`、`CHECKPOINT.md`、大量 `output/*`、`docs/REFACTORING_PLAN.md`、`docs/WIZARD_IMPLEMENTATION_PLAN.md` 与本轮交付无关，不要误提交或删除用户文件。
+
 ## 0. 2026-08-04 当前发布交接（优先阅读）
+
+### 2026-08-05 控制面/数据面分离产品决策（最新，后续实现必须遵守）
+
+- 用户确认 Linux 服务本质是自动化脚手架和控制面，不是 MF4、Selena Bundle 或配置资产的中转文件服务器。Cluster 任务所需的本地文件必须由文件所在 Windows/Linux 客户端直接写入 Cluster 可访问 UNC/共享 staging，或调用 Cluster 上传网关；文件正文不得经过 Linux Web/API 端口或先落入 Linux 私有存储。
+- `本地编译 + Cluster`：Windows light/full 在本机编译、校验 Selena.exe/DLL，并把 Selena、MF4、Runtime、MatFilter、Adapter 直接传到 Cluster 数据面；Linux 仅下发 TransferPlan、接收进度/Manifest、登记引用并提交 Cluster。
+- `已有 Selena + Cluster`：共享路径零复制；本地路径由 Windows Connector 或调用端 SDK 直传。existing 路径不检查 VS/编译依赖。
+- `本地编译 + 本地仿真` 与 `已有 Selena + 本地仿真`：所有输入和执行留在 Windows full；禁止上传到 Linux/Cluster，传输 Stage 必须为 `transfer_skipped_local_execution`。
+- 上一条的“所有输入留在 Windows”指本机已有/可直接读取的输入不做无意义搬运。用户补充了远端数据+本地仿真、本地数据+远端 Selena+本地仿真等组合：不可原地读取的远端输入可以由源端直接送到 Windows full 受控缓存，但仍不得经过 Linux。统一算法是先选执行端，再对 Selena/Runtime/MatFilter/Adapter/MF4 分别做可达性解析，原地读取优先，必要时源端直传执行端。
+- 多项目不能形成传输分支。项目识别只用于 Selena 编译命令、环境依赖与产物路径推导；仿真输入路由使用项目无关的资源图。Agent 必须保持轻薄：只做受控脚本调用、产物发现、流式直传、本地仿真（full）和状态上报，不运行第二套调度器/项目库/Web，也不解析完整 MF4。
+- 纯浏览器不能读取任意本地路径。未连接本机组件时，Web 进入可恢复等待并提供一次连接入口；不得静默回退成浏览器把大文件上传到 Linux。Linux 工作站 SDK 应使用已挂载 Cluster 共享或直传适配器，缺少能力时返回 `cluster_direct_transfer_unavailable`，不能提示安装 Windows 组件。
+- 新的权威实施计划为 `docs/CONTROL_DATA_PLANE_PLAN.md`。现有 Agent/SDK `POST/PATCH /api/v1/dataset-uploads`、Linux `DatasetStore` 及 Runtime Bundle 中央上传属于与新产品合同冲突的旧数据面，后续 P0 必须停止用于新 Cluster 任务；不能在它们之上继续做性能优化来固化错误架构。
+- 直传期间 Linux 只处理 YAML/JSON、心跳、状态、进度、校验摘要和逻辑引用；大文件传输不能影响其他用户的 Web、SDK、任务列表或 Agent polling。发布门禁必须用真实大 MF4 证明 Linux API 入站字节和内存不随文件大小增长。
+
+### 2026-08-05 新用户 Web/SDK 首次接入稳定性（最新）
+
+- 现场日志里的单次 `timed out` / `WinError 10061` 来自旧 Windows Agent：旧版第一次轮询失败就打印 WARN。验证机已通过同一 Web owner 原地升级，保留 Agent ID、安装目录和自启动配置；安装代码哈希与仓库一致，`RadarSimConnector-HOZ2WX`、独立 Watchdog、`windows_light` 与 Cluster 均在线。
+- 当前 Linux `radar-sim-v1.service` 自 2026-08-05 02:56 UTC 连续运行，`NRestarts=0`；两台 Agent 轮询持续返回 200。历史 `address already in use` 来自部署期间并存进程/反复人工重启，不是当前任务执行时持续宕机。
+- 新版 Agent 连续三次轮询失败才报告故障；前两次短抖动静默重试，最长 30 秒退避。恢复不会改变任务 owner、Stage affinity 或重复创建任务。
+- 一键 `.cmd`、安装脚本的 health/包下载、bootstrap 的认证模式检查均增加有界重试；安装撞到短暂发布窗口不再第一次失败，也不会把网络不通误报成缺 Token。
+- SDK 未传 `user` 时自动使用 `sdk-<sha256(login@hostname)[:24]>`，同一用户/电脑重启后稳定，不同调用机不再全部落到 Linux 服务账号。显式 `user` 与 Bearer 行为保持兼容。
+- SDK 新增 `download_windows_connector_for_run(config, destination)`：本地仿真自动选择 full，其余 Windows 读取/编译/上传选择 light，集成方不再配置内部部署模式。
+- 定向回归：SDK、发布脚本、Agent 策略、FastAPI 共 `84 passed`。
 
 ### 2026-08-05 远程 Linux 调用端与 Windows Connector 断线恢复（最新）
 

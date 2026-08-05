@@ -248,6 +248,8 @@ def _run_serve_v1(args) -> int:
         from core.config_assets import ConfigAssetStore
         from core.local_results import default_result_catalog
         from core.result_upload_service import ResultUploadService
+        from core.transfer_service import TransferError, TransferService, TransferStore
+        from core.config import load_cluster_execution_config
         uvicorn = importlib.import_module("uvicorn")
     except ImportError as exc:
         print(
@@ -290,7 +292,8 @@ def _run_serve_v1(args) -> int:
         # v2 uses one central control DB with owner-scoped rows.  A shared DB is
         # required so the Linux/Gateway executor can schedule every user's job
         # without discovering per-user database files from filesystem names.
-        service = ControlService(default_artifact_catalog_db_path().parent / "control_v1.db")
+        db_path = default_artifact_catalog_db_path().parent / "control_v1.db"
+        service = ControlService(db_path)
 
         def factory(_user: str) -> ControlService:
             return service
@@ -392,6 +395,30 @@ def _run_serve_v1(args) -> int:
     def result_upload_service_factory(_owner: str) -> ResultUploadService:
         return result_upload_service
 
+    # Direct-transfer roots are deployment authority.  Keep them out of the
+    # user YAML and construct one metadata-only TransferService for the shared
+    # Linux control DB.  A missing/invalid root is represented by an empty
+    # service so API submissions fail closed with the stable
+    # ``cluster_direct_transfer_unavailable`` action rather than selecting a
+    # legacy HTTP upload path.
+    transfer_db = db_path.parent / f"{db_path.stem}_transfers.db"
+    try:
+        cluster_deployment = dict(load_cluster_execution_config("run-config-v2").get("cluster") or {})
+        direct_deployment = dict(cluster_deployment.get("direct_transfer") or {})
+        transfer_service = TransferService(
+            TransferStore(transfer_db),
+            client_target_root=direct_deployment.get("client_target_root")
+            or cluster_deployment.get("client_target_root")
+            or cluster_deployment.get("direct_transfer_root")
+            or None,
+            server_probe_root=direct_deployment.get("server_probe_root")
+            or cluster_deployment.get("server_probe_root")
+            or cluster_deployment.get("probe_root"),
+        )
+    except (OSError, TypeError, ValueError, TransferError) as exc:
+        print(f"Direct-transfer deployment configuration unavailable: {exc}")
+        transfer_service = TransferService(TransferStore(transfer_db))
+
     api_service = ApiV1Service(
         control_service_factory=factory,
         source_resolution_provider=source_resolution_provider,
@@ -402,6 +429,7 @@ def _run_serve_v1(args) -> int:
         config_asset_store=config_asset_store,
         result_catalog=result_catalog,
         result_upload_service_factory=result_upload_service_factory,
+        transfer_service=transfer_service,
         project_names_provider=lambda: __import__("core.config", fromlist=["list_projects"]).list_projects(),
     )
     app_kwargs = {"api_service": api_service}
@@ -412,6 +440,24 @@ def _run_serve_v1(args) -> int:
     if not bool(getattr(args, "no_cluster_executor", False)):
         from core.cluster_runs import ClusterRunStore
         from core.cluster_stage_executor import ClusterStageContext, ClusterStageExecutor
+
+        def resolve_transfer_storage_ref(
+            storage_ref: str,
+            *,
+            owner: str,
+            expected_size: int = 0,
+            require_exists: bool = True,
+        ) -> Path:
+            """Resolve one owner-bound logical ref with metadata-only checks."""
+
+            resolved = transfer_service.resolve_storage_ref(
+                storage_ref,
+                owner=owner,
+                require_exists=require_exists,
+            )
+            if expected_size and int(resolved.stat().st_size) != int(expected_size):
+                raise ValueError("resolved storage object size does not match manifest")
+            return resolved
 
         cluster_stage_context = ClusterStageContext(
             runtime_catalog=runtime_bundle_catalog,
@@ -424,6 +470,8 @@ def _run_serve_v1(args) -> int:
                 "core.config", fromlist=["load_cluster_execution_config"]
             ).load_cluster_execution_config(project),
             result_catalog=result_catalog,
+            server_probe_root=transfer_service.server_probe_root,
+            storage_ref_resolver=resolve_transfer_storage_ref,
         )
         cluster_stage_executor = ClusterStageExecutor(service, cluster_stage_context)
         cluster_stage_executor.start()

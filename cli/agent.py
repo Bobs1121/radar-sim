@@ -291,21 +291,13 @@ def _run_task(
                 else _resolve_v2_run_config(dict(task.get("payload") or {}))
             )
             client.append_logs(task_id, ["[agent] local Selena/runtime evidence prepared"])
-            recognition["config_assets"] = _upload_resolution_config_assets(
-                dict(task.get("payload") or {}),
-                client=client,
-                owner=str(task.get("owner") or ""),
-            )
-            client.append_logs(task_id, ["[agent] local MatFilter/Adapter assets uploaded or reused"])
-            if resolution_source == "existing":
-                imported = client.import_existing_runtime_bundle(
-                    recognition,
-                    owner=str(task.get("owner") or ""),
-                )
-                recognition["registered_runtime_bundle"] = dict(
-                    imported.get("runtime_bundle") or {}
-                )
-                client.append_logs(task_id, ["[agent] Selena Runtime Bundle uploaded and registered"])
+            # Resource bodies are not accepted by the Linux control plane.
+            # Later role-specific stages request signed TransferPlans after
+            # this node-local recognition; no archive/config upload is done
+            # during resolve_spec.
+            recognition["config_assets"] = {}
+            recognition["registered_runtime_bundle"] = {}
+            client.append_logs(task_id, ["[agent] local MatFilter/Adapter/Selena resources reserved for direct transfer"])
             client.heartbeat(
                 agent_id,
                 status="busy",
@@ -857,52 +849,13 @@ def _create_v5_artifact_lease(
 
 
 def _upload_v5_artifact(client: "_ControlClient", payload: dict, *, owner: str = "") -> dict:
-    from core.agent_artifact_lease import AgentArtifactLeaseStore
-
-    lease_ref = str(payload.get("artifact_lease_ref") or "").strip()
-    runtime_bundle_lease_ref = str(payload.get("runtime_bundle_lease_ref") or "").strip()
-    evidence_ref = str(payload.get("build_evidence_ref") or "").strip()
-    if runtime_bundle_lease_ref:
-        from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
-
-        store = AgentRuntimeBundleLeaseStore()
-        lease = store.get(runtime_bundle_lease_ref, build_evidence_ref=evidence_ref)
-        result = client.upload_runtime_bundle(
-            evidence_ref,
-            lease.archive_path,
-            publish_path=str(payload.get("publish_path") or ""),
-            owner=owner,
-        )
-        runtime_bundle = dict(result.get("runtime_bundle") or {})
-        storage_ref = str(runtime_bundle.get("storage_ref") or "")
-        store.mark_uploaded(runtime_bundle_lease_ref, storage_ref)
-        return {
-            "runtime_bundle": runtime_bundle,
-            "storage_ref": storage_ref,
-            "upload_session_id": str(result.get("upload_session_id") or ""),
-            "reused": bool(result.get("reused", False)),
-            "build_evidence_ref": evidence_ref,
-        }
-    lease = AgentArtifactLeaseStore().get(
-        lease_ref,
-        build_evidence_ref=evidence_ref,
-    )
-    result = client.upload_artifact(
-        evidence_ref,
-        lease.artifact_path,
-        publish_path=str(payload.get("publish_path") or ""),
-        owner=owner,
-    )
-    artifact = dict(result.get("artifact") or {})
-    storage_ref = str(artifact.get("storage_ref") or "")
-    AgentArtifactLeaseStore().mark_uploaded(lease_ref, storage_ref)
-    return {
-        "artifact": artifact,
-        "storage_ref": storage_ref,
-        "upload_session_id": str(result.get("upload_session_id") or ""),
-        "reused": bool(result.get("reused", False)),
-        "build_evidence_ref": evidence_ref,
-    }
+    # Kept as a guard for third-party embedded callers that imported the old
+    # helper.  Sending Selena bytes to a Linux artifact upload endpoint would
+    # violate the control/data-plane contract; callers must execute a signed
+    # plan through ``_direct_transfer_v5_artifact`` instead.
+    error = RuntimeError("direct transfer plan is required; Linux artifact upload is disabled")
+    error.code = "cluster_direct_transfer_unavailable"  # type: ignore[attr-defined]
+    raise error
 
 
 def _run_v5_register_artifact(
@@ -912,7 +865,13 @@ def _run_v5_register_artifact(
     *,
     heartbeat_interval: float,
 ) -> int:
-    """Upload with a live heartbeat; never expose the Agent-local lease path."""
+    """Direct-copy a complete Selena bundle with a live heartbeat.
+
+    The task may carry a signed ``transfer_plan`` (the normal path) or enough
+    owner/job/stage metadata for the Agent to request one after validating its
+    local lease.  Legacy Linux artifact/runtime-bundle upload sessions are
+    deliberately rejected.
+    """
     task_id = str(task.get("task_id") or "")
     stop_event = threading.Event()
 
@@ -947,14 +906,16 @@ def _run_v5_register_artifact(
                 "reused": True,
             }
         else:
-            result = _upload_v5_artifact(
+            result = _direct_transfer_v5_artifact(
                 client,
-                payload,
+                agent_id,
+                task,
                 owner=str(task.get("owner") or ""),
+                cancel_check=lambda: False,
             )
         status = "succeeded"
         returncode = 0
-        client.append_logs(task_id, ["[agent] Selena artifact upload and registration completed"])
+        client.append_logs(task_id, ["[agent] complete Selena directory copied directly to Cluster data plane"])
     except Exception as exc:
         code = str(getattr(exc, "code", "") or "artifact_upload_failed")
         api_message = str(getattr(exc, "message", "") or "").strip()
@@ -965,7 +926,7 @@ def _run_v5_register_artifact(
         client.append_logs(
             task_id,
             [
-                f"[agent] artifact upload failed ({code}"
+                f"[agent] direct Selena transfer failed ({code}"
                 + (f": {api_message}" if api_message else "")
                 + "); retry is safe and resumable"
             ],
@@ -983,6 +944,181 @@ def _run_v5_register_artifact(
     return 0 if status == "succeeded" else 1
 
 
+def _direct_transfer_v5_artifact(
+    client: "_ControlClient",
+    agent_id: str,
+    task: dict,
+    *,
+    owner: str,
+    cancel_check,
+) -> dict:
+    """Resolve a local bundle/artifact lease and execute one signed plan."""
+    import tempfile
+
+    payload = dict(task.get("payload") or {})
+    source_root: Path
+    temporary_root: Path | None = None
+    runtime_lease_ref = str(payload.get("runtime_bundle_lease_ref") or "").strip()
+    artifact_lease_ref = str(payload.get("artifact_lease_ref") or "").strip()
+    evidence_ref = str(payload.get("build_evidence_ref") or "").strip()
+    runtime_manifest: dict = dict(payload.get("runtime_bundle") or {})
+    source_role = str(payload.get("source_role") or "runtime_bundle")
+
+    if runtime_lease_ref:
+        from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
+        from core.runtime_bundle_archive import extract_runtime_bundle_archive
+
+        lease = AgentRuntimeBundleLeaseStore().get(runtime_lease_ref, build_evidence_ref=evidence_ref)
+        temporary_root = Path(tempfile.mkdtemp(prefix="rsim-direct-runtime-"))
+        extract_runtime_bundle_archive(
+            lease.archive_path,
+            temporary_root / "bundle",
+            manifest=lease.manifest,
+            archive_checksum=lease.archive_checksum,
+        )
+        source_root = temporary_root / "bundle"
+        runtime_manifest = lease.manifest.to_dict()
+    elif artifact_lease_ref:
+        from core.agent_artifact_lease import AgentArtifactLeaseStore
+
+        lease = AgentArtifactLeaseStore().get(artifact_lease_ref, build_evidence_ref=evidence_ref)
+        source_root = lease.artifact_path.parent
+        source_role = "runtime_bundle"
+    else:
+        raw_source = str(payload.get("source_path") or payload.get("existing_path") or "").strip()
+        if not raw_source:
+            raise ValueError("direct Selena source lease is unavailable")
+        source_root = Path(raw_source).expanduser()
+        if source_root.is_file():
+            source_root = source_root.parent
+
+    try:
+        payload_plan = dict(payload.get("transfer_plan") or {})
+        if payload_plan:
+            plan = payload_plan
+        else:
+            items = _scan_direct_transfer_items(source_root, source_role=source_role)
+            plan = client.issue_transfer_plan(
+                owner=owner,
+                job_id=str(task.get("job_id") or ""),
+                stage_id=str(task.get("task_id") or task.get("stage_id") or ""),
+                mode="shared_copy",
+                source_role=source_role,
+                items=items,
+                source_fingerprints={"evidence_ref": evidence_ref} if evidence_ref else {},
+            )
+        manifest = client.execute_transfer_plan(
+            plan,
+            source_root=source_root,
+            owner=owner,
+            cancel_check=cancel_check,
+        )
+        return {
+            "runtime_bundle": runtime_manifest,
+            "transfer_id": manifest.transfer_id,
+            "transfer_status": "transfer_completed",
+            "manifest": manifest.to_dict(),
+            "storage_refs": [entry.storage_ref for entry in manifest.entries],
+            "build_evidence_ref": evidence_ref,
+            "agent_id": agent_id,
+        }
+    finally:
+        if temporary_root is not None:
+            import shutil
+
+            shutil.rmtree(temporary_root, ignore_errors=True)
+
+
+def _scan_direct_transfer_items(source_root: Path, *, source_role: str) -> list[dict]:
+    """Discover every regular file below a local source, preserving folders.
+
+    The signed plan needs stable size/mtime evidence, while the transfer
+    kernel computes each file's SHA-256 during the copy stream.  Leaving the
+    request checksum empty avoids a separate full-file read for large MF4 or
+    Selena binaries; an existing lease may still supply a checksum when one is
+    already available.
+    """
+
+    root = Path(source_root).expanduser().resolve(strict=True)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("direct transfer source root is unavailable")
+    items: list[dict] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().casefold()):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(root).as_posix()
+        stat = path.stat()
+        items.append(
+            {
+                "source_role": source_role,
+                "relative_path": relative,
+                "size": int(stat.st_size),
+                "checksum": "",
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+        )
+    if not items:
+        raise ValueError("direct transfer source directory is empty")
+    return items
+
+
+def _direct_transfer_asset(
+    client: "_ControlClient",
+    task: dict,
+    *,
+    owner: str,
+    source_role: str,
+    source_path: str,
+    cancel_check,
+) -> dict:
+    """Transfer one runtime/config asset independently of dataset bytes."""
+    path = Path(source_path).expanduser().resolve(strict=True)
+    if path.is_dir():
+        source_root = path
+        items = _scan_direct_transfer_items(source_root, source_role=source_role)
+    elif path.is_file() and not path.is_symlink():
+        source_root = path.parent
+        stat = path.stat()
+        items = [
+            {
+                "source_role": source_role,
+                "relative_path": path.name,
+                "size": int(stat.st_size),
+                "checksum": "",
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+        ]
+    else:
+        raise ValueError(f"authorized {source_role} source is unavailable")
+
+    payload = dict(task.get("payload") or {})
+    plan_value = payload.get("transfer_plans") or {}
+    plan = plan_value.get(source_role) if isinstance(plan_value, dict) else None
+    if not plan:
+        plan = client.issue_transfer_plan(
+            owner=owner,
+            job_id=str(task.get("job_id") or ""),
+            stage_id=str(task.get("task_id") or task.get("stage_id") or ""),
+            mode="shared_copy",
+            source_role=source_role,
+            items=items,
+            source_fingerprints={},
+        )
+    manifest = client.execute_transfer_plan(
+        plan,
+        source_root=source_root,
+        owner=owner,
+        cancel_check=cancel_check,
+    )
+    return {
+        "source_role": source_role,
+        "transfer_id": manifest.transfer_id,
+        "transfer_status": "transfer_completed",
+        "manifest": manifest.to_dict(),
+        "storage_refs": [entry.storage_ref for entry in manifest.entries],
+    }
+
+
 def _run_v5_prepare_data(
     client: "_ControlClient",
     agent_id: str,
@@ -990,7 +1126,7 @@ def _run_v5_prepare_data(
     *,
     heartbeat_interval: float,
 ) -> int:
-    """Authorize and discover local MF4s, uploading only for Cluster routes."""
+    """Authorize/discover local MF4s and direct-copy Cluster routes."""
     from core.agent_data_bindings import AgentDataBindingStore
     from core.agent_data_lease import AgentDataLeaseStore
     from core.datasets import DatasetDiscoveryCancelled
@@ -1017,6 +1153,7 @@ def _run_v5_prepare_data(
     returncode = -1
     local_route = str((task.get("payload") or {}).get("dispatch_scope") or "") == "local_data"
     result: dict = {"error": "local dataset preparation failed"}
+    direct_transfers: list[dict] = []
     try:
         response = client.heartbeat(agent_id, status="busy", current_task_id=task_id)
         if response.get("cancel_requested"):
@@ -1024,12 +1161,36 @@ def _run_v5_prepare_data(
         if cancel_event.is_set():
             raise DatasetDiscoveryCancelled("dataset preparation cancelled")
         payload = dict(task.get("payload") or {})
+        source_entries = [
+            item
+            for item in list(payload.get("source_paths") or [])
+            if isinstance(item, dict)
+            and str(item.get("source_role") or "").strip()
+            and str(item.get("path") or "").strip()
+        ]
+        dataset_sources = [
+            item for item in source_entries
+            if str(item.get("source_role") or "").strip() == "dataset"
+        ]
+        asset_sources = [
+            item for item in source_entries
+            if str(item.get("source_role") or "").strip() != "dataset"
+        ]
+        # Shared/Cluster-visible data may coexist with local Runtime XML or
+        # config assets. Only a local dataset role requires an AgentDataLease;
+        # discovering the shared path here would make the mixed-source Stage
+        # fail before its independent asset transfers.
+        has_dataset_plan = bool(payload.get("transfer_plan")) or bool(
+            isinstance(payload.get("transfer_plans"), dict)
+            and payload.get("transfer_plans", {}).get("dataset")
+        )
+        needs_dataset_lease = bool(local_route or dataset_sources or has_dataset_plan)
         bindings = AgentDataBindingStore()
         # One-click Windows deployment has no separate "register data root"
         # screen.  The control plane assigns this only for a syntactically
         # Windows-local path; authorize that submitted path on this Agent once
         # and retain the resulting durable binding for later tasks.
-        if payload.get("auto_configure") is True and not str(payload.get("data_binding_id") or ""):
+        if needs_dataset_lease and payload.get("auto_configure") is True and not str(payload.get("data_binding_id") or ""):
             project = str(payload.get("project") or "").strip()
             data_path = str(payload.get("data_path") or "").strip()
             candidate = Path(data_path).expanduser()
@@ -1045,19 +1206,54 @@ def _run_v5_prepare_data(
                 metadata={"data_bindings": _public_data_bindings()},
             )
             client.append_logs(task_id, ["[agent] submitted local data path authorized for this Windows computer"])
-        leases = AgentDataLeaseStore()
-        lease = leases.create(
-            payload,
-            bindings,
-            stage_id=task_id,
-            attempt=attempt,
-            # Local simulation consumes the immutable Agent lease directly.
-            # Path/size/mtime evidence is sufficient there; Cluster upload
-            # still requires content checksums for integrity and resume.
-            checksum=not local_route,
-            cancel_requested=cancel_event.is_set,
+        leases = AgentDataLeaseStore() if needs_dataset_lease else None
+        lease = (
+            leases.create(
+                payload,
+                bindings,
+                stage_id=task_id,
+                attempt=attempt,
+                # The direct-transfer kernel computes SHA-256 while copying
+                # each file. Discovery records only size/mtime so large MF4
+                # inputs are not read twice before transfer.
+                checksum=False,
+                cancel_requested=cancel_event.is_set,
+            )
+            if leases is not None
+            else None
         )
-        if local_route:
+        if lease is None:
+            # No local dataset role was advertised. Transfer each local
+            # Runtime/config resource independently and leave shared data
+            # zero-copy for the Cluster-side resolver.
+            owner = str(task.get("owner") or "")
+            for source in asset_sources:
+                role = str(source.get("source_role") or "").strip()
+                raw_path = str(source.get("path") or "").strip()
+                direct_transfers.append(
+                    _direct_transfer_asset(
+                        client,
+                        task,
+                        owner=owner,
+                        source_role=role,
+                        source_path=raw_path,
+                        cancel_check=cancel_event.is_set,
+                    )
+                )
+            result = {
+                "source_kind": "agent_direct_transfer",
+                "accessibility": "cluster",
+                "transfers": direct_transfers,
+                "transfer_status": "transfer_completed" if direct_transfers else "transfer_skipped_shared",
+                "evidence_ref": evidence_ref,
+            }
+            status = "succeeded"
+            returncode = 0
+            client.append_logs(
+                task_id,
+                ["[agent] local Runtime/config assets copied directly; shared dataset remains zero-copy"],
+            )
+        elif local_route:
             import hashlib
             from core.datasets import dataset_fingerprint
 
@@ -1082,33 +1278,91 @@ def _run_v5_prepare_data(
             returncode = 0
             client.append_logs(task_id, ["[agent] local data lease prepared for Windows-full simulation"])
         else:
+            # Cluster input is copied directly from the authorized Windows
+            # lease to the signed data-plane root.  The old
+            # ``agent-dataset-uploads`` HTTP session is intentionally not a
+            # fallback: a missing direct-transfer deployment is a stable
+            # needs-input error, never a Linux staging upload.
+            owner = str(task.get("owner") or "")
             client.append_logs(
                 task_id,
-                [f"[agent] discovered {len(lease.files)} MF4 input(s); starting resumable upload"],
+                [f"[agent] discovered {len(lease.files)} MF4 input(s); requesting direct-transfer plan"],
             )
-            uploaded = client.upload_data_lease(
-                evidence_ref,
-                agent_id=agent_id,
-                lease=lease,
-                task_id=task_id,
-                owner=str(task.get("owner") or ""),
-                cancel_requested=cancel_event.is_set,
+            items = [
+                {
+                    "source_role": "dataset",
+                    "relative_path": str(item.relative_path).replace("\\", "/"),
+                    "size": int(item.size),
+                    # Hash once while streaming to the signed target; the
+                    # AgentDataLease itself is metadata-only.
+                    "checksum": "",
+                    "mtime_ns": int(item.mtime_ns),
+                }
+                for item in lease.files
+            ]
+            payload_plan = dict(payload.get("transfer_plan") or {})
+            plan = payload_plan or client.issue_transfer_plan(
+                owner=owner,
+                job_id=str(task.get("job_id") or ""),
+                stage_id=task_id,
+                mode="shared_copy",
+                source_role="dataset",
+                items=items,
+                source_fingerprints={"evidence_ref": evidence_ref},
             )
-            dataset = dict(uploaded.get("dataset") or {})
-            dataset_id = str(dataset.get("id") or "")
-            leases.mark_uploaded(lease.lease_id, dataset_id)
+            manifest = client.execute_transfer_plan(
+                plan,
+                source_root=lease.source_path if lease.source_path.is_dir() else lease.source_path.parent,
+                owner=owner,
+                cancel_check=cancel_event.is_set,
+            )
+            import hashlib
+            from core.datasets import dataset_fingerprint
+
+            fingerprint = dataset_fingerprint(lease.files)
+            dataset_id = "dataset:sha256:" + hashlib.sha256(
+                "\0".join((lease.project, lease.binding_id, fingerprint)).encode("utf-8")
+            ).hexdigest()
+            entries = [entry.to_dict() for entry in manifest.entries]
             result = {
-                "dataset": dataset,
+                "dataset": {
+                    "id": dataset_id,
+                    "source_kind": "agent_direct_transfer",
+                    "accessibility": "cluster",
+                    "file_count": len(entries),
+                    "total_size": manifest.total_bytes,
+                    "source_fingerprint": fingerprint,
+                    "storage_refs": [entry.storage_ref for entry in manifest.entries],
+                },
                 "dataset_id": dataset_id,
-                "data_path": str(uploaded.get("data_path") or ""),
                 "data_lease_ref": lease.lease_id,
-                "upload_session_id": str(uploaded.get("upload_session_id") or ""),
-                "reused": bool(uploaded.get("reused", False)),
+                "transfer_id": manifest.transfer_id,
+                "transfer_status": "transfer_completed",
+                "manifest": manifest.to_dict(),
                 "evidence_ref": evidence_ref,
             }
             status = "succeeded"
             returncode = 0
-            client.append_logs(task_id, ["[agent] local dataset upload completed; Agent may now disconnect"])
+            client.append_logs(task_id, ["[agent] local dataset copied directly to Cluster data plane; Agent may now disconnect"])
+            # Runtime XML, MatFilter and Adapter are independent resources.
+            # They share the Stage only for scheduling; each gets its own
+            # owner/job/stage-bound plan and manifest.
+            for source in asset_sources:
+                role = str(source.get("source_role") or "").strip()
+                raw_path = str(source.get("path") or "").strip()
+                if not role or not raw_path:
+                    continue
+                asset_manifest = _direct_transfer_asset(
+                    client,
+                    task,
+                    owner=owner,
+                    source_role=role,
+                    source_path=raw_path,
+                    cancel_check=cancel_event.is_set,
+                )
+                direct_transfers.append(asset_manifest)
+            if direct_transfers:
+                result["transfers"] = direct_transfers
     except DatasetDiscoveryCancelled:
         status = "cancelled"
         returncode = 130
@@ -1127,7 +1381,17 @@ def _run_v5_prepare_data(
             }
             client.append_logs(task_id, [f"[agent] {exc.detail}"])
         else:
-            client.append_logs(task_id, ["[agent] local dataset upload failed; retry is resumable"])
+            code = str(getattr(exc, "code", "") or "direct_transfer_failed")
+            detail = str(getattr(exc, "message", "") or "").strip()
+            result = {"error": detail or "direct dataset transfer failed", "code": code}
+            client.append_logs(
+                task_id,
+                [
+                    "[agent] direct dataset transfer failed"
+                    + (f" ({code}: {detail})" if detail else f" ({code})")
+                    + "; retry is resumable"
+                ],
+            )
     finally:
         stop_event.set()
         thread.join(timeout=max(1.0, heartbeat_interval))
@@ -1917,6 +2181,12 @@ def _quote_command(command: list[str]) -> str:
     return " ".join(parts)
 
 
+def _raw_sha256(value: object) -> str:
+    """Normalize ``sha256:<hex>`` and raw digest evidence for TransferPlan."""
+    text = str(value or "").strip().lower()
+    return text.split(":", 1)[1] if text.startswith("sha256:") else text
+
+
 def _child_env_utf8(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """Return os.environ copy with UTF-8 IO encoding forced for the child.
 
@@ -2005,6 +2275,130 @@ class _ControlClient:
                 "message": str(message or ""),
             },
         )
+
+    # ------------------------------------------------------------------
+    # Metadata-only direct-transfer adapter
+    # ------------------------------------------------------------------
+    # These calls carry plan/progress/manifest metadata only.  File bytes are
+    # copied by ``core.direct_transfer`` from an authorized local source to
+    # the signed ``client_target_root`` returned by the control plane.
+
+    def issue_transfer_plan(
+        self,
+        *,
+        owner: str,
+        job_id: str,
+        stage_id: str,
+        mode: str = "shared_copy",
+        source_role: str,
+        items: list[dict],
+        source_fingerprints: dict | None = None,
+        ttl_seconds: float | None = None,
+    ) -> dict:
+        payload = {
+            "source_role": str(source_role),
+            "items": [dict(item) for item in items],
+            "source_fingerprints": dict(source_fingerprints or {}),
+        }
+        return self._transfer_request(
+            "POST",
+            f"/api/v1/jobs/{urllib.parse.quote(str(job_id), safe='')}/stages/{urllib.parse.quote(str(stage_id), safe='')}/transfers",
+            owner=owner,
+            payload=payload,
+        )
+
+    def get_transfer_plan(self, transfer_id: str, *, owner: str = "") -> dict:
+        return self._transfer_request(
+            "GET",
+            f"/api/v1/transfers/{urllib.parse.quote(str(transfer_id), safe='')}",
+            owner=owner,
+        )
+
+    def report_transfer_progress(self, progress, *, owner: str = "") -> dict:
+        value = progress.to_dict() if hasattr(progress, "to_dict") else dict(progress)
+        transfer_id = str(value.get("transfer_id") or "")
+        if not transfer_id:
+            raise ValueError("transfer progress transfer_id is required")
+        payload = {
+            "bytes_transferred": int(value.get("bytes_transferred") or 0),
+            "bytes_total": int(value.get("bytes_total") or 0),
+            "current_file": str(value.get("current_file") or ""),
+            "status": str(value.get("status") or "in_progress"),
+        }
+        return self._transfer_request(
+            "POST",
+            f"/api/v1/transfers/{urllib.parse.quote(transfer_id, safe='')}/progress",
+            owner=owner,
+            payload=payload,
+        )
+
+    def report_transfer_manifest(self, manifest, *, owner: str = "") -> dict:
+        value = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest)
+        transfer_id = str(value.get("transfer_id") or "")
+        if not transfer_id:
+            raise ValueError("transfer manifest transfer_id is required")
+        payload = dict(value)
+        payload.pop("transfer_id", None)
+        payload.pop("owner", None)
+        return self._transfer_request(
+            "POST",
+            f"/api/v1/transfers/{urllib.parse.quote(transfer_id, safe='')}/manifest",
+            owner=owner,
+            payload=payload,
+        )
+
+    def cancel_transfer(self, transfer_id: str, *, owner: str = "") -> dict:
+        return self._transfer_request(
+            "POST",
+            f"/api/v1/transfers/{urllib.parse.quote(str(transfer_id), safe='')}/cancel",
+            owner=owner,
+        )
+
+    def execute_transfer_plan(
+        self,
+        plan,
+        *,
+        source_root: str | Path,
+        owner: str = "",
+        cancel_check=None,
+        progress_callback=None,
+        chunk_size: int = 1024 * 1024,
+        allow_local_test: bool = False,
+    ):
+        """Copy one signed plan directly and publish only metadata."""
+        from core.direct_transfer import TransferPlan, execute_transfer
+        from core.transfer_service import TransferProgress
+
+        signed = plan if isinstance(plan, TransferPlan) else TransferPlan.from_dict(dict(plan.get("plan") or plan))
+        per_file: dict[str, int] = {}
+        total = sum(item.size for item in signed.items)
+
+        def report(relative_path: str, processed: int, _file_total: int) -> None:
+            per_file[relative_path] = int(processed)
+            progress = TransferProgress(
+                signed.transfer_id,
+                sum(per_file.values()),
+                total,
+                relative_path,
+                updated_at=time.time(),
+                owner_scope=signed.owner_scope,
+            )
+            self.report_transfer_progress(progress, owner=owner)
+            if progress_callback is not None:
+                progress_callback(progress)
+
+        manifest = execute_transfer(
+            signed,
+            Path(source_root).expanduser(),
+            signed.items,
+            client_target_root=signed.client_target_root,
+            allow_local_test=bool(allow_local_test),
+            cancel_callback=cancel_check,
+            progress_callback=report,
+            chunk_size=int(chunk_size),
+        )
+        self.report_transfer_manifest(manifest, owner=owner)
+        return manifest
 
     def submit_result(self, task_id: str, *, agent_id: str, status: str, returncode: int, result: dict) -> dict:
         return self._request(
@@ -2207,8 +2601,11 @@ class _ControlClient:
         base_url = self._api_url or self._server_url
         endpoint = "/api/v1/runtime-bundles/" + urllib.parse.quote(bundle_id, safe="") + "/download"
         headers = {"Accept": "application/octet-stream"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
+        # Prefer a user token for owner-scoped immutable downloads when one is
+        # available; otherwise use the authenticated Agent token.
+        auth_token = self._api_token or self._token
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
         request = urllib.request.Request(base_url + endpoint, headers=headers, method="GET")
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response, temporary.open("xb") as writer:
@@ -2243,90 +2640,64 @@ class _ControlClient:
         owner: str = "",
         cancel_requested=None,
     ) -> dict:
-        if not self._api_url:
-            raise ValueError("Agent v1 api-url is required for dataset upload")
+        # Source-compatible name retained for embedded callers.  The method
+        # now executes a metadata-only TransferPlan; it never opens a Linux
+        # dataset upload session or sends a file body over HTTP.
         from core.datasets import DatasetDiscoveryCancelled
         from core.user import current_user
 
         cancelled = cancel_requested or (lambda: False)
         if cancelled():
-            raise DatasetDiscoveryCancelled("dataset upload cancelled")
-        manifest = [
+            raise DatasetDiscoveryCancelled("dataset transfer cancelled")
+        items = [
             {
+                "source_role": "dataset",
                 "relative_path": item.relative_path,
                 "size": item.size,
-                "checksum": item.checksum,
+                "checksum": _raw_sha256(item.checksum),
+                "mtime_ns": int(item.mtime_ns),
             }
             for item in lease.files
         ]
         source = lease.source_path
         root = source if source.is_dir() else source.parent
         transfer_owner = str(owner or current_user())
-        # Keep the light Agent independent of the optional public SDK stack.
-        # The SDK imports Pydantic/httpx; local data upload only needs the
-        # small JSON + resumable-byte HTTP contract implemented below.
-        session = self._dataset_request(
-            "POST",
-            "/api/v1/agent-dataset-uploads",
+        plan = self.issue_transfer_plan(
             owner=transfer_owner,
-            token=self._token,
-            agent_id=agent_id,
-            payload={"project": lease.project, "files": manifest, "evidence_ref": evidence_ref},
+            job_id=task_id.split(":", 1)[0] or task_id,
+            stage_id=task_id,
+            mode="shared_copy",
+            source_role="dataset",
+            items=items,
+            source_fingerprints={"evidence_ref": evidence_ref},
         )
-        current = session
-        session_id = str(session.get("session_id") or "")
-        chunk_size = int(session.get("chunk_size") or 0)
-        files = list(session.get("files") or [])
-        if not session_id or chunk_size <= 0 or not files:
-            raise ValueError("dataset upload session is incomplete")
-        total = len(files)
-        for index, upload_file in enumerate(files, start=1):
-            if cancelled():
-                raise DatasetDiscoveryCancelled("dataset upload cancelled")
-            relative_path = str(upload_file.get("relative_path") or "")
-            file_id = str(upload_file.get("file_id") or "")
-            expected_size = int(upload_file.get("expected_size") or 0)
-            offset = int(upload_file.get("received_bytes") or 0)
-            if not file_id or expected_size < 0:
-                raise ValueError("dataset upload file evidence is incomplete")
-            path = source if source.is_file() else root.joinpath(*Path(relative_path).parts)
-            with path.open("rb") as handle:
-                handle.seek(offset)
-                while offset < expected_size:
-                    if cancelled():
-                        raise DatasetDiscoveryCancelled("dataset upload cancelled")
-                    data = handle.read(min(chunk_size, expected_size - offset))
-                    if not data:
-                        raise ValueError("leased data file ended during upload")
-                    current = self._dataset_request(
-                        "PATCH",
-                        f"/api/v1/dataset-uploads/{urllib.parse.quote(session_id, safe='')}/files/{urllib.parse.quote(file_id, safe='')}",
-                        owner=transfer_owner,
-                        token=self._api_token,
-                        upload_offset=offset,
-                        data=data,
-                    )
-                    state = next(
-                        item for item in (current.get("files") or [])
-                        if str(item.get("file_id") or "") == file_id
-                    )
-                    offset = int(state.get("received_bytes") or 0)
-            if cancelled():
-                raise DatasetDiscoveryCancelled("dataset upload cancelled")
-            self.append_logs(task_id, [f"[agent] uploaded MF4 {index}/{total}"])
-        if cancelled():
-            raise DatasetDiscoveryCancelled("dataset upload cancelled")
-        uploaded = self._dataset_request(
-            "POST",
-            f"/api/v1/dataset-uploads/{urllib.parse.quote(session_id, safe='')}/finalize",
+        manifest = self.execute_transfer_plan(
+            plan,
+            source_root=root,
             owner=transfer_owner,
-            token=self._api_token,
+            cancel_check=cancelled,
         )
+        import hashlib
+        from core.datasets import dataset_fingerprint
+
+        fingerprint = dataset_fingerprint(lease.files)
+        dataset_id = "dataset:sha256:" + hashlib.sha256(
+            "\0".join((lease.project, lease.binding_id, fingerprint)).encode("utf-8")
+        ).hexdigest()
         return {
-            "dataset": dict(uploaded.get("dataset") or {}),
-            "data_path": str(uploaded.get("data_path") or ""),
-            "upload_session_id": str((uploaded.get("session") or {}).get("session_id") or session_id),
-            "reused": bool(uploaded.get("reused", False)),
+            "dataset": {
+                "id": dataset_id,
+                "source_kind": "agent_direct_transfer",
+                "accessibility": "cluster",
+                "file_count": len(manifest.entries),
+                "total_size": manifest.total_bytes,
+                "source_fingerprint": fingerprint,
+                "storage_refs": [entry.storage_ref for entry in manifest.entries],
+            },
+            "dataset_id": dataset_id,
+            "transfer_id": manifest.transfer_id,
+            "transfer_status": "transfer_completed",
+            "manifest": manifest.to_dict(),
         }
 
     def _dataset_request(
@@ -2362,7 +2733,63 @@ class _ControlClient:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"{method} {path} failed: {exc.code} {body_text}") from exc
+            try:
+                envelope = json.loads(body_text)
+            except (TypeError, ValueError):
+                envelope = {}
+            error = RuntimeError(
+                f"{method} {path} failed: {exc.code} "
+                + str(envelope.get("message") or body_text)
+            )
+            error.code = str(envelope.get("code") or "transfer_request_failed")  # type: ignore[attr-defined]
+            error.message = str(envelope.get("message") or body_text)  # type: ignore[attr-defined]
+            raise error from exc
+
+    def _transfer_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        owner: str = "",
+        payload: dict | None = None,
+    ) -> dict:
+        """Call metadata-only transfer endpoints with the Agent identity."""
+        from core.user import current_user
+
+        headers = {
+            "Accept": "application/json",
+            "X-Rsim-User": str(owner or current_user()),
+        }
+        auth_token = self._api_token or self._token
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        body = None
+        if payload is not None:
+            body = json.dumps(payload, sort_keys=True).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            self._server_url + path,
+            data=body,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                raw = response.read()
+                return json.loads(raw.decode("utf-8")) if raw else {}
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            try:
+                envelope = json.loads(body_text)
+            except (TypeError, ValueError):
+                envelope = {}
+            error = RuntimeError(
+                f"{method} {path} failed: {exc.code} "
+                + str(envelope.get("message") or body_text)
+            )
+            error.code = str(envelope.get("code") or "transfer_request_failed")  # type: ignore[attr-defined]
+            error.message = str(envelope.get("message") or body_text)  # type: ignore[attr-defined]
+            raise error from exc
 
     def _api_binary_request(
         self,

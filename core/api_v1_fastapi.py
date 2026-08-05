@@ -35,6 +35,7 @@ from core.windows_connector import (
     render_installer,
     render_launcher,
 )
+from core.transfer_service import TransferService
 
 
 class SubmitJobRequest(BaseModel):
@@ -184,6 +185,68 @@ class AgentResultRequest(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
 
 
+class TransferPlanItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Clients may omit the per-item role when every item belongs to the
+    # top-level source_role; ApiV1Service binds the effective role server-side.
+    source_role: str = Field(default="", max_length=64)
+    relative_path: str = Field(min_length=1, max_length=4096)
+    size: int = Field(ge=0)
+    checksum: str = Field(default="", max_length=128)
+    sha256: str = Field(default="", max_length=128)
+    mtime_ns: int | None = Field(default=None, ge=0)
+
+
+class CreateTransferPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_role: str = Field(min_length=1, max_length=64)
+    items: list[TransferPlanItemRequest] = Field(min_length=1)
+    source_fingerprints: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class TransferProgressRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transfer_id: str = Field(default="", max_length=256)
+    owner_scope: str = Field(default="", max_length=256)
+    bytes_transferred: int = Field(ge=0)
+    bytes_total: int = Field(ge=0)
+    current_file: str = Field(default="", max_length=4096)
+    status: str = Field(default="in_progress", pattern=r"^in_progress$")
+    updated_at: float = Field(default=0, ge=0)
+
+
+class TransferManifestEntryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relative_path: str = Field(min_length=1, max_length=4096)
+    size: int = Field(ge=0)
+    sha256: str = Field(default="", max_length=128)
+    checksum: str = Field(default="", max_length=128)
+    storage_ref: str = Field(default="", max_length=1024)
+    target_logical_ref: str = Field(default="", max_length=1024)
+    mtime_ns: int = Field(default=0, ge=0)
+    status: str = Field(default="completed", pattern=r"^(completed|skipped)$")
+    result: str = Field(default="", pattern=r"^(?:|ok|skipped)$")
+    started_at: float = Field(default=0, ge=0)
+    completed_at: float = Field(default=0, ge=0)
+
+
+class TransferManifestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transfer_id: str = Field(default="", max_length=256)
+    owner_scope: str = Field(default="", max_length=256)
+    job_id: str = Field(default="", max_length=512)
+    entries: list[TransferManifestEntryRequest] = Field(min_length=1)
+    total_bytes: int | None = Field(default=None, ge=0)
+    started_at: float = Field(default=0, ge=0)
+    completed_at: float = Field(default=0, ge=0)
+    status: str = Field(default="completed", pattern=r"^completed$")
+
+
 def create_app(
     *,
     control_service_factory: Callable[[str], ControlService] | None = None,
@@ -191,9 +254,13 @@ def create_app(
     web_root: str | Path | None = None,
     authenticator: HttpTokenAuthenticator | None = None,
     windows_connector_bundle: str | Path | None = None,
+    transfer_service: TransferService | None = None,
 ) -> FastAPI:
     """Create the FastAPI app for v5 `/api/v1` routes."""
-    service = api_service or ApiV1Service(control_service_factory=control_service_factory)
+    service = api_service or ApiV1Service(
+        control_service_factory=control_service_factory,
+        transfer_service=transfer_service,
+    )
     app = FastAPI(title="radar-sim API", version="v1")
 
     @app.middleware("http")
@@ -615,6 +682,62 @@ def create_app(
     @app.get("/api/v1/jobs/{job_id}/manifest")
     def manifest(request: Request, job_id: str):
         return service.manifest(owner(request), job_id)
+
+    @app.post("/api/v1/jobs/{job_id}/stages/{stage_id}/transfers", status_code=201)
+    def issue_transfer_plan(
+        request: Request,
+        job_id: str,
+        stage_id: str,
+        body: CreateTransferPlanRequest,
+    ):
+        # Job/stage/root/mode are bound by the service.  The body carries only
+        # metadata and cannot self-select an owner or physical destination.
+        return service.issue_transfer_plan(
+            user_or_agent_owner(request),
+            job_id=job_id,
+            stage_id=stage_id,
+            source_role=body.source_role,
+            items=[item.model_dump() for item in body.items],
+            source_fingerprints=body.source_fingerprints,
+        )
+
+    @app.get("/api/v1/jobs/{job_id}/transfers")
+    def job_transfer_status(request: Request, job_id: str):
+        return service.get_job_transfer_status(owner(request), job_id)
+
+    @app.get("/api/v1/transfers/{transfer_id}")
+    def get_transfer_plan(request: Request, transfer_id: str):
+        return service.get_transfer_plan(user_or_agent_owner(request), transfer_id)
+
+    @app.post("/api/v1/transfers/{transfer_id}/progress")
+    def report_transfer_progress(request: Request, transfer_id: str, body: TransferProgressRequest):
+        payload = body.model_dump()
+        supplied = str(payload.get("transfer_id") or "")
+        if supplied and supplied != transfer_id:
+            raise ApiV1Error(
+                "transfer_scope_mismatch",
+                "transfer_id does not match the route",
+                status_code=403,
+            )
+        payload["transfer_id"] = transfer_id
+        return service.report_transfer_progress(user_or_agent_owner(request), payload)
+
+    @app.post("/api/v1/transfers/{transfer_id}/manifest")
+    def receive_transfer_manifest(request: Request, transfer_id: str, body: TransferManifestRequest):
+        payload = body.model_dump()
+        supplied = str(payload.get("transfer_id") or "")
+        if supplied and supplied != transfer_id:
+            raise ApiV1Error(
+                "transfer_scope_mismatch",
+                "transfer_id does not match the route",
+                status_code=403,
+            )
+        payload["transfer_id"] = transfer_id
+        return service.receive_transfer_manifest(user_or_agent_owner(request), transfer_id, payload)
+
+    @app.post("/api/v1/transfers/{transfer_id}/cancel")
+    def cancel_transfer(request: Request, transfer_id: str):
+        return service.cancel_transfer(user_or_agent_owner(request), transfer_id)
 
     @app.get("/api/v1/jobs/{job_id}/diagnosis")
     def diagnosis(request: Request, job_id: str):

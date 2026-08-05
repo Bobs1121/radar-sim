@@ -750,14 +750,17 @@ def test_existing_bundle_local_data_path_creates_agent_upload_stage(tmp_path):
     )
     stage = next(item for item in control.get_job(job["id"])["stages"] if item["stage_type"] == "prepare_data")
     assert stage["required_agent_id"] == ""
-    assert stage["payload"]["dispatch_scope"] == "data_upload"
+    assert stage["status"] == "blocked"
+    assert stage["payload"]["dispatch_scope"] == "direct_transfer"
+    assert stage["payload"].get("dispatch_scope") != "data_upload"
+    assert stage["error"]["code"] == "cluster_direct_transfer_unavailable"
+    assert stage["payload"]["transfer_status"] == "cluster_direct_transfer_unavailable"
     assert stage["payload"]["project"] == "bydod25"
     assert stage["payload"]["data_path"] == "D:/measurements/local"
 
-    # The existing Selena Bundle is already shared, but the user data is not.
-    # A newly installed one-click Windows Agent has no data-root registration
-    # yet; it must still receive this Stage and authorize the submitted local
-    # path itself, rather than allowing a Linux route to claim it.
+    # Without a deployment TransferService, a Connector cannot obtain a
+    # signed Cluster target.  It must not claim the blocked Stage or fall back
+    # to the legacy Linux upload namespace.
     control.register_agent(
         "one-click",
         agent_id="windows-one-click",
@@ -770,12 +773,7 @@ def test_existing_bundle_local_data_path_creates_agent_upload_stage(tmp_path):
         },
     )
     bound = control.bind_pending_data_stage("windows-one-click")
-    assert bound is not None
-    assert bound["assigned_agent_id"] == "windows-one-click"
-    assert bound["required_agent_id"] == "windows-one-click"
-    assert bound["payload"]["dispatch_scope"] == "data_upload"
-    assert bound["payload"]["auto_configure"] is True
-    assert "data_binding_id" not in bound["payload"]
+    assert bound is None
 
 
 def test_submit_get_cancel_and_manifest_are_logical_jobs(tmp_path):

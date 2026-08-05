@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
+import getpass
+import ipaddress
 import json
 import hashlib
+import socket
 import ssl
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterator
+from urllib.parse import urlsplit
 
 import httpx
 
+from core.direct_transfer import (
+    TransferManifest,
+    TransferPlan,
+    execute_transfer,
+)
+from core.transfer_service import TransferProgress
 from core.spec import SimulationSpec
 from core.user_config import UserRunConfig
 from core.data import iter_mf4_inputs
@@ -50,12 +61,18 @@ class RadarSimClient:
         verify: bool | ssl.SSLContext = True,
         transport: httpx.BaseTransport | None = None,
         client: httpx.Client | None = None,
-        trust_env: bool = True,
+        trust_env: bool | None = None,
     ) -> None:
         self._owns_client = client is None
         merged_headers = dict(headers or {})
-        if user:
-            merged_headers.setdefault(USER_HEADER, user)
+        # A no-auth Linux deployment still needs deterministic caller
+        # isolation.  Without a header FastAPI falls back to the *server* OS
+        # account, which merged every SDK caller into the same job/Agent
+        # scope.  Keep the generated value stable for one OS user + machine so
+        # reconnecting an SDK-downloaded Windows connector also keeps working
+        # after process and machine restarts.
+        if not any(str(key).casefold() == USER_HEADER.casefold() for key in merged_headers):
+            merged_headers[USER_HEADER] = str(user or _default_sdk_user())
         if token:
             merged_headers.setdefault("Authorization", f"Bearer {token}")
         default_timeout = httpx.Timeout(timeout=60.0, connect=5.0, read=60.0, write=30.0, pool=5.0)
@@ -64,13 +81,16 @@ class RadarSimClient:
                 client.headers.update(merged_headers)
             self._client = client
         else:
+            effective_trust_env = (
+                _trust_environment_proxy(base_url) if trust_env is None else bool(trust_env)
+            )
             self._client = httpx.Client(
                 base_url=base_url.rstrip("/"),
                 headers=merged_headers,
                 timeout=timeout or default_timeout,
                 verify=verify,
                 transport=transport,
-                trust_env=trust_env,
+                trust_env=effective_trust_env,
             )
 
     def health(self) -> dict[str, Any]:
@@ -115,6 +135,21 @@ class RadarSimClient:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def download_windows_connector_for_run(
+        self,
+        config: UserRunConfig | dict[str, Any],
+        destination: str | Path,
+    ) -> Path:
+        """Download the correct connector mode for one run configuration.
+
+        Local simulation needs the full Windows capability.  Build/upload plus
+        Cluster simulation only needs the light capability.  Callers therefore
+        do not need to understand the internal full/light product vocabulary.
+        """
+        parsed = UserRunConfig.from_dict(self._run_config_payload(config))
+        mode = "full" if parsed.simulation.target == "local" else "light"
+        return self.download_windows_connector(destination, mode=mode)
+
     def validate(self, spec: SimulationSpec | dict[str, Any]) -> ValidationResult:
         return ValidationResult.from_dict(self._request("POST", "/api/v1/validate", json=self._spec_payload(spec)))
 
@@ -130,11 +165,15 @@ class RadarSimClient:
         *,
         dry_run: bool = False,
         idempotency_key: str | None = None,
+        auto_transfer: bool = True,
+        allow_local_test: bool = False,
+        progress_callback: Callable[[TransferProgress], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> Job:
         parsed = UserRunConfig.from_dict(self._run_config_payload(config))
         payload, prepared_bundle_id = self._prepare_user_run(parsed, dry_run=bool(dry_run))
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
-        return Job.from_dict(
+        job = Job.from_dict(
             self._request(
                 "POST",
                 "/api/v1/run-jobs",
@@ -146,12 +185,305 @@ class RadarSimClient:
                 headers=headers,
             )
         )
+        if not dry_run and auto_transfer:
+            return self._auto_prepare_direct_transfers(
+                job,
+                parsed,
+                allow_local_test=bool(allow_local_test),
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+            )
+        return job
+
+    def submit_and_prepare(
+        self,
+        config: UserRunConfig | dict[str, Any],
+        *,
+        dry_run: bool = False,
+        idempotency_key: str | None = None,
+        allow_local_test: bool = False,
+        progress_callback: Callable[[TransferProgress], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> Job:
+        """Submit a run and, when possible, execute its local direct transfers.
+
+        ``submit_run`` already enables this behavior by default.  The named
+        method is provided for callers that want to make the data-plane side
+        effect explicit at the call site.
+        """
+        return self.submit_run(
+            config,
+            dry_run=dry_run,
+            idempotency_key=idempotency_key,
+            auto_transfer=True,
+            allow_local_test=allow_local_test,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
+
+    def _auto_prepare_direct_transfers(
+        self,
+        job: Job,
+        config: UserRunConfig,
+        *,
+        allow_local_test: bool,
+        progress_callback: Callable[[TransferProgress], None] | None,
+        cancel_check: Callable[[], bool] | None,
+    ) -> Job:
+        """Execute readable local inputs for a persisted direct-transfer stage.
+
+        The public Job response intentionally hides source paths.  The SDK
+        already owns the parsed YAML, so it derives the same role-to-path
+        mapping locally, sends only metadata to the control plane, and copies
+        bytes directly to each signed target root.  A missing Connector or an
+        inaccessible target is represented as a path-free ``needs-agent``
+        waiting hint; no HTTP request containing file bytes is attempted.
+        """
+
+        selected_target = str(
+            ((job.resolved_spec.get("decisions") or {}).get("execution") or {}).get("selected_target")
+            or config.simulation.target
+            or ""
+        ).strip().lower()
+        if selected_target != "cluster":
+            return job
+        stage = next(
+            (
+                item
+                for item in job.stages
+                if str(item.get("stage_type") or item.get("task_type") or "") == "prepare_data"
+            ),
+            None,
+        )
+        if not stage:
+            return job
+        stage_status = str(stage.get("status") or "").strip().lower()
+        if stage_status in {"skipped", "blocked", "failed", "succeeded", "cancelled"}:
+            return job
+        stage_id = str(stage.get("stage_id") or stage.get("task_id") or "").strip()
+        if not stage_id:
+            return self._direct_transfer_waiting(
+                job,
+                code="direct_transfer_stage_unavailable",
+                message="The Cluster direct-transfer Stage is not available yet; connect the source Agent and retry.",
+            )
+
+        sources = _sdk_local_transfer_sources(config)
+        if not sources:
+            # Shared/dataset references and build outputs that do not yet
+            # exist on this process are intentionally left for the scheduler
+            # or a Windows Agent.  This is a successful no-op, not an upload.
+            return job
+
+        fingerprints = {"config_fingerprint": config.fingerprint()}
+        for source_role, source_path in sources:
+            try:
+                source_root, items = _scan_sdk_transfer_items(source_path, source_role=source_role)
+                plan = self.issue_transfer_plan(
+                    job_id=job.id,
+                    stage_id=stage_id,
+                    source_role=source_role,
+                    items=items,
+                    source_fingerprints=fingerprints,
+                )
+                self.execute_transfer_plan(
+                    plan,
+                    source_root,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                    allow_local_test=allow_local_test,
+                )
+            except Exception as exc:
+                # Keep the server-side Stage queued/running.  The control
+                # plane remains the source of truth and a later Connector can
+                # resume with a fresh plan; this process never falls back to
+                # a Linux body upload.
+                code = str(getattr(exc, "code", "") or "cluster_direct_transfer_unavailable")
+                if code not in {
+                    "cluster_direct_transfer_unavailable",
+                    "transfer_io_error",
+                    "direct_transfer_stage_unavailable",
+                    "source_changed_during_transfer",
+                    "transfer_plan_expired",
+                    "transfer_cancelled",
+                }:
+                    code = "cluster_direct_transfer_unavailable"
+                return self._direct_transfer_waiting(
+                    job,
+                    code=code,
+                    message="Local input transfer is waiting for a connected Agent or an accessible Cluster target.",
+                )
+
+        try:
+            return self.get_job(job.id)
+        except (RadarSimApiError, RadarSimTransportError):
+            # A successful manifest is durable even if the refresh races a
+            # transient control-plane outage.  Return the submitted object so
+            # callers can poll explicitly.
+            return job
+
+    @staticmethod
+    def _direct_transfer_waiting(job: Job, *, code: str, message: str) -> Job:
+        waiting = dict(job.waiting or {})
+        waiting.update(
+            {
+                "reason": "needs-agent",
+                "code": str(code or "cluster_direct_transfer_unavailable"),
+                "missing_capability": "client_target_root",
+                "message": str(message),
+                "action": {
+                    "type": "configure_direct_transfer",
+                    "label": "Mount the Cluster share or connect the computer that owns the files",
+                },
+            }
+        )
+        actions = list(job.available_actions or [])
+        action = dict(waiting["action"])
+        if action not in actions:
+            actions.append(action)
+        return replace(job, waiting=waiting, available_actions=actions)
+
+    # ------------------------------------------------------------------
+    # Data-plane adapter
+    # ------------------------------------------------------------------
+    # These methods intentionally live beside the HTTP client instead of in
+    # the scheduler.  Linux receives only plan/progress/manifest metadata;
+    # ``execute_transfer_plan`` writes bytes directly to the signed target
+    # root and never sends a file body through ``_request``.
+
+    def issue_transfer_plan(
+        self,
+        *,
+        job_id: str,
+        stage_id: str,
+        mode: str = "shared_copy",
+        source_role: str,
+        items: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+        source_fingerprints: dict[str, Any] | None = None,
+        ttl_seconds: float | None = None,
+    ) -> TransferPlan:
+        """Ask the control plane for one owner/job/stage-bound plan.
+
+        ``owner`` and both physical roots are deliberately absent from the
+        request.  The authenticated SDK identity selects the owner and the
+        deployment selects the target root.
+        """
+        payload = {
+            "source_role": str(source_role),
+            "items": [dict(item) for item in items],
+            "source_fingerprints": dict(source_fingerprints or {}),
+        }
+        response = self._request(
+            "POST",
+            f"/api/v1/jobs/{_quote_path_token(job_id)}/stages/{_quote_path_token(stage_id)}/transfers",
+            json=payload,
+        )
+        raw = dict(response.get("plan") or response)
+        return TransferPlan.from_dict(raw)
+
+    def get_transfer_plan(self, transfer_id: str) -> TransferPlan:
+        response = self._request(
+            "GET", f"/api/v1/transfers/{_quote_path_token(transfer_id)}"
+        )
+        return TransferPlan.from_dict(dict(response.get("plan") or response))
+
+    def report_transfer_progress(self, progress: TransferProgress | dict[str, Any]) -> dict[str, Any]:
+        value = progress if isinstance(progress, TransferProgress) else TransferProgress(**dict(progress))
+        response = self._request(
+            "POST",
+            f"/api/v1/transfers/{_quote_path_token(value.transfer_id)}/progress",
+            json={
+                "bytes_transferred": int(value.bytes_transferred),
+                "bytes_total": int(value.bytes_total),
+                "current_file": value.current_file,
+                "status": value.status,
+            },
+        )
+        return dict(response)
+
+    def report_transfer_manifest(self, manifest: TransferManifest | dict[str, Any]) -> dict[str, Any]:
+        value = manifest if isinstance(manifest, TransferManifest) else TransferManifest.from_dict(dict(manifest))
+        payload = value.to_dict()
+        # transfer_id/owner are bound by the URL and authenticated identity;
+        # keeping them out of the body avoids a second client-selected scope.
+        payload.pop("transfer_id", None)
+        payload.pop("owner", None)
+        response = self._request(
+            "POST",
+            f"/api/v1/transfers/{_quote_path_token(value.transfer_id)}/manifest",
+            json=payload,
+        )
+        return dict(response)
+
+    def cancel_transfer(self, transfer_id: str) -> dict[str, Any]:
+        return dict(
+            self._request(
+                "POST",
+                f"/api/v1/transfers/{_quote_path_token(transfer_id)}/cancel",
+            )
+        )
+
+    def execute_transfer_plan(
+        self,
+        plan: TransferPlan | dict[str, Any],
+        source_root: str | Path,
+        *,
+        progress_callback: Callable[[TransferProgress], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+        chunk_size: int = 1024 * 1024,
+        allow_local_test: bool = False,
+    ) -> TransferManifest:
+        """Execute a signed plan in the caller's data plane.
+
+        This is intentionally a thin wrapper over ``core.direct_transfer``.
+        It can be used by a Windows Agent or a Linux SDK process that has a
+        mounted Cluster share.  Callers without such access should leave the
+        plan pending and surface ``needs-agent`` instead of uploading bytes
+        to this SDK's HTTP endpoint.
+        """
+        signed = plan if isinstance(plan, TransferPlan) else TransferPlan.from_dict(dict(plan))
+        per_file: dict[str, int] = {}
+        total = sum(item.size for item in signed.items)
+
+        def report(relative_path: str, processed: int, file_total: int) -> None:
+            per_file[relative_path] = int(processed)
+            progress = TransferProgress(
+                signed.transfer_id,
+                sum(per_file.values()),
+                total,
+                relative_path,
+                updated_at=time.time(),
+                owner_scope=signed.owner_scope,
+            )
+            # Progress is metadata-only and is part of the SDK adapter's
+            # default contract.  A caller callback is an additional local
+            # notification, not a replacement for the control-plane update.
+            self.report_transfer_progress(progress)
+            if progress_callback is not None:
+                progress_callback(progress)
+
+        manifest = execute_transfer(
+            signed,
+            Path(source_root).expanduser(),
+            signed.items,
+            client_target_root=signed.client_target_root,
+            allow_local_test=bool(allow_local_test),
+            cancel_callback=cancel_check,
+            progress_callback=report,
+            chunk_size=int(chunk_size),
+        )
+        self.report_transfer_manifest(manifest)
+        return manifest
 
     def submit_cluster_yaml(
         self,
         yaml_path: str | Path,
         *,
         idempotency_key: str | None = None,
+        auto_transfer: bool = True,
+        allow_local_test: bool = False,
+        progress_callback: Callable[[TransferProgress], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> Job:
         """Submit the V1 existing-Selena + Cluster flow from one YAML file."""
         config = UserRunConfig.from_yaml(Path(yaml_path))
@@ -159,7 +491,14 @@ class RadarSimClient:
             raise ValueError(
                 "V1 submit_cluster_yaml requires selena.source=existing and simulation.target=cluster"
             )
-        return self.submit_run(config, idempotency_key=idempotency_key)
+        return self.submit_run(
+            config,
+            idempotency_key=idempotency_key,
+            auto_transfer=auto_transfer,
+            allow_local_test=allow_local_test,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
 
     def submit_yaml(
         self,
@@ -167,12 +506,20 @@ class RadarSimClient:
         *,
         dry_run: bool = False,
         idempotency_key: str | None = None,
+        auto_transfer: bool = True,
+        allow_local_test: bool = False,
+        progress_callback: Callable[[TransferProgress], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> Job:
         """Submit any supported build/existing and local/Cluster YAML in one call."""
         return self.submit_run(
             UserRunConfig.from_yaml(Path(yaml_path)),
             dry_run=dry_run,
             idempotency_key=idempotency_key,
+            auto_transfer=auto_transfer,
+            allow_local_test=allow_local_test,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
 
     def _prepare_user_run(
@@ -186,54 +533,16 @@ class RadarSimClient:
         if dry_run:
             return payload, ""
 
-        prepared_bundle_id = ""
-        existing = Path(config.selena.existing_path).expanduser()
-        runtime = Path(config.selena.runtime_xml).expanduser()
-        data_path = Path(config.data.path).expanduser()
-        existing_is_shared = config.selena.existing_path.startswith("//")
-        runtime_is_shared = config.selena.runtime_xml.startswith("//")
-        if (
-            config.selena.source == "existing"
-            and not existing_is_shared
-            and not runtime_is_shared
-            and existing.is_dir()
-            and runtime.is_file()
-        ):
-            prepared_bundle_id = self._upload_existing_selena(
-                existing,
-                runtime,
-                code_path=config.selena.code_path,
-                selena_build_script=config.selena.selena_build_script,
-                package_build_script=config.selena.package_build_script,
-            )
-
-        data_kind = classify_data_path(config.data.path)
-        if (
-            config.simulation.target in {"auto", "cluster"}
-            and _should_upload_client_data(
-                config.data.path,
-                data_path,
-                data_kind=data_kind,
-            )
-        ):
-            uploaded_data = self.upload_run_data(data_path)
-            payload["data"] = {"path": uploaded_data.data_path}
-
-        simulation = dict(payload.get("simulation") or {})
-        mat_filter = Path(config.simulation.mat_filter).expanduser()
-        if mat_filter.is_file():
-            simulation["mat_filter"] = self.upload_config_asset(
-                "mat_filter", mat_filter
-            )["uri"]
-        adapter_text = str(config.simulation.adapter_file or "").strip()
-        if adapter_text:
-            adapter = Path(adapter_text).expanduser()
-            if adapter.is_file():
-                simulation["adapter_file"] = self.upload_config_asset(
-                    "adapter", adapter
-                )["uri"]
-        payload["simulation"] = simulation
-        return UserRunConfig.from_dict(payload).to_dict(), prepared_bundle_id
+        # A local path is a data-plane source, never an implicit Linux upload.
+        # The control plane creates owner/job/stage-bound TransferPlans and a
+        # Windows Agent (or a caller with a mounted Cluster share) executes
+        # them.  Keeping the user paths in this payload also makes Web and SDK
+        # route the same YAML through the same scheduler decisions.
+        #
+        # ``prepared_runtime_bundle_id`` remains an optional compatibility
+        # field for already-registered logical references, but this method no
+        # longer manufactures one by archiving a local Selena directory.
+        return UserRunConfig.from_dict(payload).to_dict(), ""
 
     def _upload_existing_selena(
         self,
@@ -858,6 +1167,145 @@ class RadarSimClient:
             return UserRunConfig.from_dict(payload).to_dict()
         except Exception:
             return payload
+
+
+def _default_sdk_user() -> str:
+    """Return one stable, opaque no-config identity per OS user and machine."""
+    try:
+        login = getpass.getuser()
+    except Exception:
+        login = ""
+    try:
+        hostname = socket.gethostname()
+    except Exception:
+        hostname = ""
+    seed = f"{login.strip().casefold()}@{hostname.strip().casefold()}" or "radar-sim-sdk"
+    digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()
+    return f"sdk-{digest[:24]}"
+
+
+def _sdk_local_transfer_sources(config: UserRunConfig) -> list[tuple[str, Path]]:
+    """Return readable config inputs that can be copied by this SDK process.
+
+    ``shared://``/UNC references stay zero-copy.  Other existing paths are
+    considered candidates when the direct-transfer Stage is queued; the
+    Stage's server-side role allow-list remains authoritative when a plan is
+    issued.
+    """
+
+    candidates: list[tuple[str, str]] = [("dataset", str(config.data.path or ""))]
+    if config.selena.source == "existing":
+        candidates.append(("runtime_bundle", str(config.selena.existing_path or "")))
+    candidates.extend(
+        [
+            ("runtime_xml", str(config.selena.runtime_xml or "")),
+            ("mat_filter", str(config.simulation.mat_filter or "")),
+            ("adapter", str(config.simulation.adapter_file or "")),
+        ]
+    )
+    result: list[tuple[str, Path]] = []
+    seen: set[tuple[str, str]] = set()
+    for role, raw in candidates:
+        value = str(raw or "").strip()
+        if not value or value.casefold().startswith(("shared://", "dataset://")):
+            continue
+        # UNC/shared paths belong to the deployment namespace even if this
+        # process happens to have a mapped view of them.
+        if classify_data_path(value) == "shared":
+            continue
+        source = Path(value).expanduser()
+        try:
+            if not source.exists() or source.is_symlink():
+                continue
+            resolved = source.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if not resolved.is_file() and not resolved.is_dir():
+            continue
+        key = (role, str(resolved).casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((role, resolved))
+    return result
+
+
+def _scan_sdk_transfer_items(
+    source_path: Path,
+    *,
+    source_role: str,
+) -> tuple[Path, list[dict[str, Any]]]:
+    """Scan one local source into metadata-only plan items.
+
+    Checksums deliberately remain empty.  The direct-transfer kernel computes
+    SHA-256 while streaming each file to the signed target, avoiding a second
+    full read for large MF4/Selena binaries.
+    """
+
+    original = Path(source_path).expanduser()
+    if original.is_symlink():
+        raise ValueError("direct transfer source is a symlink")
+    path = original.resolve(strict=True)
+    if path.is_dir():
+        root = path
+        paths = [
+            item
+            for item in sorted(root.rglob("*"), key=lambda candidate: candidate.as_posix().casefold())
+            if item.is_file() and not item.is_symlink()
+        ]
+        if source_role == "dataset":
+            paths = [item for item in paths if item.suffix.casefold() == ".mf4"]
+    elif path.is_file():
+        root = path.parent
+        paths = [path]
+        if source_role == "dataset" and path.suffix.casefold() != ".mf4":
+            raise ValueError("dataset source does not contain an MF4 file")
+    else:
+        raise ValueError("direct transfer source is unavailable")
+    if not paths:
+        raise ValueError("direct transfer source is empty")
+    items: list[dict[str, Any]] = []
+    for item in paths:
+        relative = item.relative_to(root).as_posix()
+        stat = item.stat()
+        items.append(
+            {
+                "source_role": str(source_role),
+                "relative_path": relative,
+                "size": int(stat.st_size),
+                "checksum": "",
+                "mtime_ns": int(stat.st_mtime_ns),
+            }
+        )
+    return root, items
+
+
+def _quote_path_token(value: str) -> str:
+    """Quote an opaque route token without treating slashes as hierarchy."""
+    from urllib.parse import quote
+
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("route token is required")
+    return quote(text, safe="")
+
+
+def _trust_environment_proxy(base_url: str) -> bool:
+    """Use enterprise proxy settings except for literal local/private hosts.
+
+    Corporate environments commonly export HTTP_PROXY without adding every
+    lab subnet to NO_PROXY.  Sending multi-GB MF4 uploads through that proxy
+    made a working SDK appear stalled.  An explicit ``trust_env=True`` still
+    lets an integration override this safe automatic default.
+    """
+    hostname = (urlsplit(str(base_url or "")).hostname or "").strip()
+    if not hostname:
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return hostname.casefold() not in {"localhost"}
+    return not (address.is_private or address.is_loopback or address.is_link_local)
 
 
 def _should_upload_client_data(

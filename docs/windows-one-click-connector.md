@@ -55,12 +55,12 @@ SDK 只是 Linux 控制面的调用客户端，不会把编译器或 Selena 仿�
 
 ```python
 from pathlib import Path
-from radar_sim_sdk import RadarSimClient
+from radar_sim_sdk import RadarSimClient, UserRunConfig
 
-with RadarSimClient("http://linux-rsim:8877", user="alice") as client:
-    launcher = client.download_windows_connector(
+with RadarSimClient("http://linux-rsim:8877") as client:
+    launcher = client.download_windows_connector_for_run(
+        UserRunConfig.from_yaml(Path("run.yaml")),
         Path(r"C:\Temp\RadarSim-Connect-Windows.cmd"),
-        mode="light",       # 本地编译/上传；本地仿真使用 full
     )
     print(launcher)
 ```
@@ -78,8 +78,10 @@ with RadarSimClient("http://linux-rsim:8877", user="alice") as client:
 ```python
 from radar_sim_sdk import RadarSimClient
 
-with RadarSimClient("http://linux-rsim:8877", user="alice") as client:
+with RadarSimClient("http://linux-rsim:8877") as client:
     job = client.submit_yaml("run.yaml", idempotency_key="issue-123-run-1")
 ```
+
+SDK 未传 `user` 时会自动生成同一 OS 用户和机器稳定的 `sdk-...` 身份，连接程序与后续任务使用同一 scope；不会退回 Linux 服务器进程账号，也不会与其他默认 SDK 调用者混用任务和 Agent。
 
 认证开启的正式部署不把长期 Token 写进 YAML；应使用管理员提供的短期配对入口。当前 Sprint 的无认证内网入口已验证上述 SDK/脚本路径，认证配对协议仍是后续发布项。

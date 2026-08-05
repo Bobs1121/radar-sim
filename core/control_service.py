@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -1021,7 +1022,12 @@ class ControlService:
                     if job_owner and registered_owner and registered_owner != job_owner:
                         continue
                     payload = self._loads(row["payload_json"])
-                    if payload.get("dispatch_scope") != "data_upload":
+                    # P0 direct-transfer stages are claimed by the same
+                    # source-side Connector path as the old local-data hook,
+                    # but never fall back to a Linux body upload.  Keep the
+                    # legacy token readable for old jobs while all new v2
+                    # submissions use ``direct_transfer``.
+                    if payload.get("dispatch_scope") not in {"data_upload", "direct_transfer"}:
                         continue
                     project = str(payload.get("project") or "").strip()
                     data_path = str(payload.get("data_path") or "")
@@ -1086,6 +1092,198 @@ class ControlService:
                 )
                 conn.commit()
                 return self._get_job_locked(conn, job_id)
+            except Exception:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def complete_transfer_stage(
+        self,
+        job_id: str,
+        stage_id: str,
+        *,
+        owner: str,
+        source_role: str,
+        transfer: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist a completed direct-transfer manifest as control metadata.
+
+        The method deliberately receives only the small manifest projection;
+        it never resolves or opens a physical object.  Owner, Job and Stage
+        are checked inside one transaction so a client cannot complete another
+        user's stage or create an orphan resolved-spec reference.
+        """
+
+        now = self._now()
+        role = str(source_role or "").strip()
+        if not role:
+            raise ValueError("source_role is required")
+        entries = []
+        for raw in list((transfer or {}).get("entries") or []):
+            if not isinstance(raw, dict):
+                continue
+            entries.append(
+                {
+                    "relative_path": str(raw.get("relative_path") or ""),
+                    "size": int(raw.get("size") or 0),
+                    "sha256": str(raw.get("sha256") or raw.get("checksum") or ""),
+                    "storage_ref": str(raw.get("storage_ref") or raw.get("target_logical_ref") or ""),
+                }
+            )
+        resource = {
+            "transfer_id": str((transfer or {}).get("transfer_id") or ""),
+            "source_role": role,
+            "status": "resolved",
+            "entries": entries,
+        }
+        with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                job = self._get_job_locked(conn, str(job_id))
+                if str(job.get("owner") or "") != str(owner or ""):
+                    raise PermissionError("job belongs to another owner")
+                task = next(
+                    (item for item in job.get("stages") or [] if str(item.get("stage_id") or "") == str(stage_id)),
+                    None,
+                )
+                if task is None:
+                    raise KeyError(f"unknown stage: {stage_id}")
+                resolved = dict(job.get("resolved_spec") or {})
+                decisions = dict(resolved.get("decisions") or {})
+                transfers = dict(decisions.get("transfers") or {})
+                resources = dict(transfers.get("resources") or {})
+                previous = resources.get(role)
+                if previous is None:
+                    resources[role] = resource
+                elif isinstance(previous, list):
+                    if resource not in previous:
+                        previous.append(resource)
+                elif previous != resource:
+                    resources[role] = [previous, resource]
+                transfers["resources"] = resources
+                decisions["transfers"] = transfers
+
+                # Keep the mature Cluster/manifest paths fed from the same
+                # path-free direct-transfer evidence.  The transfer table is
+                # the authoritative transport record, while these two
+                # business decisions are the stable DatasetRef/RuntimeBundle
+                # projections consumed by environment/final-manifest stages.
+                # Only logical metadata is persisted; no deployment roots or
+                # file bodies cross into the control plane.
+                transfer_id = resource["transfer_id"]
+                transfer_digest = hashlib.sha256(transfer_id.encode("utf-8")).hexdigest()
+                file_count = len(entries)
+                total_size = sum(int(item.get("size") or 0) for item in entries)
+                storage_refs = [
+                    str(item.get("storage_ref") or "")
+                    for item in entries
+                    if str(item.get("storage_ref") or "")
+                ]
+                if role == "dataset":
+                    decisions["data"] = {
+                        "status": "resolved",
+                        "route": "direct_transfer",
+                        "dataset": {
+                            "id": f"dataset:sha256:{transfer_digest}",
+                            "source_kind": "direct_transfer",
+                            "file_count": file_count,
+                            "total_size": total_size,
+                            "storage_refs": storage_refs,
+                        },
+                    }
+                elif role == "runtime_bundle":
+                    decisions["selena"] = {
+                        "status": "resolved",
+                        "action": "use_direct_transfer",
+                        "runtime_bundle": {
+                            "id": f"selena-bundle:sha256:{transfer_digest}",
+                            "source_kind": "direct_transfer",
+                            "file_count": file_count,
+                            "total_size": total_size,
+                            "storage_refs": storage_refs,
+                        },
+                    }
+                resolved["decisions"] = decisions
+                conn.execute(
+                    "UPDATE jobs SET resolved_spec_json=?, updated_at=? WHERE job_id=?",
+                    (self._dumps(resolved), now, str(job_id)),
+                )
+                stage_payload = dict(task.get("payload") or {})
+                required_roles = {
+                    str(item).strip()
+                    for item in list(stage_payload.get("source_roles") or [])
+                    if str(item).strip()
+                }
+                if not required_roles:
+                    required_roles = {role}
+                resolved_roles = {
+                    key
+                    for key, value in resources.items()
+                    if (
+                        isinstance(value, dict)
+                        and str(value.get("status") or "") == "resolved"
+                    )
+                    or (
+                        isinstance(value, list)
+                        and any(
+                            isinstance(item, dict)
+                            and str(item.get("status") or "") == "resolved"
+                            for item in value
+                        )
+                    )
+                }
+                remaining_roles = sorted(required_roles - resolved_roles)
+                transfer_complete = not remaining_roles
+                result = {
+                    "code": "transfer_completed" if transfer_complete else "transfer_partial",
+                    "message": "direct transfer manifest accepted" if transfer_complete else "direct transfer manifest accepted; waiting for remaining resources",
+                    "transfer": resource,
+                    "remaining_roles": remaining_roles,
+                }
+                next_status = "succeeded" if transfer_complete else "running"
+                next_progress = 1.0 if transfer_complete else min(0.99, len(resolved_roles) / max(len(required_roles), 1))
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status=?, result_json=?, output_ref_json=?, error_json='{}',
+                        progress=?, updated_at=?, completed_at=?, returncode=?
+                    WHERE task_id=? AND job_id=?
+                    """,
+                    (
+                        next_status,
+                        self._dumps(result),
+                        self._dumps(
+                            {
+                                "transfer_status": "transfer_completed" if transfer_complete else "transferring_direct_to_cluster",
+                                "transfer_id": resource["transfer_id"],
+                                "remaining_roles": remaining_roles,
+                            }
+                        ),
+                        next_progress,
+                        now,
+                        now if transfer_complete else 0.0,
+                        0 if transfer_complete else None,
+                        str(stage_id),
+                        str(job_id),
+                    ),
+                )
+                self._append_event_locked(
+                    conn,
+                    str(job_id),
+                    stage_id=str(stage_id),
+                    event_type="stage.succeeded" if transfer_complete else "stage.running",
+                    status=next_status,
+                    progress=next_progress,
+                    code=str(result["code"]),
+                    message=str(result["message"]),
+                    detail={"transfer_id": resource["transfer_id"], "source_role": role, "remaining_roles": remaining_roles},
+                )
+                self._refresh_job_status_locked(conn, str(job_id), now)
+                conn.commit()
+                return self._get_job_locked(conn, str(job_id))
             except Exception:
                 if conn.in_transaction:
                     conn.rollback()

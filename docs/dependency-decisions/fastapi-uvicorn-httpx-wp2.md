@@ -71,7 +71,7 @@ Legacy Python 3.9/base imports remain usable because `core.config`, `core.contro
 
 ## Proxy, SSL, and enterprise network policy
 
-SDK default is `trust_env=True`, so standard enterprise `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`, `SSL_CERT_FILE`, and `SSL_CERT_DIR` are honored by HTTPX. SDK users can pass `verify=...`, `headers=...`, `transport=...`, or a prebuilt `httpx.Client` for tests and controlled deployments. The SDK never defaults to `verify=False`.
+SDK defaults to automatic proxy selection: literal loopback/private/link-local control-plane IPs bypass `HTTP_PROXY` because large MF4 uploads must remain on the internal direct path; public hostnames continue honoring standard enterprise `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`, `SSL_CERT_FILE`, and `SSL_CERT_DIR`. SDK users can explicitly pass `trust_env=True|False`, `verify=...`, `headers=...`, `transport=...`, or a prebuilt `httpx.Client` for controlled deployments. The SDK never defaults to `verify=False`.
 
 Uvicorn/FastAPI are server-side optional runtime dependencies. Deployment behind enterprise TLS termination should keep certificates/proxy policy outside user `SimulationSpec`.
 

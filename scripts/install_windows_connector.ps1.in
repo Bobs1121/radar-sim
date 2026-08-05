@@ -25,6 +25,26 @@ $Expanded = Join-Path $WorkRoot "package"
 function Step([string]$message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
 function Fail([string]$message) { Write-Host "`nConnection failed: $message" -ForegroundColor Red; exit 1 }
 
+function Invoke-WithRetry {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Operation,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [int]$Attempts = 5
+    )
+    $lastError = $null
+    foreach ($attempt in 1..$Attempts) {
+        try { return & $Operation }
+        catch {
+            $lastError = $_
+            if ($attempt -ge $Attempts) { throw }
+            $delay = [Math]::Min(2 * $attempt, 8)
+            Write-Host "$Description was temporarily unavailable; retrying ($attempt/$Attempts)..." -ForegroundColor Yellow
+            Start-Sleep -Seconds $delay
+        }
+    }
+    throw $lastError
+}
+
 function Get-Sha256([string]$Path) {
     # Do not depend on the PowerShell Utility module here.  A launcher started
     # from PowerShell 7 can put its module directory ahead of Windows
@@ -71,7 +91,9 @@ try {
     $env:no_proxy = $env:NO_PROXY
 
     Step "Check the simulation service"
-    $health = Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/health" -TimeoutSec 10
+    $health = Invoke-WithRetry -Description "The simulation service" -Operation {
+        Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/health" -TimeoutSec 10
+    }
     if ($health.authentication_required) {
         Fail "This service requires authenticated pairing. Contact the service administrator."
     }
@@ -95,9 +117,12 @@ try {
 
     Step "Download the matching Windows component"
     New-Item -ItemType Directory -Force -Path $WorkRoot, $Expanded | Out-Null
-    $download = Invoke-WebRequest -UseBasicParsing `
-        -Uri "$ServerUrl/api/v1/windows-connector/package.zip" `
-        -OutFile $Archive -PassThru -TimeoutSec 120
+    $download = Invoke-WithRetry -Description "The Windows component download" -Operation {
+        Remove-Item -LiteralPath $Archive -Force -ErrorAction SilentlyContinue
+        Invoke-WebRequest -UseBasicParsing `
+            -Uri "$ServerUrl/api/v1/windows-connector/package.zip" `
+            -OutFile $Archive -PassThru -TimeoutSec 120
+    }
     $expectedHash = [string]$download.Headers["X-Content-SHA256"]
     if ($expectedHash -notmatch '^sha256:[0-9a-f]{64}$') {
         Fail "The service did not provide a valid package checksum."

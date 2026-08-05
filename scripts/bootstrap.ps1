@@ -70,6 +70,22 @@ function Write-Ok($message) { Write-Host "    OK  $message" -ForegroundColor Gre
 function Write-Warn($message) { Write-Host "    WARN $message" -ForegroundColor Yellow }
 function Fail($message) { Write-Host "    ERR  $message" -ForegroundColor Red; exit 1 }
 
+function Get-RemoteHealth([string]$Url, [int]$Attempts = 5) {
+    $lastError = $null
+    foreach ($attempt in 1..$Attempts) {
+        try {
+            return Invoke-RestMethod -Method Get -Uri "$Url/api/v1/health" -TimeoutSec 10
+        } catch {
+            $lastError = $_.Exception.Message
+            if ($attempt -lt $Attempts) {
+                Write-Warn "Linux service is temporarily unavailable; retrying ($attempt/$Attempts)."
+                Start-Sleep -Seconds ([Math]::Min(2 * $attempt, 8))
+            }
+        }
+    }
+    throw "Linux service is unreachable after $Attempts attempts: $lastError"
+}
+
 function Stop-ConnectorProcessTree([int]$RootPid) {
     # Stop deepest children first.  Stopping only the PowerShell supervisor can
     # orphan its Python Agent, and a reinstall would then run the same task
@@ -194,12 +210,12 @@ if ($UseLocalControl) {
     $ServerUrl = $ServerUrl.TrimEnd('/')
     $RemoteAuthRequired = $true
     try {
-        $health = Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/health" -TimeoutSec 5
+        $health = Get-RemoteHealth -Url $ServerUrl
         if ($null -ne $health.authentication_required) {
             $RemoteAuthRequired = [bool]$health.authentication_required
         }
     } catch {
-        Write-Warn "Could not inspect Linux authentication mode yet: $($_.Exception.Message)"
+        Fail $_.Exception.Message
     }
     if (Test-Path $SecretsPath) {
         $oldSecrets = Get-Content -Raw -Encoding UTF8 $SecretsPath | ConvertFrom-Json

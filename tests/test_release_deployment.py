@@ -104,6 +104,10 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     connector = (ROOT / "scripts" / "install_windows_connector.ps1.in").read_text(encoding="utf-8")
     assert "Get-Sha256" in connector
     assert "Get-FileHash" not in connector
+    assert "Invoke-WithRetry" in connector
+    assert "foreach ($attempt in 1..$Attempts)" in connector
+    assert "Get-RemoteHealth" in bootstrap
+    assert "unreachable after $Attempts attempts" in bootstrap
     assert "/api/v1/capabilities" in bootstrap
     launcher = (ROOT / "scripts" / "connect_windows.cmd.in").read_text(encoding="utf-8")
     assert "Python.Python.3.12" in connector
@@ -112,6 +116,8 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "Software Center" in connector
     assert "timeout /t" not in launcher
     assert "127.0.0.1" not in launcher
+    assert "foreach($i in 1..5)" in launcher
+    assert "temporarily unavailable; retrying" in launcher
 
 
 def test_linux_release_builds_same_origin_windows_connector_bundle():

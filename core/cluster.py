@@ -776,7 +776,15 @@ def prepare_cluster_job(
         copied = copy_input_data(Path(_to_local_path(datafile_path)), data_dir)
         datafile_path = _to_unc_path(str(copied))
 
-    copied_assets_local = _copy_assets(config, assets_dir, warnings, mount_map=mount_map or None)
+    # Direct-transfer Cluster jobs already have Runtime/MatFilter/Adapter
+    # files in the worker-visible data plane.  Keep the existing asset copier
+    # for legacy/local packages, but do not create a second Linux staging copy
+    # for a zero-copy package.
+    copied_assets_local = (
+        {}
+        if bool(config.get("_cluster_zero_copy"))
+        else _copy_assets(config, assets_dir, warnings, mount_map=mount_map or None)
+    )
     # Config.cfg needs UNC paths (workers are Windows); copied_assets_local has
     # mount-point paths from the local write. Translate back to UNC.
     copied_assets = {k: _to_unc_path(v) for k, v in copied_assets_local.items()}
@@ -820,7 +828,10 @@ def prepare_cluster_job(
         source_is_explicit=source_is_explicit,
         require_detected_source=source_explicit_marker is not None,
         warnings=warnings,
+        skip_data_probe=bool(config.get("_cluster_skip_mf4_probe")),
     )
+    if bool(config.get("_cluster_skip_mf4_probe")):
+        sim["_cluster_skip_mf4_probe"] = True
 
     script_path = job_dir_local / "SIMULATION_RADAR_SIM.py"
     script_unc = job_dir_unc_str + "\\SIMULATION_RADAR_SIM.py"
@@ -1255,11 +1266,29 @@ def _resolve_cluster_radar_context(
     source_is_explicit: bool,
     warnings: list[str],
     require_detected_source: bool = False,
+    skip_data_probe: bool = False,
 ) -> dict[str, Any]:
     """Resolve one faithful Cluster source without trusting project defaults."""
     resolved = dict(sim)
     configured_source = str(resolved.get("source", "") or "").strip()
     mounting = str(resolved.get("mounting_position", "") or "").strip()
+
+    if skip_data_probe:
+        # A direct-transfer manifest is the acquisition/source evidence for the
+        # task.  Linux must not open the MF4 or infer a source from a project or
+        # filename hint while preparing a zero-copy Cluster package.
+        canonical = _canonical_radar_source(configured_source)
+        if canonical in RADAR_SOURCE_MOUNTING and mounting.lower() in ("", "auto"):
+            resolved["mounting_position"] = RADAR_SOURCE_MOUNTING[canonical]
+        resolved["source"] = canonical or configured_source
+        resolved["radar_available_sources"] = [resolved["source"]] if resolved["source"] else []
+        resolved["radar_selection_evidence"] = {
+            "available_sources": list(resolved.get("radar_available_sources") or []),
+            "selected_source": resolved["source"],
+            "selection_method": "transfer_manifest" if resolved["source"] else "manifest_unresolved",
+            "orientation_evidence": {},
+        }
+        return resolved
 
     if source_is_explicit:
         resolved["source"] = configured_source
@@ -1499,7 +1528,7 @@ def _render_config_cfg(
     mounting = sim.get("mounting_position", "")
     if str(mounting).lower() == "auto":
         mounting = ""
-    inferred = _infer_radar_from_path(datafile_path)
+    inferred = {} if bool(sim.get("_cluster_skip_mf4_probe")) else _infer_radar_from_path(datafile_path)
     source = source or inferred.get("source", "")
     mounting = mounting or inferred.get("mounting_position", "")
     lines = [

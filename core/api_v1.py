@@ -10,11 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-import tempfile
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from pydantic import ValidationError
 
@@ -39,6 +38,14 @@ from core.datasets import classify_data_path
 from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID, CLUSTER_GATEWAY_AGENT_ID
 from core.local_results import ResultCatalog, ResultCatalogError
 from core.result_upload_service import ResultUploadService, ResultUploadServiceError
+from core.transfer_service import (
+    TransferError,
+    TransferManifest,
+    TransferManifestEntry,
+    TransferPlanItem,
+    TransferProgress,
+    TransferService,
+)
 
 API_VERSION = "v1"
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -120,6 +127,12 @@ class ApiV1Service:
     config_asset_store: ConfigAssetStore | None = None
     result_catalog: ResultCatalog | None = None
     result_upload_service_factory: Callable[[str], ResultUploadService] | None = None
+    # The deployment-owned transfer service signs target roots and stores only
+    # plan/progress/manifest metadata.  It is intentionally optional so the
+    # API can run in a control-only deployment and return the stable
+    # ``cluster_direct_transfer_unavailable`` blocker instead of falling back
+    # to an HTTP/body upload path.
+    transfer_service: TransferService | None = None
     project_names_provider: ProjectNamesProvider | None = None
     now_fn: Callable[[], float] = time.time
 
@@ -347,57 +360,13 @@ class ApiV1Service:
                 "Prepared existing Selena can only be used with selena.source=existing",
                 status_code=422,
             )
-        # A shared/cloud folder may be invisible to the caller but mounted on
-        # the Linux control plane.  Import it here so the V1 flow does not
-        # require a Windows Agent merely to recognize an existing runtime.
-        if (
-            not dry_run
-            and not prepared_bundle_id
-            and config.selena.source == "existing"
-        ):
-            existing_path = self._server_visible_path(config.selena.existing_path)
-            runtime_path = self._server_visible_path(config.selena.runtime_xml)
-            if (
-                existing_path.is_dir()
-                and runtime_path.is_file()
-                and self.runtime_bundle_upload_service_factory is not None
-            ):
-                try:
-                    from core.existing_selena import import_existing_selena
-
-                    with tempfile.TemporaryDirectory(prefix="rsim-server-existing-") as temporary:
-                        imported = import_existing_selena(
-                            existing_path,
-                            runtime_path,
-                            code_path=config.selena.code_path,
-                            selena_build_script=config.selena.selena_build_script,
-                            package_build_script=config.selena.package_build_script,
-                            staging_root=Path(temporary) / "staging",
-                            created_at=0.0,
-                        )
-                        imported_record = self.runtime_bundle_upload_service_factory(owner).import_existing(
-                            owner,
-                            metadata={
-                                "internal_project": imported.internal_project,
-                                "adapter_key": imported.adapter_key,
-                                "manifest": imported.bundle.manifest.to_dict(),
-                                "archive_checksum": imported.archive.checksum,
-                                "archive_size": imported.archive.size,
-                            },
-                            archive_bytes=imported.archive.path.read_bytes(),
-                        )
-                    prepared_bundle_id = str(
-                        (imported_record.get("runtime_bundle") or {}).get("id") or ""
-                    )
-                except RuntimeBundleUploadServiceError as exc:
-                    raise ApiV1Error(exc.code, exc.message, status_code=exc.status_code) from exc
-                except (OSError, ValueError) as exc:
-                    raise ApiV1Error(
-                        "invalid_existing_selena",
-                        "Existing Selena folder or Runtime XML is invalid",
-                        status_code=422,
-                        detail={"error": str(exc)},
-                    ) from exc
+        # A Linux control plane may validate a logical/shared path, but it
+        # never archives a user Selena directory.  Existing Selena folders
+        # remain source-side inputs and are either referenced in place or
+        # copied by a trusted Connector/SDK through the direct-transfer data
+        # plane.  ``prepared_runtime_bundle_id`` is an explicit internal
+        # selector supplied out-of-band by a trusted client; no implicit body
+        # import is performed here.
         request_hash = self._request_hash(
             {**canonical, "_prepared_runtime_bundle_id": prepared_bundle_id},
             dry_run=bool(dry_run),
@@ -514,26 +483,6 @@ class ApiV1Service:
                         }
                     )
                     task["payload"] = payload
-            if (
-                selected_runtime_bundle is not None
-                and selected_target == "cluster"
-                and stage_type == "prepare_data"
-                and not str(config.data.path).lower().startswith("dataset://")
-                and classify_data_path(config.data.path) not in {"shared", "central"}
-            ):
-                # The Web/YAML still carries only data.path. A matching Windows
-                # Agent turns this stage into a central Dataset upload.
-                payload = dict(task.get("payload") or {})
-                payload.update(
-                    {
-                        "dispatch_scope": "data_upload",
-                        "contract": "user-run-config/2.0",
-                        "project": selected_runtime_project,
-                        "data_path": str(config.data.path),
-                        "required_signals": [],
-                    }
-                )
-                task["payload"] = payload
             cluster_route = selected_target == "cluster"
             if cluster_route:
                 if (
@@ -559,6 +508,19 @@ class ApiV1Service:
                 elif stage_type == "run_simulation":
                     task["assigned_agent_id"] = CLUSTER_GATEWAY_AGENT_ID
                     task["required_agent_id"] = CLUSTER_GATEWAY_AGENT_ID
+        # A cluster job with any Windows-local input is represented by the
+        # existing ``prepare_data`` Stage, but its data-plane dispatch scope is
+        # explicit and never the legacy Linux ``data_upload`` path.  The
+        # actual TransferPlan is issued later, after ControlService has
+        # persisted the Job/Stage and the Connector has enumerated metadata
+        # items.  Shared/dataset references are zero-copy and skip the Stage.
+        if selected_target == "cluster":
+            self._apply_direct_transfer_stage(
+                task_specs,
+                config,
+                selected_runtime_bundle=selected_runtime_bundle,
+                selected_runtime_project=selected_runtime_project,
+            )
         if dry_run:
             # UserRunConfig dry-run is plan-only: it must never switch branches,
             # compile, upload data, launch Selena or submit a Cluster job.
@@ -597,6 +559,153 @@ class ApiV1Service:
                     return self._job_response(existing)
             self._raise_idempotency_conflict(key)
         return self._job_response(job)
+
+    def _apply_direct_transfer_stage(
+        self,
+        task_specs: list[dict[str, Any]],
+        config: UserRunConfig,
+        *,
+        selected_runtime_bundle: dict[str, Any] | None = None,
+        selected_runtime_project: str = "",
+    ) -> None:
+        """Annotate the project-free data Stage with the P0 data-plane route.
+
+        This method is deliberately metadata-only.  It does not inspect any
+        user path, enumerate a directory, open a file, or create a transfer
+        plan.  A Connector/SDK performs that work after the Job and Stage have
+        been persisted and sends only ``TransferPlanItem`` metadata back to the
+        owner-authenticated API.
+        """
+
+        stage = next(
+            (item for item in task_specs if str(item.get("stage_type") or "") == "prepare_data"),
+            None,
+        )
+        if stage is None:
+            return
+
+        data_path = str(config.data.path or "")
+        local_sources: list[dict[str, str]] = []
+
+        def add_local(role: str, value: str) -> None:
+            if classify_data_path(value) == "agent":
+                local_sources.append({"source_role": role, "path": value})
+
+        add_local("dataset", data_path)
+        # A selected registered bundle is already a logical internal asset;
+        # otherwise an existing Selena folder/Runtime XML must be supplied by
+        # the source-side Connector and never archived by Linux.
+        if selected_runtime_bundle is None:
+            if config.selena.source == "existing":
+                add_local("runtime_bundle", config.selena.existing_path)
+                add_local("runtime_xml", config.selena.runtime_xml)
+            elif config.selena.source == "build":
+                # The workspace and build scripts remain on the build Agent.
+                # Only the actual build output discovered by that Agent may
+                # be emitted from the register_artifact handoff; never treat
+                # the source code directory as a runtime bundle to copy.
+                add_local("runtime_xml", config.selena.runtime_xml)
+        add_local("adapter", config.simulation.adapter_file)
+        add_local("mat_filter", config.simulation.mat_filter)
+
+        payload = dict(stage.get("payload") or {})
+        payload.update(
+            {
+                "contract": "user-run-config/2.0",
+                "transfer_mode": "shared_copy",
+                "source_roles": sorted({item["source_role"] for item in local_sources}),
+            }
+        )
+        if local_sources:
+            payload.update(
+                {
+                    "dispatch_scope": "direct_transfer",
+                    "transfer_status": "waiting_for_local_connector",
+                    "transfer_required": True,
+                    # Paths are the user's own input references.  They remain
+                    # private task payload and are never included by
+                    # ``_public_run_stage`` or in a TransferPlan response.
+                    "source_paths": local_sources,
+                    "data_path": data_path,
+                    "required_signals": [],
+                }
+            )
+            if selected_runtime_bundle is not None:
+                payload["project"] = selected_runtime_project
+            # A preselected registered Bundle means the Selena resource is
+            # already logical and this Stage is the only remaining source-side
+            # data edge.  If deployment has no direct target at that point we
+            # can fail closed immediately.  For build/unprepared existing
+            # inputs, the Windows Connector itself is still the capability
+            # being awaited, so keep the Job resumably queued.
+            if not self._direct_transfer_available() and selected_runtime_bundle is not None:
+                self._block_direct_transfer_tasks(
+                    task_specs,
+                    message=(
+                        "Cluster direct transfer is unavailable; configure a deployment data-plane root "
+                        "or connect a source-side Connector/SDK. Linux will not proxy file bytes."
+                    ),
+                )
+                payload["transfer_status"] = "cluster_direct_transfer_unavailable"
+            stage["payload"] = payload
+            return
+
+        # dataset://, central and shared paths are already visible to Cluster;
+        # the Stage records zero-copy evidence but creates no TransferPlan.
+        payload.update(
+            {
+                "dispatch_scope": "shared_reference",
+                "transfer_status": "transfer_skipped_shared",
+                "transfer_required": False,
+            }
+        )
+        # Keep the Linux ``prepare_data`` Stage claimable for a bounded
+        # shared-path/dataset existence check.  The transfer edge itself is
+        # skipped (``transfer_status`` above), but central resolution still
+        # records the DatasetRef needed by the Cluster executor's manifest.
+        stage["payload"] = payload
+
+    def _direct_transfer_available(self) -> bool:
+        """Return whether deployment has a usable target namespace.
+
+        Test doubles may intentionally omit ``client_target_root``; treating
+        those as available keeps the scheduler tests focused on route
+        selection.  A real ``TransferService`` without an injected root is a
+        deterministic infrastructure blocker.
+        """
+
+        service = self.transfer_service
+        if service is None:
+            return False
+        root = getattr(service, "client_target_root", None)
+        return root is None or bool(str(root).strip())
+
+    @staticmethod
+    def _block_direct_transfer_tasks(task_specs: list[dict[str, Any]], *, message: str) -> None:
+        """Stop a local-input Cluster DAG before any staging/submit Stage."""
+
+        error = {
+            "code": "cluster_direct_transfer_unavailable",
+            "status": "needs_input",
+            "message": message,
+            "actions": [
+                {
+                    "type": "configure_direct_transfer",
+                    "label": "Configure a Cluster direct-transfer root or connect the source client",
+                }
+            ],
+        }
+        for task in task_specs:
+            status = str(task.get("status") or task.get("initial_status") or "queued")
+            if status == "skipped":
+                continue
+            task["status"] = "blocked"
+            task["initial_status"] = "blocked"
+            task["skip_reason"] = "cluster_direct_transfer_unavailable"
+            task["error"] = dict(error)
+            payload = dict(task.get("payload") or {})
+            payload["transfer_status"] = "cluster_direct_transfer_unavailable"
+            task["payload"] = payload
 
     def _select_user_execution_target(
         self,
@@ -989,6 +1098,266 @@ class ApiV1Service:
             "available": manifest is not None,
             "manifest": manifest,
         }
+
+    # ------------------------------------------------------------------
+    # Control/data-plane transfer contract
+    # ------------------------------------------------------------------
+
+    def issue_transfer_plan(
+        self,
+        owner: str,
+        *,
+        job_id: str,
+        stage_id: str,
+        source_role: str,
+        items: Sequence[Mapping[str, Any]],
+        source_fingerprints: Optional[Mapping[str, Any]] = None,
+        ttl_seconds: float = 86400.0,
+    ) -> dict[str, Any]:
+        """Issue a deployment-signed, metadata-only direct-transfer plan."""
+
+        owner = self._owner(owner)
+        transfer = self.transfer_service
+        if transfer is None:
+            raise ApiV1Error(
+                "cluster_direct_transfer_unavailable",
+                "Cluster direct transfer is not configured on this deployment",
+                status_code=503,
+                actions=[
+                    {
+                        "type": "configure_direct_transfer",
+                        "label": "Configure a deployment-managed Cluster data-plane root",
+                    }
+                ],
+            )
+        job = self._get_owned_job(owner, str(job_id or ""))
+        stage_key = str(stage_id or "").strip()
+        stage = next(
+            (
+                item
+                for item in list(job.get("stages") or job.get("tasks") or [])
+                if str(item.get("stage_id") or item.get("task_id") or "") == stage_key
+            ),
+            None,
+        )
+        if stage is None:
+            raise ApiV1Error(
+                "transfer_stage_not_found",
+                "Transfer Stage is not part of this Job",
+                status_code=404,
+                detail={"job_id": str(job_id), "stage_id": stage_key},
+            )
+        stage_payload = dict(stage.get("payload") or {})
+        if str(stage_payload.get("dispatch_scope") or "") != "direct_transfer":
+            raise ApiV1Error(
+                "transfer_stage_not_direct",
+                "Transfer plans are allowed only for a direct-transfer Stage",
+                status_code=403,
+                detail={"job_id": str(job_id), "stage_id": stage_key},
+            )
+        allowed_roles = {
+            str(item).strip()
+            for item in list(stage_payload.get("source_roles") or [])
+            if str(item).strip()
+        }
+        requested_role = str(source_role or "").strip()
+        if requested_role not in allowed_roles:
+            raise ApiV1Error(
+                "transfer_source_role_not_allowed",
+                "source_role is not required by this direct-transfer Stage",
+                status_code=422,
+                detail={"source_role": requested_role},
+            )
+        if not items:
+            raise ApiV1Error(
+                "invalid_transfer_item",
+                "At least one metadata item is required before issuing a transfer plan",
+                status_code=422,
+            )
+        plan_items: list[TransferPlanItem] = []
+        allowed_item_fields = {"source_role", "relative_path", "size", "checksum", "sha256", "mtime_ns"}
+        try:
+            for raw in items:
+                if not isinstance(raw, Mapping):
+                    raise ValueError("transfer item must be an object")
+                unknown = set(raw) - allowed_item_fields
+                if unknown:
+                    raise ValueError("transfer item contains unsupported fields")
+                item_role = str(raw.get("source_role") or requested_role or "").strip()
+                if item_role != requested_role:
+                    raise ValueError("item source_role must match the request source_role")
+                plan_items.append(
+                    TransferPlanItem(
+                        source_role=item_role,
+                        relative_path=str(raw.get("relative_path") or ""),
+                        size=int(raw.get("size") or 0),
+                        checksum=str(raw.get("checksum") or raw.get("sha256") or ""),
+                        mtime_ns=(None if raw.get("mtime_ns") is None else int(raw.get("mtime_ns"))),
+                    )
+                )
+        except (TypeError, ValueError) as exc:
+            raise ApiV1Error(
+                "invalid_transfer_item",
+                "Transfer plan items must contain metadata only",
+                status_code=422,
+                detail={"error": str(exc)},
+            ) from exc
+        try:
+            plan = transfer.issue_plan(
+                owner=owner,
+                job_id=str(job_id),
+                stage_id=stage_key,
+                # P0 local-input Cluster transfers always use the deployed
+                # shared-copy adapter.  The mode is server policy, not a
+                # client-selectable field.
+                mode="shared_copy",
+                source_role=requested_role,
+                items=tuple(plan_items),
+                source_fingerprints=source_fingerprints,
+                ttl_seconds=float(ttl_seconds),
+            )
+        except TransferError as exc:
+            raise ApiV1Error(
+                exc.code,
+                exc.message,
+                status_code=exc.status_code,
+                detail=exc.detail,
+                actions=exc.actions,
+            ) from exc
+        return plan.to_dict()
+
+    def get_transfer_plan(self, owner: str, transfer_id: str) -> dict[str, Any]:
+        transfer = self._require_transfer_service()
+        try:
+            return transfer.get_plan(str(transfer_id or ""), owner=self._owner(owner)).to_dict()
+        except TransferError as exc:
+            raise ApiV1Error(exc.code, exc.message, status_code=exc.status_code, detail=exc.detail, actions=exc.actions) from exc
+
+    def get_job_transfer_status(self, owner: str, job_id: str) -> dict[str, Any]:
+        self._get_owned_job(owner, str(job_id or ""))
+        transfer = self._require_transfer_service()
+        try:
+            result = transfer.get_job_transfer_status(self._owner(owner), str(job_id))
+        except TransferError as exc:
+            raise ApiV1Error(exc.code, exc.message, status_code=exc.status_code, detail=exc.detail, actions=exc.actions) from exc
+        return {"job_id": str(job_id), **result}
+
+    def report_transfer_progress(self, owner: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        transfer = self._require_transfer_service()
+        try:
+            progress = TransferProgress(
+                transfer_id=str(payload.get("transfer_id") or ""),
+                owner_scope=str(payload.get("owner_scope") or ""),
+                bytes_transferred=int(payload.get("bytes_transferred") or 0),
+                bytes_total=int(payload.get("bytes_total") or 0),
+                current_file=str(payload.get("current_file") or ""),
+                status=str(payload.get("status") or "in_progress"),
+                updated_at=float(payload.get("updated_at") or self.now_fn()),
+            )
+            transfer.report_progress(progress, owner=self._owner(owner))
+            plan = transfer.get_plan(progress.transfer_id, owner=self._owner(owner))
+            return {"transfer_id": progress.transfer_id, "status": plan.status, "progress": progress.to_dict()}
+        except TransferError as exc:
+            raise ApiV1Error(exc.code, exc.message, status_code=exc.status_code, detail=exc.detail, actions=exc.actions) from exc
+
+    def receive_transfer_manifest(self, owner: str, transfer_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        transfer = self._require_transfer_service()
+        try:
+            plan = transfer.get_plan(str(transfer_id or ""), owner=self._owner(owner))
+            entries: list[TransferManifestEntry] = []
+            for raw in payload.get("entries") or ():
+                if not isinstance(raw, Mapping):
+                    raise ValueError("manifest entry must be an object")
+                entries.append(
+                    TransferManifestEntry(
+                        relative_path=str(raw.get("relative_path") or ""),
+                        size=int(raw.get("size") or 0),
+                        checksum=str(raw.get("checksum") or raw.get("sha256") or ""),
+                        target_logical_ref=str(raw.get("target_logical_ref") or raw.get("storage_ref") or ""),
+                        mtime_ns=int(raw.get("mtime_ns") or 0),
+                        status=str(raw.get("status") or "completed"),
+                        result=str(raw.get("result") or ""),
+                        started_at=float(raw.get("started_at") or 0.0),
+                        completed_at=float(raw.get("completed_at") or 0.0),
+                    )
+                )
+            manifest = TransferManifest(
+                transfer_id=str(payload.get("transfer_id") or transfer_id or ""),
+                # The authenticated request owner is authoritative; a body
+                # owner is ignored so clients cannot self-report another
+                # user's scope.
+                owner=self._owner(owner),
+                owner_scope=str(payload.get("owner_scope") or plan.owner_scope),
+                job_id=str(payload.get("job_id") or plan.job_id),
+                entries=tuple(entries),
+                total_bytes=(None if payload.get("total_bytes") is None else int(payload.get("total_bytes"))),
+                started_at=float(payload.get("started_at") or 0.0),
+                completed_at=float(payload.get("completed_at") or 0.0),
+                status=str(payload.get("status") or "completed"),
+            )
+            if manifest.transfer_id != str(transfer_id or ""):
+                raise ValueError("manifest transfer_id does not match route")
+            result = transfer.receive_manifest(manifest, owner=self._owner(owner))
+            completed_job = self._control(self._owner(owner)).complete_transfer_stage(
+                manifest.job_id or plan.job_id,
+                plan.stage_id,
+                owner=self._owner(owner),
+                source_role=plan.source_role,
+                transfer={
+                    "transfer_id": manifest.transfer_id,
+                    "source_role": plan.source_role,
+                    "entries": [
+                        {
+                            "relative_path": entry.relative_path,
+                            "size": entry.size,
+                            "sha256": entry.sha256,
+                            "storage_ref": entry.storage_ref,
+                        }
+                        for entry in manifest.entries
+                    ],
+                },
+            )
+            completed_stage = next(
+                (
+                    item
+                    for item in completed_job.get("stages") or []
+                    if str(item.get("stage_id") or "") == plan.stage_id
+                ),
+                {},
+            )
+            output_ref = dict(completed_stage.get("output_ref") or {})
+            stage_result = dict(completed_stage.get("result") or {})
+            return {
+                **result,
+                "manifest": manifest.to_dict(),
+                "job_id": plan.job_id,
+                "stage_id": plan.stage_id,
+                "stage_status": str(completed_stage.get("status") or ""),
+                "transfer_status": str(output_ref.get("transfer_status") or result.get("status") or ""),
+                "remaining_roles": list(stage_result.get("remaining_roles") or output_ref.get("remaining_roles") or []),
+                "job_status": completed_job.get("status"),
+            }
+        except TransferError as exc:
+            raise ApiV1Error(exc.code, exc.message, status_code=exc.status_code, detail=exc.detail, actions=exc.actions) from exc
+        except (TypeError, ValueError) as exc:
+            raise ApiV1Error("invalid_transfer_manifest", "Transfer manifest must contain metadata only", status_code=422, detail={"error": str(exc)}) from exc
+
+    def cancel_transfer(self, owner: str, transfer_id: str) -> dict[str, Any]:
+        transfer = self._require_transfer_service()
+        try:
+            return transfer.cancel_transfer(str(transfer_id or ""), owner=self._owner(owner))
+        except TransferError as exc:
+            raise ApiV1Error(exc.code, exc.message, status_code=exc.status_code, detail=exc.detail, actions=exc.actions) from exc
+
+    def _require_transfer_service(self) -> TransferService:
+        if self.transfer_service is None:
+            raise ApiV1Error(
+                "cluster_direct_transfer_unavailable",
+                "Cluster direct transfer is not configured on this deployment",
+                status_code=503,
+                actions=[{"type": "configure_direct_transfer", "label": "Configure a deployment-managed Cluster data-plane root"}],
+            )
+        return self.transfer_service
 
     def diagnosis(self, owner: str, job_id: str) -> dict[str, Any]:
         """Return a stable, path-free diagnosis for Web, SDK and AI adapters.

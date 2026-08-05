@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -414,7 +415,7 @@ def test_resolve_spec_reports_unexpected_setup_error_instead_of_staying_running(
     assert any("task setup error" in line for line in client.logs)
 
 
-def test_register_artifact_uses_explicit_uploader_without_spawning(monkeypatch):
+def test_register_artifact_uses_direct_transfer_without_spawning(monkeypatch):
     class FakeClient:
         def __init__(self):
             self.results = []
@@ -431,11 +432,12 @@ def test_register_artifact_uses_explicit_uploader_without_spawning(monkeypatch):
 
     monkeypatch.setattr(
         agent_module,
-        "_upload_v5_artifact",
-        lambda client, payload, *, owner="": {
-            "artifact": {"storage_ref": "shared://selena/ovrs25/team/a/selena.exe"},
-            "storage_ref": "shared://selena/ovrs25/team/a/selena.exe",
-            "build_evidence_ref": payload["build_evidence_ref"],
+        "_direct_transfer_v5_artifact",
+        lambda client, agent_id, task, *, owner="", cancel_check=None: {
+            "transfer_id": "transfer:sha256:" + "a" * 64,
+            "transfer_status": "transfer_completed",
+            "storage_refs": ["cluster-staging://v1/selena/Selena.exe"],
+            "build_evidence_ref": task["payload"]["build_evidence_ref"],
             "owner": owner,
         },
     )
@@ -460,13 +462,14 @@ def test_register_artifact_uses_explicit_uploader_without_spawning(monkeypatch):
         node_kind="windows_agent",
     ) == 0
     assert client.results[0]["status"] == "succeeded"
-    assert client.results[0]["result"]["storage_ref"].startswith("shared://selena/")
+    assert client.results[0]["result"]["transfer_status"] == "transfer_completed"
     assert client.results[0]["result"]["owner"] == "alice"
 
 
-def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkeypatch):
+def test_prepare_data_uses_authorized_lease_and_direct_transfer_without_spawning(monkeypatch):
     import core.agent_data_bindings as binding_module
     import core.agent_data_lease as lease_module
+    from core.datasets import DatasetFileRef
 
     class FakeLeaseStore:
         uploaded = []
@@ -477,12 +480,14 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
             assert payload["data_binding_id"].startswith("data-root:")
             assert stage_id == "stage-data"
             assert attempt == 1
-            assert checksum is True
+            assert checksum is False
             assert cancel_requested() is False
             return SimpleNamespace(
                 lease_id="data-lease:sha256:" + "a" * 32,
-                files=(SimpleNamespace(relative_path="a.MF4", size=1, checksum="sha256:" + "b" * 64),),
+                files=(DatasetFileRef("a.MF4", 1, "", mtime_ns=1),),
                 project="ovrs25",
+                binding_id="data-root:sha256:" + "e" * 24,
+                source_path=Path("D:/measurements"),
             )
 
         def mark_uploaded(self, lease_id, dataset_id):
@@ -499,23 +504,27 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
         def heartbeat(self, _agent_id, **_kwargs):
             return {"cancel_requested": False}
 
-        def upload_data_lease(
-            self, evidence_ref, *, agent_id, lease, task_id, owner="", cancel_requested
-        ):
-            assert evidence_ref == "stage-data:1"
-            assert agent_id == "agent-a"
-            assert task_id == "stage-data"
-            assert owner == "alice"
-            assert cancel_requested() is False
-            return {
-                "dataset": {
-                    "id": "dataset:sha256:" + "c" * 64,
-                    "source_kind": "agent_upload",
-                    "storage_ref": "shared://datasets/ovrs25/opaque",
+        def issue_transfer_plan(self, **kwargs):
+            assert kwargs["source_role"] == "dataset"
+            assert kwargs["items"][0]["checksum"] == ""
+            return {"signed": True}
+
+        def execute_transfer_plan(self, _plan, **_kwargs):
+            entry = SimpleNamespace(
+                storage_ref="cluster-staging://v1/data/a.MF4",
+                to_dict=lambda: {
+                    "relative_path": "a.MF4",
+                    "size": 1,
+                    "sha256": "b" * 64,
+                    "storage_ref": "cluster-staging://v1/data/a.MF4",
                 },
-                "data_path": "dataset://sha256/" + "c" * 64,
-                "upload_session_id": "dsup_" + "d" * 24,
-            }
+            )
+            return SimpleNamespace(
+                transfer_id="transfer:sha256:" + "a" * 64,
+                total_bytes=1,
+                entries=(entry,),
+                to_dict=lambda: {"transfer_id": "transfer:sha256:" + "a" * 64},
+            )
 
         def submit_result(self, _task_id, **kwargs):
             self.results.append(kwargs)
@@ -534,7 +543,12 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
         "stage_type": "prepare_data",
         "attempt_count": 1,
         "owner": "alice",
-        "payload": {"project": "ovrs25", "data_binding_id": "data-root:sha256:" + "e" * 24},
+        "payload": {
+            "dispatch_scope": "direct_transfer",
+            "project": "ovrs25",
+            "data_binding_id": "data-root:sha256:" + "e" * 24,
+            "source_paths": [{"source_role": "dataset", "path": "D:/measurements"}],
+        },
     }
     assert agent_module._run_task(
         client,
@@ -544,11 +558,12 @@ def test_prepare_data_uses_authorized_lease_and_uploader_without_spawning(monkey
         node_kind="windows_agent",
     ) == 0
     assert client.results[0]["status"] == "succeeded"
-    assert client.results[0]["result"]["dataset_id"].startswith("dataset:sha256:")
+    assert client.results[0]["result"]["transfer_status"] == "transfer_completed"
 
 
-def test_prepare_data_one_click_authorizes_first_local_path_then_uploads(monkeypatch, tmp_path):
+def test_prepare_data_one_click_authorizes_first_local_path_then_direct_transfers(monkeypatch, tmp_path):
     import core.agent_data_lease as lease_module
+    from core.datasets import DatasetFileRef
 
     monkeypatch.setenv("RSIM_HOME", str(tmp_path / "home"))
     source = tmp_path / "measurements" / "case"
@@ -559,7 +574,7 @@ def test_prepare_data_one_click_authorizes_first_local_path_then_uploads(monkeyp
         def create(self, payload, bindings, *, stage_id, attempt, checksum, cancel_requested):
             assert stage_id == "stage-one-click-data"
             assert attempt == 1
-            assert checksum is True
+            assert checksum is False
             assert payload["data_binding_id"].startswith("data-root:sha256:")
             assert bindings.authorize_path(
                 project="ovrs25",
@@ -568,8 +583,10 @@ def test_prepare_data_one_click_authorizes_first_local_path_then_uploads(monkeyp
             ) == source.resolve()
             return SimpleNamespace(
                 lease_id="data-lease:sha256:" + "a" * 32,
-                files=(SimpleNamespace(relative_path="one.MF4", size=3, checksum="sha256:" + "b" * 64),),
+                files=(DatasetFileRef("one.MF4", 3, "", mtime_ns=1),),
                 project="ovrs25",
+                binding_id=payload["data_binding_id"],
+                source_path=source,
             )
 
         def mark_uploaded(self, _lease_id, _dataset_id):
@@ -588,11 +605,24 @@ def test_prepare_data_one_click_authorizes_first_local_path_then_uploads(monkeyp
             self.metadata.append(kwargs.get("metadata") or {})
             return {"cancel_requested": False}
 
-        def upload_data_lease(self, *_args, **_kwargs):
-            return {
-                "dataset": {"id": "dataset:sha256:" + "c" * 64},
-                "data_path": "dataset://sha256/" + "c" * 64,
-            }
+        def issue_transfer_plan(self, **_kwargs):
+            return {"signed": True}
+
+        def execute_transfer_plan(self, _plan, **_kwargs):
+            entry = SimpleNamespace(
+                storage_ref="cluster-staging://v1/data/one.MF4",
+                to_dict=lambda: {
+                    "relative_path": "one.MF4", "size": 3,
+                    "sha256": "b" * 64,
+                    "storage_ref": "cluster-staging://v1/data/one.MF4",
+                },
+            )
+            return SimpleNamespace(
+                transfer_id="transfer:sha256:" + "a" * 64,
+                total_bytes=3,
+                entries=(entry,),
+                to_dict=lambda: {"transfer_id": "transfer:sha256:" + "a" * 64},
+            )
 
         def submit_result(self, _task_id, **kwargs):
             self.results.append(kwargs)
@@ -606,10 +636,11 @@ def test_prepare_data_one_click_authorizes_first_local_path_then_uploads(monkeyp
         "attempt_count": 1,
         "owner": "alice",
         "payload": {
-            "dispatch_scope": "data_upload",
+            "dispatch_scope": "direct_transfer",
             "project": "ovrs25",
             "data_path": str(source),
             "auto_configure": True,
+            "source_paths": [{"source_role": "dataset", "path": str(source)}],
         },
     }
 
@@ -632,7 +663,7 @@ def test_prepare_data_heartbeat_cancels_a_slow_discovery(monkeypatch):
         ):
             assert stage_id == "stage-slow-data"
             assert attempt == 1
-            assert checksum is True
+            assert checksum is False
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
                 if cancel_requested():
@@ -665,7 +696,12 @@ def test_prepare_data_heartbeat_cancels_a_slow_discovery(monkeypatch):
         "stage_type": "prepare_data",
         "attempt_count": 1,
         "owner": "alice",
-        "payload": {"project": "ovrs25", "data_binding_id": "data-root:sha256:" + "e" * 24},
+        "payload": {
+            "dispatch_scope": "direct_transfer",
+            "project": "ovrs25",
+            "data_binding_id": "data-root:sha256:" + "e" * 24,
+            "source_paths": [{"source_role": "dataset", "path": "D:/measurements"}],
+        },
     }
 
     assert agent_module._run_task(

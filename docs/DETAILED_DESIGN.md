@@ -119,9 +119,9 @@ P0 默认基于现有代码改造；只有在现有代码缺少标准能力、�
 | Pydantic v2 | https://docs.pydantic.dev/latest/concepts/json_schema/ | `SimulationSpec` 类型校验、JSON Schema、默认值和错误定位 | `core/config.py` legacy adapter、PyYAML loader | 新依赖；模型和 legacy config 需避免双份字段 | 用一份 spec 生成 JSON Schema；Web JSON、YAML、SDK model round-trip hash 一致；错误能定位字段 | dataclass + 手写校验 + 手写 JSON Schema |
 | FastAPI + Uvicorn | https://fastapi.tiangolo.com/features/ | `/api/v1` OpenAPI、请求/响应校验、SSE/streaming 接入点 | `core/control_service.py`、`core/control_http.py` 的 service/repository；stdlib server 保留 legacy | 运行时依赖增加；不能把调度器重写到 FastAPI route 内 | v1 `validate/submit/get/events/cancel` thin route 调用同一 application service；legacy `/api/*` 仍可跑 | 继续 stdlib `http.server`，手写 route/schema |
 | HTTPX | https://www.python-httpx.org/ | Python SDK transport、timeout、stream/SSE、后续 async 兼容 | `core/remote_control.py` client 思路和错误模型 | 新依赖；代理/证书策略需配置 | SDK 能 validate/submit/watch 同一 job；SSE 或流式响应断线后可恢复 cursor | `urllib.request` transport，仅保留 polling watch |
-| tus protocol + tusd | https://tus.io/ and https://tus.github.io/tusd/ | 大文件上传、断点续传、校验、并发和失败恢复 | `core/data.py` 的扫描/引用生成；Stage `prepare_data` | 需要部署 sidecar/server；权限、清理和 storage hook 需接入平台策略 | tusd 本地/SMB staging smoke；上传中断恢复；完成后生成 `DatasetRef` 和 checksum manifest | 简化一次性 multipart upload；大文件上传降级为 Agent/SDK 本地复制 |
-| Uppy tus browser client | https://uppy.io/docs/tus/ | 浏览器文件夹上传和续传 UI | existing vanilla Web；不引入 React | JS bundle 和 UI 集成成本；浏览器目录权限限制 | vanilla 页面可选择文件夹、续传、显示进度，完成后调用 v1 create DatasetRef | HTML file input + non-resumable upload |
-| tus-py-client | https://github.com/tus/tus-py-client | SDK/Agent 使用同一上传协议 | `cli/agent.py`、SDK upload module | 客户端依赖；代理和断点状态目录需设计 | SDK/Agent 上传同一 MF4，断点续传成功，server 得到同一 fingerprint | SDK/Agent 调用 tus HTTP primitives or local copy |
+| SMB/UNC direct copy | 现有 Cluster 共享工作区 | 客户端到 Cluster 数据面的直传、续传、校验和失败恢复 | `core/data.py` 清单；`core/cluster.py` workspace；Agent/SDK | 用户设备必须具备共享盘权限；目标隔离和部分文件清理需实现 | 1 GB MF4 从客户端直达 UNC，Linux API 入站字节不增长，断线续传成功 | 部署方提供 Cluster upload gateway；禁止回退 Linux 中转 |
+| tus protocol + tusd | https://tus.io/ and https://tus.github.io/tusd/ | 仅作为 Cluster 上传网关的可选协议，不部署在 Linux 控制面进程前 | TransferPlan `gateway_upload` adapter | 需要 Cluster 侧部署和权限接入 | tusd 的物理存储直接位于 Cluster 数据面；Linux 只签发目标/凭据 | SMB/UNC `shared_copy` |
+| Uppy/tus client | https://uppy.io/docs/tus/ | 浏览器到 Cluster 上传网关的直传 UI | existing vanilla Web；不引入 React | 浏览器目录权限、网关 CORS/认证 | 浏览器请求体直达 Cluster gateway，Linux 只收 Manifest | 本机 Connector；禁止 HTML 上传到 Linux |
 | PyInstaller one-folder | https://pyinstaller.org/en/stable/ | Windows full/light Agent 可分发 Python runtime | existing CLI/agent/server entrypoints | 打包体积、动态 import、杀软误报 | one-folder 包能启动 full/agent，运行 `rsim check` 和 agent register smoke | 文档化 `pip install -e .` 开发安装；P0 安装体验降级 |
 | WinSW stable | https://github.com/winsw/winsw | Windows Agent/Worker 服务化、开机启动、日志 | `cli/agent.py` process loop | 服务权限和路径授权需要谨慎 | MSI 安装后服务启动、重启恢复 heartbeat、日志可收集 | 用户手动启动 agent 进程；Windows Task Scheduler |
 | WiX Toolset | https://docs.firegiant.com/wix/ | Full/Agent MSI、安装/卸载、目录和服务注册 | PyInstaller output、WinSW service wrapper | MSI 学习成本；企业签名流程另行处理 | 安装、升级同版本拒绝/覆盖策略、卸载不删用户数据 | ZIP + PowerShell installer |
@@ -191,8 +191,8 @@ flowchart LR
     Agent --> Events
     LinuxExec --> Events
     Gateway --> Events
+    Local --> Shared
     Agent --> Shared
-    LinuxExec --> Shared
     Gateway --> Shared
     LinuxExec --> Cluster
     Gateway --> Cluster
@@ -208,6 +208,8 @@ flowchart LR
 5. Cluster Gateway 是平台节点，不是用户节点。Cluster 数据与 Selena 就绪后，任务不依赖用户 Agent 在线。
 6. Windows 轻量 Agent 首版不得声明或领取 `simulation.local`，也不得领取 Cluster 运行期 stage；它的边界止于编译/数据准备、登记校验、上传同步和结果回传。
 7. 用户 YAML 与内部部署配置分离。
+8. Linux 是控制面而不是大文件代理：MF4、Selena/DLL、Runtime、MatFilter、Adapter 和大型结果归档不得通过 Linux API 上传或落入 Linux 私有 staging。Linux 只签发 TransferPlan、接收 TransferManifest 并登记逻辑引用。
+9. `target=local` 对本机可达输入不创建 TransferPlan；若输入只在远端且 Windows full 不能原地读取，则签发 `source_to_local`，由源端直接送入 Windows 受控缓存。`target=cluster` 时，文件所在客户端直写 Cluster 可访问共享工作区，或使用 Cluster 上传网关。两种方向都不经过 Linux 数据面。
 
 ## 3. 两种部署拓扑
 
@@ -244,16 +246,16 @@ flowchart TB
     Linux --> LExec["Linux Cluster Executor"]
     Linux --> PGateway["Platform Windows Gateway"]
     Linux -. optional .-> UAgent["User Windows Agent"]
-    UAgent --> Upload["Artifact / Dataset Staging"]
+    UAgent --> Shared["Cluster-accessible Shared Staging"]
     LExec --> Cluster["Cluster"]
     PGateway --> Cluster
-    Upload --> Cluster
+    Shared --> Cluster
 ```
 
 路由规则：
 
 - `existing Selena + shared/uploaded data + cluster`：Linux executor 或平台 Gateway；
-- `current workspace build + cluster`：可路由到 Windows full 或用户授权的 Windows 轻量 Agent；branch 仅用于期望值告警，Agent 完成编译、产物/数据 staging 后必须交还中央调度；
+- `current workspace build + cluster`：可路由到 Windows full 或用户授权的 Windows 轻量 Agent；branch 仅用于期望值告警，Agent 完成编译并把产物/数据直接写入 Cluster staging 后必须交还中央调度；文件正文不经过 Linux；
 - `local simulation`：只路由到 Windows full deployment，不路由到轻量 Agent；
 - 用户没有 Windows full 或轻量 Agent：只允许已有 Selena + shared/uploaded data + Cluster；
 - 旧 Cluster 客户端不能在 Linux 运行时，路由到平台 Windows Gateway，不能退回用户 Agent。
@@ -361,10 +363,10 @@ Event
   "capabilities": {
     "build.selena": {"status": "ready", "version": "..."},
     "data.local.read": {"status": "ready"},
-    "data.upload": {"status": "ready"},
+    "data.direct_transfer": {"status": "ready"},
     "artifact.register": {"status": "ready"},
     "artifact.validate": {"status": "ready"},
-    "artifact.upload": {"status": "ready"}
+    "artifact.direct_transfer": {"status": "ready"}
   },
   "environment_snapshot_id": "env-...",
   "last_heartbeat": "..."
@@ -373,7 +375,7 @@ Event
 
 Capability 必须带健康状态和版本，不能只保存字符串列表。现有 `agents.capabilities_json` 可作为迁移源。服务端必须先按 `node.kind` 过滤自报能力，再应用 v1 policy；legacy wildcard 或旧 `cluster.run` 字符串不能绕过 `windows_agent` 限制。`kind=windows_agent` 的 P0 capability 集合不得包含 `simulation.local`、`simulation.cluster`、`cluster.gateway` 或 Cluster run/collect/finalize stage；`simulation.local` 只属于 `windows_full`，`simulation.cluster` / `cluster.gateway` 只属于 Linux executor、platform gateway 或 Windows full 的显式 Cluster adapter。`windows_full` 与 `platform_gateway` 必须使用不同 `node.kind` 和策略，不能用同一 capability 集合互相伪装。
 
-正式 artifact capability 词汇为 `artifact.register`、`artifact.validate`、`artifact.upload`。三者必须绑定同一构建节点、构建 attempt、授权 workspace/output 目录和产物 checksum；light Agent 不得登记任意路径或其他节点构建的二进制。平台 catalog 成功写入 `SelenaArtifact` 后，Cluster path 只消费 `SelenaArtifact.storage_ref`，不再要求构建 Agent 在线。
+正式 artifact capability 词汇为 `artifact.register`、`artifact.validate`、`artifact.direct_transfer`。三者必须绑定同一构建节点、构建 attempt、授权 workspace/output 目录和产物 checksum；light Agent 不得登记任意路径或其他节点构建的二进制。平台 catalog 成功登记 Cluster 可达的 `SelenaArtifact.storage_ref` 后，Cluster path 不再要求构建 Agent 在线。
 
 ### 4.5 SelenaArtifact
 
@@ -386,39 +388,16 @@ binary_checksum, interface_manifest, signal_manifest
 storage_ref, accessibility, health, created_by, created_at, retain_until
 ```
 
-#### 中央产物存储设计（WP4/WP6-A6）
+#### Cluster 数据面产物设计
 
-状态：**Current kernel/application boundary**。中央 store、trusted-evidence application service、`/api/v1` 和 SDK 已实现；Windows Agent 自动调用、Stage scheduler binding 和真实共享存储 smoke 仍属于后续工作。
+状态：**Current product target**。过去实现的 Linux 中央 `ArtifactStore`、`DatasetStore` 和 `/api/v1/*-uploads` 只保留为迁移/兼容代码，不得用于新建 Cluster Job；继续优化它们的大文件吞吐会固化错误架构。
 
-**存储根与逻辑引用**
-- 管理员通过环境变量或部署策略配置一个文件系统根目录（`RSIM_ARTIFACT_ROOT`）；缺省时仅在开发/测试场景下回退到 `RSIM_HOME/artifacts`。
-- 所有对外接口只暴露归一化逻辑引用，格式为 `shared://selena/<project>/<relative-publish-path>`；物理服务器路径永不返回给客户端。
-
-**路径安全**
-- 解析用户提供的相对发布路径时，必须逐段校验：禁止 `..`、空段、绝对路径前缀（`/`、`\`、`C:`、`\\`）、UNC 前缀、设备路径（`CON`、`NUL` 等 Windows 保留名）。
-- 写入前对目标路径执行 `os.path.realpath` 或等效解析，确认最终物理路径仍在存储根之下；拒绝符号链接、重解析点（reparse point）或硬链接导致的逃逸。
-- 上传会话的临时文件也必须落在存储根内的隔离目录中，按会话 UUID 分段。
-
-**上传会话协议（内部 resumable offset）**
-- 创建会话：`POST /api/v1/artifact-uploads`。客户端只提交不可变的 `build_evidence_ref` 与可选 `publish_path`；项目、checksum、size、branch/commit、dirty/source-changed、build mode 和构建节点均从服务端持久化的成功 build attempt 读取，不接受客户端自报。
-- 追加分片：`PATCH /api/v1/artifact-uploads/{session_id}`，请求头 `Upload-Offset: <offset>`，正文为原始字节。只接受连续 offset；同一 offset、size、chunk checksum 的重试幂等，空洞或重叠返回冲突。
-- 查询进度：`GET /api/v1/artifact-uploads/{session_id}` 返回 `received_bytes`、`expected_size`、`storage_ref`、`chunk_size` 和状态。
-- 完成并注册：`POST /api/v1/artifact-uploads/{session_id}/finalize` 不接收新的 metadata/checksum；服务端原子校验：
-  1. 确认已接收字节数和物理文件大小严格等于 trusted build evidence；
-  2. 流式计算 SHA-256，与 trusted build evidence 比对；
-  3. 若同一 `logical_path` 已存在相同 checksum，幂等返回已有 `SelenaArtifact`；
-  4. 若同一 `logical_path` 已存在不同 checksum，返回 `artifact_path_conflict`（409），要求选择不同路径；
-  5. 校验通过后，原子移动临时文件到最终逻辑路径，并在 `ArtifactCatalog` 中注册不可变的 `SelenaArtifact`。
-- 会话状态持久化在 artifact root 下独立的 `.store/sessions.db`；catalog 位于 `.store/catalog.db`。二者与 per-user ControlService DB 分离，支持进程重启后恢复未完成会话并让 clean 产物跨用户发现。
-
-**授权与隔离**
-- 每个上传会话绑定 `owner`（经 `normalize_user` 处理），查询/追加/完成时必须校验会话归属。
-- 目录创建按 `project` 隔离，但共享可见性由产物级 `visibility` 字段控制，而非文件系统 ACL。
-
-**API 与 SDK 扩展**
-- FastAPI route 只做 HTTP 适配：解析 `Upload-Offset`、读取原始正文并调用 application service。
-- SDK 提供 `create_artifact_upload()`、`get_artifact_upload()`、`append_artifact_upload()`、`finalize_artifact_upload()` 和文件级便利方法 `upload_artifact()`。
-- `core/artifact_store.py` 负责受控文件系统、offset/checksum 与幂等 finalize；`core/artifact_upload_service.py` 负责 trusted build evidence、可见性和 `ArtifactCatalog` 注册；业务逻辑不进入 FastAPI handler。
+- Linux 从部署白名单生成 owner/Job/Transfer 隔离的 TransferPlan，不接收文件正文。
+- Windows Connector、SDK 或 Cluster 上传网关把 Selena 完整目录直接写入 Cluster 可访问 staging；`.partial` 完成后原子发布。
+- 客户端回传 TransferManifest：相对路径、大小、checksum、build evidence 和目标逻辑引用。
+- Linux 只校验 Manifest、目标处的有界可达性和 owner scope，再在 Catalog 登记不可变 `SelenaArtifact`。
+- 相同 checksum 和允许的 visibility 可幂等复用；同一逻辑位置的不同 checksum 必须使用新的不可猜测目标。
+- 目标路径、UNC、挂载点和凭据不出现在公共 API/YAML/MCP/日志中。完整协议见 `docs/CONTROL_DATA_PLANE_PLAN.md`。
 
 ### 4.6 DatasetRef
 
@@ -427,7 +406,7 @@ storage_ref, accessibility, health, created_by, created_at, retain_until
 ```text
 id, owner, project, original_path, resolved_kind
 content_fingerprint, file_count, total_bytes
-storage_ref, accessibility, upload_session_id, retain_until
+storage_ref, accessibility, transfer_id, retain_until
 ```
 
 `original_path` 用于说明来源；执行任务只消费 `storage_ref` 或节点绑定的本地 token。
@@ -442,7 +421,7 @@ storage_ref, accessibility, upload_session_id, retain_until
 
 `current_workspace` 以及最小 YAML 的 `selena.mode=auto + auto_build=true` 在中央已有 logical binding、但 Linux 无法取得 workspace fingerprint 时，解析状态为 `pending_node`，不等同于用户缺配置。在线 Agent 可在提交时匹配；离线 Agent 后续 poll 时根据 path-free `workspace_bindings` 广告完成 CAS binding。真正没有 logical binding 时才返回 `workspace_binding_required`。
 
-build 成功后，Windows Agent 将绝对产物路径和 file identity 写入 Agent-local `artifact_leases.db`，中央只持有随机 `artifact-lease:sha256:*` 与可信 `build_stage_id:attempt`。上传前 Agent 重验 identity 和 SHA-256；`register_artifact` 必须带 durable affinity 回到同一 Agent，并通过显式 `--api-url` 调用 v1 resumable upload。中央继续以成功 build attempt 为 metadata source of truth，不接受 Agent 自报 branch/commit/visibility。
+build 成功后，Windows Agent 将绝对产物路径和 file identity 写入 Agent-local lease，中央只持有随机 lease 与可信 `build_stage_id:attempt`。直传前 Agent 重验 identity 和 SHA-256；`register_artifact` 必须带 durable affinity 回到同一 Agent，并按服务签发的 TransferPlan 直写 Cluster 数据面。中央继续以成功 build attempt 为 metadata source of truth，不接受 Agent 自报 branch/commit/visibility。
 
 ## 5. 配置分层
 
@@ -512,21 +491,25 @@ flowchart TD
 
 1. 服务端检查路径是否属于已登记的共享存储命名空间；
 2. 当前选择/绑定的 Agent 检查本地路径；
-3. SDK 在调用方显式允许时检查本地路径；
-4. 中央 Web 无 Agent 时进入浏览器文件夹上传；
+3. SDK 在调用方检查本地路径，并在 Cluster 目标下执行客户端到 Cluster 的直传；
+4. 中央 Web 无本机 Connector 时不得读取本地路径，也不得回退为经 Linux HTTP 上传；应进入可恢复等待并提供一次连接入口；
 5. 多个节点都声称能访问相同字符串路径时，返回 `needs_input` 让用户确认节点；
 6. 解析成功后生成 `DatasetRef`，后续 Stage 不再依赖原始路径推断。
 
-浏览器安全约束：远端网页不能仅凭 `D:\\path` 读取本地目录。必须通过 Agent companion 弹出本机选择器，或由浏览器文件夹选择器上传内容。
+浏览器安全约束：远端网页不能仅凭 `D:\\path` 读取本地目录。必须通过 Agent companion 弹出本机选择器；若部署了 Cluster 侧上传网关，也可由浏览器文件夹选择器直接上传到该网关。
+
+数据面约束：上句中的浏览器上传只可用于具备 Cluster 直传能力的本机 companion/上传网关；禁止以 Linux Web/API 为接收端。解析成功后的 `DatasetRef` 必须指向 Cluster 可访问位置。完整 TransferPlan、客户端矩阵、状态码和发布门禁见 `docs/CONTROL_DATA_PLANE_PLAN.md`。
 
 ### 6.4 目标路由规则
 
 | Selena 来源 | 目标 | 必需能力 | 执行原则 |
 |---|---|---|---|
 | current workspace | local | Windows full build + local sim | 只允许 Windows full deployment |
-| current workspace | cluster | Windows full 或 light Agent build/upload + platform cluster | 用户节点只负责构建/上传，Cluster 后续独立 |
+| current workspace | cluster | Windows full 或 light Agent build/direct-transfer + platform cluster | 用户节点只负责构建和直传 Cluster，Linux 不接收文件正文，Cluster 后续独立 |
 | existing | local | Windows full local sim + artifact access | 无 Windows full 本地 sim capability 时禁止 |
-| existing | cluster | platform cluster + artifact/data access | 无 Windows 用户的默认路径 |
+| existing | cluster | platform cluster + Cluster-accessible artifact/data | 已在共享存储则零复制；本地文件由所在客户端直传 |
+
+上述四行只是 Selena 来源/目标的业务入口，不是文件位置的限制。每个任务还需独立解析 Selena、Runtime、MatFilter、Adapter 和数据所在节点；例如远端数据+本地仿真、本地数据+远端 Selena+本地仿真都使用同一资源图与可达性算法。项目识别只影响编译适配，不影响资源图路由。
 
 `simulation.target=auto` 的选择顺序由项目策略决定；默认优先本地已有、无需搬运的执行路径，否则选择 Cluster。
 
@@ -538,8 +521,8 @@ light build-to-cluster 的 Stage 绑定矩阵：
 | `environment_check` | 按阶段拆分：light Agent 只检查 build/data staging 所需本机环境；Cluster 环境检查在 central/Gateway | central + `windows_agent` light + `linux_executor`/`platform_gateway` | `windows_full` |
 | `prepare_source` | 默认当前工作区构建时为可见的 `skipped`；未来显式冻结构建才需要 `source.git.worktree` | `windows_full` 或 `windows_agent` light | `windows_full` |
 | `build_selena` | `build.selena` | `windows_full` 或 `windows_agent` light | `windows_full` |
-| `register_artifact` | `artifact.register` + `artifact.validate` + `artifact.upload`；同一构建节点、同一授权目录；写入平台 `SelenaArtifact` 后解除 Agent 依赖 | 构建节点为 `windows_full` 或 `windows_agent` light；catalog 在 central | `windows_full` |
-| `prepare_data` | 本地路径走 `data.local.read` / `data.upload`；shared/browser/SDK 路径由 central upload/staging | 本地路径：`windows_full` 或 `windows_agent` light；shared/browser/SDK：central | `windows_full` |
+| `register_artifact` | `artifact.register` + `artifact.validate` + `artifact.direct_transfer`；同一构建节点、同一授权目录；直传 Cluster 后写入逻辑引用并解除 Agent 依赖 | 构建节点为 `windows_full` 或 `windows_agent` light；catalog 在 central，字节不进入 central | `windows_full` 原地使用，不传输 |
+| `prepare_data` | Cluster 本地路径走 `data.local.read` / `data.direct_transfer`；shared 路径零复制；本地仿真跳过传输 | Cluster：`windows_full`、`windows_agent` light 或 SDK direct-transfer；local：`windows_full` 原地读取 | `windows_full`，`transfer_skipped_local_execution` |
 | `preflight` | artifact/data/target 强校验 | `linux_executor` 或 `platform_gateway`；light Agent 不领取 | `windows_full` |
 | `run_simulation` | `simulation.cluster` / `cluster.gateway` 或 `simulation.local` | `linux_executor` 或 `platform_gateway`；light Agent 不领取 | `windows_full` only |
 | `collect_results` | `result.collect` | `linux_executor` 或 `platform_gateway`；light Agent 不领取 | `windows_full` |
@@ -571,7 +554,7 @@ flowchart TD
 - `prepare_source`：默认流程无副作用并可安全重放；未来显式冻结构建的 worktree 以 job/stage ID 命名，可检测并恢复；
 - `build_selena`：不可盲目重放，必须记录 attempt 和输出目录；
 - `register_artifact`：以 checksum 幂等；
-- `prepare_data`：以 content fingerprint 和 upload session 幂等；
+- `prepare_data`：以 content fingerprint 和 transfer id 幂等；
 - `run_simulation`：提交 Cluster 后必须先查询外部 job ID，禁止重复提交；
 - `collect_results`：允许重复；
 - `finalize_manifest`：按 job + successful attempt 生成不可变版本。
@@ -582,7 +565,7 @@ flowchart TD
 
 1. Job 进入 `cancelling`；
 2. 调度器向活动 Stage 发取消请求；
-3. 本地进程树、上传或 Cluster job 分别执行适配器取消；
+3. 本地进程树、客户端直传或 Cluster job 分别执行适配器取消；
 4. 无法立即取消时持续展示 `cancelling`；
 5. 已产生的日志、产物和外部 job ID 保留在 Manifest；
 6. 所有活动 Stage 终止后 Job 进入 `cancelled`。
@@ -651,7 +634,7 @@ dirty fingerprint 输入：
 
 无法解析时使用不确定进度，并持续发送心跳和原始日志，不能长期只显示静默的 `running`。
 
-## 9. 数据与上传设计
+## 9. 数据可达性与直传设计
 
 ### 9.1 共享数据
 
@@ -665,30 +648,27 @@ DeploymentPolicy 维护共享命名空间和不同执行节点的映射。用户
 2. 用户确认后 Agent 返回短期 `path_token` 和显示路径；
 3. 中央服务创建数据探测 Stage；
 4. Agent 检索内容并返回清单、大小和 fingerprint；
-5. 若目标是 Cluster，创建断点上传会话；
-6. 上传完成并校验后生成 DatasetRef；
+5. Resolver 根据执行位置签发 TransferPlan：Cluster 目标直达共享 staging，本地目标只为不可原地读取的远端输入签发 `source_to_local`；
+6. 客户端直传完成并回传 Manifest 后生成 DatasetRef；
 7. Cluster 任务不再依赖 Agent 在线。
 
 `path_token` 只对当前用户、节点和授权目录有效，不进入导出的 YAML。
 
-### 9.3 浏览器上传
+### 9.3 浏览器与本机 Connector
 
-没有 Agent 时，使用浏览器文件夹选择器：
+浏览器不会提供可信绝对路径，也不能把大文件提交给 Linux Web。页面保留用户填写的显示路径；需要本地读取时进入 `waiting_for_local_connector`，由一次安装、持久在线且 owner 匹配的本机 Connector 完成路径选择、清单生成和直传。若部署了 Cluster 侧浏览器上传网关，浏览器可直接向该网关发送字节，但 Linux 仍只接收完成 Manifest。
 
-- 浏览器不会提供可信绝对路径；UI 可保留用户填写的显示路径，但执行依据是上传会话；
-- 服务端支持分片、并发、断点、大小限制、SHA-256 和最终清单；
-- 上传完成后，UI 可把 YAML 中的 `data.path` 更新为平台分配的可复用逻辑路径；
-- 再次导入 YAML 时，Resolver 先查询该逻辑路径，失效才要求重新上传。
+### 9.4 SDK 直传
 
-### 9.4 SDK 上传
+Python SDK 发现调用机可读本地路径且目标执行端不可直接访问时：
 
-Python SDK 在用户显式调用 `submit(..., upload_local_data=True)` 或发现服务端返回 `DATA_PATH_NEEDS_UPLOAD` 后：
+1. 本地检索并展示/回调预计大小；
+2. 向 Linux 请求不含文件正文的 TransferPlan；
+3. 使用 `shared_copy`、`source_to_local` 或 `gateway_upload` 直接连接目标数据面；
+4. 续传并校验，向 Linux 回传进度和最终 Manifest；
+5. 继续原 Job 的 `prepare_data`/`register_artifact`，不重新提交 Job。
 
-1. 本地检索；
-2. 展示/回调预计大小；
-3. 创建 upload session；
-4. 分片上传并断点恢复；
-5. 重新提交或继续原 Job 的 `prepare_data` Stage。
+SDK 无可用直传适配器时返回稳定错误与处理动作，禁止回退为 Linux HTTP 分片上传。
 
 ## 10. Selena Catalog 与推荐
 
@@ -769,7 +749,7 @@ radar-sim-installer.exe --mode agent --server-url <url> --token <one-time-token>
 - Windows Service：Agent/Worker、任务执行和更新；
 - Local Companion：按需启动文件夹选择器、显示需要用户确认的安装动作；
 - Full 模式附加本机 API/Scheduler/Web；
-- Agent 模式 P0 只启用 `build.selena`、`data.local.read`、`data.upload`、产物登记/校验/上传和中央回传；不启用 `simulation.local` 或 Cluster 运行期 stage；
+- Agent 模式 P0 只启用 `build.selena`、`data.local.read`、`data.direct_transfer`、产物登记/校验/直传和控制面回传；不启用 `simulation.local` 或 Cluster 运行期 stage；
 - 服务日志写入固定诊断目录并可从 Web 导出。
 
 ### 12.3 本机 Web 到 Companion 的安全
@@ -1079,7 +1059,9 @@ run_manifests
 - legacy wildcard / `cluster.run` 不能绕过 v1 node-kind policy；
 - `windows_full` 与 `platform_gateway` 使用不同 node kind/policy，互相不能代领；
 - 本地数据上传与共享数据直用；
-- light Agent 数据 E2E：授权本地路径 -> Agent 检索/校验/上传 -> `DatasetRef` -> 中央 Cluster 使用 -> Agent 离线仍完成；
+- light Agent 数据 E2E：授权本地路径 -> Agent 检索/校验 -> 直传 Cluster 共享 staging -> `DatasetRef` -> Cluster 使用 -> Agent 离线仍完成；
+- 大文件不经过 Linux API：Linux 入站字节、私有 staging 和进程内存均不随 MF4 大小线性增长；
+- 本机可达输入的两条 local 路由不创建 TransferPlan、上传会话或 Cluster staging；远端不可达输入只允许 `source_to_local`；
 - 缺少 Windows build capability；
 - Agent 断线后 Cluster 继续；
 - 多节点路径歧义进入 needs_input。
@@ -1131,9 +1113,9 @@ run_manifests
 | 本机持久化 | SQLite，schema 与中央服务一致 |
 | 中央持久化 | 首版可继续 SQLite；并发和 HA 需要时迁移服务型 DB |
 | Agent 通信 | 出站 HTTPS 长轮询/事件上报，借鉴 runner handshake；后续可升级 WebSocket |
-| Agent P0 能力 | 授权工作区编译、产物/数据登记校验上传、回传中央；不做本地仿真，不承担 Cluster 运行期 |
+| Agent P0 能力 | 授权工作区编译、产物/数据校验并直传执行端、回传控制面；不做本地仿真，不承担 Cluster 运行期 |
 | Cluster 接入 | Linux adapter 优先，不兼容时平台 Windows Gateway |
 | Git 默认构建 | 当前工作区锁 + 前后 fingerprint；branch 仅用于差异警告 |
 | 可选清仓/冻结构建 | 后续独立开关 + 二次确认 + detached worktree，不静默清理主仓 |
-| Web 本机路径 | Agent companion；无 Agent 时浏览器上传；tus/Uppy spike 通过则用于断点上传，失败回退非断点上传 |
+| Web 本机路径 | Agent companion；无 Agent 时等待一次连接或改用本机 SDK；仅允许浏览器直达 Cluster 上传网关，禁止上传到 Linux 控制面 |
 | 兼容策略 | 旧 API/CLI adapter，不再新增旧模式能力 |

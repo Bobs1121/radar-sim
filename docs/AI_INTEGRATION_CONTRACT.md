@@ -21,6 +21,14 @@ Web、Python SDK、未来 Skill/MCP 只使用同一套 `/api/v1`，不得复制�
 
 用户 YAML 中的文件路径统一由 `/api/v1` 规范化；Skill/MCP 不应自行替换斜杠或解析 Windows/UNC，直接转发用户输入。
 
+## 控制面与数据面边界
+
+Web、SDK、Skill/MCP 通过 Linux `/api/v1` 传递的只能是 YAML/JSON、控制命令、状态、进度、Manifest 和逻辑引用。MF4、Selena.exe/DLL、Runtime、MatFilter、Adapter 与大型结果文件不得编码进 MCP 消息、模型上下文或 Linux API 请求体。
+
+当执行端不能读取用户路径时，Linux 返回内部 TransferPlan 或稳定等待/动作状态：Windows/Linux 本机 SDK、一次安装的 Connector 或 Cluster 上传网关负责把文件从源端直接送到本地 Windows full/Cluster 数据面。Skill/MCP 只解释 `waiting_for_local_connector`、`waiting_for_cluster_access`、`transferring_direct_to_cluster`、`cluster_direct_transfer_unavailable` 等状态并调用 SDK 的继续/重试动作，不读取文件正文，也不自行实现 SMB/UNC 复制。
+
+本地仿真中，本机可达输入原地使用；远端输入不可原地读取时可由源端直达 Windows full。Cluster 仿真中，共享输入原地引用，本地输入直达 Cluster。两类数据流都不经过 Linux 控制面。完整产品合同见 `docs/PRODUCT_CONTRACT.md`，实施合同见 `docs/CONTROL_DATA_PLANE_PLAN.md`。
+
 ## Diagnosis 契约
 
 HTTP：`GET /api/v1/jobs/{job_id}/diagnosis`

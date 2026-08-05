@@ -141,12 +141,9 @@ python -m pip install -e ".[sdk]"
 
 ```python
 from pathlib import Path
-from radar_sim_sdk import RadarSimClient
+from radar_sim_sdk import RadarSimClient, UserRunConfig
 
-with RadarSimClient(
-    "http://10.190.171.44:8877",
-    user="alice",
-) as client:
+with RadarSimClient("http://10.190.171.44:8877") as client:
     job = client.submit_yaml(
         "od25.simulation.yaml",
         idempotency_key="od25-issue-123-run-1",
@@ -164,6 +161,8 @@ with RadarSimClient(
 
 `submit_yaml()` 与 Web 调用同一个 `/api/v1/run-jobs` 调度核心。`idempotency_key` 用于避免集成产品因网络重试重复创建任务；同一次业务请求保持不变，新一次运行换一个值。
 
+未显式传入 `user` 时，SDK 会根据调用端的 Windows/Linux 登录用户与机器生成稳定、不可读的 `sdk-...` 身份。它在进程或电脑重启后保持不变，并避免多个未配置 SDK 用户落到 Linux 服务账号的同一个任务空间。接入企业登录后可显式传入统一用户 ID。
+
 ### 6.3 SDK 进程所在位置决定谁读取本地文件
 
 - SDK 在 Windows 电脑运行：它能读取的已有 Selena、Runtime、数据、Adapter、MatFilter 会自动校验和上传。
@@ -171,6 +170,18 @@ with RadarSimClient(
 - Linux 后端不能直接读取 Windows 本地 Adapter/MatFilter。此时先通过 Web 文件按钮生成可复用 `config-asset://` 引用，或把文件放到 Linux 可访问共享路径，再把引用/路径写入同一 YAML。
 
 当前测试服务关闭认证，`token` 可省略；正式服务开启认证后使用 `RadarSimClient(..., token="...")`，令牌仍不写入 YAML。
+
+如果 SDK 提交的文件位于另一台 Windows，使用配置自动选择一次性连接组件，不需要理解 light/full：
+
+```python
+with RadarSimClient("http://10.190.171.44:8877") as client:
+    launcher = client.download_windows_connector_for_run(
+        UserRunConfig.from_yaml(Path("od25.simulation.yaml")),
+        Path("downloads"),
+    )
+```
+
+`target=local` 自动下载完整本地仿真组件；其他需要 Windows 读取、编译或上传的场景下载轻量组件。
 
 ## 7. Linux 服务的启动与迁移
 

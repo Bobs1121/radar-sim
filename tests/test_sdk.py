@@ -1,15 +1,25 @@
 import pytest
 import httpx
+import time
+from pathlib import Path
 from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from core.api_v1_fastapi import create_app
 from core.control_service import ControlService
+from core.direct_transfer import (
+    TransferPlan,
+    TransferPlanItem,
+    build_isolated_relative_root,
+    generate_opaque_id,
+    generate_owner_scope,
+)
 from core.api_v1 import ApiV1Service
 from core.config_assets import ConfigAssetStore
 from core.local_results import ResultCatalog
 from core.http_auth import HttpTokenAuthenticator
 from radar_sim_sdk import RadarSimApiError, RadarSimClient, SimulationSpec, UserRunConfig
+from radar_sim_sdk.client import _trust_environment_proxy
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
 from tests.test_api_v1_service import run_config_dict, spec_dict
 
@@ -53,6 +63,67 @@ def test_sdk_downloads_one_time_windows_connector_for_current_scope(tmp_path):
     assert "__RSIM_OWNER_BASE64__" not in content
 
 
+def test_sdk_without_explicit_user_gets_stable_machine_scoped_identity(monkeypatch):
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["X-Rsim-User"])
+        return httpx.Response(200, json={"ok": True, "api_version": "v1"})
+
+    monkeypatch.setattr("radar_sim_sdk.client.getpass.getuser", lambda: "new-user")
+    monkeypatch.setattr("radar_sim_sdk.client.socket.gethostname", lambda: "new-pc")
+    with RadarSimClient("http://testserver", transport=httpx.MockTransport(handler)) as first:
+        first.health()
+    with RadarSimClient("http://testserver", transport=httpx.MockTransport(handler)) as second:
+        second.health()
+
+    assert seen[0] == seen[1]
+    assert seen[0].startswith("sdk-")
+    assert len(seen[0]) == 28
+
+
+def test_sdk_bypasses_environment_proxy_for_private_control_plane():
+    assert _trust_environment_proxy("http://10.190.171.44:8877") is False
+    assert _trust_environment_proxy("http://127.0.0.1:8877") is False
+    assert _trust_environment_proxy("http://[::1]:8877") is False
+    assert _trust_environment_proxy("https://public.example.com") is True
+
+
+def test_sdk_selects_full_connector_for_local_simulation(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    config = run_config_dict()
+    config["simulation"]["target"] = "local"
+    seen = []
+    monkeypatch.setattr(
+        sdk,
+        "download_windows_connector",
+        lambda destination, *, mode="light": seen.append((Path(destination), mode))
+        or Path(destination) / "RadarSim-Connect-Windows.cmd",
+    )
+
+    target = sdk.download_windows_connector_for_run(config, tmp_path)
+
+    assert target.name == "RadarSim-Connect-Windows.cmd"
+    assert seen == [(tmp_path, "full")]
+
+
+def test_sdk_selects_light_connector_for_cluster_simulation(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    config = run_config_dict()
+    config["simulation"]["target"] = "cluster"
+    seen = []
+    monkeypatch.setattr(
+        sdk,
+        "download_windows_connector",
+        lambda destination, *, mode="light": seen.append((Path(destination), mode))
+        or Path(destination) / "RadarSim-Connect-Windows.cmd",
+    )
+
+    sdk.download_windows_connector_for_run(config, tmp_path)
+
+    assert seen == [(tmp_path, "light")]
+
+
 def test_sdk_and_web_share_project_free_run_config_contract(tmp_path):
     sdk, _ = make_sdk(tmp_path)
     config = UserRunConfig.from_dict(run_config_dict())
@@ -63,9 +134,9 @@ def test_sdk_and_web_share_project_free_run_config_contract(tmp_path):
     assert job.spec_hash == config.fingerprint()
     assert job.type == "simulation.run_config.v2"
     assert "project" not in job.spec
-    assert job.waiting["reason"] == "windows_connection_required"
-    assert job.waiting["mode"] == "light"
-    assert job.waiting["action"]["type"] == "connect_windows"
+    # Waiting/route details are owned by the control-plane resolver.  The SDK
+    # must preserve the same user YAML and never manufacture an upload session.
+    assert job.spec["data"] == config.to_dict()["data"]
 
 
 def test_sdk_submit_yaml_accepts_every_user_run_combination(tmp_path):
@@ -81,7 +152,7 @@ def test_sdk_submit_yaml_accepts_every_user_run_combination(tmp_path):
     assert job.type == "simulation.run_config.v2.dry_run"
 
 
-def test_sdk_submit_run_transparently_uploads_linux_local_data_path(tmp_path, monkeypatch):
+def test_sdk_submit_run_keeps_local_data_path_for_direct_transfer(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     data = tmp_path / "measurements"
     data.mkdir()
@@ -89,22 +160,15 @@ def test_sdk_submit_run_transparently_uploads_linux_local_data_path(tmp_path, mo
     config = run_config_dict()
     config["data"] = {"path": str(data)}
     config["simulation"]["target"] = "cluster"
-    uploaded_path = "dataset://sha256/" + "a" * 64
-    seen = []
-    monkeypatch.setattr(
-        sdk,
-        "upload_run_data",
-        lambda source: seen.append(str(source)) or SimpleNamespace(data_path=uploaded_path),
-    )
+    monkeypatch.setattr(sdk, "upload_run_data", lambda *_: pytest.fail("legacy data upload"))
 
     job = sdk.submit_run(config)
 
-    assert seen == [str(data)]
-    assert job.spec["data"] == {"path": uploaded_path}
+    assert job.spec["data"] == {"path": data.as_posix()}
     assert "project" not in job.spec
 
 
-def test_sdk_uploads_readable_local_path_even_when_posix_syntax_is_central(tmp_path, monkeypatch):
+def test_sdk_keeps_readable_local_path_even_when_posix_syntax_is_central(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     data = tmp_path / "linux-local"
     data.mkdir()
@@ -112,7 +176,6 @@ def test_sdk_uploads_readable_local_path_even_when_posix_syntax_is_central(tmp_p
     config = run_config_dict()
     config["data"] = {"path": data.as_posix()}
     config["simulation"]["target"] = "cluster"
-    uploaded_path = "dataset://sha256/" + "d" * 64
     monkeypatch.setattr(
         "radar_sim_sdk.client.classify_data_path",
         lambda _path: "central",
@@ -121,15 +184,11 @@ def test_sdk_uploads_readable_local_path_even_when_posix_syntax_is_central(tmp_p
         "radar_sim_sdk.client._is_separate_mount",
         lambda _path: False,
     )
-    monkeypatch.setattr(
-        sdk,
-        "upload_run_data",
-        lambda _source: SimpleNamespace(data_path=uploaded_path),
-    )
+    monkeypatch.setattr(sdk, "upload_run_data", lambda *_: pytest.fail("legacy data upload"))
 
     job = sdk.submit_run(config)
 
-    assert job.spec["data"]["path"] == uploaded_path
+    assert job.spec["data"]["path"] == data.as_posix()
 
 
 def test_sdk_keeps_readable_cluster_mount_without_upload(tmp_path, monkeypatch):
@@ -179,7 +238,7 @@ def test_sdk_submit_run_keeps_shared_data_even_when_caller_can_read_it(tmp_path,
     assert job.spec["data"]["path"] == readable_share.as_posix()
 
 
-def test_sdk_submit_run_prepares_local_data_and_configuration_assets(tmp_path, monkeypatch):
+def test_sdk_submit_run_preserves_local_data_and_configuration_assets_for_direct_transfer(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     data = tmp_path / "measurements"
     data.mkdir()
@@ -197,25 +256,14 @@ def test_sdk_submit_run_prepares_local_data_and_configuration_assets(tmp_path, m
             "adapter_file": str(adapter),
         }
     )
-    uploaded = []
-    monkeypatch.setattr(
-        sdk,
-        "upload_run_data",
-        lambda source: SimpleNamespace(data_path="dataset://sha256/" + "a" * 64),
-    )
-    monkeypatch.setattr(
-        sdk,
-        "upload_config_asset",
-        lambda kind, source: uploaded.append((kind, str(source)))
-        or {"uri": "config-asset://sha256/" + ("b" if kind == "mat_filter" else "c") * 64},
-    )
+    monkeypatch.setattr(sdk, "upload_run_data", lambda *_: pytest.fail("legacy data upload"))
+    monkeypatch.setattr(sdk, "upload_config_asset", lambda *_: pytest.fail("legacy asset upload"))
 
     job = sdk.submit_run(config)
 
-    assert uploaded == [("mat_filter", str(mat_filter)), ("adapter", str(adapter))]
-    assert job.spec["data"]["path"].startswith("dataset://")
-    assert job.spec["simulation"]["mat_filter"].startswith("config-asset://")
-    assert job.spec["simulation"]["adapter_file"].startswith("config-asset://")
+    assert job.spec["data"]["path"] == data.as_posix()
+    assert job.spec["simulation"]["mat_filter"] == mat_filter.as_posix()
+    assert job.spec["simulation"]["adapter_file"] == adapter.as_posix()
 
 
 def test_sdk_submit_run_dry_run_never_uploads_local_inputs(tmp_path, monkeypatch):
@@ -532,3 +580,203 @@ def test_sdk_watch_continuous_transport_failure_times_out():
     sdk = RadarSimClient("http://testserver", transport=httpx.MockTransport(handler))
     with pytest.raises(TimeoutError):
         list(sdk.watch("job_1", timeout=0.05, poll_interval=0.01))
+
+
+def test_sdk_direct_transfer_adapter_uses_metadata_only_control_requests(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "one.MF4").write_bytes(b"mf4")
+    target = tmp_path / "cluster-target"
+    target.mkdir()
+    transfer_id = generate_opaque_id()
+    owner_scope = generate_owner_scope("alice", "job-direct")
+    item = TransferPlanItem(
+        source_role="dataset",
+        relative_path="one.MF4",
+        size=3,
+        checksum="" + __import__("hashlib").sha256(b"mf4").hexdigest(),
+        mtime_ns=(source / "one.MF4").stat().st_mtime_ns,
+    )
+    plan = TransferPlan(
+        transfer_id=transfer_id,
+        owner_scope=owner_scope,
+        job_id="job-direct",
+        stage_id="stage-data",
+        mode="shared_copy",
+        source_role="dataset",
+        client_target_root=str(target),
+        relative_root=build_isolated_relative_root(owner_scope, "job-direct", transfer_id),
+        items=(item,),
+        expires_at=10_000_000_000,
+        owner="alice",
+    )
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, request.content))
+        if request.url.path.endswith("/transfers"):
+            payload = __import__("json").loads(request.content.decode("utf-8"))
+            assert set(payload) == {"source_role", "items", "source_fingerprints"}
+            assert "source_root" not in payload and "client_target_root" not in payload
+            return httpx.Response(200, json={"plan": plan.to_dict()})
+        if request.url.path.endswith("/manifest"):
+            # The target bytes must never be present in the control request.
+            assert len(request.content) < 4096
+            return httpx.Response(200, json={"status": "completed"})
+        if request.url.path.endswith("/progress"):
+            return httpx.Response(200, json={"status": "in_progress"})
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+    issued = sdk.issue_transfer_plan(
+        job_id="job-direct",
+        stage_id="stage-data",
+        mode="shared_copy",
+        source_role="dataset",
+        items=[item.to_dict()],
+    )
+    manifest = sdk.execute_transfer_plan(issued, source, allow_local_test=True)
+
+    destination = target / plan.relative_root / "one.MF4"
+    assert destination.read_bytes() == b"mf4"
+    assert manifest.entries[0].storage_ref.startswith("cluster-staging://v1/")
+    assert all(b"mf4" not in body for _, _, body in seen)
+
+
+def test_sdk_run_preparation_does_not_create_legacy_linux_uploads(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    config = UserRunConfig.from_dict(run_config_dict())
+    monkeypatch.setattr(sdk, "upload_run_data", lambda *_: pytest.fail("legacy data upload"))
+    monkeypatch.setattr(sdk, "upload_config_asset", lambda *_: pytest.fail("legacy asset upload"))
+    monkeypatch.setattr(sdk, "_upload_existing_selena", lambda *_args, **_kwargs: pytest.fail("legacy Selena upload"))
+
+    payload, prepared = sdk._prepare_user_run(config, dry_run=False)
+
+    assert prepared == ""
+    assert payload == config.to_dict()
+
+
+def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_path):
+    """One SDK call executes every local role through metadata-only routes."""
+
+    data = tmp_path / "measurements"
+    data.mkdir()
+    sentinel = b"SDK_DIRECT_TRANSFER_SENTINEL_" * 32
+    (data / "one.MF4").write_bytes(sentinel)
+    selena = tmp_path / "selena"
+    (selena / "nested").mkdir(parents=True)
+    (selena / "Selena.exe").write_bytes(b"SELENA_EXE_" + sentinel)
+    (selena / "nested" / "Selena.dll").write_bytes(b"SELENA_DLL_" + sentinel)
+    runtime_xml = tmp_path / "Runtime.xml"
+    runtime_xml.write_bytes(b"<Runtime>SDK_DIRECT_TRANSFER</Runtime>")
+    mat_filter = tmp_path / "signals.filter"
+    mat_filter.write_bytes(b"mat_filter=SDK_DIRECT_TRANSFER")
+    adapter = tmp_path / "adapter.txt"
+    adapter.write_bytes(b"adapter=SDK_DIRECT_TRANSFER")
+    target = tmp_path / "cluster-target"
+    target.mkdir()
+
+    config = run_config_dict()
+    config["selena"] = {
+        "source": "existing",
+        "existing_path": str(selena),
+        "runtime_xml": str(runtime_xml),
+    }
+    config["data"] = {"path": str(data)}
+    config["simulation"] = {
+        "target": "cluster",
+        "adapter_file": str(adapter),
+        "mat_filter": str(mat_filter),
+    }
+    plans: dict[str, TransferPlan] = {}
+    progress: list[tuple[str, dict]] = []
+    manifests: list[dict] = []
+    forbidden_body = sentinel
+
+    def job_payload(*, terminal: bool = False) -> dict:
+        return {
+            "id": "job-sdk-direct",
+            "job_id": "job-sdk-direct",
+            "type": "simulation.run_config.v2",
+            "status": "succeeded" if terminal else "queued",
+            "spec": config,
+            "resolved_spec": {"decisions": {"execution": {"selected_target": "cluster"}}},
+            "stages": [
+                {
+                    "stage_id": "stage-sdk-transfer",
+                    "task_id": "stage-sdk-transfer",
+                    "stage_type": "prepare_data",
+                    "status": "succeeded" if terminal else "queued",
+                }
+            ],
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.content
+        assert forbidden_body not in body
+        path = request.url.path
+        if path == "/api/v1/run-jobs":
+            return httpx.Response(201, json=job_payload())
+        if path.endswith("/transfers") and "/stages/" in path:
+            payload = __import__("json").loads(body.decode("utf-8"))
+            assert set(payload) == {"source_role", "items", "source_fingerprints"}
+            role = str(payload["source_role"])
+            transfer_id = generate_opaque_id(prefix=role)
+            owner_scope = generate_owner_scope("alice", "job-sdk-direct")
+            items = tuple(TransferPlanItem.from_dict(item) for item in payload["items"])
+            plan = TransferPlan(
+                transfer_id=transfer_id,
+                owner_scope=owner_scope,
+                job_id="job-sdk-direct",
+                stage_id="stage-sdk-transfer",
+                mode="shared_copy",
+                source_role=role,
+                client_target_root=str(target),
+                relative_root=build_isolated_relative_root(owner_scope, "job-sdk-direct", transfer_id),
+                items=items,
+                expires_at=time.time() + 3600,
+                owner="alice",
+            )
+            plans[role] = plan
+            return httpx.Response(201, json={"plan": plan.to_dict()})
+        if path.endswith("/progress"):
+            progress.append((path.rsplit("/", 2)[-2], __import__("json").loads(body.decode("utf-8"))))
+            return httpx.Response(200, json={"status": "in_progress"})
+        if path.endswith("/manifest"):
+            manifests.append(__import__("json").loads(body.decode("utf-8")))
+            return httpx.Response(200, json={"status": "completed"})
+        if path == "/api/v1/jobs/job-sdk-direct":
+            return httpx.Response(200, json=job_payload(terminal=True))
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+    job = sdk.submit_run(config, allow_local_test=True)
+
+    assert job.status == "succeeded"
+    assert set(plans) == {"dataset", "runtime_bundle", "runtime_xml", "mat_filter", "adapter"}
+    assert {item[0] for item in progress} == {
+        plan.transfer_id for plan in plans.values()
+    }
+    assert {item["owner_scope"] for item in manifests} == {
+        plan.owner_scope for plan in plans.values()
+    }
+    assert len(manifests) == len(plans)
+    assert (target / plans["dataset"].relative_root / "one.MF4").read_bytes() == sentinel
+    assert {
+        path.relative_to(target).as_posix()
+        for path in target.rglob("*")
+        if path.is_file()
+    } >= {
+        (plans["runtime_bundle"].relative_root + "/Selena.exe"),
+        (plans["runtime_bundle"].relative_root + "/nested/Selena.dll"),
+    }
