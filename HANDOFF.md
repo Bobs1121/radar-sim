@@ -2116,3 +2116,64 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 - 下载验收：`output/job_d2c7917f0c90-result.zip`，大小 `9294890` 字节，SHA-256 `sha256:546e8fc5ac17765aa91d7ab4003c95e9484e078804d46012f9725831a7b2ec41`，与服务端目录一致。
 
 结论：Cluster 服务恢复后，用户提供的本地已有 Selena + Runtime + 单条 MF4 数据可以通过 Linux SDK 调度到云端并得到可下载结果；流程不依赖项目名，也不触发本地编译。
+
+## 历史成功输入的真实 E2E 回归（2026-08-09）
+
+### 验收目标
+
+本次复用历史真实成功任务 `job_444f050a55c4` 的输入，不改 Selena、Runtime、MatFilter 和 MF4 内容，按新用户路径重新验证：
+
+- Web 配对的一键 Windows Agent 安装和持久连接；
+- Windows 本地到 Cluster 共享目标的源到源复制，Linux 只传输计划、进度和 Manifest 元数据；
+- 已有 Selena + Cluster 调度，不触发编译；
+- Cluster 运行完成后由 Linux 生成 Manifest，SDK 能查询并下载结果。
+
+历史输入：
+
+- Selena：`C:\BYD_OVS_CB\ip_dc\build\ROS_PER_SIT_RPM_FCT_RECR\dc_tools\selena\core\RelWithDebInfo`
+- Runtime：`C:\tools\Runtime_For_byd_ovrs25_bl16rc71_al2.xml`
+- MatFilter：`C:\BYD_OVS_CB\reco_fw\tools\selena\matlab_transport_cfg\matlab_swx_plotreco.mdf.mat.filter`
+- 单个 MF4：`D:\data\byd\CRGVBYDPF-13086\0729\Gen5_2026-07-28_17-22_0118.MF4`
+
+### Agent 安装与多用户身份
+
+通过 Linux 服务对 `web-19fcbd9caa3073691cbb13418` 生成的 `install.ps1` 执行了一次真实安装。检查结果：Python `3.12.10`、Visual Studio 2015 `v140`、light Agent 标准库路径、计划任务持久启动和重连均通过；安装配置写入该 Web 配对身份，未要求用户填写 Agent ID、Linux URL 或令牌。正式任务前清理了旧的临时 E2E Agent/计划任务，避免互斥锁占用。
+
+验证后的能力快照：`windows_light.available=true`、`windows_light.count=1`、`cluster.available=true`。
+
+这次暴露并确认了一个重要边界：如果 Agent 是用本机默认用户名 `hoz2wx` 安装，而任务由另一个 Web owner 提交，服务会按多用户隔离规则显示该 Windows Agent 不属于当前用户；必须使用 Web 生成的带配对身份的一键入口。共享 Cluster 能力不受该隔离影响。
+
+### 真实任务结果
+
+实际提交任务：`job_5722e711206a`，SDK 调用使用 `auto_transfer=False`，让 Windows Agent 独立执行直传。
+
+- `status=succeeded`，`progress=1.0`，10 个 Stage 中已有 Selena 的 `resolve_spec/build_selena/register_artifact` 按设计跳过；`prepare_data/environment_check/preflight/run_simulation/collect_results/finalize_manifest` 全部成功。
+- 4 个 TransferPlan 均 `shared_copy/completed`：dataset `443266984` 字节；runtime bundle 19 个文件、`670780294` 字节；Runtime XML `98780` 字节；MatFilter `5726` 字节。
+- `resolved_spec.decisions.data.route=direct_transfer`，Dataset 的存储引用为 `cluster-staging://...`；Transfer API 只收到计划、进度和 Manifest，不经过 Linux 结果/数据 HTTP 上传接口。
+- Cluster run：`cluster-run:720b374006094b5cb875a56ba28ea664`。
+- Manifest：`status=succeeded`、6 个结果文件，`result_ref=result:sha256:9c9693f10c895cef4ae1e227a27514a31dba10fde386a951c9d2d08adccc6077`。
+- SDK 下载验收：本地结果包 `results/e2e-job_5722e711206a`，大小 `12173154` 字节，SHA-256 `sha256:4777bbbae36434b492e56a29ef70ab0ca31fe7330f8185b228d96843e7b69040`，与 ResultCatalog 返回值一致；ZIP 内含输出 MF4、`result.ini`、`selena.log`、`radar_sim_paramconfig.txt`、`robocopy.txt` 和日志压缩包。
+- Manifest 摘要包含 Selena 内部的缺失信号提示，但 `selena return code=0`、`failed_count=0`、`success_count=1`。按产品边界这属于仿真内部输出，不作为外围接入失败。
+
+### 外围重复回调修复
+
+第一次直传完成时发现一个外围告警：最终 Transfer Manifest 会先把 `prepare_data` 标记为成功，Agent 随后的普通 `/api/tasks/result` 回调被旧逻辑当作重复任务并返回 500，Agent 日志误报 `task setup error`，但 Stage DAG 仍继续运行。
+
+- 根因：`ApiV1Service.submit_agent_result` 没有把“已由最终 Manifest 完成”的同一 Agent 回调视为幂等操作。
+- 修复：`762c568 Make agent result callback idempotent`；仅当回调 Agent 与任务 assigned/required Agent 一致时返回当前 Job，其他 Agent 或未知任务仍报错。
+- 生产部署：`/home/hoz2wx/radar-sim-7a68a20/core/api_v1.py` 已更新并重启；保留备份 `/home/hoz2wx/radar-sim-release-backups/20260809-api-v1-before-idempotent-result.py`。
+- 线上验证：对已完成任务重放同一 Agent 回调，HTTP `200`、返回 `job_5722e711206a/succeeded`，不再产生 500。
+
+### 代码与部署证据
+
+- `199c0d7`：light Agent 无 `asammdf` 时使用 stdlib MDF4 头部解析，保持 `RadarRL/RadarRR` 采集组顺序；Windows connector 包 SHA-256 `B182B043F251710E3A0AF630B3CDDE7D9671838160C0DABD3216AE5F7E1BF30C`。
+- `5f0e8ce`：支持 `agent_direct_transfer/direct_transfer` DatasetRef 在 Stage handoff 中落为 `route=direct_transfer`，并补回归测试。
+- `762c568`：Agent 结果回调幂等化，并补 FastAPI 回归测试。
+- 本轮针对性回归：`11 passed`；此前直接传输/Cluster 相关回归 `70 passed`。
+- Linux 服务当前必须按部署环境启动：设置 `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`，加载 `/home/hoz2wx/.rsim-v1-cluster.env`，运行 `rsim.py server serve-v1 --host 0.0.0.0 --port 8877 --insecure-no-auth`。手工重启不得省略这两个环境设置，否则会落到错误的默认 DB，造成假性“Agent 未连接/任务不存在”。
+
+### 后续约束
+
+1. 任何 Web/SDK 新用户都必须从当前 Web owner 下载一键连接入口；不能让用户直接运行未配对的 `bootstrap.ps1` 作为普通安装流程。
+2. `submit_run(auto_transfer=False)` 是验证 Agent 源到源路径的明确 SDK 调用；`auto_transfer=True` 适合 SDK 进程本身作为源端时的直传，但不要和 Agent 同时抢同一 Stage。
+3. MCP/Skill 只复用 `RadarSimClient` 的 YAML、任务状态、诊断、Transfer 状态和结果下载能力；不要复制 Agent 注册、Stage binder 或 Cluster 执行代码。
