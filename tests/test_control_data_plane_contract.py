@@ -383,6 +383,14 @@ def test_existing_cluster_direct_transfer_uses_prepare_data_barrier_without_agen
 ) -> None:
     """Local existing Selena is a source-side barrier, then Linux owns the DAG."""
     config, _ = _local_existing_inputs(tmp_path)
+    # This case specifically exercises Web/Connector-owned Windows paths.
+    # Use platform-independent Windows syntax instead of relying on tmp_path's
+    # host OS classification; Linux SDK caller-local POSIX paths are covered
+    # separately by test_linux_sdk_posix_sources_use_direct_transfer_hint_not_linux_body_route.
+    config["selena"]["existing_path"] = "D:/alice/Selena"
+    config["selena"]["runtime_xml"] = "D:/alice/Runtime.xml"
+    config["data"]["path"] = "D:/alice/data"
+    config["simulation"]["mat_filter"] = "D:/alice/MatFilter.cfg"
     control = ControlService(tmp_path / "existing-direct-control.db")
     api = ApiV1Service(control_service_factory=lambda _owner: control)
 
