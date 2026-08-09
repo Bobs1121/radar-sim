@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import mmap
 import os
 import re
+import struct
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -24,6 +26,126 @@ OUTPUT_FILE_PATTERN = re.compile(r"out(?:\s*\(\d+\))?$", re.IGNORECASE)
 # multi-gigabyte MF4 for every input.  Failed probes are not cached.
 _RADAR_DETECTION_CACHE: dict[str, dict[str, Any]] = {}
 _RADAR_DETECTION_CACHE_LOCK = threading.Lock()
+
+# These are the fixed-size MDF 4 blocks needed to read acquisition-source
+# metadata.  The light Windows Agent deliberately does not install asammdf;
+# keeping this small reader here lets it preserve the same group ordering as
+# the full parser without decoding samples or copying the MF4 payload.
+_MF4_COMMON = struct.Struct("<4sI2Q")
+_MF4_HEADER = struct.Struct("<4sI9Q2h4B2Q")
+_MF4_DATA_GROUP = struct.Struct("<4sI6QB7s")
+_MF4_CHANNEL_GROUP = struct.Struct("<4sI10Q2H3I")
+_MF4_SOURCE_INFORMATION = struct.Struct("<4sI5Q3B5s")
+_MF4_METADATA_OFFSET = 0x40
+
+
+def _read_mf4_text(mapped: mmap.mmap, address: int) -> str:
+    """Read one MDF4 TX/MD block without materializing the recording."""
+
+    if not address or address < 0 or address + _MF4_COMMON.size > len(mapped):
+        return ""
+    try:
+        block_id, _reserved, block_size, _links = _MF4_COMMON.unpack_from(mapped, address)
+    except (struct.error, ValueError):
+        return ""
+    if block_id not in (b"##TX", b"##MD"):
+        return ""
+    if block_size < _MF4_COMMON.size or address + block_size > len(mapped):
+        return ""
+    raw = bytes(mapped[address + _MF4_COMMON.size : address + block_size]).split(b"\0", 1)[0]
+    raw = raw.strip(b" \r\t\n")
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8", "ignore").strip()
+    except (AttributeError, UnicodeError):
+        return ""
+
+
+def _discover_mf4_acquisition_sources_stdlib(mf4_path: str) -> list[str]:
+    """Read MDF4 acquisition sources using only the standard library.
+
+    MDF4 stores data groups as a linked list from the header block.  Each
+    channel group points at a source-information block whose path is the
+    acquisition name (for example ``RadarRL``).  Walking those links is
+    deterministic and avoids the incorrect result produced by scanning raw
+    bytes: the first textual occurrence in a file is not necessarily the
+    first acquisition group.
+
+    This is intentionally metadata-only.  Unsupported/corrupt MDF versions
+    return an empty list and the normal best-effort orientation fallback can
+    continue.
+    """
+
+    path = str(mf4_path or "").strip()
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "rb") as stream:
+            if os.fstat(stream.fileno()).st_size < _MF4_METADATA_OFFSET + _MF4_HEADER.size:
+                return []
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                try:
+                    header = _MF4_HEADER.unpack_from(mapped, _MF4_METADATA_OFFSET)
+                except (struct.error, ValueError):
+                    return []
+                if header[0] != b"##HD":
+                    return []
+
+                found: list[str] = []
+                data_group_address = int(header[4])
+                visited_data_groups: set[int] = set()
+                while data_group_address and data_group_address not in visited_data_groups:
+                    if len(visited_data_groups) >= 10000:
+                        break
+                    visited_data_groups.add(data_group_address)
+                    try:
+                        data_group = _MF4_DATA_GROUP.unpack_from(mapped, data_group_address)
+                    except (struct.error, ValueError):
+                        break
+                    if data_group[0] != b"##DG":
+                        break
+
+                    channel_group_address = int(data_group[5])
+                    visited_channel_groups: set[int] = set()
+                    while channel_group_address and channel_group_address not in visited_channel_groups:
+                        if len(visited_channel_groups) >= 10000:
+                            break
+                        visited_channel_groups.add(channel_group_address)
+                        try:
+                            channel_group = _MF4_CHANNEL_GROUP.unpack_from(
+                                mapped, channel_group_address
+                            )
+                        except (struct.error, ValueError):
+                            break
+                        if channel_group[0] != b"##CG":
+                            break
+
+                        source_address = int(channel_group[7])
+                        if source_address:
+                            try:
+                                source_info = _MF4_SOURCE_INFORMATION.unpack_from(
+                                    mapped, source_address
+                                )
+                            except (struct.error, ValueError):
+                                source_info = None
+                            if source_info and source_info[0] == b"##SI":
+                                # MDF4's path is the acquisition source.  A
+                                # few recorders leave path empty and put the
+                                # same value in name, hence the fallback.
+                                raw_source = _read_mf4_text(mapped, int(source_info[5]))
+                                raw_source = raw_source or _read_mf4_text(
+                                    mapped, int(source_info[4])
+                                )
+                                source = canonical_radar_source(raw_source)
+                                if source and source not in found:
+                                    found.append(source)
+
+                        channel_group_address = int(channel_group[4])
+                    data_group_address = int(data_group[4])
+                return found
+    except (OSError, ValueError, mmap.error):
+        return []
 
 
 def _data_root() -> Path:
@@ -187,11 +309,11 @@ def discover_radar_acquisition_sources(mf4_path: str) -> list[str]:
     try:
         from asammdf import MDF
     except (ImportError, OSError):
-        return []
+        return _discover_mf4_acquisition_sources_stdlib(path)
     try:
         mdf = MDF(path, memory="minimum")
     except Exception:
-        return []
+        return _discover_mf4_acquisition_sources_stdlib(path)
     found: list[str] = []
     try:
         for group in getattr(mdf, "groups", ()) or ():
@@ -210,7 +332,7 @@ def discover_radar_acquisition_sources(mf4_path: str) -> list[str]:
             mdf.close()
         except Exception:
             pass
-    return found
+    return found or _discover_mf4_acquisition_sources_stdlib(path)
 
 
 def normalize_radar_metadata(value: Any) -> dict[str, str]:

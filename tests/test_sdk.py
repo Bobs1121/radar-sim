@@ -18,7 +18,15 @@ from core.api_v1 import ApiV1Service
 from core.config_assets import ConfigAssetStore
 from core.local_results import ResultCatalog
 from core.http_auth import HttpTokenAuthenticator
-from core.simulation import detect_radar_transfer_metadata
+from core.simulation import (
+    _MF4_CHANNEL_GROUP,
+    _MF4_COMMON,
+    _MF4_DATA_GROUP,
+    _MF4_HEADER,
+    _MF4_SOURCE_INFORMATION,
+    _discover_mf4_acquisition_sources_stdlib,
+    detect_radar_transfer_metadata,
+)
 from radar_sim_sdk import Job, RadarSimApiError, RadarSimClient, SimulationSpec, UserRunConfig
 from radar_sim_sdk.client import _dataset_transfer_fingerprints, _trust_environment_proxy
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
@@ -116,6 +124,80 @@ def test_radar_transfer_metadata_prefers_first_acquisition_source(monkeypatch, t
         "radar_source": "RadarRL",
         "radar_mounting_position": "CRL",
     }
+
+
+def test_light_agent_mf4_reader_preserves_acquisition_group_order(tmp_path: Path):
+    """The light Agent can infer RadarRL without installing asammdf."""
+
+    import struct
+
+    mf4 = tmp_path / "recording.MF4"
+    content = bytearray(0x500)
+
+    def put_text(address: int, text: str) -> None:
+        raw = text.encode("utf-8") + b"\0"
+        _MF4_COMMON.pack_into(content, address, b"##TX", 0, 24 + len(raw), 0)
+        content[address + 24 : address + 24 + len(raw)] = raw
+
+    # Header -> one data group -> two channel groups.  The source blocks are
+    # deliberately placed in the opposite byte order to prove that the
+    # linked-list order, not a raw byte scan, selects the first source.
+    _MF4_HEADER.pack_into(
+        content,
+        0x40,
+        b"##HD",
+        0,
+        104,
+        6,
+        0x100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    _MF4_DATA_GROUP.pack_into(content, 0x100, b"##DG", 0, 64, 4, 0, 0x180, 0, 0, 0, b"\0" * 7)
+    def put_channel_group(address: int, next_address: int, source_address: int) -> None:
+        _MF4_CHANNEL_GROUP.pack_into(
+            content,
+            address,
+            b"##CG",
+            0,
+            104,
+            6,
+            next_address,
+            0,
+            0,
+            source_address,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+
+    put_channel_group(0x180, 0x220, 0x280)
+    put_channel_group(0x220, 0, 0x2C0)
+    _MF4_SOURCE_INFORMATION.pack_into(content, 0x280, b"##SI", 0, 56, 3, 0, 0x3C0, 0, 1, 7, 0, b"\0" * 5)
+    _MF4_SOURCE_INFORMATION.pack_into(content, 0x2C0, b"##SI", 0, 56, 3, 0, 0x380, 0, 1, 7, 0, b"\0" * 5)
+    put_text(0x380, "RadarRR")
+    put_text(0x3C0, "RadarRL")
+    mf4.write_bytes(content)
+
+    assert _discover_mf4_acquisition_sources_stdlib(str(mf4)) == ["RadarRL", "RadarRR"]
 
 
 def test_sdk_bypasses_environment_proxy_for_private_control_plane():
