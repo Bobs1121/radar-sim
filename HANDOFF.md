@@ -28,7 +28,7 @@ Web 与 Python SDK 使用同一份 `UserRunConfig 2.0` YAML/JSON，并提交到�
 
 ### 当前发布与本轮复核证据
 
-- Git 当前提交与 `origin/codex/new-branch` 一致：`16c40f114f2a2ecbfe7c2635d189ec6a2f6c77b1`。生产运行代码为 `f94d9aa`；后续 `ec90c8b`、`16c40f1` 只更新文档/交接。
+- 本节写入前的代码/发布基线为 `16c40f114f2a2ecbfe7c2635d189ec6a2f6c77b1`，本节本身已经提交到 `origin/codex/new-branch`。生产运行代码为 `f94d9aa`；后续提交只更新文档/交接，不改变生产运行代码。
 - 生产入口 `http://10.190.171.44:8877/` 返回 200；`/api/v1/health` 返回 `ok=true`、`api_version=v1`、`authentication_required=false`；2026-08-09 用全新审计 owner 查询得到 Cluster `available=true`、`linux_executor_count=1`、`platform_gateway_count=1`，该 owner 的 Windows light/full 均为 0，证明 Windows 能力按 owner 隔离而不是全局冒充“本机已连接”。
 - Windows Connector 弹黑框问题已在 `f94d9aa` 修复：主任务和 Watchdog 都通过 `wscript.exe + scripts/run_hidden.vbs` 隐藏启动；生产 Connector ZIP SHA-256 为 `7e88e13bc3633c83e6d50429b6cec68c06499dc6eee52ca667b6f038f462865a`。一次安装持久生效，但电脑关机/睡眠/未登录或网络隔离时只能等待自动重连，Linux 无法远程唤醒设备。
 - 2026-08-09 重新运行数据面、SDK、Web、通用 workspace 定向回归：`135 passed, 2 skipped, 1 warning`。两个 skipped 不能解释为目标环境真实通过；本次没有重复消耗 Cluster 资源。
