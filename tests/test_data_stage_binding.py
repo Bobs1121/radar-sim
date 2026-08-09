@@ -171,3 +171,57 @@ def test_successful_agent_data_upload_updates_path_free_resolved_spec(tmp_path: 
     assert resolved["decisions"]["data"]["dataset"]["id"] == dataset["id"]
     assert "D:/data" not in str(resolved["decisions"]["data"])
     assert next(item for item in completed["stages"] if item["stage_type"] == "prepare_data")["status"] == "succeeded"
+
+
+def test_successful_agent_direct_transfer_updates_path_free_resolved_spec(tmp_path: Path):
+    """Direct Windows-to-Cluster copies must not be mistaken for central uploads."""
+    service = ControlService(tmp_path / "control.db")
+    service.register_agent(
+        "light",
+        agent_id="agent-1",
+        node_kind="windows_agent",
+        capabilities=["data.local.read", "data.upload"],
+        metadata={"node_kind": "windows_agent"},
+    )
+    job = service.create_job(
+        "simulation.v1",
+        owner="alice",
+        assigned_agent_id="agent-1",
+        spec={"project": "run-config-v2", "data": {"path": "D:/data"}},
+        resolved_spec={"status": "pending_node", "decisions": {}},
+        tasks=[
+            {
+                "task_type": "prepare_data",
+                "stage_type": "prepare_data",
+                "required_agent_id": "agent-1",
+                "payload": {"dispatch_scope": "data_upload"},
+            },
+            {"task_type": "preflight", "stage_type": "preflight", "dependencies": ["prepare_data"]},
+        ],
+    )
+    stage = service.claim_next_task("agent-1")
+    attempt = stage["attempt_count"]
+    dataset = {
+        "id": "dataset:sha256:" + "c" * 64,
+        "source_kind": "agent_direct_transfer",
+        "accessibility": "cluster",
+        "file_count": 1,
+        "total_size": 3,
+        "storage_refs": ["cluster-staging://v1/sha256/" + "d" * 64],
+    }
+    service.submit_task_result(
+        stage["stage_id"],
+        agent_id="agent-1",
+        status="succeeded",
+        returncode=0,
+        result={"dataset": dataset, "evidence_ref": f"{stage['stage_id']}:{attempt}"},
+    )
+
+    complete_data_resolution(service, job["job_id"], stage["stage_id"])
+
+    resolved = service.get_job(job["job_id"])["resolved_spec"]
+    data = resolved["decisions"]["data"]
+    assert data["code"] == "agent_direct_transfer"
+    assert data["route"] == "direct_transfer"
+    assert data["dataset"]["storage_refs"][0].startswith("cluster-staging://")
+    assert "D:/data" not in str(data)

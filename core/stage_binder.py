@@ -640,6 +640,12 @@ def complete_data_resolution(control: ControlService, job_id: str, data_stage_id
     storage_ref = str(dataset.get("storage_ref") or "")
     evidence_ref = str(result.get("evidence_ref") or "")
     data_lease_ref = str(result.get("data_lease_ref") or "")
+    source_kind = str(dataset.get("source_kind") or "").strip().lower()
+    storage_refs = [
+        str(item).strip()
+        for item in dataset.get("storage_refs") or []
+        if str(item).strip()
+    ]
     local_route = str((stage.get("payload") or {}).get("dispatch_scope") or "") == "local_data"
     if local_route:
         if (
@@ -665,19 +671,37 @@ def complete_data_resolution(control: ControlService, job_id: str, data_stage_id
         resolved_spec.pop("code", None)
         resolved_spec.pop("action", None)
         return control.update_resolved_spec(job_id, resolved_spec)
-    if (
-        not dataset_id.startswith("dataset:sha256:")
-        or not storage_ref.startswith("shared://datasets/")
-        or dataset.get("source_kind") != "agent_upload"
-        or evidence_ref != f"{data_stage_id}:{attempt}"
-    ):
+    if source_kind == "agent_upload":
+        if (
+            not dataset_id.startswith("dataset:sha256:")
+            or not storage_ref.startswith("shared://datasets/")
+            or evidence_ref != f"{data_stage_id}:{attempt}"
+        ):
+            raise StageBindingError("prepare_data result has no trusted DatasetRef")
+        resolution_code = "agent_dataset_uploaded"
+        resolution_route = "central"
+    elif source_kind in {"agent_direct_transfer", "direct_transfer"}:
+        # A Windows Agent copies the dataset directly to the Cluster data
+        # plane.  The result intentionally carries only path-free
+        # ``cluster-staging://`` references (not the Linux control-plane
+        # upload namespace used by the legacy central-upload route).
+        if (
+            not dataset_id.startswith("dataset:sha256:")
+            or not storage_refs
+            or any(not ref.startswith("cluster-staging://") for ref in storage_refs)
+            or evidence_ref != f"{data_stage_id}:{attempt}"
+        ):
+            raise StageBindingError("prepare_data result has no trusted direct-transfer DatasetRef")
+        resolution_code = "agent_direct_transfer"
+        resolution_route = "direct_transfer"
+    else:
         raise StageBindingError("prepare_data result has no trusted DatasetRef")
     resolved_spec = dict(job.get("resolved_spec") or {})
     decisions = dict(resolved_spec.get("decisions") or {})
     decisions["data"] = {
         "status": "resolved",
-        "code": "agent_dataset_uploaded",
-        "route": "central",
+        "code": resolution_code,
+        "route": resolution_route,
         "action": "",
         "dataset": dataset,
         "evidence": {"reason": "agent_prepare_data_attempt", "ref": evidence_ref},
