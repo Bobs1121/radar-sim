@@ -2141,6 +2141,8 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 
 验证后的能力快照：`windows_light.available=true`、`windows_light.count=1`、`cluster.available=true`。
 
+清理临时 Agent 后重新执行同一安装脚本，最终输出 `The connector is running (PID 45216)`、`independent reconnect watchdog is registered`、`Linux confirmed this PC is available for task scheduling`，安装命令以退出码 `0` 完成。安装目录中的 owner 为 `web-19fcbd9caa3073691cbb13418`，计划任务仍为 `RadarSimConnector-HOZ2WX` 和独立 Watchdog。
+
 这次暴露并确认了一个重要边界：如果 Agent 是用本机默认用户名 `hoz2wx` 安装，而任务由另一个 Web owner 提交，服务会按多用户隔离规则显示该 Windows Agent 不属于当前用户；必须使用 Web 生成的带配对身份的一键入口。共享 Cluster 能力不受该隔离影响。
 
 ### 真实任务结果
