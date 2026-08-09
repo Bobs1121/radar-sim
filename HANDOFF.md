@@ -1,8 +1,46 @@
 # radar-sim v5 Active Handoff
 
-> 最近更新：2026-08-05
+> 最近更新：2026-08-09
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
+
+## 0.0.3 最终现状快照：任务运行、数据直传、多用户、通用适配与双入口（2026-08-09）
+
+> 结论口径：本节只把真实跑过的能力写成“已完成”。只有代码/合同测试、没有目标环境黑盒证据的能力明确写成“未完整验收”。后续 AI/开发者不得依据历史章节把部分完成描述成整套产品完成。
+
+### 当前任务怎样运行
+
+Web 与 Python SDK 使用同一份 `UserRunConfig 2.0` YAML/JSON，并提交到同一个 `/api/v1` 控制面。Linux 持久化 Job/Stage/Event，按 `selena.source`、`simulation.target` 和每项输入的可达性动态编排：
+
+1. `source=existing + target=cluster`：共享输入直接登记引用、零复制；Windows/Linux 调用机本地输入由 SDK 或轻量 Connector 按 Linux 签发的 `TransferPlan` 直接写 Cluster 可访问共享工作区。完整 Selena 目录（exe + DLL）、Runtime、MatFilter、可选 Adapter、MF4 就绪后，Linux 生成通用 Cluster 配置并提交成熟 Cluster 仿真，随后汇总终态和结果。
+2. `source=build + target=cluster`：Windows light/full 执行用户提供的 Selena 编译脚本，脚本推导构建工作目录、依赖提示和产物目录；编译后校验 Selena.exe/同目录 DLL，再由该 Windows 把产物和其他本地输入直传 Cluster。Linux 不编译，也不接收文件正文。
+3. `target=local`：必须由同 owner 的 Windows full 执行。执行机可读的代码、Selena、数据和配置原地使用，不上传到 Linux/Cluster；Linux 只下发命令、收状态/日志和登记结果。
+4. 浏览器本身不能凭路径读取任意本机文件。Web 遇到本地路径时等待一次安装、持久在线的 Connector；SDK 进程若同时能读取源路径并写 Cluster 共享根，可自行完成直传，否则也保持可恢复等待，不得回退成 Linux HTTP 大文件上传。
+
+### 四个问题的最终状态
+
+| 问题 | 当前结论 | 已验证证据与边界 |
+|---|---|---|
+| 源端到执行端的文件传输 | **Cluster 方向已完成；所有方向尚未完成** | `job_444f050a55c4` 已证明 MF4、完整 Selena 目录、Runtime、MatFilter 从 Windows/SDK 直接写 Cluster 数据面，Linux 只处理计划、进度、Manifest 和逻辑引用；任务与 Cluster run `cluster-run:afc9405404d94c978164be7e8614f2c8` 均成功，结果可下载。共享输入已有零复制合同测试。本地仿真对本机可达输入为零传输。反向“远端输入不可直读时直传 Windows full”的 `source_to_local` 只有协议/内核模式和产品设计，尚无完整调度适配与真实黑盒验收；`gateway_upload` 明确仍不可用。因此不能宣称任意来源到任意执行端已全部达成。 |
+| Linux 多用户 | **可信内网下可并发、逻辑隔离；安全多租户尚未完成** | Job、Stage、Agent、TransferPlan、Manifest 和 Result 均按 owner/job 隔离；Windows Connector 只能领取同 owner 的本地任务，Linux/Cluster executor 是跨 owner 共享资源，长任务执行期间持续心跳，其他用户不会再因 executor 忙碌被误判为 Cluster 离线。当前生产 `/api/v1/health` 返回 `ok=true`、Cluster `available=true`。但生产仍为 `authentication_required=false`；`X-Rsim-User` 是调用方身份标签而不是强认证，尚无 SSO/令牌、配额、公平调度和恶意租户安全边界。可供受信用户共同使用，不可表述成对不可信用户开放的企业级多租户服务。 |
+| 编译/仿真是否无需识别项目 | **仿真已去项目化；编译是“用户无项目概念、内部证据推导”，不是完全不识别** | 已有 Selena + Cluster 的真实成功任务不依赖 ovrs25/bydod25/xpeng 项目分支，Runtime/MatFilter/Adapter 只取当前 YAML，雷达 source/mounting 从当前 MF4 证据推导，未知输入使用稳定匿名内部身份。编译仍需 `WorkspaceRecognizer`/脚本推导内部身份、Git 子仓、工具链和产物目录；未知仓库可生成稳定 `workspace-*` 身份，脚本能明确表达输出时可通用执行。内部识别不得选择仿真参数，也不得阻断已有 Selena + Cluster。任意新项目编译尚无“无需看脚本即可保证成功”的承诺，必须以该项目真实编译脚本可推导且 Windows 依赖满足为边界。 |
+| Web 与 SDK | **共享合同和调度核心已适配；真实验收强度不同** | Web 支持同一 YAML 的导入、修改、导出并调用 `/api/v1`；SDK 提供 `validate_run`、`submit_run`、`submit_yaml`、Job/Stage/Event/结果接口和自动直传。SDK 已完成真实 Existing Selena → Cluster 直传成功验收；Web/SDK 等价性和路径/等待行为有自动化合同测试。最新真实成功任务由 SDK 发起，尚未用一个全新浏览器 owner 对最终生产版本再完成一次“Web 一键连接 → 真实大文件直传 → Cluster 成功 → 下载结果”的完整黑盒，所以 Web 不能单独标成最终验收完成。MCP/Skill 只有稳定 SDK/诊断合同准备，尚未发布封装。 |
+
+### 当前发布与本轮复核证据
+
+- Git 当前提交与 `origin/codex/new-branch` 一致：`16c40f114f2a2ecbfe7c2635d189ec6a2f6c77b1`。生产运行代码为 `f94d9aa`；后续 `ec90c8b`、`16c40f1` 只更新文档/交接。
+- 生产入口 `http://10.190.171.44:8877/` 返回 200；`/api/v1/health` 返回 `ok=true`、`api_version=v1`、`authentication_required=false`；2026-08-09 用全新审计 owner 查询得到 Cluster `available=true`、`linux_executor_count=1`、`platform_gateway_count=1`，该 owner 的 Windows light/full 均为 0，证明 Windows 能力按 owner 隔离而不是全局冒充“本机已连接”。
+- Windows Connector 弹黑框问题已在 `f94d9aa` 修复：主任务和 Watchdog 都通过 `wscript.exe + scripts/run_hidden.vbs` 隐藏启动；生产 Connector ZIP SHA-256 为 `7e88e13bc3633c83e6d50429b6cec68c06499dc6eee52ca667b6f038f462865a`。一次安装持久生效，但电脑关机/睡眠/未登录或网络隔离时只能等待自动重连，Linux 无法远程唤醒设备。
+- 2026-08-09 重新运行数据面、SDK、Web、通用 workspace 定向回归：`135 passed, 2 skipped, 1 warning`。两个 skipped 不能解释为目标环境真实通过；本次没有重复消耗 Cluster 资源。
+- 真实正向直传成功证据仍以 `job_444f050a55c4` 为准：结果引用 `result:sha256:56a08eb906ae83fad339bb714189e3d31d5de109fcc1ad15b1b8c2df7cbfed88`，本地下载包 `output/job_444f050a55c4-result.zip` 为 12,173,265 bytes，结果文件总量 239,086,595 bytes。
+
+### 下一步必须按此顺序收敛
+
+1. 用最终生产版做一个全新用户 Web 黑盒：无历史登录/无历史 Agent 记录，一键连接后提交同一 YAML，确认直传、任务隔离、终态真值和结果下载；失败必须修通，不为该用户写特例。
+2. 分别真实验收 `build+cluster`、`existing+local`、`build+local` 最终链路。历史成功可作参考，但不能替代当前生产版本证据；本地两条需要 Windows full 在线。
+3. 若远端输入 + 本地仿真仍属于首版范围，补齐 `source_to_local` 的计划签发、源节点选择、Windows 受控缓存、恢复/清理和黑盒测试；否则在首版 UI/SDK 中明确标注该组合暂不支持，不能只停在协议字段。
+4. 对外开放多用户前恢复身份认证（优先公司 SSO 或服务端签发的短期凭证），并增加 owner 不可伪造、配额、并发公平性和审计；当前 `--insecure-no-auth` 仅限受信内网试用。
+5. MCP/Skill 只封装 `RadarSimClient` 的 YAML 校验、提交、查询、诊断、重试/取消和结果下载；不得复制调度器、项目规则或文件传输实现。
 
 ## 0.0.2 多用户 Connector 与 Cluster 并发修复（2026-08-05）
 
