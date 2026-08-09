@@ -64,6 +64,7 @@ $VenvDir = Join-Path $RepoRoot ".venv"
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
 $StartScript = Join-Path $PSScriptRoot "start_windows.ps1"
 $WatchdogScript = Join-Path $PSScriptRoot "watch_windows_connector.ps1"
+$RunHiddenScript = Join-Path $PSScriptRoot "run_hidden.vbs"
 
 function Write-Step($message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
 function Write-Ok($message) { Write-Host "    OK  $message" -ForegroundColor Green }
@@ -282,7 +283,7 @@ if ($RegisterStartup) {
     Write-Step "Register automatic startup and reconnect"
     $taskName = "RadarSimConnector-$env:USERNAME"
     $watchdogTaskName = "$taskName-Watchdog"
-    $taskArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" -InstallRoot `"$InstallRoot`" -Supervise -NoBrowser"
+    $taskArgs = "`"$RunHiddenScript`" `"$StartScript`" -InstallRoot `"$InstallRoot`" -Supervise -NoBrowser"
     # A reinstall must replace the running code, not leave the previous
     # supervisor holding the single-instance mutex until the next logon.
     if ($existing -and [string]$existing.startup_method -eq "scheduled_task" -and $existing.startup_name) {
@@ -302,7 +303,7 @@ if ($RegisterStartup) {
         Remove-Item -LiteralPath $connectorPidPath -Force -ErrorAction SilentlyContinue
     }
     try {
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgs
+        $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument $taskArgs
         $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
         $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
             -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
@@ -311,8 +312,8 @@ if ($RegisterStartup) {
             -MultipleInstances IgnoreNew
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $logonTrigger `
             -Settings $settings -Description "radar-sim Windows connector" -Force | Out-Null
-        $watchdogArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$WatchdogScript`" -InstallRoot `"$InstallRoot`" -ConnectorTaskName `"$taskName`""
-        $watchdogAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $watchdogArgs
+    $watchdogArgs = "`"$RunHiddenScript`" `"$WatchdogScript`" -InstallRoot `"$InstallRoot`" -ConnectorTaskName `"$taskName`""
+    $watchdogAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument $watchdogArgs
         $watchdogTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
             -RepetitionInterval (New-TimeSpan -Minutes 2)
         $watchdogSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable `

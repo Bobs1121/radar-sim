@@ -28,7 +28,7 @@ SOURCE_DIRS = (
     "config",
     "scripts",
 )
-ALLOWED_SUFFIXES = {".py", ".ps1", ".yaml", ".yml", ".json", ".html", ".css", ".js", ".txt"}
+ALLOWED_SUFFIXES = {".py", ".ps1", ".vbs", ".yaml", ".yml", ".json", ".html", ".css", ".js", ".txt"}
 
 
 def _files() -> list[Path]:
@@ -49,6 +49,7 @@ def _files() -> list[Path]:
         "rsim.py",
         "setup.py",
         "scripts/bootstrap.ps1",
+        "scripts/run_hidden.vbs",
         "scripts/start_windows.ps1",
         "scripts/watch_windows_connector.ps1",
     }

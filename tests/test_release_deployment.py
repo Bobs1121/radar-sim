@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import subprocess
+import sys
+import time
+import zipfile
 
 import cli.web as web_module
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +79,8 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert 'watchdogTaskName = "$taskName-Watchdog"' in bootstrap
     assert "RepetitionInterval (New-TimeSpan -Minutes 2)" in bootstrap
     assert "watch_windows_connector.ps1" in bootstrap
+    assert 'RunHiddenScript = Join-Path $PSScriptRoot "run_hidden.vbs"' in bootstrap
+    assert 'New-ScheduledTaskAction -Execute "wscript.exe"' in bootstrap
     assert "-StartWhenAvailable" in bootstrap
     assert "-RestartCount 999" in bootstrap
     assert "-AllowStartIfOnBatteries" in bootstrap
@@ -88,6 +95,9 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "Test-ConnectorSupervisor" in watchdog
     assert "Start-ScheduledTask -TaskName $ConnectorTaskName" in watchdog
     assert "watchdog.log" in watchdog
+    hidden_launcher = (ROOT / "scripts" / "run_hidden.vbs").read_text(encoding="utf-8")
+    assert 'shell.Run command, 0, False' in hidden_launcher
+    assert "-WindowStyle Hidden" in hidden_launcher
     assert '$RsimEntry = Join-Path $RepoRoot "rsim.py"' in starter
     assert '$RsimEntry, "agent"' in starter
     assert '"rsim.py", "agent"' not in starter
@@ -118,6 +128,46 @@ def test_windows_installer_persists_mode_and_enforces_light_boundary():
     assert "127.0.0.1" not in launcher
     assert "foreach($i in 1..5)" in launcher
     assert "temporarily unavailable; retrying" in launcher
+
+
+def test_hidden_launcher_runs_powershell_and_preserves_spaced_arguments(tmp_path: Path):
+    if sys.platform != "win32":
+        pytest.skip("VBScript launcher is a Windows-only connector component")
+    marker = tmp_path / "folder with spaces" / "marker.txt"
+    marker.parent.mkdir()
+    probe = tmp_path / "probe script.ps1"
+    probe.write_text(
+        "param([string]$OutputPath, [string]$Value)\n"
+        "[IO.File]::WriteAllText($OutputPath, $Value)\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            "cscript.exe",
+            "//nologo",
+            str(ROOT / "scripts" / "run_hidden.vbs"),
+            str(probe),
+            str(marker),
+            "value with spaces",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not marker.exists():
+        time.sleep(0.1)
+    assert marker.read_text(encoding="utf-8") == "value with spaces"
+
+
+def test_windows_connector_bundle_contains_hidden_launcher(tmp_path: Path):
+    from scripts.build_windows_connector_bundle import build
+
+    archive, _manifest = build(tmp_path / "connector.zip")
+    with zipfile.ZipFile(archive) as bundle:
+        assert "scripts/run_hidden.vbs" in bundle.namelist()
 
 
 def test_linux_release_builds_same_origin_windows_connector_bundle():

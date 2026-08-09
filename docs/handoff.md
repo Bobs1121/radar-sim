@@ -9,6 +9,13 @@ description: 项目现状、架构、已知问题和后续 TODO
 
 > 状态：**代码已提交推送，真实 Cluster 黑盒成功，生产 8877 已切换至 `eff321a`**。本节记录 2026-08-05 当前共享工作区的真实进度，优先级高于下方所有历史“上传到 Linux”描述。下方旧记录只用于解释历史问题，不能作为当前实施合同。
 
+### 2026-08-09 Windows Connector 黑框遗留收口
+
+- 工作区遗留的 `bootstrap.ps1` 已把计划任务 Action 改成 `wscript.exe + run_hidden.vbs`，但 `run_hidden.vbs` 当时未进入仓库，Connector 打包器也不允许 `.vbs`；若直接发布，新用户重装后计划任务会引用不存在的文件。
+- 已补齐通用无窗口启动器 `scripts/run_hidden.vbs`：首参数是 PowerShell 脚本，后续参数逐个安全加引号；以 `WScript.Shell.Run(..., 0, False)` 和 PowerShell `-WindowStyle Hidden` 双重隐藏，不改变 supervisor、watchdog、重连或日志逻辑。
+- `scripts/build_windows_connector_bundle.py` 已显式允许并强制包含 `scripts/run_hidden.vbs`；`tests/test_release_deployment.py` 覆盖 scheduled-task 合同、真实 VBScript -> PowerShell spaced-argument 启动和 ZIP 内容。
+- 本轮验证：Windows VBS 实际启动测试通过；Connector ZIP 成功生成并包含 155 files；release/API 组合 `83 passed, 1 warning`；PowerShell parser 与 `git diff --check` 通过。生产发布提交、版本和当前 Windows 任务复核应追加在本节后再结束。
+
 ### 2026-08-05 真实直传黑盒最新现场（额度/上下文中断时从这里接续）
 
 - 已提交并推送 `codex/new-branch`：`26354a9 Implement direct client-to-cluster data plane`。生产 `radar-sim-v1.service:8877` 没有被覆盖；验收使用隔离目录 `/home/hoz2wx/radar-sim-direct-26354a9`、隔离 `RSIM_HOME=/home/hoz2wx/.rsim-direct-acceptance`、隔离服务 `radar-sim-direct-acceptance.service:8879`。
