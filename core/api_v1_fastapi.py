@@ -63,6 +63,10 @@ class SubmitUserRunRequest(BaseModel):
     config: UserRunConfig
     dry_run: bool = Field(default=False)
     prepared_runtime_bundle_id: str = Field(default="", max_length=160)
+    # Internal source-side capability hint. It is derived by the Python SDK
+    # from paths readable on that calling machine and never enters exported
+    # UserRunConfig YAML. Web callers leave it empty and use their Connector.
+    client_transfer_roles: list[str] = Field(default_factory=list, max_length=5)
 
 
 class ExportUserRunRequest(BaseModel):
@@ -609,6 +613,7 @@ def create_app(
             dry_run=body.dry_run,
             idempotency_key=idempotency_key or "",
             prepared_runtime_bundle_id=body.prepared_runtime_bundle_id,
+            client_transfer_roles=body.client_transfer_roles,
         )
 
     @app.post("/api/v1/validate")

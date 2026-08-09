@@ -23,9 +23,6 @@ const state = {
   // authenticated deployments ignore it in favor of the Bearer identity.
   userId: browserUserId(),
   authenticationRequired: false,
-  dataFolderFiles: [],
-  uploadedDataPath: "",
-  selectedFolderLabel: "",
   importedSelection: null,
   validatedTarget: "",
 };
@@ -168,14 +165,14 @@ function createFormWindowsRequirement() {
       mode: "light",
       title: "本地编译需要连接这台电脑",
       capability: "缺少本机编译和文件访问能力",
-      reason: "代码仓和编译脚本只在 Windows 电脑上可访问；完成一次连接后由 Linux 自动调度编译和上传。",
+      reason: "代码仓和编译脚本只在 Windows 电脑上可访问；完成一次连接后由 Linux 自动调度编译并让该电脑直传执行端。",
     };
   }
   if (usesWindowsPath && !hasWindowsCapability("light")) {
     return {
       mode: "light",
       title: "本地文件需要连接这台电脑",
-      capability: "缺少本机文件访问和上传能力",
+      capability: "缺少本机文件访问和直传能力",
       reason: "配置包含 C:/ 或 D:/ 本地路径，需要这台电脑读取 Selena、Runtime、MatFilter 或数据并交给 Cluster。已有 Selena 不需要 Visual Studio。",
     };
   }
@@ -198,28 +195,6 @@ function updateCreateWindowsCallout() {
   byId("createWindowsStatus").textContent = configured
     ? "本机已经配置过，通常会自动恢复；长时间未连接时可重新下载连接程序"
     : "安装一次，后续开机自动连接";
-}
-
-async function uploadConfigAsset(kind, file, targetId) {
-  if (!file) return;
-  const button = kind === "adapter" ? byId("chooseAdapter") : byId("chooseMatFilter");
-  button.disabled = true;
-  const original = button.textContent;
-  button.textContent = "正在上传…";
-  try {
-    const asset = await api("/config-assets", {
-      method: "POST",
-      headers: { "X-Asset-Kind": kind, "X-Asset-Filename": file.name },
-      body: file,
-    });
-    byId(targetId).value = asset.uri;
-    showToast(`${kind === "adapter" ? "Adapter" : "MatFilter"} 已保存为可复用配置引用`);
-  } catch (error) {
-    showFormError(error);
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
-  }
 }
 
 function showToast(message, duration = 3200) {
@@ -260,7 +235,7 @@ function setSelectedValue(name, value) {
 }
 
 function runConfigFromForm() {
-  const dataPath = state.uploadedDataPath || byId("dataPath").value.trim();
+  const dataPath = byId("dataPath").value.trim();
   if (!dataPath) {
     byId("dataPath").setAttribute("aria-invalid", "true");
     throw new Error("请填写数据路径");
@@ -307,11 +282,7 @@ function runConfigFromForm() {
 }
 
 function applyRunConfig(config) {
-  state.dataFolderFiles = [];
-  state.uploadedDataPath = "";
-  state.selectedFolderLabel = "";
   byId("dataPath").value = config.data?.path || "";
-  updateDataUploadHint();
   byId("selenaSource").value = config.selena?.source || "build";
   byId("codePath").value = config.selena?.code_path || "";
   byId("selenaBranch").value = config.selena?.branch || "";
@@ -328,81 +299,6 @@ function applyRunConfig(config) {
   byId("matFilter").value = config.simulation?.mat_filter || "";
   updateConditionalFields();
   updateRouteSummary();
-}
-
-function chooseDataFolder(fileList) {
-  const files = Array.from(fileList || []).filter((file) => /\.mf4$/i.test(file.name) && file.size > 0);
-  if (!files.length) {
-    state.dataFolderFiles = [];
-    showToast("所选文件夹中没有可上传的 MF4 文件");
-    return;
-  }
-  const firstPath = files[0].webkitRelativePath || files[0].name;
-  const folder = firstPath.includes("/") ? firstPath.split("/", 1)[0] : "本机数据";
-  state.dataFolderFiles = files;
-  state.uploadedDataPath = "";
-  state.selectedFolderLabel = folder;
-  byId("dataPath").value = folder;
-  byId("dataUploadState").textContent = `已选择 ${files.length} 个 MF4；提交或校验时自动上传`;
-}
-
-function updateDataUploadHint() {
-  const value = byId("dataPath")?.value.trim() || "";
-  const status = byId("dataUploadState");
-  if (!status || state.dataFolderFiles.length || state.uploadedDataPath) return;
-  status.textContent = value.startsWith("/") && !value.startsWith("//")
-    ? "如果这是当前 Linux 电脑的本地路径，请选择本机文件夹上传；如果是中央服务或 Cluster 挂载路径，可直接保留。"
-    : "Windows 或 Linux 用户都可选择浏览器本机文件夹；提交时自动上传。";
-}
-
-async function ensureSelectedDataUploaded() {
-  if (!state.dataFolderFiles.length || state.uploadedDataPath) return state.uploadedDataPath;
-  const files = state.dataFolderFiles;
-  const manifest = files.map((file) => ({
-    relative_path: file.webkitRelativePath || file.name,
-    size: file.size,
-  }));
-  const progress = byId("dataUploadProgress");
-  const bar = byId("dataUploadBar");
-  const percent = byId("dataUploadPercent");
-  progress.hidden = false;
-  let uploaded = 0;
-  let displayedValue = -1;
-  const total = files.reduce((sum, file) => sum + file.size, 0);
-  const update = () => {
-    const value = total ? Math.round(uploaded * 100 / total) : 100;
-    if (value === displayedValue) return;
-    displayedValue = value;
-    bar.value = value;
-    percent.textContent = `${value}% · ${formatBytes(uploaded)} / ${formatBytes(total)}`;
-  };
-  const session = await api("/run-data-uploads", { method: "POST", json: { files: manifest } });
-  const remoteByPath = new Map((session.files || []).map((item) => [item.relative_path, item]));
-  const chunkSize = Math.max(1, Number(session.chunk_size) || 4 * 1024 * 1024);
-  for (const file of files) {
-    const relative = file.webkitRelativePath || file.name;
-    const remote = remoteByPath.get(relative);
-    if (!remote) throw new Error(`上传会话缺少文件：${relative}`);
-    let offset = Number(remote.received_bytes) || 0;
-    uploaded += offset;
-    update();
-    while (offset < file.size) {
-      const blob = file.slice(offset, Math.min(file.size, offset + chunkSize));
-      await api(
-        `/dataset-uploads/${encodeURIComponent(session.session_id)}/files/${encodeURIComponent(remote.file_id)}`,
-        { method: "PATCH", headers: { "Upload-Offset": String(offset) }, body: blob },
-      );
-      offset += blob.size;
-      uploaded += blob.size;
-      update();
-    }
-  }
-  const completed = await api(`/dataset-uploads/${encodeURIComponent(session.session_id)}/finalize`, { method: "POST" });
-  state.uploadedDataPath = completed.data_path;
-  byId("dataPath").value = completed.data_path;
-  byId("dataUploadState").textContent = `数据已就绪：${files.length} 个 MF4`;
-  showToast("本机数据已上传，配置已自动换成可复用的数据路径");
-  return completed.data_path;
 }
 
 function updateConditionalFields() {
@@ -475,9 +371,15 @@ function confirmSubmission(config, validation) {
   const changedWarning = byId("importSelectionWarning").hidden
     ? ""
     : `\n${byId("importSelectionWarning").textContent}`;
+  const blockers = Array.isArray(validation?.readiness?.blockers)
+    ? validation.readiness.blockers
+    : [];
+  const waitingNotice = blockers.length
+    ? `\n\n当前尚未就绪：\n${blockers.map((item) => `- ${item.message}`).join("\n")}\n提交后任务会保留并等待能力恢复，无需重新提交。`
+    : "";
   return window.confirm(
     `请确认本次仿真任务：\n最终执行位置：${submissionTargetName(selectedTarget)}\n`
-    + `Selena 来源：${submissionSourceName(config.selena?.source)}${changedWarning}`,
+    + `Selena 来源：${submissionSourceName(config.selena?.source)}${changedWarning}${waitingNotice}`,
   );
 }
 
@@ -521,7 +423,6 @@ function switchView(view) {
 async function validateCurrentSpec() {
   clearFormError();
   try {
-    await ensureSelectedDataUploaded();
     const config = runConfigFromForm();
     const result = await api("/run-configs/validate", { method: "POST", json: config });
     renderExecutionPlan(result);
@@ -546,15 +447,9 @@ async function submitCurrentSpec(event) {
   button.disabled = true;
   button.textContent = "正在提交";
   try {
-    await ensureSelectedDataUploaded();
     const config = runConfigFromForm();
     const validation = await api("/run-configs/validate", { method: "POST", json: config });
     renderExecutionPlan(validation);
-    if (validation.readiness && validation.readiness.can_submit === false) {
-      const blockers = Array.isArray(validation.readiness.blockers) ? validation.readiness.blockers : [];
-      throw new Error(blockers.map((item) => `${item.message}${item.action ? ` ${item.action}` : ""}`).join("\n")
-        || "当前环境尚未就绪，请先按页面提示完成连接或恢复服务。");
-    }
     if (!confirmSubmission(config, validation)) {
       showToast("已取消提交，配置保持不变");
       return;
@@ -602,7 +497,6 @@ async function importYamlFile(file) {
 async function exportYaml() {
   clearFormError();
   try {
-    await ensureSelectedDataUploaded();
     const config = runConfigFromForm();
     const result = await api("/run-configs/export", { method: "POST", json: { config } });
     const blob = new Blob([result.yaml_content], { type: "text/yaml;charset=utf-8" });
@@ -746,13 +640,13 @@ function windowsWaitState(job, candidateStage = null) {
       title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
       capability: full
         ? "缺少本地仿真能力"
-        : build ? "缺少本机编译和文件访问能力" : "缺少本机文件访问和上传能力",
+        : build ? "缺少本机编译和文件访问能力" : "缺少本机文件访问和直传能力",
       shortCapability: full ? "本地仿真能力" : build ? "本机编译能力" : "本机文件访问能力",
       reason: full
         ? "你选择了本地仿真，运行 Selena 和收集结果需要由这台 Windows 电脑完成。"
         : build
           ? "任务会编译当前代码工作区，再把 Selena 产物交给 Cluster；代码和编译脚本只在你的 Windows 电脑上可访问。"
-          : "已有 Selena 不需要安装 Visual Studio 或编译依赖；如果 Selena、Runtime、MatFilter 或数据在本机，只需连接本机完成读取/上传。全部路径放在 Cluster 可访问共享位置时，可以完全不安装 Windows 组件。",
+          : "已有 Selena 不需要安装 Visual Studio 或编译依赖；如果 Selena、Runtime、MatFilter 或数据在本机，只需连接本机完成读取并直传执行端。全部路径放在 Cluster 可访问共享位置时，可以完全不安装 Windows 组件。",
     };
   }
   const paths = [
@@ -797,7 +691,7 @@ function windowsWaitState(job, candidateStage = null) {
       mode: "light",
       reconnecting,
       title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
-      capability: "缺少本机文件访问和上传能力",
+      capability: "缺少本机文件访问和直传能力",
       shortCapability: "本机文件访问能力",
       reason: "配置中包含 Windows 本地路径，需要由这台电脑准备 Selena、Runtime 或数据，再交给 Cluster。",
     };
@@ -1140,8 +1034,8 @@ function friendlySkipReason(value) {
 
 function friendlyStageDetail(stage) {
   const byCode = {
-    shared_dataset_unavailable: "共享路径未授权，请上传数据或联系管理员配置共享空间",
-    agent_data_upload_required: "等待已授权的 Windows Agent 上传数据",
+    shared_dataset_unavailable: "共享路径未授权，请改用受控直传或联系管理员配置共享空间",
+    agent_data_upload_required: "等待已授权的 Windows Connector 将数据直传执行端",
     workspace_snapshot_pending: "等待 Windows Agent 检查当前工作区",
   };
   if (byCode[stage.error?.code]) return byCode[stage.error.code];
@@ -1168,7 +1062,7 @@ function friendlyEvent(event) {
   const direct = {
     resolved_during_submission: "提交时已完成配置解析",
     current_workspace_verified_by_environment_check: "当前工作区将由环境检查阶段确认",
-    "shared path is not under an authorized namespace": "共享路径未授权，需要上传数据或配置共享空间",
+    "shared path is not under an authorized namespace": "共享路径未授权，需要受控直传或配置共享空间",
   };
   if (direct[message]) return direct[message];
   if (event.event === "job.created") return "任务已创建";
@@ -1213,23 +1107,10 @@ async function initialize() {
   byId("selenaSource").addEventListener("change", () => { updateConditionalFields(); invalidateValidatedTarget(); });
   byId("existingPath").addEventListener("input", updateRouteSummary);
   byId("selenaBranch").addEventListener("input", updateRouteSummary);
-  byId("chooseDataFolder").addEventListener("click", () => byId("dataFolderInput").click());
-  byId("dataFolderInput").addEventListener("change", (event) => chooseDataFolder(event.target.files));
   byId("dataPath").addEventListener("input", () => {
     state.validatedTarget = "";
     updateRouteSummary();
-    const value = byId("dataPath").value.trim();
-    if (value !== state.selectedFolderLabel && value !== state.uploadedDataPath) {
-      state.dataFolderFiles = [];
-      state.uploadedDataPath = "";
-      state.selectedFolderLabel = "";
-      updateDataUploadHint();
-    }
   });
-  byId("chooseAdapter").addEventListener("click", () => byId("adapterUpload").click());
-  byId("adapterUpload").addEventListener("change", (event) => uploadConfigAsset("adapter", event.target.files[0], "adapterFile"));
-  byId("chooseMatFilter").addEventListener("click", () => byId("matFilterUpload").click());
-  byId("matFilterUpload").addEventListener("change", (event) => uploadConfigAsset("mat_filter", event.target.files[0], "matFilter"));
   byId("simulationForm").addEventListener("input", updateCreateWindowsCallout);
   byId("simulationForm").addEventListener("submit", submitCurrentSpec);
   byId("validateSpec").addEventListener("click", () => validateCurrentSpec().catch(() => {}));

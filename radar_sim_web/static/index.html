@@ -72,22 +72,13 @@
           <section class="form-section" aria-labelledby="dataHeading">
             <div class="section-heading">
               <h2 id="dataHeading">仿真数据</h2>
-              <p>系统自动判断本地/共享并按执行目标直读或上传。</p>
+              <p>系统自动判断本地/共享并按执行目标原地读取或从源端直传。</p>
             </div>
             <label class="field">
               <span>数据路径</span>
               <input id="dataPath" name="dataPath" required placeholder="D:/measurements、/home/user/data 或 //server/share">
-              <small>系统递归检索输入 MF4。Windows 本地路径由连接组件读取；远程 Linux 本地路径由 SDK 自动上传，或在 Web 选择本机文件夹；共享路径由 Cluster 直读。</small>
+              <small>系统递归检索输入 MF4。Web 中填写 Windows 本地路径时由一次安装的连接组件读取并直传；Linux 本地路径请在该 Linux 设备上使用同一 SDK；共享路径由执行端原地读取。文件正文不经过本 Linux Web 服务。</small>
             </label>
-            <div class="folder-picker">
-              <button type="button" class="button secondary" id="chooseDataFolder">选择本机文件夹</button>
-              <input id="dataFolderInput" type="file" webkitdirectory directory multiple hidden>
-              <span id="dataUploadState">Windows 或 Linux 用户都可选择浏览器本机文件夹；提交时自动上传。</span>
-            </div>
-            <div class="upload-progress" id="dataUploadProgress" hidden>
-              <div><span>正在准备 Cluster 可访问的数据</span><strong id="dataUploadPercent">0%</strong></div>
-              <progress id="dataUploadBar" max="100" value="0"></progress>
-            </div>
           </section>
 
           <section class="form-section" aria-labelledby="selenaHeading">
@@ -147,15 +138,13 @@
             <div class="field-grid two">
               <div class="field">
                 <span>Adapter（可选）</span>
-                <input id="adapterFile" placeholder="可选，系统识别项目后决定是否需要">
-                <button type="button" class="folder-picker" id="chooseAdapter">选择并上传 Adapter</button>
-                <input id="adapterUpload" type="file" hidden>
+                <input id="adapterFile" placeholder="本地或共享路径；仅在当前仿真确实需要时填写">
+                <small>本地文件由 Connector/SDK 与其他输入一起直传，不经过 Linux Web 服务。</small>
               </div>
               <div class="field">
                 <span>MatFilter</span>
-                <input id="matFilter" required placeholder="本地/共享路径，或已上传的配置引用">
-                <button type="button" class="folder-picker" id="chooseMatFilter">选择并上传 MatFilter</button>
-                <input id="matFilterUpload" type="file" hidden>
+                <input id="matFilter" required placeholder="本地或共享路径">
+                <small>与 SDK 使用相同路径和直传语义，不生成 Web 专用上传引用。</small>
               </div>
             </div>
           </section>
@@ -193,15 +182,15 @@
             <ol id="planStages" class="stage-preview">
               <li><span>1</span><div><strong>识别配置</strong><small>内部适配和数据定位</small></div></li>
               <li><span>2</span><div><strong>检查环境</strong><small>按选定路径检查依赖</small></div></li>
-              <li><span>3</span><div><strong>准备 Selena 和数据</strong><small>仅在需要时编译或上传</small></div></li>
+              <li><span>3</span><div><strong>准备 Selena 和数据</strong><small>仅在需要时编译或源端直传</small></div></li>
               <li><span>4</span><div><strong>运行仿真</strong><small>本地或 Cluster</small></div></li>
             </ol>
             <div class="deployment-note">
               <strong>部署能力边界</strong>
               <dl>
                 <div><dt>完全部署</dt><dd>本地编译、本地仿真、Cluster 提交</dd></div>
-                <div><dt>轻量部署</dt><dd>本地编译和上传，再由 Cluster 仿真</dd></div>
-                <div><dt>无需部署</dt><dd>已有 Selena 和共享或上传数据，直接 Cluster 仿真</dd></div>
+                <div><dt>轻量部署</dt><dd>本地编译并直传执行端，再由 Cluster 仿真</dd></div>
+                <div><dt>无需部署</dt><dd>已有 Selena 和 Cluster 可读共享数据，直接 Cluster 仿真</dd></div>
               </dl>
             </div>
           </div>

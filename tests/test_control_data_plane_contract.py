@@ -118,6 +118,27 @@ def _stage_projection(job: dict[str, Any] | Any) -> tuple[Any, ...]:
     )
 
 
+def test_web_user_run_never_uploads_task_file_bodies_to_linux() -> None:
+    """The browser entry must use the same direct-transfer contract as SDK.
+
+    A browser cannot safely turn a local folder picker into an absolute source
+    path.  Local paths therefore stay in UserRunConfig and are read by the
+    owner-bound Connector; the Web control plane must not retain its legacy
+    dataset/config-asset body upload fallback.
+    """
+
+    root = Path(__file__).resolve().parents[1]
+    javascript = (root / "radar_sim_web" / "static" / "app.js").read_text(encoding="utf-8")
+    html = (root / "radar_sim_web" / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert 'api("/run-data-uploads"' not in javascript
+    assert 'api("/config-assets"' not in javascript
+    assert "body: file" not in javascript
+    assert "body: blob" not in javascript
+    assert "文件正文不经过本 Linux Web 服务" in html
+    assert "与 SDK 使用相同路径和直传语义" in html
+
+
 def test_sdk_existing_cluster_local_paths_never_use_linux_body_uploads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -156,7 +177,49 @@ def test_sdk_existing_cluster_local_paths_never_use_linux_body_uploads(
 
     assert len(requests) == 1
     assert requests[0]["json"]["prepared_runtime_bundle_id"] == ""
+    assert set(requests[0]["json"]["client_transfer_roles"]) == {
+        "dataset", "runtime_bundle", "runtime_xml", "mat_filter"
+    }
     assert job.spec == UserRunConfig.from_dict(config).to_dict()
+
+
+def test_linux_sdk_posix_sources_use_direct_transfer_hint_not_linux_body_route(
+    tmp_path: Path,
+) -> None:
+    """A remote Linux SDK's `/home/...` paths belong to that caller, not server disk."""
+
+    config = {
+        "schema_version": "2.0",
+        "selena": {
+            "source": "existing",
+            "existing_path": "/home/alice/Selena",
+            "runtime_xml": "/home/alice/Runtime.xml",
+        },
+        "data": {"path": "/home/alice/data"},
+        "simulation": {
+            "target": "cluster",
+            "adapter_file": "",
+            "mat_filter": "/home/alice/MatFilter.cfg",
+        },
+    }
+    control = ControlService(tmp_path / "linux-sdk-control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+
+    job = api.submit_user_run(
+        "alice",
+        config_payload=config,
+        client_transfer_roles=("dataset", "runtime_bundle", "runtime_xml", "mat_filter"),
+    )
+    private = control.get_job(job["id"])
+    stages = {item["stage_type"]: item for item in private["stages"]}
+
+    assert stages["resolve_spec"]["status"] == "skipped"
+    assert stages["resolve_spec"]["skip_reason"] == "runtime_bundle_direct_transfer"
+    assert stages["prepare_data"]["payload"]["dispatch_scope"] == "direct_transfer"
+    assert set(stages["prepare_data"]["payload"]["source_roles"]) == {
+        "dataset", "runtime_bundle", "runtime_xml", "mat_filter"
+    }
+    assert stages["prepare_data"].get("required_agent_id", "") != "linux-v2-stage-executor"
 
 
 def test_linux_control_plane_does_not_import_server_visible_existing_cluster_bodies(

@@ -14,7 +14,7 @@ radar-sim v5 的产品入口是 **Web** 和 **Python SDK / versioned REST API**�
 
 当前统一入口已经收敛为 `Web / Python SDK -> Linux serve-v1 -> Stage 调度 -> Windows 本机或 Cluster`。Windows 执行组件属于平台内部实现：用户只在任务提示时点击“一键连接本机”，不填写服务地址、节点 ID、部署模式或令牌。
 
-发布边界：Linux 永不编译 Selena或执行本地仿真；light 只编译/上传后交给 Cluster；full 才能本地仿真；没有 Windows 时填写/上传已有 Selena 文件夹后由 Linux 调度 Cluster。用户不选择 Runtime Bundle；系统从目录校验 `Selena.exe + 同目录 DLL + Runtime XML` 并在内部打包。真实企业 Cluster 共享盘/manager 仍需在目标环境最终验收。
+发布边界：Linux 永不编译 Selena 或执行本地仿真；light 只编译并从源端直传后交给 Cluster；full 才能本地仿真；没有 Windows 时填写 Cluster 可访问的已有 Selena 文件夹，或在文件所在 Linux 设备运行 SDK 直传后由中央 Linux 调度 Cluster。用户不选择 Runtime Bundle；系统从目录校验 `Selena.exe + 同目录 DLL + Runtime XML` 并在内部登记。真实企业 Cluster 共享盘/manager 仍需在目标环境最终验收。
 
 OD25 发布用户请直接使用 [`docs/OD25_USER_GUIDE.md`](docs/OD25_USER_GUIDE.md)，其中包含可导入 Web 的两份 YAML、Windows 一键连接、Linux 后端 SDK 调用和当前验收边界。
 
@@ -46,7 +46,7 @@ with RadarSimClient("http://10.190.171.44:8877") as client:
     print(job.id)
 ```
 
-`submit_yaml()` 是 Web 共用的统一入口，可接受已有/编译 Selena 与 local/cluster 的组合。兼容方法 `submit_cluster_yaml()` 会额外强制检查“已有 Selena + Cluster”组合。SDK/服务会根据路径在哪一侧可达，自动准备 Selena 目录、Runtime、数据和配置资产；用户不填写 project、Bundle、Cluster 参数或输出目录。
+`submit_yaml()` 是 Web 共用的统一入口，可接受已有/编译 Selena 与 local/cluster 的组合。兼容方法 `submit_cluster_yaml()` 会额外强制检查“已有 Selena + Cluster”组合。SDK/Connector 会根据路径在哪一侧可达，把 Selena 目录、Runtime、数据和配置资产原地引用或从源端直传执行端；Linux API 只处理控制信息。用户不填写 project、Bundle、Cluster 参数或输出目录。
 
 ## 现有兼容 CLI 快速开始
 

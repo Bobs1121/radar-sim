@@ -326,6 +326,7 @@ class ApiV1Service:
         dry_run: bool = False,
         idempotency_key: str = "",
         prepared_runtime_bundle_id: str = "",
+        client_transfer_roles: Sequence[str] = (),
     ) -> dict[str, Any]:
         """Persist a project-free job; recognition occurs on the execution node.
 
@@ -336,6 +337,21 @@ class ApiV1Service:
         """
         owner = self._owner(owner)
         config = self._parse_user_run_config(config_payload)
+        allowed_transfer_roles = {
+            "dataset", "runtime_bundle", "runtime_xml", "mat_filter", "adapter"
+        }
+        sdk_transfer_roles = {
+            str(role or "").strip().lower() for role in client_transfer_roles
+            if str(role or "").strip()
+        }
+        invalid_transfer_roles = sorted(sdk_transfer_roles - allowed_transfer_roles)
+        if invalid_transfer_roles:
+            raise ApiV1Error(
+                "invalid_client_transfer_roles",
+                "Client direct-transfer roles are invalid",
+                status_code=422,
+                detail={"roles": invalid_transfer_roles},
+            )
         if (
             config.selena.source == "existing"
             and config.selena.existing_path.startswith("selena-bundle:sha256:")
@@ -430,7 +446,10 @@ class ApiV1Service:
             selected_target == "cluster"
             and config.selena.source == "existing"
             and selected_runtime_bundle is None
-            and classify_data_path(str(config.selena.existing_path or "")) == "agent"
+            and (
+                classify_data_path(str(config.selena.existing_path or "")) == "agent"
+                or "runtime_bundle" in sdk_transfer_roles
+            )
         )
         for task in task_specs:
             stage_type = str(task.get("stage_type") or "")
@@ -520,8 +539,11 @@ class ApiV1Service:
                     task["assigned_agent_id"] = LINUX_STAGE_AGENT_ID
                     task["required_agent_id"] = LINUX_STAGE_AGENT_ID
                 elif stage_type == "prepare_data" and (
-                    str(config.data.path).lower().startswith("dataset://")
-                    or classify_data_path(config.data.path) in {"shared", "central"}
+                    not sdk_transfer_roles
+                    and (
+                        str(config.data.path).lower().startswith("dataset://")
+                        or classify_data_path(config.data.path) in {"shared", "central"}
+                    )
                 ):
                     # Data preparation is independent of Selena packaging.
                     # Shared/uploaded data belongs to the Linux control plane
@@ -563,6 +585,7 @@ class ApiV1Service:
                 config,
                 selected_runtime_bundle=selected_runtime_bundle,
                 selected_runtime_project=selected_runtime_project,
+                client_transfer_roles=sdk_transfer_roles,
             )
         if dry_run:
             # UserRunConfig dry-run is plan-only: it must never switch branches,
@@ -610,6 +633,7 @@ class ApiV1Service:
         *,
         selected_runtime_bundle: dict[str, Any] | None = None,
         selected_runtime_project: str = "",
+        client_transfer_roles: Iterable[str] = (),
     ) -> None:
         """Annotate the project-free data Stage with the P0 data-plane route.
 
@@ -629,9 +653,13 @@ class ApiV1Service:
 
         data_path = str(config.data.path or "")
         local_sources: list[dict[str, str]] = []
+        hinted_roles = {str(role or "").strip().lower() for role in client_transfer_roles}
 
         def add_local(role: str, value: str) -> None:
-            if classify_data_path(value) == "agent":
+            value = str(value or "").strip()
+            if not value:
+                return
+            if classify_data_path(value) == "agent" or role in hinted_roles:
                 local_sources.append({"source_role": role, "path": value})
 
         add_local("dataset", data_path)

@@ -98,6 +98,10 @@ class RadarSimClient:
         """Check server health and API version."""
         return dict(self._request("GET", "/api/v1/health"))
 
+    def capabilities(self) -> dict[str, Any]:
+        """Return the path-free execution capability snapshot for this user."""
+        return dict(self._request("GET", "/api/v1/capabilities"))
+
     def download_windows_connector(
         self,
         destination: str | Path,
@@ -148,7 +152,12 @@ class RadarSimClient:
         do not need to understand the internal full/light product vocabulary.
         """
         parsed = UserRunConfig.from_dict(self._run_config_payload(config))
-        mode = "full" if parsed.simulation.target == "local" else "light"
+        selected_target = parsed.simulation.target
+        if selected_target == "auto":
+            selected_target = str(
+                self.validate_run(parsed).execution.get("selected_target") or "cluster"
+            ).strip().lower()
+        mode = "full" if selected_target == "local" else "light"
         return self.download_windows_connector(destination, mode=mode)
 
     def validate(self, spec: SimulationSpec | dict[str, Any]) -> ValidationResult:
@@ -173,6 +182,11 @@ class RadarSimClient:
     ) -> Job:
         parsed = UserRunConfig.from_dict(self._run_config_payload(config))
         payload, prepared_bundle_id = self._prepare_user_run(parsed, dry_run=bool(dry_run))
+        client_transfer_roles = (
+            []
+            if dry_run
+            else sorted({role for role, _path in _sdk_local_transfer_sources(parsed)})
+        )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         job = Job.from_dict(
             self._request(
@@ -182,14 +196,17 @@ class RadarSimClient:
                     "config": payload,
                     "dry_run": bool(dry_run),
                     "prepared_runtime_bundle_id": prepared_bundle_id,
+                    "client_transfer_roles": client_transfer_roles,
                 },
                 headers=headers,
             )
         )
         if not dry_run and auto_transfer:
-            return self._auto_prepare_direct_transfers(
+            return self.prepare_direct_transfers(
                 job,
                 parsed,
+                # Keep submit's one-request contract; explicit resume retries.
+                retries=0,
                 allow_local_test=bool(allow_local_test),
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
@@ -222,6 +239,68 @@ class RadarSimClient:
             cancel_check=cancel_check,
         )
 
+    def prepare_direct_transfers(
+        self,
+        job: Job | str,
+        config: UserRunConfig | dict[str, Any],
+        *,
+        retries: int = 3,
+        retry_interval: float = 0.1,
+        allow_local_test: bool = False,
+        progress_callback: Callable[[TransferProgress], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> Job:
+        """Prepare local direct-transfer inputs for an already submitted run.
+
+        ``submit_run`` uses one attempt; callers can resume with bounded retries
+        while a newly-created Job is still persisting its ``prepare_data`` Stage.
+        """
+        parsed = UserRunConfig.from_dict(self._run_config_payload(config))
+        current = job if isinstance(job, Job) else self.get_job(str(job))
+        selected_target = str(
+            ((current.resolved_spec.get("decisions") or {}).get("execution") or {}).get(
+                "selected_target"
+            )
+            or parsed.simulation.target
+            or ""
+        ).strip().lower()
+        if selected_target != "cluster":
+            return current
+
+        attempt_limit = max(0, int(retries))
+        interval = max(0.0, float(retry_interval))
+        for attempt in range(attempt_limit + 1):
+            if _find_sdk_prepare_data_stage(current) is not None:
+                return self._auto_prepare_direct_transfers(
+                    current,
+                    parsed,
+                    allow_local_test=bool(allow_local_test),
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                )
+            if attempt >= attempt_limit:
+                return self._direct_transfer_waiting(
+                    current,
+                    code="direct_transfer_stage_unavailable",
+                    message=(
+                        "The Cluster direct-transfer Stage is not available yet; "
+                        "connect the source Agent and retry."
+                    ),
+                )
+            if interval > 0:
+                time.sleep(interval)
+            current = self.get_job(current.id)
+        return current  # pragma: no cover - loop always returns above
+
+    def resume_direct_transfers(
+        self,
+        job: Job | str,
+        config: UserRunConfig | dict[str, Any],
+        **kwargs: Any,
+    ) -> Job:
+        """Resume :meth:`prepare_direct_transfers` after a prior submit."""
+        return self.prepare_direct_transfers(job, config, **kwargs)
+
     def _auto_prepare_direct_transfers(
         self,
         job: Job,
@@ -248,14 +327,7 @@ class RadarSimClient:
         ).strip().lower()
         if selected_target != "cluster":
             return job
-        stage = next(
-            (
-                item
-                for item in job.stages
-                if str(item.get("stage_type") or item.get("task_type") or "") == "prepare_data"
-            ),
-            None,
-        )
+        stage = _find_sdk_prepare_data_stage(job)
         if not stage:
             return job
         stage_status = str(stage.get("status") or "").strip().lower()
@@ -638,6 +710,15 @@ class RadarSimClient:
 
     def get_job(self, job_id: str) -> Job:
         return Job.from_dict(self._request("GET", f"/api/v1/jobs/{job_id}"))
+
+    def get_job_transfer_status(self, job_id: str) -> dict[str, Any]:
+        """Return aggregate direct-transfer status and plan summaries for a Job."""
+        return dict(
+            self._request(
+                "GET",
+                f"/api/v1/jobs/{_quote_path_token(job_id)}/transfers",
+            )
+        )
 
     def list_jobs(self, *, status: str = "", limit: int = 50) -> list[Job]:
         payload = self._request(
@@ -1194,6 +1275,13 @@ class RadarSimClient:
             return payload
 
 
+def _find_sdk_prepare_data_stage(job: Job) -> dict[str, Any] | None:
+    for item in (*job.stages, *job.tasks):
+        if str(item.get("stage_type") or item.get("task_type") or "") == "prepare_data":
+            return item
+    return None
+
+
 def _default_sdk_user() -> str:
     """Return one stable, opaque no-config identity per OS user and machine."""
     try:
@@ -1236,11 +1324,16 @@ def _sdk_local_transfer_sources(config: UserRunConfig) -> list[tuple[str, Path]]
             continue
         # UNC/shared paths belong to the deployment namespace even if this
         # process happens to have a mapped view of them.
-        if classify_data_path(value) == "shared":
+        data_kind = classify_data_path(value)
+        if data_kind == "shared":
             continue
         source = Path(value).expanduser()
         try:
-            if not source.exists() or source.is_symlink():
+            if source.is_symlink() or not _should_upload_client_data(
+                value,
+                source,
+                data_kind=data_kind,
+            ):
                 continue
             resolved = source.resolve(strict=True)
         except (OSError, RuntimeError, ValueError):

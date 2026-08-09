@@ -19,7 +19,7 @@ from core.config_assets import ConfigAssetStore
 from core.local_results import ResultCatalog
 from core.http_auth import HttpTokenAuthenticator
 from core.simulation import detect_radar_transfer_metadata
-from radar_sim_sdk import RadarSimApiError, RadarSimClient, SimulationSpec, UserRunConfig
+from radar_sim_sdk import Job, RadarSimApiError, RadarSimClient, SimulationSpec, UserRunConfig
 from radar_sim_sdk.client import _dataset_transfer_fingerprints, _trust_environment_proxy
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
 from tests.test_api_v1_service import run_config_dict, spec_dict
@@ -158,6 +158,28 @@ def test_sdk_selects_light_connector_for_cluster_simulation(tmp_path, monkeypatc
     sdk.download_windows_connector_for_run(config, tmp_path)
 
     assert seen == [(tmp_path, "light")]
+
+
+def test_sdk_auto_connector_mode_uses_same_resolved_target_as_web(tmp_path, monkeypatch):
+    sdk, _ = make_sdk(tmp_path)
+    config = run_config_dict()
+    config["simulation"]["target"] = "auto"
+    seen = []
+    monkeypatch.setattr(
+        sdk,
+        "validate_run",
+        lambda _config: SimpleNamespace(execution={"selected_target": "local"}),
+    )
+    monkeypatch.setattr(
+        sdk,
+        "download_windows_connector",
+        lambda destination, *, mode="light": seen.append((Path(destination), mode))
+        or Path(destination) / "RadarSim-Connect-Windows.cmd",
+    )
+
+    sdk.download_windows_connector_for_run(config, tmp_path)
+
+    assert seen == [(tmp_path, "full")]
 
 
 def test_sdk_and_web_share_project_free_run_config_contract(tmp_path):
@@ -891,3 +913,104 @@ def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_pa
         (plans["runtime_bundle"].relative_root + "/Selena.exe"),
         (plans["runtime_bundle"].relative_root + "/nested/Selena.dll"),
     }
+
+
+def test_sdk_capabilities_and_job_transfer_status_are_public():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/api/v1/capabilities":
+            return httpx.Response(
+                200,
+                json={
+                    "capabilities": {"cluster": {"available": True}},
+                    "observed_at": 123.0,
+                },
+            )
+        if request.url.path == "/api/v1/jobs/job-status/transfers":
+            return httpx.Response(
+                200,
+                json={
+                    "job_id": "job-status",
+                    "status": "transfer_completed",
+                    "plan_count": 1,
+                    "plans": [{"transfer_id": "transfer-1", "status": "completed"}],
+                },
+            )
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    assert sdk.capabilities()["capabilities"]["cluster"]["available"] is True
+    status = sdk.get_job_transfer_status("job-status")
+    assert status["status"] == "transfer_completed"
+    assert status["plans"][0]["status"] == "completed"
+    assert seen == ["/api/v1/capabilities", "/api/v1/jobs/job-status/transfers"]
+
+
+def test_sdk_prepare_direct_transfers_retries_until_prepare_stage_is_visible(monkeypatch):
+    config = run_config_dict()
+    config["data"] = {"path": "C:/local/measurements"}
+    pending = Job.from_dict(
+        {
+            "id": "job-stage-retry",
+            "status": "queued",
+            "resolved_spec": {"decisions": {"execution": {"selected_target": "cluster"}}},
+            "stages": [],
+        }
+    )
+    ready = Job.from_dict(
+        {
+            "id": "job-stage-retry",
+            "status": "queued",
+            "resolved_spec": {"decisions": {"execution": {"selected_target": "cluster"}}},
+            "stages": [{"stage_id": "stage-data", "stage_type": "prepare_data", "status": "queued"}],
+        }
+    )
+    responses = iter([pending, ready])
+    fetched: list[str] = []
+    sdk = RadarSimClient("http://testserver", transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
+    monkeypatch.setattr(sdk, "get_job", lambda job_id: fetched.append(job_id) or next(responses))
+    monkeypatch.setattr(sdk, "_auto_prepare_direct_transfers", lambda job, *_args, **_kwargs: job)
+
+    resumed = sdk.prepare_direct_transfers(
+        "job-stage-retry", config, retries=2, retry_interval=0
+    )
+
+    assert resumed == ready
+    assert fetched == ["job-stage-retry", "job-stage-retry"]
+
+
+def test_sdk_prepare_direct_transfers_shared_inputs_are_a_noop():
+    config = run_config_dict()
+    job = Job.from_dict(
+        {
+            "id": "job-shared-noop",
+            "status": "queued",
+            "resolved_spec": {"decisions": {"execution": {"selected_target": "cluster"}}},
+            "stages": [
+                {
+                    "stage_id": "stage-shared-noop",
+                    "stage_type": "prepare_data",
+                    "status": "queued",
+                }
+            ],
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"shared-only direct transfer made HTTP call: {request.url}")
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+    assert sdk.prepare_direct_transfers(job, config) == job
