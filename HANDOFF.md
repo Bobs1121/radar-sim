@@ -4,6 +4,28 @@
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
+## 0.0.4 Web / SDK 统一数据面与 SDK 恢复能力（2026-08-09）
+
+### 本轮用户结论
+
+- “SDK 与 Web 能力一样”定义为：两端使用同一 `UserRunConfig 2.0`、同一 `/api/v1`、同一 Job/Stage/Event/Manifest/Result，且文件传输遵循同一数据面合同。能力等价不表示浏览器和 Python 进程用同一种方式读取本机磁盘：浏览器交给同 owner 的持久 Connector；SDK 调用机能读取路径时直接执行相同 `TransferPlan`。
+- Web 主链路已删除 `/run-data-uploads` 和 `/config-assets` 的浏览器文件正文上传。MF4、完整 Selena 目录、Runtime、MatFilter、Adapter 不再因使用 Web 而经过 Linux API；Web YAML 保留用户原始路径，本机暂未连接时先创建可恢复 Job，连接恢复后继续，无需重新提交。
+- SDK `submit_run()` / `submit_yaml()` 继续自动处理调用机可读的本地输入；新增 `capabilities()`、`get_job_transfer_status()`、`prepare_direct_transfers()`、`resume_direct_transfers()`。提交响应暂未出现 `prepare_data` Stage 时，显式 prepare/resume 可有界刷新后继续；submit 本身保持旧单请求语义，不制造隐式轮询。
+- Windows/Linux SDK 都会把可读本地输入按 `dataset/runtime_bundle/runtime_xml/mat_filter/adapter` 独立直传。远程 Linux SDK 的 `/home/...` 路径通过请求内、非 YAML 的 `client_transfer_roles` 标记为调用机来源，中央 Linux 不再把它误认成自己的本地磁盘；独立挂载的共享/Cluster 文件系统仍零复制。
+- `download_windows_connector_for_run()` 在 `target=auto` 时先复用服务端与 Web 相同的执行目标决策，再选择 full/light，不再默认下载 light 后才发现任务被路由到本地仿真。
+- legacy body-upload API/SDK 方法暂时为历史兼容保留，但 Web、`submit_run()`、`submit_yaml()` 和未来 Skill/MCP 均不得调用；后续可单独做 deprecation/removal，不影响本轮主合同。
+
+### 测试和生产发布
+
+- 本机直接传输、SDK、API、Agent、Cluster 引用、Web 等组合回归：`266 passed, 2 skipped, 1 warning`；`node --check`、`py_compile`、`git diff --check` 通过。
+- 首次 Linux 候选门禁在 153 项中的 1 项失败并停止在切换前：测试依赖 `tmp_path` 在 Windows 被识别成本地盘，Linux `/tmp` 被识别为中央路径。修复测试为显式 Windows 路径，并为 Linux SDK caller-local 路径保留独立反例；生产当时仍运行 `f94d9aa`，未发生半发布。
+- 代码提交 `4e89d7e Align Web and SDK transfer behavior`，跨平台门禁修复 `7a68a20 Make direct transfer contract cross-platform`，均已推送 `origin/codex/new-branch`。
+- 生产 `radar-sim-v1.service:8877` 已切换到 `/home/hoz2wx/radar-sim-7a68a20`；服务器门禁 `153 passed`，health 返回 `ok=true/api_version=v1/authentication_required=false`，systemd `active`，MainPID `1089774`。
+- 生产 Connector ZIP：587,479 bytes、155 files、SHA-256 `29cb1b80c5643beeb7184198f41994ae0778541d92b42a8ffb9807c576d8cf5b`。
+- 生产实时复核：SDK `health()` 与 `capabilities()` 正常，Cluster `available=true/linux_executor_count=1/platform_gateway_count=1`；新 owner 的 Windows 能力为 0（owner 隔离正确）；线上 `/console/app.js` 已包含可恢复等待文案且不再包含 `/run-data-uploads`；OpenAPI `SubmitUserRunRequest` 已包含内部 `client_transfer_roles`。
+- 本轮没有重复提交真实大 MF4/Cluster 仿真。已有正向直传真实成功证据仍为 `job_444f050a55c4`；本轮验证的是 Web/SDK 等价合同、跨平台路由、传输恢复接口和生产部署，不把自动化回归冒充新一次 Cluster 黑盒。
+- 浏览器文件夹选择器在没有 Cluster 上传网关/本机浏览器桥的情况下无法获得可信绝对路径且只能把字节发到 Linux，故已从 P0 Web 主链路移除。当前 Web 用户填写路径并一次连接本机；未来若恢复选择器，只能接 Connector 本地桥或浏览器直达 Cluster 上传网关，不能恢复 Linux 中转。
+
 ## 0.0.3 最终现状快照：任务运行、数据直传、多用户、通用适配与双入口（2026-08-09）
 
 > 结论口径：本节只把真实跑过的能力写成“已完成”。只有代码/合同测试、没有目标环境黑盒证据的能力明确写成“未完整验收”。后续 AI/开发者不得依据历史章节把部分完成描述成整套产品完成。
