@@ -1728,10 +1728,32 @@ class ApiV1Service:
         returncode: int, result: dict[str, Any],
     ) -> dict[str, Any]:
         control = self._control(self._owner(owner))
-        completed = control.submit_task_result(
-            task_id, agent_id=agent_id, status=status,
-            returncode=returncode, result=result,
-        )
+        try:
+            completed = control.submit_task_result(
+                task_id, agent_id=agent_id, status=status,
+                returncode=returncode, result=result,
+            )
+        except ValueError as exc:
+            # Direct-transfer manifests can complete a prepare_data Stage as
+            # soon as the last resource is accepted.  The Windows Agent then
+            # sends its ordinary task-result callback, which is a harmless
+            # duplicate.  Treat only an assigned Agent's already-terminal
+            # callback as idempotent; keep assignment and unknown-task errors
+            # visible to callers.
+            if not str(exc).startswith(f"task already completed: {task_id}"):
+                raise
+            try:
+                task = control.get_task(task_id)
+            except KeyError:
+                raise exc
+            assigned = {
+                str(task.get("assigned_agent_id") or ""),
+                str(task.get("required_agent_id") or ""),
+            }
+            if str(agent_id or "") not in assigned:
+                raise exc
+            completed = control.get_job(str(task.get("job_id") or ""))
+            return completed
         try:
             from core.stage_binder import StageBindingError, advance_after_stage_result
 

@@ -231,6 +231,20 @@ def test_serve_v1_exposes_agent_control_endpoints_on_same_database(tmp_path):
     assert completed.status_code == 200
     assert control.get_job(job["job_id"])["status"] == "succeeded"
 
+    # Direct-transfer completion may persist the Stage from its final
+    # manifest before the Agent's ordinary result callback arrives.  The
+    # callback is idempotent for the assigned Agent and must not surface a
+    # misleading HTTP 500 or make the connector restart.
+    duplicate = client.post(
+        "/api/tasks/result", headers=headers,
+        json={
+            "task_id": claimed.json()["task"]["task_id"], "agent_id": "agent-1",
+            "status": "succeeded", "returncode": 0, "result": {"ok": True},
+        },
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json()["job_id"] == job["job_id"]
+
 
 def test_one_click_windows_connector_is_bound_to_current_linux_service(tmp_path):
     bundle = tmp_path / "rsim-windows-connector.zip"
