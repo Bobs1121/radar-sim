@@ -36,7 +36,7 @@ Platform gateway:                         run_simulation (submit only)
 Linux executor:                                           collect_results -> finalize_manifest
 ```
 
-`preflight` 校验并原子解压 Runtime Bundle、解析数据和两项配置、调用现有 `prepare_cluster_job()`，再写 `cluster-run:*` 私有租约；`run_simulation` 只通过 Gateway 提交并返回路径无关状态；`collect_results` 轮询官方状态并形成 `result:sha256:*`；`finalize_manifest` 只拼装 Bundle/Dataset/Run/Result 逻辑引用。不得直接复用旧 `build_run_manifest()` 的绝对路径 `artifacts` 作为公共 Manifest。
+`preflight` 校验并原子解压 Runtime Bundle、解析数据和两项配置、调用现有 `prepare_cluster_job()`，再写 `cluster-run:*` 私有租约；`run_simulation` 只通过 Gateway 提交并返回路径无关状态；`collect_results` 轮询官方状态并形成 `result:sha256:*`；`finalize_manifest` 由 ApiV1/ResultCatalog 拼装 Bundle/Dataset/Run/Result 逻辑引用，不维护第二套绝对路径 Manifest。
 
 本文严格区分：
 
@@ -55,12 +55,12 @@ Linux executor:                                           collect_results -> fin
 - `core/remote_control.py`：远端控制 client，可演进为 SDK transport；
 - `core/web_control.py`：Web 到控制面的兼容桥；
 - `cli/agent.py`：Windows polling worker 与本地命令适配；
-- `core/server_cluster_executor.py`：Linux server-side `cluster.run` executor；
+- `core/cluster_stage_executor.py`：serve-v1 当前 Linux/Gateway Cluster Stage executor；
 - `core/cluster.py`：Cluster 打包、提交、等待、结果获取和路径映射；
 - `core/data.py`：数据发现和复制能力；
 - `core/config.py`、`core/profiles.py`：历史配置、项目和 profile 加载；
 - `core/environment.py`、`cli/doctor.py`、`core/tcc.py`：环境检查与部分修复能力；
-- `core/preflight.py`、`core/manifest.py`、`core/progress_parser.py`：目标能力的原型。
+- `core/preflight.py`、`core/progress_parser.py`、`core/api_v1.py`、`core/local_results.py`：Preflight、进度事件、逻辑 Manifest 与结果目录。
 
 截至 2026-07-14，`UserRunConfig 2.0`、`/api/v1`、Python SDK、统一 Stage DAG、隔离 worktree、Runtime Bundle、数据/配置上传、Windows full 本地四阶段、Linux Cluster Stage、Bearer 鉴权和 full/light 一键安装均已接入。仍需如实标记的发布限制只有：
 
@@ -71,7 +71,7 @@ Linux executor:                                           collect_results -> fin
 
 ### 1.1 首版实现原则
 
-- 迁移优先于重写：复用现有 `control_service`、`control_http`、`web_control`、`server_cluster_executor`、`cluster`、`data`、`environment`、`repo` 等模块，外层补齐 v5 合同和适配器。
+- 迁移优先于重写：复用现有 `control_service`、`cluster_stage_executor`、`cluster`、`data`、`environment`、`repo` 等模块，外层补齐 v5 合同和适配器。
 - 先闭环最小纵切，再扩展体验：`SimulationSpec -> validate -> submit -> Stage events -> Manifest` 必须先跑通 Web 与 SDK 的同合同链路。
 - P0 不实现 Linux Selena 编译，也不实现平台托管编译农场；任何 Selena 编译只路由到用户授权 Windows full/agent 节点。
 - Windows 轻量 Agent 首版只执行授权工作区 Selena 本地编译、产物登记/校验/上传、必要数据检索/校验/上传，并把任务交还中央调度；它不支持本地仿真，也不是 Cluster 仿真运行期依赖。
@@ -102,11 +102,11 @@ P0 默认基于现有代码改造；只有在现有代码缺少标准能力、�
 |---|---|---|
 | Control-plane persistence and task claim | `core/control_service.py`、`core/control_http.py` | 保留 SQLite 与 claim/pinning 语义，外层增加 v1 application service、Stage/Event schema 和 legacy adapter |
 | Windows polling Agent | `cli/agent.py` | 保留任务执行和日志流能力，改造成 Stage adapter；服务化和安装交给 packaging WP，不重写 executor |
-| Server-side Cluster executor | `core/server_cluster_executor.py` | 保留 Linux `cluster.run` 执行器，补足 no-build capability、Gateway fallback、外部 job id 和 Stage event |
+| Cluster Stage executor | `core/cluster_stage_executor.py` | 作为 serve-v1 唯一 Linux/Gateway 执行器，保持 no-build capability、外部 job id 和 Stage event |
 | Cluster packaging/submission | `core/cluster.py` | 拆分 prepare/submit/wait/fetch 幂等边界，继续承载 SZHRADAR 兼容逻辑 |
 | Data discovery/adaptivity | `core/data.py` | 保留 MF4 扫描、路径分类、访问检查，外层补 `DatasetRef` 与上传协议 |
 | Environment and TCC | `core/environment.py`、`cli/doctor.py`、`core/tcc.py` | 保留检查/修复能力，统一输出 capability health、actions 和 EnvironmentSnapshot |
-| Preflight / Manifest / Progress parser | `core/preflight.py`、`core/manifest.py`、`core/progress_parser.py` | 保留原型，必须接入真实 Stage/Event 后才算 v5 完成 |
+| Preflight / Manifest / Progress parser | `core/preflight.py`、`core/api_v1.py`、`core/local_results.py`、`core/progress_parser.py` | 由真实 Stage/Event 和逻辑结果引用生成单一 Manifest |
 | Git operations | Git CLI via `core/repo.py` | 默认只读取 branch/HEAD/dirty fingerprint 并编译当前工作区；detached worktree 仅保留给未来显式冻结构建；禁止隐藏 checkout/reset/clean 行为 |
 | YAML | PyYAML through existing config loader | 保留 YAML codec 能力，结合 schema/model 做 `SimulationSpec` round-trip |
 | Local persistence | SQLite | P0 保留 SQLite；schema migration 先用显式 SQL 和备份，不引入 ORM 迁移栈 |
@@ -956,12 +956,12 @@ SDK 模型与服务端 schema 同源生成或共享，不允许手工维护两�
 | `core/web_control.py` | 迁移桥 | Web 完成 v1 切换后删除直接 service 分支 |
 | `cli/web.py` | 静态 Web host + legacy adapter | 移除业务 subprocess 和配置写入 |
 | `cli/agent.py` | Windows Worker adapter | Stage 协议、结构化事件、服务化 |
-| `core/server_cluster_executor.py` | Linux Cluster Worker | 改用 Stage 协议，保持无 Windows 用户链路 |
+| `core/cluster_stage_executor.py` | Linux Cluster Worker | 使用 Stage 协议，保持无 Windows 用户链路 |
 | `core/cluster.py` | Cluster backend adapter | 拆分 prepare/submit/wait/fetch 并幂等化 |
 | `core/repo.py` | Source adapter | 当前工作区只读检查优先；worktree 只服务未来显式冻结构建；停用破坏性 checkout 路径 |
 | `core/config.py` | legacy config adapter | 映射 ProjectCatalog/UserBindings，停止膨胀 |
 | `core/preflight.py` | Preflight Stage | 接入 DAG，输出标准错误和事件 |
-| `core/manifest.py` | Manifest service | 从真实 Stage attempt 生成不可变清单 |
+| `core/api_v1.py`、`core/local_results.py` | Manifest / Result service | 从真实 Stage attempt 生成逻辑清单并登记结果 |
 | `core/progress_parser.py` | Worker event parser | 接入 build/sim adapter |
 | `web/*` | v1 Web client | 只调用 API；移除不存在 DOM 的遗留函数 |
 | `cli/build.py`、`cli/run.py`、`cli/cluster.py` | 执行 adapter / 兼容 CLI | CLI 经 SDK 提交；Worker 可复用底层函数 |

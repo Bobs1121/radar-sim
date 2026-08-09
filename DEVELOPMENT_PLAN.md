@@ -17,8 +17,7 @@
 |---|---|
 | 本文末尾“历史阶段索引” | 说明旧计划已冻结，不再排入 backlog |
 | `HANDOFF.md` | v5 唯一实时状态、conformance log 和偏离防护记录 |
-| `CHECKPOINT.md`、`docs/handoff.md` | 历史交付与测试记录 |
-| `docs/REFACTORING_PLAN.md`、`docs/WIZARD_IMPLEMENTATION_PLAN.md`、`docs/selena-source-tiers-design.md` | 历史方案输入，可作为证据，不作为产品合同 |
+| `docs/selena-source-tiers-design.md` | 历史方案输入，可作为证据，不作为产品合同 |
 
 当前实现与目标架构的边界以 `PRD.md` 和 `docs/DETAILED_DESIGN.md` 为准；实现计划只接受能直接落到代码、测试和验收的工作包。
 
@@ -31,11 +30,11 @@
 - `core/control_service.py`、`core/control_http.py`：legacy Job/Task/Agent/Log SQLite 控制面，支持 `assigned_agent_id` claim pinning、独立且不会在 stale reclaim 时丢失的 `required_agent_id` 节点亲和、task claim、日志、取消和 reclaim。
 - `core/web_control.py`、`core/remote_control.py`：Web/远端控制兼容桥。
 - `cli/server.py`、`cli/agent.py`：Linux/Windows 可运行的 legacy control server 与 polling agent。
-- `core/server_cluster_executor.py`、`core/cluster.py`：server-side `cluster.run` executor 与 Cluster prepare/submit/wait/fetch 能力。
+- `core/cluster_stage_executor.py`、`core/cluster.py`：当前 serve-v1 Cluster Stage executor 与 Cluster prepare/submit/wait/fetch 能力。
 - `core/data.py`：MF4 发现、路径分类、访问检查和按需复制原型。
 - `core/environment.py`、`cli/doctor.py`、`core/tcc.py`：环境检查和部分自动修复。
 - `core/repo.py`：已有 `prepare_repo_worktree()`，但主构建路径仍有 `prepare_repo_context()` 原地 checkout 风险。
-- `core/preflight.py`、`core/progress_parser.py`、`core/manifest.py`：Preflight、结构化进度、Manifest 原型。
+- `core/preflight.py`、`core/progress_parser.py`、`core/api_v1.py`、`core/local_results.py`：Preflight、结构化进度、逻辑 Manifest 与结果目录。
 - `web/*`、`cli/web.py`：现有 Web 仍走 legacy `/api/*` 和直接业务 handler，可迁移为 v1 API client。
 
 尚未具备的 v5 发布能力：
@@ -142,8 +141,8 @@ WP0 安全冻结
 | 项 | 内容 |
 |---|---|
 | 依赖 | WP3 |
-| 代码落点 | `core/repo.py`、`core/build_runner.py`、新 `core/artifacts.py`、`core/manifest.py`、config adapter |
-| 主要任务 | 第一项：复用 `core/repo.py` worktree、Git CLI、`core/manifest.py` 原型的集成 spike，不引入新的 artifact 服务产品；随后实现 `current_workspace` 前后 fingerprint；`branch` detached worktree；`existing` artifact lookup；artifact checksum、branch、commit、dirty、interface/signal manifest；推荐候选；完成后更新 `HANDOFF.md` conformance entry |
+| 代码落点 | `core/repo.py`、`core/build_runner.py`、`core/artifacts.py`、`core/api_v1.py`、config adapter |
+| 主要任务 | 复用 `core/repo.py` worktree、Git CLI 和现有 Artifact/ApiV1 服务；实现 `current_workspace` 前后 fingerprint、`branch` detached worktree、`existing` artifact lookup，以及 checksum、branch、commit、dirty、interface/signal evidence；不再引入第二套 Manifest 实现 |
 | 测试 | current dirty 构建包含未提交修改；branch worktree 清理；并发 branch build 隔离；existing artifact 可访问性；dirty artifact 默认不共享 |
 | 退出标准 | 六种组合中的 Selena 解析结果都进入 `ResolvedSimulationSpec`，且不修改主工作区 |
 | 停止项 | 分支自动编译需要 checkout 主工作区；dirty 产物无法区分 clean 产物 |
@@ -181,8 +180,8 @@ WP0 安全冻结
 | 项 | 内容 |
 |---|---|
 | 依赖 | WP3、WP4、WP5 |
-| 代码落点 | `core/server_cluster_executor.py`、`core/cluster.py`、Gateway adapter、deployment policy |
-| 主要任务 | 第一项：复用 `core/server_cluster_executor.py` 和 `core/cluster.py` 的 Linux executor/Gateway routing spike，借鉴 GitLab Runner/Jenkins 节点能力握手但不引入整套产品；随后实现 Linux executor 能力探测；Cluster 共享路径映射；旧 Python2/Windows-only client 路由到平台 Gateway；external cluster job id 持久化；结果 fetch；完成后更新 `HANDOFF.md` conformance entry |
+| 代码落点 | `core/cluster_stage_executor.py`、`core/cluster.py`、Gateway adapter、deployment policy |
+| 主要任务 | 复用当前 `ClusterStageExecutor` 和 `core/cluster.py` 的 Linux executor/Gateway routing；保持能力探测、共享路径映射、平台 Gateway、external cluster job id 持久化和结果 fetch 的单一实现 |
 | 测试 | Linux no-agent existing Selena + shared data dry/smoke；Linux no build capability；Gateway routing mock；Agent offline 后 Cluster 继续；UNC/linux mount map；`windows_agent` 不能上报/领取 Cluster runtime capability；`windows_full` 与 `platform_gateway` node kind/policy 隔离 |
 | 退出标准 | Linux 进程不会触发 Selena 编译；无 Windows 用户能提交已有 Selena + Cluster；旧接入不可 Linux 运行时有平台 Gateway 路径；Cluster preflight/run/collect/finalize 不由 light Agent 执行 |
 | 停止项 | P0 依赖无 Windows 用户的本机环境；把 Linux 配成 `build.selena`；legacy wildcard/`cluster.run` 绕过 v1 policy；`platform_gateway` 冒充 `windows_full` 或反向代领 |
@@ -194,8 +193,8 @@ WP0 安全冻结
 | 项 | 内容 |
 |---|---|
 | 依赖 | WP3、WP4、WP5、WP6/WP7 对应执行路径 |
-| 代码落点 | `core/environment.py`、`core/preflight.py`、`core/progress_parser.py`、`core/manifest.py`、Stage adapters |
-| 主要任务 | 第一项：复用 `environment/tcc/preflight/progress_parser/manifest` 原型的 Stage-event integration spike，借鉴 MLflow metadata/artifact separation 但不部署 MLflow；随后实现动态环境检查；自动/确认/指导处理等级；Preflight 强校验；build/sim progress event；最终 Manifest 成功/失败/取消均生成；完成后更新 `HANDOFF.md` conformance entry |
+| 代码落点 | `core/environment.py`、`core/preflight.py`、`core/progress_parser.py`、`core/api_v1.py`、`core/local_results.py`、Stage adapters |
+| 主要任务 | 复用现有 environment/preflight/progress parser，并由统一 ApiV1/ResultCatalog 从 Stage evidence 形成逻辑 Manifest；保持动态环境检查、分级处理、进度事件和成功/失败/取消终态的单一链路 |
 | 测试 | 缺工具/缺权限/缺数据 action；preflight pass/fail/degraded；build `[n/N]` 和 sim `Frame X/Y`；manifest immutability |
 | 退出标准 | Web/SDK 能看到完整阶段、进度、失败原因、建议动作、日志和 Manifest |
 | 停止项 | 任务只有“running”无阶段；失败只返回原始堆栈或日志片段 |

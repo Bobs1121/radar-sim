@@ -4,6 +4,29 @@
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
+## 0.0.5 仓库与 Linux 存储收敛（2026-08-09）
+
+### 代码与文档
+
+- 删除三个经生产闭包和全仓引用审计确认无调用、且已有替代实现的原型：`core/server_cluster_executor.py`（当前为 `core/cluster_stage_executor.py`）、`core/manifest.py`（当前由 ApiV1/ResultCatalog 形成逻辑 Manifest）、`core/windows_generated_dependencies.py`（当前为 `core/windows_build_environment.py`），以及各自专属测试。
+- 保留 legacy CLI/Web/control/platform/plugin 兼容栈。它们不在 serve-v1 主链，但仍由公开兼容命令、动态 CLI 注册、测试或文档使用；本轮不以“主链未调用”为由扩大删除范围。
+- 状态文档只保留根目录 `HANDOFF.md` 作为实时交接入口；删除并行的 `CHECKPOINT.md`、`docs/handoff.md` 和两份未纳入版本控制的旧重构/向导草案，同时修正 README、计划、详细设计和 Claude guardrail 的过期引用。
+- 删除旧 AI linked worktree `workspace-recognizer` 的本地副本和本地分支；工作树当时 clean，远端 `origin/worktree-workspace-recognizer` 仍保留可追溯提交，当前主线已有后续更完整实现。
+- `output/`、`results/`、`.playwright-cli/`、pytest/Python build cache 和 egg-info 已清除并加入忽略规则；`.venv/` 保留用于可重复回归，`dist/` 保留当前 Connector 发布物。本地工作区由约 3.47 GiB 降至 0.14 GiB（不含 `.git`），释放约 3.33 GiB。
+
+### Linux 生产存储
+
+- 清理前先验证控制库无 queued/running/needs_input 等非终态任务，且 Cluster/Linux/Windows executor 均 idle；清理时不删除当前发布 `/home/hoz2wx/radar-sim-7a68a20`、回滚版本 `/home/hoz2wx/radar-sim-f94d9aa`、当前控制库、Runtime Bundle 或最近 7 天数据。
+- 删除旧发布目录/归档、旧 direct-acceptance/smoke 数据根、48 个已完成任务 staging/数据库快照；再以 2026-08-02 UTC 为边界事务性移除过期上传会话与其 4 个旧数据实体，并删除两份旧结果归档。`RSIM_HOME` 从约 11 GiB 降至 4.8 GiB，合计释放约 6.2 GiB。
+- `/home/hoz2wx/radar-sim` 是包含未提交修改的旧 Git 工作区，按脏工作区保护规则保留；不能因当前 systemd 未引用就自动删除。当前 systemd 仍指向 `radar-sim-7a68a20`，重启后 `/api/v1/health` 返回 `ok=true`。
+- 本次执行的是一次性、显式保留边界的清理；尚未增加自动定时删除策略。后续若产品化 retention，必须按 Job/Artifact/Dataset 引用计数和 owner 配额实现，不能按目录年龄盲删。
+
+### 清理后门禁
+
+- v5 主链定向回归：`228 passed, 3 skipped, 1 warning`；`compileall`、前端 `node --check` 和 `git diff --check` 通过。全量 `pytest -q` 在 300 秒上限内没有产出终态并被超时终止，不能表述为全量通过；仓库 `.venv` 当前也没有安装 pytest，本轮使用本机开发 Python 执行测试。
+- 生产复核：health 正常；新审计 owner 看到 `cluster.available=true`、`linux_executor_count=1`、`platform_gateway_count=1`；control/catalog/upload 三个 SQLite 库 `PRAGMA integrity_check=ok`，当前分别保留 14 个历史 Job、12 个 Dataset、10 个上传会话。
+- 本轮未重新发布代码：生产继续运行已经验收的 `7a68a20`，因为删除项均不在 serve-v1 生产闭包。代码清理提交推送后，下一次功能发布自然带入，不为纯删除额外切换在线版本。
+
 ## 0.0.4 Web / SDK 统一数据面与 SDK 恢复能力（2026-08-09）
 
 ### 本轮用户结论
@@ -96,7 +119,7 @@ Web 与 Python SDK 使用同一份 `UserRunConfig 2.0` YAML/JSON，并提交到�
 | `DEVELOPMENT_PLAN.md` | WP0-WP10 可执行 backlog、依赖顺序、测试、退出标准、停止项 | 实施顺序或验收门禁变化时更新 |
 | `HANDOFF.md` | 唯一实时状态、conformance log、偏离检查记录 | 每次 CLI/code agent 任务完成前必须更新 |
 
-`CHECKPOINT.md`、`docs/handoff.md`、`docs/REFACTORING_PLAN.md`、`docs/WIZARD_IMPLEMENTATION_PLAN.md` 和旧 phase 章节只作为历史证据，不覆盖上述四份文档。
+旧 phase 章节只作为历史证据，不覆盖上述四份文档。仓库不再保留并行的 checkpoint/handoff/重构草案，避免后续实施读取过期状态。
 
 ## 0.0-current 阶段交接：仿真执行彻底去项目化（2026-07-29）
 

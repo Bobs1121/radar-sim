@@ -22,7 +22,7 @@ You must strictly enforce these three physical isolation rules in all code refac
 
 ## 3. ⏱️ Micro-Checkpointing & Memory Management
 To prevent memory/attention decay in long sessions:
-- **Write Checkpoints**: After completing any subtask (e.g., refactoring one Python module or writing a test), you **MUST** summarize the current file state, modifications, and pending items into `docs/handoff.md` (or `CHECKPOINT.md`).
+- **Write Checkpoints**: After completing a coherent delivery slice, summarize the verified state, modifications, and pending items in the active section of `HANDOFF.md`. Do not create parallel status documents.
 - **Test Before Proceeding**: Never stack modifications without testing. You must execute and pass tests for the modified module before moving to the next file.
 
 ---
@@ -42,7 +42,7 @@ To prevent memory/attention decay in long sessions:
 当你被下达最高指令并启动自主运行模式时，你必须在内部模拟一个 **"三维 Agent 开发团队"** 并协同工作。在你的思考过程 (Thinking) 中，请显式使用以下角色进行内部对齐，无需人类干预：
 
 1. **[Architect-Planner (架构与规划师)]**：
-   - **职责**：负责全局业务拆解。收到最高指令后，首先读取 `PRD.md`，制定阶段性执行路线图并写入 `CHECKPOINT.md`。
+   - **职责**：负责全局业务拆解。收到最高指令后，首先读取 `PRD.md`，制定阶段性执行路线，并在完成验证后更新 `HANDOFF.md`。
    - **红线**：禁止 Worker 直接改代码。必须先由 Planner 决定重构模块的物理隔离边界。
 
 2. **[Worker-Engineer (搬砖与编码器)]**：

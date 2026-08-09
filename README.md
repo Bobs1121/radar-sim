@@ -8,7 +8,7 @@ radar-sim v5 的产品入口是 **Web** 和 **Python SDK / versioned REST API**�
 2. `docs/DETAILED_DESIGN.md`：v5 目标架构、现有代码迁移映射和技术边界。
 3. `DEVELOPMENT_PLAN.md`：当前可执行发布计划和下一阶段编码 backlog。
 4. `HANDOFF.md`：v5 唯一实时状态、WP 完成度和架构一致性检查记录。
-5. `CHECKPOINT.md`、`docs/handoff.md` 以及旧 phase 文档：历史记录，仅用于追溯，不再作为当前 backlog 或产品口径。
+5. 旧 phase 章节：仅用于历史追溯，不再作为当前 backlog 或产品口径。
 
 ## 当前实现状态
 

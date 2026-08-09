@@ -11,6 +11,9 @@ build/
 .coverage
 htmlcov/
 results/
+/output/
+/.playwright-cli/
+/.claude/worktrees/
 *.mf4
 *.MF4
 *.blf
