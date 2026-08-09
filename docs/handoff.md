@@ -14,7 +14,9 @@ description: 项目现状、架构、已知问题和后续 TODO
 - 工作区遗留的 `bootstrap.ps1` 已把计划任务 Action 改成 `wscript.exe + run_hidden.vbs`，但 `run_hidden.vbs` 当时未进入仓库，Connector 打包器也不允许 `.vbs`；若直接发布，新用户重装后计划任务会引用不存在的文件。
 - 已补齐通用无窗口启动器 `scripts/run_hidden.vbs`：首参数是 PowerShell 脚本，后续参数逐个安全加引号；以 `WScript.Shell.Run(..., 0, False)` 和 PowerShell `-WindowStyle Hidden` 双重隐藏，不改变 supervisor、watchdog、重连或日志逻辑。
 - `scripts/build_windows_connector_bundle.py` 已显式允许并强制包含 `scripts/run_hidden.vbs`；`tests/test_release_deployment.py` 覆盖 scheduled-task 合同、真实 VBScript -> PowerShell spaced-argument 启动和 ZIP 内容。
-- 本轮验证：Windows VBS 实际启动测试通过；Connector ZIP 成功生成并包含 155 files；release/API 组合 `83 passed, 1 warning`；PowerShell parser 与 `git diff --check` 通过。生产发布提交、版本和当前 Windows 任务复核应追加在本节后再结束。
+- 本轮验证：Windows VBS 实际启动测试通过；Connector ZIP 成功生成并包含 155 files；release/API 组合 `83 passed, 1 warning`；PowerShell parser 与 `git diff --check` 通过。
+- 修复已提交并推送为 `f94d9aa Hide Windows connector scheduled tasks`，生产 `radar-sim-v1.service:8877` 已切到 `/home/hoz2wx/radar-sim-f94d9aa`。服务端 Connector ZIP 为 588,109 bytes、155 files、SHA-256 `7e88e13bc3633c83e6d50429b6cec68c06499dc6eee52ca667b6f038f462865a`；HTTP header checksum 与下载文件一致，ZIP 已确认包含 `scripts/run_hidden.vbs`。
+- 当前 Windows 已通过生产 Web/SDK 的真实“一键连接”入口重新安装 light Agent。安装完成后 `RadarSimConnector-HOZ2WX` 和 Watchdog 的 Action 均为 `wscript.exe`；主动触发 watchdog 前后 Agent PID 未变化，相关 PowerShell/Python `MainWindowHandle=0`；生产 `/api/v1/capabilities` 返回 `windows_light.available=true,count=1,reconnecting=false`。因此本轮不是只修改源码，现有用户和新下载包均已验证。
 
 ### 2026-08-05 真实直传黑盒最新现场（额度/上下文中断时从这里接续）
 
