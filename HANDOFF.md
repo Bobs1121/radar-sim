@@ -2328,6 +2328,7 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 3. `cli/agent.py` 将本地 Selena 失败的稳定摘要、失败输入序号和脱敏日志尾部写入对应 Stage 的 `stderr` 日志；日志回调采用 advisory 语义，控制面日志接口短暂失败不会改变最终 Stage 结果。终态结果回调仍是唯一权威来源。
 4. `core/control_service.py` 在收到失败结果但没有单独 `error_json` 时，从结构化 `summary.error_code` 生成路径无关的 Stage 错误；`selena_failed`、超时、启动失败、连接器依赖缺失分别映射到稳定消息。
 5. `core/api_v1.py`/`docs/AI_INTEGRATION_CONTRACT.md` 将 Selena/引擎失败归入 `diagnosis.category=simulation`，将 Agent 启动/安全调用错误归入 `configuration`；未来 Skill/MCP 只需读取 `diagnosis` 和 Stage 日志，不需要识别项目或解析堆栈。
+6. `ApiV1Service.diagnosis()` 对旧记录增加只读事件回溯：若 Stage `error_json` 为空，则从该 Stage 不可变 `stage.failed` 事件中的结构化摘要恢复稳定错误码，不修改历史审计数据。线上重新读取 `job_633162f59b32` 已返回 `code=simulation_failed`、`category=simulation`、`source_code=selena_failed`。
 
 ### 验证结果
 
@@ -2338,6 +2339,6 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 ### 发布/运维注意
 
 - 发布 Windows Connector 时必须重新生成包，使 `core/agent_local_run.py`、`core/local_selena_runner.py` 和 `cli/agent.py` 进入 ZIP；只更新 Linux 服务源码而不更新 Connector 包会让旧 Agent 继续缺少本轮诊断能力。
-- 本次已同步并重建生产包：`GET /api/v1/windows-connector/package.zip` 返回 `8308678` bytes，响应头与下载文件均为 `sha256:6d0ec9a2861c090a0326ae9a54cf296cc53a409627e103a55096c6db22a59ec9`；Linux `/api/v1/health` 返回 `ok=true`，Cluster 与配对 Windows 能力仍在线。
+- 本次已同步并重建生产包：`GET /api/v1/windows-connector/package.zip` 返回 `8309135` bytes，响应头与下载文件均为 `sha256:b9767cdef58826ad0399b8ab34d10a60b5bce4ced32e6f96a51e7f9162106bfb`；Linux `/api/v1/health` 返回 `ok=true`，Cluster 与配对 Windows 能力仍在线。
 - Linux 重启仍必须使用生产环境 `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke` 及 `/home/hoz2wx/.rsim-v1-cluster.env`，单 worker `serve-v1` 监听 `0.0.0.0:8877`；禁止落到默认 DB 造成任务/Agent 假性消失。
 - 任务业务结果仍以真实 Selena/Cluster 输出和最终 Manifest 为准：外围层负责把命令、数据、配置、状态和日志安全接入；不替用户修复仿真内部 runnable、信号或算法错误。内部失败要可见、可定位、可重试 Stage，但不能伪装成外围故障或成功。
