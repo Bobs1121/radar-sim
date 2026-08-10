@@ -75,6 +75,8 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "no token is stored" in bootstrap
     assert "radar_sim_source.pth" in bootstrap
     assert "no pip or package-index access is required" in bootstrap
+    assert "small control dependencies" in bootstrap
+    assert ".[control]" in bootstrap
     assert "RegisterStartup" in bootstrap
     assert "New-ScheduledTaskAction" in bootstrap
     assert "New-ScheduledTaskTrigger -AtLogOn" in bootstrap

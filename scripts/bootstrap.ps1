@@ -146,12 +146,12 @@ foreach ($candidate in @("python", "py")) {
 }
 if (-not $Python) { Fail "Python 3.10+ is required." }
 
-Write-Step "2/5 Install $Mode dependencies"
+Write-Step "2/5 Prepare the unified connector runtime"
 if (-not (Test-Path $VenvPy)) {
     & $Python -m venv $VenvDir
     if ($LASTEXITCODE -ne 0) { Fail "Failed to create .venv." }
 }
-if ($Mode -eq "light") {
+if ($RequestedMode -eq "light") {
     # A light Agent only polls the control plane and performs local path
     # discovery, hashing and resumable uploads.  Those code paths use the
     # Python standard library; requiring ``pip install -e .[sdk]`` here made
@@ -169,7 +169,32 @@ if ($Mode -eq "light") {
     if ($LASTEXITCODE -ne 0) {
         Fail "The light Agent source package is incomplete. Reconnect this PC from the Linux Web entry."
     }
-    Write-Ok "light Agent uses its bundled standard-library path; no pip or package-index access is required."
+    Write-Ok "legacy light connector uses its bundled standard-library path."
+} elseif ($RequestedMode -eq "unified") {
+    # The public connector is intentionally thin.  It needs only the control
+    # contract and YAML parser; Selena, VS and the simulation environment stay
+    # on the user's Windows machine.  Install the small control extra only
+    # when the current venv cannot import the required modules.  Do not pull
+    # the historical full/AI extras for a normal connector installation.
+    $sitePackages = (& $VenvPy -c "import sysconfig; print(sysconfig.get_paths()['purelib'])").Trim()
+    if (-not $sitePackages -or -not (Test-Path $sitePackages)) {
+        Fail "Could not locate the connector Python site-packages directory."
+    }
+    $sourcePathFile = Join-Path $sitePackages "radar_sim_source.pth"
+    Set-Content -LiteralPath $sourcePathFile -Value $RepoRoot -Encoding ASCII
+    & $VenvPy -c "import cli.agent, core.agent_policy, core.config, core.local_selena_runner" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "The connector is missing its small control dependencies; installing them once..." -ForegroundColor Yellow
+        & $VenvPy -m pip install --quiet -e ".[control]"
+        if ($LASTEXITCODE -ne 0) {
+            Fail "The connector could not install its small control dependencies. Install PyYAML for this Python and run the one-click connection again."
+        }
+    }
+    & $VenvPy -c "import cli.agent, core.agent_policy, core.config, core.local_selena_runner" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Fail "The connector runtime is incomplete. Install PyYAML for this Python and reconnect this PC."
+    }
+    Write-Ok "Unified connector runtime is ready; Selena, Visual Studio and local simulation dependencies remain user-managed."
 } elseif (-not $SkipDeps) {
     & $VenvPy -m pip install --quiet --upgrade pip
     $extra = ".[v5,full]"
