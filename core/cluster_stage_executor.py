@@ -945,6 +945,11 @@ def execute_cluster_collect(
             "file_count": int(inspected.get("file_count") or 0),
             "success_count": int(inspected.get("success_count") or 0),
             "fail_count": int(inspected.get("fail_count") or 0),
+            "succeeded_input_count": int(inspected.get("success_count") or 0),
+            "failed_input_count": int(inspected.get("fail_count") or 0),
+            "total_input_count": int(inspected.get("success_count") or 0)
+            + int(inspected.get("fail_count") or 0),
+            "input_results": _cluster_input_results(inspected, lease.job_dir),
             "errors": errors,
         },
         physical_root=lease.job_dir,
@@ -982,6 +987,112 @@ def _dedupe_relative_paths(values: list[str]) -> list[str]:
     return unique
 
 
+def _cluster_input_results(inspected: dict[str, Any], job_root: str) -> list[dict[str, Any]]:
+    """Build path-safe per-input outcomes from Cluster result.ini files.
+
+    Cluster workers do not consistently write the original MF4 name into
+    ``result.ini``.  When it is absent, the result-directory relative path is
+    the stable logical task identity; it is preferable to guessing a source
+    filename or leaking a private worker path.
+    """
+    raw_results = [item for item in inspected.get("task_results") or [] if isinstance(item, dict)]
+    if not raw_results:
+        return []
+    output_files = [
+        str(item.get("relative_path") or "").replace("\\", "/").strip("/")
+        for item in inspected.get("output_mf4") or []
+        if str(item.get("relative_path") or "").strip()
+    ]
+    rows: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_results, 1):
+        result_relative = _cluster_logical_relative_path(
+            raw.get("relative_path") or raw.get("path"),
+            job_root,
+            fallback=f"cluster-task-{index}/result.ini",
+        )
+        task_relative = result_relative.rsplit("/", 1)[0] if "/" in result_relative else result_relative
+        source_hint = _cluster_source_hint(raw, job_root)
+        input_relative = source_hint or task_relative or f"cluster-task-{index}"
+        output_relative = _matching_cluster_output(task_relative, output_files)
+        success_value = str(raw.get("successfull") or raw.get("successful") or "").strip().lower()
+        status = "succeeded" if success_value in {"1", "true", "success", "succeeded"} else (
+            "failed" if success_value in {"0", "false", "failure", "failed"} else "unknown"
+        )
+        returncode = _cluster_returncode(raw)
+        error_code = str(raw.get("error_code") or "").strip()
+        if status == "failed" and not error_code:
+            error_code = "cluster_simulation_failed"
+        rows.append(
+            {
+                "index": index,
+                "input_relative_path": input_relative,
+                "result_relative_path": result_relative,
+                "output_relative_path": output_relative,
+                "status": status,
+                "returncode": returncode,
+                "error_code": error_code,
+            }
+        )
+    return rows[:200]
+
+
+def _cluster_logical_relative_path(value: object, job_root: str, *, fallback: str) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return fallback
+    try:
+        candidate = Path(text)
+        root = Path(str(job_root or "")).resolve(strict=False)
+        if candidate.is_absolute():
+            relative = candidate.resolve(strict=False).relative_to(root)
+            normalized = relative.as_posix().strip("/")
+            if normalized and ".." not in normalized.split("/"):
+                return normalized
+    except (OSError, ValueError):
+        pass
+    # A non-private relative path from the Cluster inspector is safe to keep.
+    if not PureWindowsPath(text).is_absolute() and not Path(text).is_absolute() and ".." not in text.split("/"):
+        return text.strip("/") or fallback
+    return fallback
+
+
+def _cluster_source_hint(raw: dict[str, Any], job_root: str) -> str:
+    for key in ("input_relative_path", "input", "input_path", "data_path", "source"):
+        value = str(raw.get(key) or "").strip()
+        if not value:
+            continue
+        text = value.replace("\\", "/")
+        if Path(text).is_absolute() or PureWindowsPath(text).is_absolute():
+            # Keep only the filename as a user-facing hint; never return a
+            # drive, UNC root or private Cluster path.
+            name = PureWindowsPath(text).name or Path(text).name
+            return name[:240]
+        if ".." not in text.split("/"):
+            return text.strip("/")[:240]
+    return ""
+
+
+def _matching_cluster_output(task_relative: str, output_files: list[str]) -> str:
+    parent = task_relative.rsplit("/", 1)[0].casefold() if "/" in task_relative else ""
+    for candidate in output_files:
+        candidate_parent = candidate.rsplit("/", 1)[0].casefold() if "/" in candidate else ""
+        if parent and candidate_parent == parent:
+            return candidate
+    return ""
+
+
+def _cluster_returncode(raw: dict[str, Any]) -> int | None:
+    for key in ("returncode", "Returncode", "return_code", "ReturnCode"):
+        value = raw.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def build_public_run_manifest(
     job: dict[str, Any],
     result: ClusterResultRef,
@@ -996,7 +1107,11 @@ def build_public_run_manifest(
     if not str(bundle.get("id") or "").startswith("selena-bundle:sha256:"):
         raise ClusterStageExecutionError("Runtime Bundle reference is unavailable for manifest")
     status = result.state
-    if status == "succeeded" and _summary_reports_failure(result.summary):
+    summary = dict(result.summary)
+    input_results = list(summary.pop("input_results", []) or [])
+    if _summary_is_partial(summary, input_results, result.files):
+        status = "partial"
+    elif status == "succeeded" and _summary_reports_failure(summary):
         # Historical ClusterResult rows are immutable.  If an older collector
         # persisted a contradictory state, the public manifest must still tell
         # the truth using the structured worker counts.
@@ -1011,14 +1126,15 @@ def build_public_run_manifest(
         "cluster_run_ref": result.run_ref,
         "result_ref": result.ref if result_ref is None else result_ref,
         "files": list(result.files),
-        "summary": dict(result.summary),
+        "summary": summary,
+        "input_results": input_results,
         "created_at": result.created_at,
     }
 
 
 def _summary_reports_failure(summary: dict[str, Any]) -> bool:
     """Return true only for explicit positive structured failure counts."""
-    for key in ("fail_count", "failed_count"):
+    for key in ("fail_count", "failed_count", "failed_input_count"):
         value = summary.get(key)
         try:
             if int(value) > 0:
@@ -1026,6 +1142,17 @@ def _summary_reports_failure(summary: dict[str, Any]) -> bool:
         except (TypeError, ValueError):
             continue
     return False
+
+
+def _summary_is_partial(
+    summary: dict[str, Any], input_results: list[dict[str, Any]], files: tuple[str, ...]
+) -> bool:
+    try:
+        succeeded = int(summary.get("succeeded_input_count") or summary.get("success_count") or 0)
+        failed = int(summary.get("failed_input_count") or summary.get("fail_count") or 0)
+    except (TypeError, ValueError):
+        succeeded = failed = 0
+    return succeeded > 0 and failed > 0 and bool(files) and bool(input_results or succeeded + failed)
 
 
 def _owner(job: dict[str, Any]) -> str:

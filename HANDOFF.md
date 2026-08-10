@@ -2353,9 +2353,9 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 
 1. `AgentLocalRunLeaseStore.result()` 对多输入结果补充 `total_input_count`、`succeeded_input_count`、`failed_input_count`。
 2. `cli/agent.py` 识别“至少一条成功、至少一条失败且存在输出”的混合结果，将 Run Stage 暴露为 `status=partial` 且以可继续的返回码进入 `collect_results` 与 `finalize_manifest`；全失败、Runner 不可用、租约失败仍立即失败。
-3. `finalize_manifest` 归档 `status=partial`、逐输入 `input_results[]` 和有限的 Selena 日志尾部。成功输出不因另一条输入失败而丢弃；最终 Job 仍归一化为 `simulation_failed`，避免把批次部分成功误报为全成功，同时保留 `artifacts_available=true`。
+3. `finalize_manifest` 归档 `status=partial`、逐输入 `input_results[]` 和有限的 Selena 日志尾部。成功输出不因另一条输入失败而丢弃；最终 Job 仍归一化为 `simulation_failed`，避免把批次部分成功误报为全成功，同时保留 `artifacts_available=true`。Cluster 结果也使用 `result.ini` 的逐任务状态生成同一字段；当原始 MF4 名称未写入 `result.ini` 时，使用结果目录的逻辑标识，不猜测源文件名。
 4. Stage 日志会明确写出成功/失败输入序号、逻辑相对路径、returncode 和稳定错误码；不上传盘符、UNC 或用户工作目录。
-5. `ControlService` 保留 `partial` Manifest 状态，并以 `failed_input_count` 参与稳定失败结论归一化。Web/SDK/未来 Skill/MCP 均通过现有 Manifest/Diagnosis 接口读取，不新增项目适配层。
+5. `core/cluster_stage_executor.py` 对 Cluster 混合结果保留成功/失败任务、输出对应关系和稳定错误码；`ControlService` 保留 `partial` Manifest 状态，并以 `failed_input_count` 参与稳定失败结论归一化。Web/SDK/未来 Skill/MCP 均通过现有 Manifest/Diagnosis 接口读取，不新增项目适配层。
 
 ### 回归证据
 

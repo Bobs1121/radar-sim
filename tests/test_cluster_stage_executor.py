@@ -229,6 +229,75 @@ def test_collect_overrides_web_succeeded_when_result_ini_reports_failure(tmp_pat
     assert output.get("result_ref") == ""
 
 
+def test_partial_cluster_result_keeps_each_input_outcome_in_manifest(tmp_path: Path, monkeypatch):
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    private_job = tmp_path / "private-job"
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="bydod25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/bydod25/runtime-bundle.zip",
+        profile="default", job_dir=str(private_job),
+        config_path="//cluster/job/Config.cfg", output_location=str(tmp_path / "private-output"),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="42", submit_mode="xmlrpc")
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
+        now_fn=lambda: 10.0,
+        result_catalog=None,
+    )
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: {"found": True, "job_id": "42", "tasks": []},
+    )
+    inspected = {
+        "state": "finished-failed",
+        "file_count": 6,
+        "success_count": 1,
+        "fail_count": 1,
+        "error_summary": ["one input failed"],
+        "output_mf4": [
+            {"relative_path": "output/good/good.MF4", "size": 10},
+            {"relative_path": "output/bad/bad.MF4", "size": 10},
+        ],
+        "result_files": [
+            {"relative_path": "output/good/result.ini"},
+            {"relative_path": "output/bad/result.ini"},
+        ],
+        "task_results": [
+            {
+                "relative_path": "output/good/result.ini",
+                "path": str(private_job / "output" / "good" / "result.ini"),
+                "successfull": "1",
+                "Returncode": "0",
+            },
+            {
+                "relative_path": "output/bad/result.ini",
+                "path": str(private_job / "output" / "bad" / "result.ini"),
+                "successfull": "0",
+                "Returncode": "-1",
+            },
+        ],
+    }
+    monkeypatch.setattr("core.cluster.inspect_cluster_job", lambda *_args: inspected)
+
+    collected = execute_cluster_collect(
+        context, _job(), run.ref,
+        cancelled=lambda: False,
+        sleep_fn=lambda _seconds: (_ for _ in ()).throw(AssertionError("must not wait")),
+    )
+    result = store.get_result(collected["cluster_result_ref"], owner="alice")
+    manifest = build_public_run_manifest(_job(), result)
+
+    assert result.state == "failed"
+    assert result.summary["succeeded_input_count"] == 1
+    assert result.summary["failed_input_count"] == 1
+    assert [item["status"] for item in manifest["input_results"]] == ["succeeded", "failed"]
+    assert manifest["status"] == "partial"
+    assert str(tmp_path) not in str(manifest)
+
+
 def test_failed_cluster_result_publishes_downloadable_diagnostics(tmp_path: Path, monkeypatch):
     private_job = tmp_path / "private-job"
     output_dir = private_job / "output"
