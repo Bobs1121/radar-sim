@@ -3,15 +3,18 @@
     radar-sim Windows one-click installer.
 
 .DESCRIPTION
-    Installs one of two explicit product modes and persists the connection once.
+    Installs the single user-facing Windows connector and persists the
+    connection once.  The historical light/full switches remain accepted for
+    administrator compatibility, but ordinary users always receive the
+    unified connector with both local-execution and Cluster-preparation
+    capabilities.
     The current sprint keeps loopback-only ``full + local`` free of login/token
     setup; authentication remains required for every Linux control plane:
 
-      light - local Selena compile + Runtime Bundle/data upload only.  Simulation
-              always continues on Cluster; this mode never enables local simulation.
-      full  - Windows full Agent.  ControlPlane=local starts an offline local-only
-              Web/API; ControlPlane=linux connects the full Agent to the central
-              Web so one task entry can select either local or Cluster simulation.
+      unified - one connector for local compile/local simulation and Cluster
+                preparation/transfer.  The local Selena/VS environment remains
+                user-managed; this installer only installs the control connector.
+      light/full - legacy administrator compatibility values.
 
     The installer does not ask users to select an internal project.  Code/data/
     Runtime/Adapter/MatFilter bindings are configured later through the unified
@@ -19,8 +22,7 @@
     the persisted connection configuration unless new values are supplied.
 
 .EXAMPLE
-    .\scripts\bootstrap.ps1 -Mode light -ServerUrl http://rsim:8878 `
-        -AgentId alice-laptop -AgentToken <agent-token> -ApiToken <user-token> -Start
+    .\scripts\bootstrap.ps1 -ServerUrl http://rsim:8878 -Start
 
 .EXAMPLE
     .\scripts\bootstrap.ps1 -Mode full -Start
@@ -33,8 +35,8 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("light", "full")]
-    [string]$Mode = "light",
+    [ValidateSet("unified", "light", "full")]
+    [string]$Mode = "unified",
     [ValidateSet("local", "linux")]
     [string]$ControlPlane = "",
     [string]$ServerUrl = "",
@@ -50,6 +52,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Internally retain the established full node policy for the public unified
+# connector.  Existing light/full installations continue to work unchanged.
+$RequestedMode = $Mode
+if ($Mode -eq "unified") { $Mode = "full" }
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $InstallRoot) {
     $base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME "AppData\Local" }

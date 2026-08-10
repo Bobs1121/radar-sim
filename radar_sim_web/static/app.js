@@ -154,26 +154,26 @@ function createFormWindowsRequirement() {
   const usesWindowsPath = paths.some(isWindowsLocalPath);
   if (target === "local" && !hasWindowsCapability("full")) {
     return {
-      mode: "full",
+      mode: "unified",
       title: "本地仿真需要连接这台电脑",
-      capability: "缺少本地仿真能力",
-      reason: "运行 Selena 和收集结果需要由这台 Windows 电脑完成。",
+      capability: "需要连接本机",
+      reason: "运行 Selena、准备本地输入和收集结果需要由这台 Windows 电脑完成。只需安装一次连接程序。",
     };
   }
   if (source === "build" && !hasWindowsCapability("light")) {
     return {
-      mode: "light",
-      title: "本地编译需要连接这台电脑",
-      capability: "缺少本机编译和文件访问能力",
-      reason: "代码仓和编译脚本只在 Windows 电脑上可访问；完成一次连接后由 Linux 自动调度编译并让该电脑直传执行端。",
+      mode: "unified",
+      title: "任务需要连接这台电脑",
+      capability: "需要连接本机",
+      reason: "代码仓和编译脚本只在 Windows 电脑上可访问；完成一次连接后，Linux 会自动调度编译、文件准备和后续仿真。",
     };
   }
   if (usesWindowsPath && !hasWindowsCapability("light")) {
     return {
-      mode: "light",
-      title: "本地文件需要连接这台电脑",
-      capability: "缺少本机文件访问和直传能力",
-      reason: "配置包含 C:/ 或 D:/ 本地路径，需要这台电脑读取 Selena、Runtime、MatFilter 或数据并交给 Cluster。已有 Selena 不需要 Visual Studio。",
+      mode: "unified",
+      title: "任务需要连接这台电脑",
+      capability: "需要连接本机",
+      reason: "配置包含本地路径，需要这台电脑读取 Selena、Runtime、MatFilter 或数据并交给执行端。已有 Selena 不需要重新编译。",
     };
   }
   return null;
@@ -625,28 +625,26 @@ function windowsWaitState(job, candidateStage = null) {
       || hasConfiguredWindows(serverWaiting.mode));
     if (pathMismatch) {
       return {
-        mode: serverWaiting.mode,
+        mode: "unified",
         reconnecting: false,
         title: "当前在线电脑无法访问这些路径",
-        capability: "需要连接存放配置和数据的 Windows 电脑",
-        shortCapability: "本地路径访问能力",
+        capability: "需要连接存放配置和数据的电脑",
+        shortCapability: "本机连接",
         reason: serverWaiting.message
           || "当前在线的 Windows 电脑无法确认能访问本任务的本地路径。请在文件所在电脑一键连接，或改用 Cluster 可访问的共享路径。",
       };
     }
     return {
-      mode: serverWaiting.mode,
+      mode: "unified",
       reconnecting,
       title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
-      capability: full
-        ? "缺少本地仿真能力"
-        : build ? "缺少本机编译和文件访问能力" : "缺少本机文件访问和直传能力",
-      shortCapability: full ? "本地仿真能力" : build ? "本机编译能力" : "本机文件访问能力",
+      capability: "需要连接本机",
+      shortCapability: "本机连接",
       reason: full
-        ? "你选择了本地仿真，运行 Selena 和收集结果需要由这台 Windows 电脑完成。"
+        ? "本地仿真需要这台 Windows 电脑执行 Selena 并收集结果。"
         : build
-          ? "任务会编译当前代码工作区，再把 Selena 产物交给 Cluster；代码和编译脚本只在你的 Windows 电脑上可访问。"
-          : "已有 Selena 不需要安装 Visual Studio 或编译依赖；如果 Selena、Runtime、MatFilter 或数据在本机，只需连接本机完成读取并直传执行端。全部路径放在 Cluster 可访问共享位置时，可以完全不安装 Windows 组件。",
+          ? "任务会在这台 Windows 电脑执行编译和文件准备，之后由 Linux/Cluster 继续调度。"
+          : "任务需要这台电脑读取本地 Selena、Runtime、MatFilter 或数据；安装一次连接程序即可长期复用。",
     };
   }
   const paths = [
@@ -666,33 +664,33 @@ function windowsWaitState(job, candidateStage = null) {
   if (target === "local" && !hasWindowsCapability("full")) {
     const reconnecting = hasConfiguredWindows("full");
     return {
-      mode: "full",
+      mode: "unified",
       reconnecting,
       title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
-      capability: "缺少本地仿真能力",
-      shortCapability: "本地仿真能力",
+      capability: "需要连接本机",
+      shortCapability: "本机连接",
       reason: "你选择了本地仿真，运行 Selena 和收集结果需要由这台 Windows 电脑完成。",
     };
   }
   if (source === "build" && buildStages.has(stageType) && !hasWindowsCapability("light")) {
     const reconnecting = hasConfiguredWindows("light");
     return {
-      mode: "light",
+      mode: "unified",
       reconnecting,
       title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
-      capability: "缺少本机编译和文件访问能力",
-      shortCapability: "本机编译能力",
+      capability: "需要连接本机",
+      shortCapability: "本机连接",
       reason: "任务会编译当前代码工作区，再把 Selena 产物交给 Cluster；代码和编译脚本只在你的 Windows 电脑上可访问。",
     };
   }
   if (target !== "local" && usesWindowsLocalPath && localStages.has(stageType) && !hasWindowsCapability("light")) {
     const reconnecting = hasConfiguredWindows("light");
     return {
-      mode: "light",
+      mode: "unified",
       reconnecting,
       title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
-      capability: "缺少本机文件访问和直传能力",
-      shortCapability: "本机文件访问能力",
+      capability: "需要连接本机",
+      shortCapability: "本机连接",
       reason: "配置中包含 Windows 本地路径，需要由这台电脑准备 Selena、Runtime 或数据，再交给 Cluster。",
     };
   }
@@ -888,7 +886,7 @@ async function downloadWindowsConnector(jobId, mode, button, status) {
     const headers = new Headers();
     if (state.userId) headers.set("X-Rsim-User", state.userId);
     if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
-    const response = await fetch(`${API}/windows-connector/connect.cmd?mode=${encodeURIComponent(mode)}`, { headers });
+    const response = await fetch(`${API}/windows-connector/connect.cmd?mode=unified`, { headers });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       if (response.status === 404) throw new Error("一键连接包暂未就绪，请刷新页面后重试");
@@ -1123,7 +1121,7 @@ async function initialize() {
   byId("connectWindowsFromCreate").addEventListener("click", () => {
     const button = byId("connectWindowsFromCreate");
     const status = byId("createWindowsStatus");
-    downloadWindowsConnector("", byId("createWindowsCallout").dataset.mode || "light", button, status);
+    downloadWindowsConnector("", "unified", button, status);
   });
   byId("accessToken").addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveAccessToken();

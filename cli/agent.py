@@ -25,15 +25,13 @@ NO_CONFIG = True
 
 # Windows Agent deployment modes (v5 contract, PRD §14.4 / DETAILED_DESIGN §4.4).
 #
-#   --windows-mode light  (default) -> node_kind=windows_agent
-#     Authorized workspace Selena compile, artifact register/validate/upload
-#     and local data inspect/validate/upload only. Never declares or receives
-#     local simulation, cluster simulation/gateway, cluster run/collect/
-#     finalize or the legacy cluster.run.
+#   --windows-mode unified (default) -> one user-facing connector.  It
+#     registers the existing windows_full node kind and can prepare/compile,
+#     direct-transfer inputs to Cluster, or execute local simulation.
 #
-#   --windows-mode full          -> node_kind=windows_full
-#     Additionally performs local compile + local simulation. Distinct from
-#     platform_gateway; does not receive cluster.gateway.
+#   --windows-mode light/full       -> administrator/legacy compatibility
+#     values only.  New installers and SDK/Web flows never ask users to pick
+#     one of them.
 #
 # Legacy Mode A/B capability tuning is replaced by the mode policy. Explicit
 # --capability flags still override the default set, but a light agent that
@@ -43,6 +41,7 @@ from core.agent_policy import (
     DEFAULT_FULL_CAPABILITIES,
     DEFAULT_LIGHT_CAPABILITIES,
     MODE_FULL,
+    MODE_UNIFIED,
     MODE_LIGHT,
     NODE_KIND_LEGACY,
     NODE_KIND_WINDOWS_AGENT,
@@ -56,9 +55,9 @@ from core.agent_policy import (
 )
 from core.progress_parser import parse_build_percentage, parse_build_progress
 
-# Default advertised capabilities for the default (light) mode. Kept as a
-# module name for backward-compatible imports (e.g. the embedded web agent).
-DEFAULT_CAPABILITIES = list(DEFAULT_LIGHT_CAPABILITIES)
+# Default advertised capabilities for the public unified connector.  Keep the
+# exported name for backward-compatible imports (e.g. the embedded web agent).
+DEFAULT_CAPABILITIES = list(DEFAULT_FULL_CAPABILITIES)
 
 # Full capability set for --windows-mode full (Windows full deployment).
 FULL_CAPABILITIES = list(DEFAULT_FULL_CAPABILITIES)
@@ -109,18 +108,15 @@ def register(subparsers):
     parser.add_argument(
         "--windows-mode",
         choices=sorted(WINDOWS_MODES),
-        default=MODE_LIGHT,
-        help="Windows deployment mode: 'light' (default, windows_agent) does authorized "
-        "compile/artifact/data work only; 'full' (windows_full) additionally allows local "
-        "compile + local simulation.",
+        default=MODE_UNIFIED,
+        help="Internal compatibility mode. The public default 'unified' connector "
+        "supports local simulation, compile, data preparation and Cluster transfer.",
     )
     parser.add_argument(
         "--capability",
         action="append",
         default=[],
-        help="Repeatable task capability filter. Overrides the mode default. In light mode, "
-        "forbidden capabilities (local simulation, cluster simulation/gateway, cluster "
-        "run/collect/finalize, legacy cluster.run, and bypass wildcards) cause a fast failure.",
+        help="Repeatable internal capability filter. New users should not set this.",
     )
     parser.add_argument("--poll-interval", type=float, default=3.0, help="Seconds between polls when idle")
     parser.add_argument("--heartbeat-interval", type=float, default=10.0, help="Seconds between heartbeats during task execution")
@@ -133,7 +129,7 @@ def run(args, config):
     from core.user import current_user
     user = current_user()
     mode, node_kind, capabilities = _capabilities_for_mode(
-        getattr(args, "windows_mode", MODE_LIGHT),
+        getattr(args, "windows_mode", MODE_UNIFIED),
         getattr(args, "capability", None),
     )
     client = _ControlClient(

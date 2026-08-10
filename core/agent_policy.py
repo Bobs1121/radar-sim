@@ -48,11 +48,18 @@ KNOWN_NODE_KINDS = frozenset({
 })
 
 # Windows Agent CLI deployment modes -> node kind.
+# ``unified`` is the public/default mode.  It maps to the existing full
+# Windows node kind so old control-plane records remain compatible while a
+# new user installs one connector with both local execution and Cluster
+# preparation capabilities.  ``light``/``full`` remain administrator and
+# legacy compatibility values only.
+MODE_UNIFIED = "unified"
 MODE_LIGHT = "light"
 MODE_FULL = "full"
-WINDOWS_MODES = frozenset({MODE_LIGHT, MODE_FULL})
+WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 
 MODE_TO_NODE_KIND = {
+    MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,
     MODE_LIGHT: NODE_KIND_WINDOWS_AGENT,
     MODE_FULL: NODE_KIND_WINDOWS_FULL,
 }
@@ -274,7 +281,11 @@ def normalize_node_kind(value: object) -> str:
 
 
 def normalize_windows_mode(value: object) -> str:
-    """Normalize a Windows Agent ``--windows-mode`` value, defaulting to light."""
+    """Normalize a Windows Agent mode.
+
+    Missing values retain the legacy light default for old callers.  New
+    user-facing installers and the CLI explicitly pass ``unified``.
+    """
     text = str(value or "").strip().lower() or MODE_LIGHT
     return text
 
@@ -373,19 +384,19 @@ def filter_capabilities_for_node(
 def default_capabilities_for_mode(mode: object) -> list[str]:
     """Return the default capability list for a Windows Agent mode."""
     normalized = normalize_windows_mode(mode)
-    if normalized == MODE_FULL:
+    if normalized in {MODE_UNIFIED, MODE_FULL}:
         return list(DEFAULT_FULL_CAPABILITIES)
     if normalized == MODE_LIGHT:
         return list(DEFAULT_LIGHT_CAPABILITIES)
-    raise AgentPolicyError("unsupported windows-mode: expected 'light' or 'full'")
+    raise AgentPolicyError("unsupported windows-mode: expected 'unified', 'light' or 'full'")
 
 
 def node_kind_for_mode(mode: object) -> str:
-    """Map a Windows Agent mode (light|full) to its node_kind."""
+    """Map a Windows Agent mode to its node_kind."""
     normalized = normalize_windows_mode(mode)
     if normalized not in MODE_TO_NODE_KIND:
         raise AgentPolicyError(
-            "unsupported windows-mode: expected 'light' or 'full'"
+            "unsupported windows-mode: expected 'unified', 'light' or 'full'"
         )
     return MODE_TO_NODE_KIND[normalized]
 

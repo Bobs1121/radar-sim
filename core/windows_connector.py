@@ -41,9 +41,9 @@ def public_server_url(request_base_url: str) -> str:
     return candidate
 
 
-def render_installer(*, template: Path, server_url: str, mode: str, owner: str = "") -> str:
-    if mode not in {"light", "full"}:
-        raise WindowsConnectorError("connector mode must be light or full")
+def render_installer(*, template: Path, server_url: str, mode: str = "unified", owner: str = "") -> str:
+    if mode not in {"unified", "light", "full"}:
+        raise WindowsConnectorError("connector mode must be unified, light or full")
     try:
         source = template.read_text(encoding="utf-8")
     except OSError as exc:
@@ -58,9 +58,9 @@ def render_installer(*, template: Path, server_url: str, mode: str, owner: str =
     return rendered if rendered.startswith("\ufeff") else "\ufeff" + rendered
 
 
-def render_launcher(*, template: Path, server_url: str, mode: str, owner: str = "") -> str:
-    if mode not in {"light", "full"}:
-        raise WindowsConnectorError("connector mode must be light or full")
+def render_launcher(*, template: Path, server_url: str, mode: str = "unified", owner: str = "") -> str:
+    if mode not in {"unified", "light", "full"}:
+        raise WindowsConnectorError("connector mode must be unified, light or full")
     try:
         source = template.read_text(encoding="utf-8")
     except OSError as exc:

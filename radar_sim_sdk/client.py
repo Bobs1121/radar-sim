@@ -106,7 +106,7 @@ class RadarSimClient:
         self,
         destination: str | Path,
         *,
-        mode: str = "light",
+        mode: str = "unified",
     ) -> Path:
         """Download the one-time Windows connector launcher for this SDK scope.
 
@@ -117,9 +117,9 @@ class RadarSimClient:
         bearer headers as normal SDK calls, so the generated launcher is bound
         to the caller's control-plane scope.
         """
-        normalized_mode = str(mode or "light").strip().lower()
-        if normalized_mode not in {"light", "full"}:
-            raise ValueError("Windows connector mode must be 'light' or 'full'")
+        normalized_mode = str(mode or "unified").strip().lower()
+        if normalized_mode not in {"unified", "light", "full"}:
+            raise ValueError("Windows connector mode must be 'unified'")
         target = Path(destination).expanduser()
         if target.exists() and target.is_dir():
             target = target / "RadarSim-Connect-Windows.cmd"
@@ -147,9 +147,11 @@ class RadarSimClient:
     ) -> Path:
         """Download the correct connector mode for one run configuration.
 
-        Local simulation needs the full Windows capability.  Build/upload plus
-        Cluster simulation only needs the light capability.  Callers therefore
-        do not need to understand the internal full/light product vocabulary.
+        The public connector is always unified: one installation can prepare
+        local inputs, compile Selena, execute Windows-local simulation, or
+        transfer inputs for Cluster execution.  The historical light/full
+        values remain an internal compatibility detail and are never selected
+        from a user run configuration.
         """
         parsed = UserRunConfig.from_dict(self._run_config_payload(config))
         selected_target = parsed.simulation.target
@@ -157,8 +159,7 @@ class RadarSimClient:
             selected_target = str(
                 self.validate_run(parsed).execution.get("selected_target") or "cluster"
             ).strip().lower()
-        mode = "full" if selected_target == "local" else "light"
-        return self.download_windows_connector(destination, mode=mode)
+        return self.download_windows_connector(destination, mode="unified")
 
     def validate(self, spec: SimulationSpec | dict[str, Any]) -> ValidationResult:
         return ValidationResult.from_dict(self._request("POST", "/api/v1/validate", json=self._spec_payload(spec)))

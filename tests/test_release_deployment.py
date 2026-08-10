@@ -51,11 +51,13 @@ def test_linux_and_docker_release_entry_is_unified_serve_v1():
     assert "EXPOSE 8878" in dockerfile
 
 
-def test_windows_installer_persists_mode_and_enforces_light_boundary():
+def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_boundary():
     bootstrap = (ROOT / "scripts" / "bootstrap.ps1").read_text(encoding="utf-8")
     starter = (ROOT / "scripts" / "start_windows.ps1").read_text(encoding="utf-8")
 
-    assert '[ValidateSet("light", "full")]' in bootstrap
+    assert '[ValidateSet("unified", "light", "full")]' in bootstrap
+    assert '$Mode = "unified"' in bootstrap
+    assert 'if ($Mode -eq "unified") { $Mode = "full" }' in bootstrap
     assert "default_capabilities_for_mode" in bootstrap
     assert "light mode exposes forbidden runtime capabilities" in bootstrap
     assert "credentials.json" in bootstrap

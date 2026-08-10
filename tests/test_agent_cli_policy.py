@@ -21,9 +21,9 @@ def _parse(*argv: str):
     return parser.parse_args(["agent", *argv])
 
 
-def test_agent_parser_defaults_to_light_mode():
+def test_agent_parser_defaults_to_unified_mode():
     args = _parse()
-    assert args.windows_mode == "light"
+    assert args.windows_mode == "unified"
     assert args.capability == []
     assert args.agent_token == ""
     assert args.api_token == ""

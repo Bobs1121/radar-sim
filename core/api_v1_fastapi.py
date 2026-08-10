@@ -401,7 +401,7 @@ def create_app(
     @app.get("/api/v1/windows-connector/install.ps1", include_in_schema=False)
     def download_windows_connector_installer(
         request: Request,
-        mode: str = Query(default="light", pattern=r"^(light|full)$"),
+        mode: str = Query(default="unified", pattern=r"^(unified|light|full)$"),
     ):
         # Never embed long-lived credentials in a downloadable script.  The
         # current no-auth sprint is supported now; authenticated deployments
@@ -436,7 +436,7 @@ def create_app(
     @app.get("/api/v1/windows-connector/connect.cmd", include_in_schema=False)
     def download_windows_connector_launcher(
         request: Request,
-        mode: str = Query(default="light", pattern=r"^(light|full)$"),
+        mode: str = Query(default="unified", pattern=r"^(unified|light|full)$"),
     ):
         if authenticator is not None:
             raise ApiV1Error(

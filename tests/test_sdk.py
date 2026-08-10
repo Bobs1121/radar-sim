@@ -207,7 +207,7 @@ def test_sdk_bypasses_environment_proxy_for_private_control_plane():
     assert _trust_environment_proxy("https://public.example.com") is True
 
 
-def test_sdk_selects_full_connector_for_local_simulation(tmp_path, monkeypatch):
+def test_sdk_selects_unified_connector_for_local_simulation(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     config = run_config_dict()
     config["simulation"]["target"] = "local"
@@ -222,10 +222,10 @@ def test_sdk_selects_full_connector_for_local_simulation(tmp_path, monkeypatch):
     target = sdk.download_windows_connector_for_run(config, tmp_path)
 
     assert target.name == "RadarSim-Connect-Windows.cmd"
-    assert seen == [(tmp_path, "full")]
+    assert seen == [(tmp_path, "unified")]
 
 
-def test_sdk_selects_light_connector_for_cluster_simulation(tmp_path, monkeypatch):
+def test_sdk_selects_unified_connector_for_cluster_simulation(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     config = run_config_dict()
     config["simulation"]["target"] = "cluster"
@@ -239,7 +239,7 @@ def test_sdk_selects_light_connector_for_cluster_simulation(tmp_path, monkeypatc
 
     sdk.download_windows_connector_for_run(config, tmp_path)
 
-    assert seen == [(tmp_path, "light")]
+    assert seen == [(tmp_path, "unified")]
 
 
 def test_sdk_auto_connector_mode_uses_same_resolved_target_as_web(tmp_path, monkeypatch):
@@ -261,7 +261,7 @@ def test_sdk_auto_connector_mode_uses_same_resolved_target_as_web(tmp_path, monk
 
     sdk.download_windows_connector_for_run(config, tmp_path)
 
-    assert seen == [(tmp_path, "full")]
+    assert seen == [(tmp_path, "unified")]
 
 
 def test_sdk_and_web_share_project_free_run_config_contract(tmp_path):
