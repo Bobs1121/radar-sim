@@ -21,6 +21,8 @@
 3. 之后 Web 与 SDK 共用这一条持久连接。任务若是本地仿真，由连接组件读取本机环境；任务若是 Cluster，连接组件只把本地 Selena/Runtime/Adapter/MatFilter/数据直接准备到 Cluster，Linux 只传递计划、进度和 Manifest。
 4. 无 Windows 用户直接在 Linux Web/SDK 中填写 Cluster 可访问路径；浏览器不能读取另一台电脑的本地路径，这是浏览器边界，不是 Linux 数据中转方案。
 
+连接器脚手架依赖的处理顺序是：复用用户 Python 中符合版本的 `PyYAML/httpx/pydantic`；缺少时使用发布包内的 Windows wheel；最后才使用用户已有的 pip 配置、企业包源和代理。Selena、Visual Studio、runtime/DLL、Cluster 仿真引擎不在 Agent 安装范围内，由用户或 Cluster 环境负责。
+
 当前验收服务为 `http://10.190.171.44:8877`，生产部署请以部署方提供的 `serve-v1` 地址为准。当前 Sprint 运行在受信内网的无认证模式；不应暴露到公网。
 
 ## Linux 一键部署

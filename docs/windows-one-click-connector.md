@@ -34,6 +34,8 @@
 - 安装完成必须由 `/api/v1/capabilities` 确认对应 Windows 能力上线，不能只依靠安装探测注册判断成功。
 - Linux 服务地址会自动加入连接进程的 `NO_PROXY`，避免公司代理错误接管内网 IP。
 - 连接器的轮询、节点注册、路径绑定和点对点传输使用 Python 标准库；`PyYAML`、`httpx`、`pydantic` 只作为编译/本地仿真的可选扩展。首次安装时如果公司包源、代理或网络不可用，页面会显示“本机仍可连接”，安装继续完成，已有 Selena + Cluster 任务不被阻断。
+- 安装器创建的连接器虚拟环境会启用 `system-site-packages`，先复用用户已经安装且版本符合要求的 Python 包；不会因为连接器隔离环境而重复下载一套。只有缺少或版本不兼容的脚手架包才会调用 pip，pip 会继承用户已有的 `pip.ini`、`HTTP_PROXY/HTTPS_PROXY` 和企业包源配置。
+- 发布包可以携带与常见 Windows Python 版本匹配的脚手架 wheel；缺包时先从随包 wheel 安装，再回退到用户配置的企业包源/代理。不会安装 Selena、Visual Studio、runtime、DLL 或实际仿真引擎。
 - 如果可选扩展安装失败，连接器会把缺少的包写入 `install.json`，编译或本地仿真任务在执行前返回稳定的 `connector_dependency_missing` 诊断和修复提示，不再让新用户在安装阶段看到裸 `Traceback`。
 - 电脑重启后，用户登录 Windows 即由已注册的计划任务启动连接；不需要重新下载、重新配对或重新填写 YAML。
 - 电脑关机、睡眠、尚未登录或网络隔离时，Linux/Web/SDK 不能远程启动本机进程或唤醒电源；任务保持“等待连接/自动重连”，电脑恢复并登录后由连接组件继续。

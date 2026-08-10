@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build the source-only Windows connector package served by Linux.
+"""Build the Windows connector package served by Linux.
 
 Only explicitly allow-listed product files are included, so dirty worktrees,
 credentials, logs, outputs and developer notes can never leak into the public
-download.  Python itself is intentionally not redistributed.
+download.  Python itself and actual Selena/simulation dependencies are not
+redistributed; only the small connector scaffold wheelhouse is allowed.
 """
 
 from __future__ import annotations
@@ -27,8 +28,9 @@ SOURCE_DIRS = (
     "web",
     "config",
     "scripts",
+    "vendor/windows-wheels",
 )
-ALLOWED_SUFFIXES = {".py", ".ps1", ".vbs", ".yaml", ".yml", ".json", ".html", ".css", ".js", ".txt"}
+ALLOWED_SUFFIXES = {".py", ".ps1", ".vbs", ".yaml", ".yml", ".json", ".html", ".css", ".js", ".txt", ".whl"}
 
 
 def _files() -> list[Path]:
@@ -65,7 +67,15 @@ def build(out: Path) -> tuple[Path, dict[str, object]]:
     files = _files()
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for source in files:
-            archive.write(source, source.relative_to(ROOT).as_posix())
+            # Do not let local checkout mtimes or Windows file attributes alter
+            # the public package hash.  Deterministic bytes make the Linux
+            # download checksum a useful deployment invariant.
+            relative = source.relative_to(ROOT).as_posix()
+            info = zipfile.ZipInfo(relative, date_time=(2020, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 0
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, source.read_bytes())
     digest = hashlib.sha256(out.read_bytes()).hexdigest()
     manifest: dict[str, object] = {
         "version": 1,

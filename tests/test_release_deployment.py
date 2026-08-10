@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
@@ -77,9 +78,17 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "use only the Python standard" in bootstrap
     assert "Optional build/local-simulation dependencies" in bootstrap
     assert "The PC is still connectable" in bootstrap
-    assert 'pip install --disable-pip-version-check --no-input --timeout 20 --retries 1 --quiet "PyYAML>=6.0" "httpx==0.28.1" "pydantic==2.13.4"' in bootstrap
+    assert '"--timeout", "20", "--retries", "1", "--quiet"' in bootstrap
+    assert '"PyYAML>=6.0", "httpx==0.28.1", "pydantic==2.13.4"' in bootstrap
     assert "optional_dependencies_ready" in bootstrap
     assert "optional_dependency_error" in bootstrap
+    assert "--system-site-packages" in bootstrap
+    assert "include-system-site-packages = true" in bootstrap
+    assert "Existing user Python packages satisfy" in bootstrap
+    assert "radar-sim-dependency-probe-" in bootstrap
+    assert "vendor\\windows-wheels" in bootstrap
+    assert "--no-index" in bootstrap
+    assert "bundled scaffold wheels" in bootstrap
     assert "RegisterStartup" in bootstrap
     assert "New-ScheduledTaskAction" in bootstrap
     assert "New-ScheduledTaskTrigger -AtLogOn" in bootstrap
@@ -175,6 +184,14 @@ def test_windows_connector_bundle_contains_hidden_launcher(tmp_path: Path):
     archive, _manifest = build(tmp_path / "connector.zip")
     with zipfile.ZipFile(archive) as bundle:
         assert "scripts/run_hidden.vbs" in bundle.namelist()
+
+
+def test_windows_connector_bundle_hash_is_deterministic(tmp_path: Path):
+    from scripts.build_windows_connector_bundle import build
+
+    first, _ = build(tmp_path / "first.zip")
+    second, _ = build(tmp_path / "second.zip")
+    assert hashlib.sha256(first.read_bytes()).digest() == hashlib.sha256(second.read_bytes()).digest()
 
 
 def test_linux_release_builds_same_origin_windows_connector_bundle():

@@ -68,6 +68,8 @@ $AuthPath = Join-Path $InstallRoot "http-auth.json"
 $DataRoot = Join-Path $InstallRoot "data"
 $VenvDir = Join-Path $RepoRoot ".venv"
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
+$VenvConfigPath = Join-Path $VenvDir "pyvenv.cfg"
+$ConnectorWheelDir = Join-Path $RepoRoot "vendor\windows-wheels"
 $StartScript = Join-Path $PSScriptRoot "start_windows.ps1"
 $WatchdogScript = Join-Path $PSScriptRoot "watch_windows_connector.ps1"
 $RunHiddenScript = Join-Path $PSScriptRoot "run_hidden.vbs"
@@ -76,6 +78,21 @@ function Write-Step($message) { Write-Host "`n==> $message" -ForegroundColor Cya
 function Write-Ok($message) { Write-Host "    OK  $message" -ForegroundColor Green }
 function Write-Warn($message) { Write-Host "    WARN $message" -ForegroundColor Yellow }
 function Fail($message) { Write-Host "    ERR  $message" -ForegroundColor Red; exit 1 }
+
+function Invoke-CapturedNative([string]$Executable, [string[]]$Arguments) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = @(& $Executable @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = (($output | ForEach-Object { $_.ToString() }) -join " ").Trim()
+    }
+}
 
 function Get-RemoteHealth([string]$Url, [int]$Attempts = 5) {
     $lastError = $null
@@ -150,11 +167,32 @@ Write-Step "2/5 Prepare the unified connector runtime"
 $ConnectorOptionalDependenciesReady = $true
 $ConnectorOptionalDependencyError = ""
 if (-not (Test-Path $VenvPy)) {
-    $venvOutput = @(& $Python -m venv $VenvDir 2>&1)
+    # Keep the connector environment isolated from project packages, but make
+    # the user's already-installed Python packages visible.  This avoids
+    # downloading a second copy of the scaffold dependencies on every PC;
+    # pip is only used for packages that are genuinely missing or incompatible.
+    $venvOutput = @(& $Python -m venv --system-site-packages $VenvDir 2>&1)
     if ($LASTEXITCODE -ne 0) {
         $detail = (($venvOutput | ForEach-Object { $_.ToString() }) -join " ").Trim()
         if ($detail.Length -gt 600) { $detail = $detail.Substring(0, 600) + "..." }
         Fail ("Failed to create .venv." + $(if ($detail) { " $detail" } else { "" }))
+    }
+}
+if (Test-Path $VenvConfigPath) {
+    # Existing installations were created before package reuse was enabled.
+    # Flip only this venv switch; do not modify the user's global Python.
+    $venvConfig = Get-Content -Raw -Encoding ASCII $VenvConfigPath
+    if ($venvConfig -notmatch '(?im)^include-system-site-packages\s*=\s*true\s*$') {
+        if ($venvConfig -match '(?im)^include-system-site-packages\s*=') {
+            $venvConfig = [regex]::Replace(
+                $venvConfig,
+                '(?im)^include-system-site-packages\s*=.*$',
+                'include-system-site-packages = true'
+            )
+        } else {
+            $venvConfig = $venvConfig.TrimEnd() + "`r`ninclude-system-site-packages = true`r`n"
+        }
+        Set-Content -LiteralPath $VenvConfigPath -Value $venvConfig -Encoding ASCII
     }
 }
 if ($RequestedMode -eq "light") {
@@ -197,45 +235,111 @@ if ($RequestedMode -eq "light") {
         Fail ("The downloaded connector source is incomplete." + $(if ($detail) { " $detail" } else { "" }))
     }
 
-    $dependencyProbeCode = "import importlib.util; names=('yaml','httpx','pydantic'); missing=[name for name in names if importlib.util.find_spec(name) is None]; print(','.join(missing))"
-    $optionalProbe = ((& $VenvPy -c $dependencyProbeCode 2>&1) | ForEach-Object { $_.ToString() }) -join " "
-    $missing = $optionalProbe.Trim()
-    if ($missing) {
-        Write-Host "Optional build/local-simulation dependencies are not installed; attempting a one-time setup..." -ForegroundColor Yellow
-        # Windows PowerShell 5.1 promotes native stderr to a terminating
-        # ErrorRecord when $ErrorActionPreference=Stop, even when 2>&1 is
-        # present.  Pip failure is expected on an offline/corporate-index PC;
-        # temporarily capture it instead of aborting the connector install.
+    $dependencyProbeCode = @'
+import importlib.util
+from importlib.metadata import PackageNotFoundError, version
+
+checks = (("PyYAML", "yaml", "6.0", ">="), ("httpx", "httpx", "0.28.1", "=="), ("pydantic", "pydantic", "2.13.4", "=="))
+def parts(value):
+    return tuple(int(piece) if piece.isdigit() else 0 for piece in value.split(".")[:3])
+missing = []
+for distribution, module, wanted, operator in checks:
+    if importlib.util.find_spec(module) is None:
+        missing.append(distribution)
+        continue
+    try:
+        found = version(distribution)
+    except PackageNotFoundError:
+        missing.append(distribution)
+        continue
+    if (operator == "==" and found != wanted) or (operator == ">=" and parts(found) < parts(wanted)):
+        missing.append(distribution)
+print(",".join(missing))
+'@
+    $dependencyProbePath = Join-Path $env:TEMP ("radar-sim-dependency-probe-" + [Guid]::NewGuid().ToString("N") + ".py")
+    Set-Content -LiteralPath $dependencyProbePath -Value $dependencyProbeCode -Encoding ASCII
+    function Invoke-DependencyProbe([string]$PythonPath, [string]$ProbePath) {
+        # Passing a multiline Python program directly to a native executable
+        # loses embedded quotes under Windows PowerShell 5.1.  Execute a
+        # temporary file instead; this keeps version checks identical on PS5.1
+        # and PowerShell 7 and avoids leaking a source fragment to the shell.
         $previousErrorActionPreference = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            $pipOutput = @(& $VenvPy -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 1 --quiet "PyYAML>=6.0" "httpx==0.28.1" "pydantic==2.13.4" 2>&1)
-            $pipExit = $LASTEXITCODE
+            $output = @(& $PythonPath $ProbePath 2>&1)
+            $exitCode = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $previousErrorActionPreference
         }
-        $optionalProbe = ((& $VenvPy -c $dependencyProbeCode 2>&1) | ForEach-Object { $_.ToString() }) -join " "
-        $afterMissing = $optionalProbe.Trim()
-        if ($pipExit -ne 0 -or $afterMissing) {
-            $ConnectorOptionalDependenciesReady = $false
-            $pipDetail = (($pipOutput | ForEach-Object { $_.ToString() }) -join " ").Trim()
-            $ConnectorOptionalDependencyError = @($afterMissing, $missing, $pipDetail) |
-                Where-Object { $_ } |
-                Select-Object -First 1
-            if (-not $ConnectorOptionalDependencyError) {
-                $ConnectorOptionalDependencyError = "optional dependencies are unavailable"
-            }
-            if ($ConnectorOptionalDependencyError.Length -gt 600) {
-                $ConnectorOptionalDependencyError = $ConnectorOptionalDependencyError.Substring(0, 600) + "..."
-            }
-            Write-Warn "The PC is still connectable. Optional dependencies could not be installed ($ConnectorOptionalDependencyError). Existing Selena + Cluster tasks can continue; build/local-simulation tasks will show the missing dependency before execution."
-        } else {
-            Write-Ok "Optional build/local-simulation dependencies installed."
+        [pscustomobject]@{
+            ExitCode = $exitCode
+            Output = (($output | ForEach-Object { $_.ToString() }) -join " ").Trim()
         }
-    } else {
-        Write-Ok "Unified connector runtime is ready."
     }
-    Write-Host "Selena, Visual Studio and the actual simulation environment remain user-managed." -ForegroundColor DarkGray
+    try {
+        $probe = Invoke-DependencyProbe -PythonPath $VenvPy -ProbePath $dependencyProbePath
+        if ($probe.ExitCode -ne 0) {
+            $detail = if ($probe.Output) { " $($probe.Output)" } else { "" }
+            Fail ("The connector dependency check failed.$detail")
+        }
+        $missing = [string]$probe.Output
+        if ($missing) {
+            Write-Host "Optional build/local-simulation dependencies are not installed; attempting a one-time setup..." -ForegroundColor Yellow
+            Write-Host "Missing or incompatible scaffold packages: $missing" -ForegroundColor DarkGray
+            $pipArguments = @(
+                "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+                "--timeout", "20", "--retries", "1", "--quiet",
+                "PyYAML>=6.0", "httpx==0.28.1", "pydantic==2.13.4"
+            )
+            $pipSource = "configured package source/proxy"
+            $wheelFiles = @()
+            if (Test-Path $ConnectorWheelDir) {
+                $wheelFiles = @(Get-ChildItem -LiteralPath $ConnectorWheelDir -Filter "*.whl" -File -ErrorAction SilentlyContinue)
+            }
+            if ($wheelFiles.Count -gt 0) {
+                Write-Host "Trying the bundled scaffold wheels before using the configured package source..." -ForegroundColor DarkGray
+                $wheelArguments = @(
+                    "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--no-index",
+                    "--find-links", $ConnectorWheelDir, "--quiet",
+                    "PyYAML>=6.0", "httpx==0.28.1", "pydantic==2.13.4"
+                )
+                $wheelResult = Invoke-CapturedNative -Executable $VenvPy -Arguments $wheelArguments
+                if ($wheelResult.ExitCode -eq 0) {
+                    $pipResult = $wheelResult
+                    $pipSource = "bundled scaffold wheels"
+                } else {
+                    $pipResult = Invoke-CapturedNative -Executable $VenvPy -Arguments $pipArguments
+                }
+            } else {
+                $pipResult = Invoke-CapturedNative -Executable $VenvPy -Arguments $pipArguments
+            }
+            $pipOutput = [string]$pipResult.Output
+            $pipExit = [int]$pipResult.ExitCode
+            $afterProbe = Invoke-DependencyProbe -PythonPath $VenvPy -ProbePath $dependencyProbePath
+            $afterMissing = if ($afterProbe.ExitCode -eq 0) { [string]$afterProbe.Output } else { "dependency probe failed" }
+            if ($pipExit -ne 0 -or $afterProbe.ExitCode -ne 0 -or $afterMissing) {
+                $ConnectorOptionalDependenciesReady = $false
+                $pipDetail = $pipOutput.Trim()
+                $ConnectorOptionalDependencyError = @($afterMissing, $missing, $pipDetail) |
+                    Where-Object { $_ } |
+                    Select-Object -First 1
+                if (-not $ConnectorOptionalDependencyError) {
+                    $ConnectorOptionalDependencyError = "optional dependencies are unavailable"
+                }
+                if ($ConnectorOptionalDependencyError.Length -gt 600) {
+                    $ConnectorOptionalDependencyError = $ConnectorOptionalDependencyError.Substring(0, 600) + "..."
+                }
+                Write-Warn "The PC is still connectable. Optional dependencies could not be installed from $pipSource ($ConnectorOptionalDependencyError). Existing Selena + Cluster tasks can continue; build/local-simulation tasks will show the missing dependency before execution."
+            } else {
+                Write-Ok "Missing scaffold dependencies installed from $pipSource."
+            }
+        } else {
+            Write-Ok "Existing user Python packages satisfy the connector requirements; no duplicate download was needed."
+        }
+        Write-Host "Selena, Visual Studio and the actual simulation environment remain user-managed." -ForegroundColor DarkGray
+    } finally {
+        Remove-Item -LiteralPath $dependencyProbePath -Force -ErrorAction SilentlyContinue
+    }
 } elseif (-not $SkipDeps) {
     & $VenvPy -m pip install --quiet --upgrade pip
     $extra = ".[v5,full]"

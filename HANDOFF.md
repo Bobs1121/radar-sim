@@ -2282,10 +2282,31 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 - 使用全新安装目录 `C:\Users\HOZ2WX\AppData\Local\radar-sim-no-index-live`，从新构建包解压，创建干净 `.venv`。
 - 设置 `PIP_NO_INDEX=1` 模拟新用户无法访问企业 Python 包源；安装仍以退出码 `0` 完成，明确显示可选依赖警告，未显示 traceback。
 - 使用同一新目录执行 `-Start`，后台 Supervisor、Python Agent 均常驻；Linux `/api/v1/capabilities` 对 owner `new-user-no-index` 返回 `windows.available=true`、`windows_full.available=true`、`reconnecting=false`，Cluster 仍在线。
-- 新包 SHA-256：`sha256:b24c6764d06483a9093e62a270ffc902375145c8ce970eeea62a5e2f46fd1540`；部署前必须以该 hash 对比 Linux 下载接口返回值。
+- 当时 source-only 包 SHA-256 为 `sha256:b24c6764d06483a9093e62a270ffc902375145c8ce970eeea62a5e2f46fd1540`；已由 0.0.8 的带 wheelhouse 包替换，当前 hash 以 0.0.8 为准。
 
 ### 回归与发布边界
 
 - `python -m py_compile cli/agent.py`、PowerShell parser check 通过；发布断言已更新为“可选依赖不阻断连接、短超时 pip、install.json 状态字段”。
 - 本轮尚未把“无可选包 + 编译/本地仿真”宣称为成功；这两类任务应按稳定诊断提示安装依赖后再执行。已有 Selena + Cluster 的连接链路才是本事故的首要验收目标。
 - 已将新 ZIP 同步至 Linux 当前 `serve-v1` 的 `dist/rsim-windows-connector.zip`；`GET /api/v1/windows-connector/package.zip` 实测返回 `585213` bytes、SHA-256 `b24c6764d06483a9093e62a270ffc902375145c8ce970eeea62a5e2f46fd1540`。后续发布仍必须重复这项大小/hash 校验，不能只在工作区生成包。
+
+## 0.0.8 连接器脚手架依赖复用与离线补齐（2026-08-10）
+
+### 用户反馈与判断
+
+“当前电脑可以下载，其他用户不可以”不能直接归因于 Linux 服务。当前开发机实际存在企业 Python Artifactory 配置和本机 HTTP(S) 代理；新用户电脑可能只有浏览器能访问 Linux，而没有同样的 `pip.ini`、代理环境或包源凭据。因此 pip 行为不同，最初的连接失败很可能是包源/代理差异，而不是仿真配置差异。
+
+### 已实施
+
+1. Windows 连接器 `.venv` 现在使用 `--system-site-packages`。安装器先在用户已有 Python 环境中检查 `PyYAML>=6.0`、`httpx==0.28.1`、`pydantic==2.13.4`；版本符合时直接复用，不重复下载。旧安装的 `pyvenv.cfg` 也会在重连时自动切换到该模式，不修改用户全局 Python。
+2. 为避免 Windows PowerShell 5.1 传递多行 Python 代码时丢失引号，依赖探测脚本会短暂写入 `%TEMP%`，执行后立即删除；探测包含模块存在性和发行版版本校验。
+3. 发布包增加仅针对连接器脚手架的 Windows wheelhouse，覆盖 CPython 3.10/3.11/3.12 x64：PyYAML、httpx、pydantic 及其轻量传输/校验依赖。缺少包时先用随包 wheel 离线安装，再回退到用户已有 `pip.ini`、`HTTP_PROXY/HTTPS_PROXY` 和企业包源；不携带 Selena、VS、runtime、DLL、asammdf 或实际仿真引擎。
+4. 这保持了产品边界：脚手架负责控制面、任务下发、数据直传和前置 Python 工具链；Selena 编译器、Visual Studio、runtime/DLL、Cluster 仿真引擎仍由用户/Cluster 环境负责。
+
+### 验证
+
+- 在当前机器设置 `PIP_NO_INDEX=1`、创建全新 system-site venv：已安装的用户包被识别，安装输出 `Existing user Python packages satisfy ... no duplicate download was needed`，退出码 `0`。
+- 用无网络的隔离 venv 直接从 `vendor/windows-wheels` 安装，`yaml 6.0.3`、`httpx 0.28.1`、`pydantic 2.13.4` 导入和版本检查均通过。
+- wheelhouse 总大小约 `7.8 MB`；不会把实际仿真环境打进 Agent。
+- Connector ZIP 已改为固定时间戳和文件属性生成；相同源码/轮子重复构建得到相同 hash，不再因工作区文件 mtime 变化而产生无意义的下载校验差异。
+- 新包已同步 Linux 并通过下载接口校验：`8294770` bytes，SHA-256 `sha256:3641299cf7ac4071abb949b68f580a061876cfc5885583f480669c995ebff4dd`。此前 `b24c...` 的 source-only 包已被替换。
