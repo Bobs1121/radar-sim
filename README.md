@@ -54,6 +54,8 @@ with RadarSimClient("http://10.190.171.44:8877") as client:
 
 任务需要 Windows 本地路径、编译或本地仿真时，Web 会显示“等待连接本机”。点击按钮、双击下载的 `RadarSim-连接本机.cmd` 即可；入口自动绑定当前 Linux 服务、选择所需能力并注册登录自启。普通用户不需要仓库、命令行或平台参数。管理员实现和恢复边界见 [`docs/windows-one-click-connector.md`](docs/windows-one-click-connector.md)。
 
+连接器的基础连接能力不依赖 Python 包源：安装器只把 `PyYAML`、`httpx`、`pydantic` 作为编译/本地仿真的可选扩展尝试安装。公司网络无法访问包源时仍会完成连接，已有 Selena + Cluster 任务可以继续；只有实际需要编译或本地仿真时才会给出缺少扩展的明确修复提示。
+
 ### Linux 统一入口
 
 ```bash

@@ -29,6 +29,13 @@ def test_agent_parser_defaults_to_unified_mode():
     assert args.api_token == ""
 
 
+def test_missing_optional_dependency_has_stable_connector_diagnostic():
+    error = ModuleNotFoundError("No module named 'yaml'")
+    assert agent_module._missing_connector_dependency(error) == "yaml"
+    assert agent_module._missing_connector_dependency(RuntimeError("No module named httpx")) == "httpx"
+    assert agent_module._missing_connector_dependency(RuntimeError("path is invalid")) == ""
+
+
 def test_control_client_sends_agent_bearer_token(monkeypatch):
     captured = {}
 

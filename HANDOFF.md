@@ -2263,3 +2263,29 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 ### 结论
 
 当前多用户稳定性结论是：任务、幂等键、结果和 Windows 本机能力均按 owner 隔离；Cluster 能力是共享基础设施；统一连接组件一次安装后复用并自动重连。仍需在下一阶段补齐强认证/短期设备配对、租户配额和完整全量测试收敛，不得把当前受信内网逻辑隔离描述为安全多租户。
+
+## 0.0.7 新用户一键连接依赖失败修复（2026-08-10）
+
+### 事故与根因
+
+新用户第一次执行 Web 下载的 `RadarSim-连接本机.cmd` 时，在 `2/5 Prepare the unified connector runtime` 阶段失败，窗口只显示 `Connection failed: Traceback (most recent call last):`。该故障不是 Selena、Visual Studio、数据路径或 Cluster 的问题，而是安装器把 `PyYAML`、`httpx`、`pydantic` 当成连接器启动的硬依赖；新电脑的企业 Python 包源/代理不可用时，`pip` 返回非零。Windows PowerShell 5.1 又把 pip 的 stderr 提升为 terminating ErrorRecord，导致用户看不到实际原因，安装在连接前被中止。
+
+### 已实施的通用修复
+
+1. 统一连接器的基础轮询、注册、路径绑定、哈希和点对点传输路径只依赖 Python 标准库；安装器先验证 `cli.agent`、`core.agent_policy`、`core.progress_parser`，不再导入可选 SDK/配置栈作为连接门槛。
+2. `PyYAML`、`httpx`、`pydantic` 改为编译/本地仿真的可选扩展。安装器用短超时、一次重试的 pip 调用尝试安装；无包源时捕获 stderr，不退出安装，写入 `install.json` 的 `optional_dependencies_ready=false` 与缺失列表。
+3. 安装窗口明确显示“本机仍可连接；已有 Selena + Cluster 可以继续”。如果后续任务确实需要可选扩展，Agent 返回稳定的 `connector_dependency_missing`、缺失包名和修复提示，不会出现任务无限等待或裸 Python traceback。
+4. 修复了 Windows PowerShell 5.1 对 native pip stderr 的处理：失败输出在受控范围内记录，不再被 `$ErrorActionPreference=Stop` 当作安装器异常。
+
+### 全新环境黑盒验证
+
+- 使用全新安装目录 `C:\Users\HOZ2WX\AppData\Local\radar-sim-no-index-live`，从新构建包解压，创建干净 `.venv`。
+- 设置 `PIP_NO_INDEX=1` 模拟新用户无法访问企业 Python 包源；安装仍以退出码 `0` 完成，明确显示可选依赖警告，未显示 traceback。
+- 使用同一新目录执行 `-Start`，后台 Supervisor、Python Agent 均常驻；Linux `/api/v1/capabilities` 对 owner `new-user-no-index` 返回 `windows.available=true`、`windows_full.available=true`、`reconnecting=false`，Cluster 仍在线。
+- 新包 SHA-256：`sha256:b24c6764d06483a9093e62a270ffc902375145c8ce970eeea62a5e2f46fd1540`；部署前必须以该 hash 对比 Linux 下载接口返回值。
+
+### 回归与发布边界
+
+- `python -m py_compile cli/agent.py`、PowerShell parser check 通过；发布断言已更新为“可选依赖不阻断连接、短超时 pip、install.json 状态字段”。
+- 本轮尚未把“无可选包 + 编译/本地仿真”宣称为成功；这两类任务应按稳定诊断提示安装依赖后再执行。已有 Selena + Cluster 的连接链路才是本事故的首要验收目标。
+- 已将新 ZIP 同步至 Linux 当前 `serve-v1` 的 `dist/rsim-windows-connector.zip`；`GET /api/v1/windows-connector/package.zip` 实测返回 `585213` bytes、SHA-256 `b24c6764d06483a9093e62a270ffc902375145c8ce970eeea62a5e2f46fd1540`。后续发布仍必须重复这项大小/hash 校验，不能只在工作区生成包。

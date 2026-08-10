@@ -81,6 +81,21 @@ def _agent_transport_error(method: str, path: str, exc: BaseException) -> Runtim
     error.status_code = 0  # type: ignore[attr-defined]
     return error
 
+
+def _missing_connector_dependency(exc: BaseException) -> str:
+    """Return a stable optional-dependency name for task diagnostics."""
+    if isinstance(exc, ModuleNotFoundError):
+        name = str(getattr(exc, "name", "") or "").strip()
+        if name:
+            return name.split(".", 1)[0]
+    text = str(exc or "")
+    marker = "No module named "
+    if marker in text:
+        name = text.split(marker, 1)[1].strip().strip("'\"")
+        if name:
+            return name.split(".", 1)[0]
+    return ""
+
 # Default advertised capabilities for the public unified connector.  Keep the
 # exported name for backward-compatible imports (e.g. the embedded web agent).
 DEFAULT_CAPABILITIES = list(DEFAULT_FULL_CAPABILITIES)
@@ -458,11 +473,17 @@ def _run_task(
         # must follow the same terminal path: otherwise the Agent supervisor
         # restarts the process while the claimed Stage remains "running".
         # Report every setup failure so the task never waits forever.
-        message = (
-            "[agent] Runtime Bundle cache failed"
-            if is_runtime_bundle_cache
-            else f"[agent] task setup error: {exc}"
-        )
+        missing_dependency = _missing_connector_dependency(exc)
+        if is_runtime_bundle_cache:
+            message = "[agent] Runtime Bundle cache failed"
+        elif missing_dependency:
+            message = (
+                "[agent] connector dependency missing: "
+                f"{missing_dependency}; install the optional build/local-simulation "
+                "dependencies on this PC, then retry the Stage"
+            )
+        else:
+            message = f"[agent] task setup error: {exc}"
         client.append_logs(task_id, [message])
         client.submit_result(
             task_id,
@@ -472,6 +493,13 @@ def _run_task(
             result=(
                 {"error": "runtime_bundle_cache_failed", "code": "runtime_bundle_cache_failed"}
                 if is_runtime_bundle_cache
+                else {
+                    "error": "connector_dependency_missing",
+                    "code": "connector_dependency_missing",
+                    "dependency": missing_dependency,
+                    "repair_hint": "Install the connector optional dependencies and retry this Stage",
+                }
+                if missing_dependency
                 else {"error": str(exc)}
                 if (is_v2_resolution or is_v5_build or is_v5_environment or is_v5_source or is_v5_register or is_v5_data or is_v5_local_stage)
                 else {"cwd": str(ROOT), "error": str(exc)}
@@ -1518,10 +1546,18 @@ def _run_v5_local_stage(
     except Exception as exc:
         # Local exceptions often carry paths.  Keep details in local diagnostics
         # and send one stable public code only.
-        code = str(getattr(exc, "code", "") or "local_stage_failed").strip().lower()
+        missing_dependency = _missing_connector_dependency(exc)
+        code = (
+            "connector_dependency_missing"
+            if missing_dependency
+            else str(getattr(exc, "code", "") or "local_stage_failed").strip().lower()
+        )
         if not code or not all(char.isalnum() or char == "_" for char in code):
             code = "local_stage_failed"
         result = {"error": code, "code": code}
+        if missing_dependency:
+            result["dependency"] = missing_dependency
+            result["repair_hint"] = "Install the connector optional dependencies and retry this Stage"
         status = "failed"
         returncode = 1
         cause = str(getattr(exc, "cause_type", "") or "")
@@ -1529,10 +1565,15 @@ def _run_v5_local_stage(
         client.append_logs(
             task_id,
             [
-                f"[agent] Windows-full {stage_type} failed "
-                f"({code}; {type(exc).__name__}"
-                + (f" caused_by={cause}/status={cause_status or 'transport'}" if cause else "")
-                + ")"
+                (
+                    f"[agent] Windows-full {stage_type} failed "
+                    f"(connector dependency missing: {missing_dependency})"
+                    if missing_dependency
+                    else f"[agent] Windows-full {stage_type} failed "
+                    f"({code}; {type(exc).__name__}"
+                    + (f" caused_by={cause}/status={cause_status or 'transport'}" if cause else "")
+                    + ")"
+                )
             ],
         )
     finally:

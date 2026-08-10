@@ -74,9 +74,12 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "authentication_required" in bootstrap
     assert "no token is stored" in bootstrap
     assert "radar_sim_source.pth" in bootstrap
-    assert "do not pull asammdf, OpenAI or" in bootstrap
-    assert "small control dependencies" in bootstrap
-    assert 'pip install --quiet "PyYAML>=6.0" "httpx==0.28.1" "pydantic==2.13.4"' in bootstrap
+    assert "use only the Python standard" in bootstrap
+    assert "Optional build/local-simulation dependencies" in bootstrap
+    assert "The PC is still connectable" in bootstrap
+    assert 'pip install --disable-pip-version-check --no-input --timeout 20 --retries 1 --quiet "PyYAML>=6.0" "httpx==0.28.1" "pydantic==2.13.4"' in bootstrap
+    assert "optional_dependencies_ready" in bootstrap
+    assert "optional_dependency_error" in bootstrap
     assert "RegisterStartup" in bootstrap
     assert "New-ScheduledTaskAction" in bootstrap
     assert "New-ScheduledTaskTrigger -AtLogOn" in bootstrap

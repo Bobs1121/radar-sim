@@ -147,9 +147,15 @@ foreach ($candidate in @("python", "py")) {
 if (-not $Python) { Fail "Python 3.10+ is required." }
 
 Write-Step "2/5 Prepare the unified connector runtime"
+$ConnectorOptionalDependenciesReady = $true
+$ConnectorOptionalDependencyError = ""
 if (-not (Test-Path $VenvPy)) {
-    & $Python -m venv $VenvDir
-    if ($LASTEXITCODE -ne 0) { Fail "Failed to create .venv." }
+    $venvOutput = @(& $Python -m venv $VenvDir 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        $detail = (($venvOutput | ForEach-Object { $_.ToString() }) -join " ").Trim()
+        if ($detail.Length -gt 600) { $detail = $detail.Substring(0, 600) + "..." }
+        Fail ("Failed to create .venv." + $(if ($detail) { " $detail" } else { "" }))
+    }
 }
 if ($RequestedMode -eq "light") {
     # A light Agent only polls the control plane and performs local path
@@ -171,30 +177,65 @@ if ($RequestedMode -eq "light") {
     }
     Write-Ok "legacy light connector uses its bundled standard-library path."
 } elseif ($RequestedMode -eq "unified") {
-    # The public connector is intentionally thin, but it must be able to use
-    # the same SDK transport as Web for owner-scoped result/artifact uploads.
-    # Install only the small control-plane set; do not pull asammdf, OpenAI or
-    # any project/AI extras.  Selena, VS and the actual simulation environment
-    # stay on the user's Windows machine.
+    # The public connector is intentionally thin.  The polling, path binding,
+    # hashing and resumable transfer paths use only the Python standard
+    # library, so a new user must still be able to connect when a corporate
+    # Python index/proxy is unavailable.  YAML/httpx/pydantic are optional
+    # extensions used by build/local-simulation/SDK paths and are attempted
+    # here with a short bounded pip call; their absence must not block the
+    # basic Windows -> Linux connection.
     $sitePackages = (& $VenvPy -c "import sysconfig; print(sysconfig.get_paths()['purelib'])").Trim()
     if (-not $sitePackages -or -not (Test-Path $sitePackages)) {
-        Fail "Could not locate the connector Python site-packages directory."
+        Fail "Could not locate the connector Python site-packages directory. The Windows Python installation may be incomplete."
     }
     $sourcePathFile = Join-Path $sitePackages "radar_sim_source.pth"
     Set-Content -LiteralPath $sourcePathFile -Value $RepoRoot -Encoding ASCII
-    & $VenvPy -c "import cli.agent, core.agent_policy, core.config, core.local_selena_runner, radar_sim_sdk, httpx, pydantic, yaml" 2>$null
+    $baselineOutput = @(& $VenvPy -c "import cli.agent, core.agent_policy, core.progress_parser" 2>&1)
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "The connector is missing its small control dependencies; installing them once..." -ForegroundColor Yellow
-        & $VenvPy -m pip install --quiet "PyYAML>=6.0" "httpx==0.28.1" "pydantic==2.13.4"
-        if ($LASTEXITCODE -ne 0) {
-            Fail "The connector could not install its small control dependencies. Check the configured Python package index or run the one-click connection again when it is available."
+        $detail = (($baselineOutput | ForEach-Object { $_.ToString() }) -join " ").Trim()
+        if ($detail.Length -gt 600) { $detail = $detail.Substring(0, 600) + "..." }
+        Fail ("The downloaded connector source is incomplete." + $(if ($detail) { " $detail" } else { "" }))
+    }
+
+    $dependencyProbeCode = "import importlib.util; names=('yaml','httpx','pydantic'); missing=[name for name in names if importlib.util.find_spec(name) is None]; print(','.join(missing))"
+    $optionalProbe = ((& $VenvPy -c $dependencyProbeCode 2>&1) | ForEach-Object { $_.ToString() }) -join " "
+    $missing = $optionalProbe.Trim()
+    if ($missing) {
+        Write-Host "Optional build/local-simulation dependencies are not installed; attempting a one-time setup..." -ForegroundColor Yellow
+        # Windows PowerShell 5.1 promotes native stderr to a terminating
+        # ErrorRecord when $ErrorActionPreference=Stop, even when 2>&1 is
+        # present.  Pip failure is expected on an offline/corporate-index PC;
+        # temporarily capture it instead of aborting the connector install.
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $pipOutput = @(& $VenvPy -m pip install --disable-pip-version-check --no-input --timeout 20 --retries 1 --quiet "PyYAML>=6.0" "httpx==0.28.1" "pydantic==2.13.4" 2>&1)
+            $pipExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
         }
+        $optionalProbe = ((& $VenvPy -c $dependencyProbeCode 2>&1) | ForEach-Object { $_.ToString() }) -join " "
+        $afterMissing = $optionalProbe.Trim()
+        if ($pipExit -ne 0 -or $afterMissing) {
+            $ConnectorOptionalDependenciesReady = $false
+            $pipDetail = (($pipOutput | ForEach-Object { $_.ToString() }) -join " ").Trim()
+            $ConnectorOptionalDependencyError = @($afterMissing, $missing, $pipDetail) |
+                Where-Object { $_ } |
+                Select-Object -First 1
+            if (-not $ConnectorOptionalDependencyError) {
+                $ConnectorOptionalDependencyError = "optional dependencies are unavailable"
+            }
+            if ($ConnectorOptionalDependencyError.Length -gt 600) {
+                $ConnectorOptionalDependencyError = $ConnectorOptionalDependencyError.Substring(0, 600) + "..."
+            }
+            Write-Warn "The PC is still connectable. Optional dependencies could not be installed ($ConnectorOptionalDependencyError). Existing Selena + Cluster tasks can continue; build/local-simulation tasks will show the missing dependency before execution."
+        } else {
+            Write-Ok "Optional build/local-simulation dependencies installed."
+        }
+    } else {
+        Write-Ok "Unified connector runtime is ready."
     }
-    & $VenvPy -c "import cli.agent, core.agent_policy, core.config, core.local_selena_runner, radar_sim_sdk, httpx, pydantic, yaml" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Fail "The connector runtime is incomplete. Re-run the one-click connection after the small control dependencies are available."
-    }
-    Write-Ok "Unified connector runtime is ready; Selena, Visual Studio and local simulation dependencies remain user-managed."
+    Write-Host "Selena, Visual Studio and the actual simulation environment remain user-managed." -ForegroundColor DarkGray
 } elseif (-not $SkipDeps) {
     & $VenvPy -m pip install --quiet --upgrade pip
     $extra = ".[v5,full]"
@@ -278,6 +319,8 @@ $installConfig = [ordered]@{
     data_root = $DataRoot
     auth_file = ""
     authentication_required = if ($UseLocalControl) { $false } else { $RemoteAuthRequired }
+    optional_dependencies_ready = [bool]$ConnectorOptionalDependenciesReady
+    optional_dependency_error = [string]$ConnectorOptionalDependencyError
 }
 $secrets = [ordered]@{ version = 1; agent_token = $AgentToken; api_token = $ApiToken }
 $installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
