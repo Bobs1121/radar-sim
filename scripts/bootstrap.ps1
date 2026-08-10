@@ -173,9 +173,9 @@ if ($RequestedMode -eq "light") {
 } elseif ($RequestedMode -eq "unified") {
     # The public connector is intentionally thin.  It needs only the control
     # contract and YAML parser; Selena, VS and the simulation environment stay
-    # on the user's Windows machine.  Install the small control extra only
-    # when the current venv cannot import the required modules.  Do not pull
-    # the historical full/AI extras for a normal connector installation.
+    # on the user's Windows machine.  Install PyYAML directly when the current
+    # venv cannot import it.  Do not install the historical full/AI extras or
+    # editable project metadata for a normal connector installation.
     $sitePackages = (& $VenvPy -c "import sysconfig; print(sysconfig.get_paths()['purelib'])").Trim()
     if (-not $sitePackages -or -not (Test-Path $sitePackages)) {
         Fail "Could not locate the connector Python site-packages directory."
@@ -185,7 +185,7 @@ if ($RequestedMode -eq "light") {
     & $VenvPy -c "import cli.agent, core.agent_policy, core.config, core.local_selena_runner" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "The connector is missing its small control dependencies; installing them once..." -ForegroundColor Yellow
-        & $VenvPy -m pip install --quiet -e ".[control]"
+        & $VenvPy -m pip install --quiet "PyYAML>=6.0"
         if ($LASTEXITCODE -ne 0) {
             Fail "The connector could not install its small control dependencies. Install PyYAML for this Python and run the one-click connection again."
         }
