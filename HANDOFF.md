@@ -2368,6 +2368,10 @@ Linux 控制面只保存数据集逻辑引用，不会从历史 Job 反查或复
 
 ### 发布前必须完成
 
-- 将本节代码与测试提交并推送；重建 Windows Connector ZIP，使新的 `cli/agent.py`、`core/agent_local_run.py`、`core/control_service.py` 进入包。
-- 同步 Linux `serve-v1`，校验 `/api/v1/health`、Cluster 能力和连接器下载 hash。
+### 已完成的发布动作
+
+- 代码与测试已提交为 `2cc9fe8` 并推送到 `origin/codex/new-branch`；定向核心回归仍为 `151 passed, 1 warning`。
+- Linux `serve-v1` 已同步 `cli/agent.py`、`core/agent_local_run.py`、`core/control_service.py` 并重启；`systemctl --user` 为 `active`，`/api/v1/health` 返回 `ok=true`、`authentication_required=false`。
+- Windows Connector 已重建并由下载接口提供：`8,342,315` bytes，SHA-256 `sha256:df961485ba218fbf77e89878a5abc488aaf83045290a47a58774dbf75fbeeb9f`。包中已包含部分成功的逐输入诊断和 Manifest 归档逻辑。
+- 发布后使用一个未配对 owner 查询能力，Cluster 仍为 `available=true`，Windows 能力按 owner 返回 `false`；没有把其他用户的 Agent 能力错误暴露给新用户。
 - 部署后先用离线/单元混合批次验收，再在获得 `0014.mf4` 完整路径后执行真实单条任务；不得使用猜测路径污染用户任务历史。
