@@ -55,6 +55,32 @@ from core.agent_policy import (
 )
 from core.progress_parser import parse_build_percentage, parse_build_progress
 
+
+def _is_retryable_agent_transport(exc: BaseException) -> bool:
+    """Return whether an Agent control/data request may be retried.
+
+    The connector runs for days and must not treat a short TCP/proxy reset as
+    a permanent task failure.  Request helpers mark standard-library network
+    exceptions explicitly; the name fallback also covers HTTPX exceptions
+    raised by compatibility paths without making file/path errors retryable.
+    """
+    if bool(getattr(exc, "transport_error", False)):
+        return True
+    name = type(exc).__name__.casefold()
+    return any(
+        token in name
+        for token in ("transport", "timeout", "connect", "network", "urlerror")
+    )
+
+
+def _agent_transport_error(method: str, path: str, exc: BaseException) -> RuntimeError:
+    """Normalize a stdlib connection failure without leaking local details."""
+    error = RuntimeError(f"{method} {path} transport failed")
+    error.transport_error = True  # type: ignore[attr-defined]
+    error.cause_type = type(exc).__name__  # type: ignore[attr-defined]
+    error.status_code = 0  # type: ignore[attr-defined]
+    return error
+
 # Default advertised capabilities for the public unified connector.  Keep the
 # exported name for backward-compatible imports (e.g. the embedded web agent).
 DEFAULT_CAPABILITIES = list(DEFAULT_FULL_CAPABILITIES)
@@ -1489,13 +1515,26 @@ def _run_v5_local_stage(
         elif returncode == 0:
             status = "succeeded"
         client.append_logs(task_id, [f"[agent] Windows-full {stage_type} {status}"])
-    except Exception:
+    except Exception as exc:
         # Local exceptions often carry paths.  Keep details in local diagnostics
         # and send one stable public code only.
-        result = {"error": "local_stage_failed", "code": "local_stage_failed"}
+        code = str(getattr(exc, "code", "") or "local_stage_failed").strip().lower()
+        if not code or not all(char.isalnum() or char == "_" for char in code):
+            code = "local_stage_failed"
+        result = {"error": code, "code": code}
         status = "failed"
         returncode = 1
-        client.append_logs(task_id, [f"[agent] Windows-full {stage_type} failed"])
+        cause = str(getattr(exc, "cause_type", "") or "")
+        cause_status = int(getattr(exc, "cause_status", 0) or 0)
+        client.append_logs(
+            task_id,
+            [
+                f"[agent] Windows-full {stage_type} failed "
+                f"({code}; {type(exc).__name__}"
+                + (f" caused_by={cause}/status={cause_status or 'transport'}" if cause else "")
+                + ")"
+            ],
+        )
     finally:
         stop_event.set()
         thread.join(timeout=max(1.0, heartbeat_interval))
@@ -1550,14 +1589,40 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
     mat_filter_path = _materialize_local_config_asset(
         str(payload.get("mat_filter") or ""), kind="mat_filter", assets=assets, client=client
     )
+    def authorize_user_asset(path_text: str, *, role: str):
+        """Authorize a YAML-provided local asset on first use.
+
+        The one-click Agent already owns this user's Windows session.  A
+        MatFilter/Adapter path supplied in the run YAML is therefore safe to
+        persist as a parent-directory binding after verifying that it is a
+        readable regular file.  This keeps the public install flow to one
+        setup step while preserving the existing path-containment checks for
+        every later use.
+        """
+        try:
+            return assets.authorize_any(asset_path=path_text, role=role)
+        except Exception as exc:
+            from core.agent_asset_bindings import AgentAssetBindingError
+
+            if not isinstance(exc, AgentAssetBindingError):
+                raise
+            try:
+                candidate = Path(path_text).expanduser().resolve(strict=True)
+            except OSError:
+                raise exc
+            if not candidate.is_file() or candidate.is_symlink():
+                raise exc
+            binding = assets.register(candidate.parent)
+            return binding, assets.authorize_path(
+                binding_id=binding.binding_id,
+                asset_path=str(candidate),
+                role=role,
+            )
+
     adapter_binding = None
     if adapter_path:
-        adapter_binding, _ = assets.authorize_any(
-            asset_path=adapter_path, role="adapter"
-        )
-    mat_binding, _ = assets.authorize_any(
-        asset_path=mat_filter_path, role="mat_filter"
-    )
+        adapter_binding, _ = authorize_user_asset(adapter_path, role="adapter")
+    mat_binding, _ = authorize_user_asset(mat_filter_path, role="mat_filter")
     timeout_minutes = int(payload.get("timeout_minutes") or 0)
     lease = store.create_from_authorized_inputs(
         job_id=str(task.get("job_id") or ""),
@@ -1769,27 +1834,78 @@ def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = N
     local_result = store.result(lease_ref)
     if local_result["status"] != "succeeded":
         raise ValueError("local run did not succeed")
+    owner = normalize_user(str(payload.get("owner") or ""))
     retain_days = max(1, int(payload.get("retain_days") or 30))
-    published = default_result_catalog().publish(
-        owner=normalize_user(str(payload.get("owner") or "")),
-        run_ref=lease_ref,
-        source_root=private["run_root"],
-        files=[str(item.get("relative_path") or "") for item in local_result["files"]],
-        retain_until=time.time() + retain_days * 86400,
+    catalog = default_result_catalog()
+    # A result collection Stage may be retried after a transient control-plane
+    # or network failure.  Rebuilding the same archive with a new retention
+    # timestamp used to look like a content conflict and made a successful
+    # Selena run permanently fail in ``collect_results``.  Reuse the immutable
+    # per-owner/run record when it already exists; the upload operation below
+    # remains independently resumable/idempotent.
+    published = next(
+        (item for item in catalog.list(owner=owner) if item.run_ref == lease_ref),
+        None,
     )
+    if published is None:
+        published = catalog.publish(
+            owner=owner,
+            run_ref=lease_ref,
+            source_root=private["run_root"],
+            files=[str(item.get("relative_path") or "") for item in local_result["files"]],
+            retain_until=time.time() + retain_days * 86400,
+        )
     central = published.public_dict
     if client is not None and getattr(client, "_api_url", ""):
-        archive = default_result_catalog().resolve_archive(
+        archive = catalog.resolve_archive(
             published.ref,
-            owner=normalize_user(str(payload.get("owner") or "")),
+            owner=owner,
         )
-        uploaded = client.upload_result_archive(
-            archive,
-            run_ref=lease_ref,
-            files=[item.to_dict() for item in published.files],
-            retain_until=published.retain_until,
-            owner=str(payload.get("owner") or ""),
-        )
+        uploaded = None
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                uploaded = client.upload_result_archive(
+                    archive,
+                    run_ref=lease_ref,
+                    files=[item.to_dict() for item in published.files],
+                    retain_until=published.retain_until,
+                    owner=str(payload.get("owner") or ""),
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                status_code = int(getattr(exc, "status_code", 0) or 0)
+                if client is not None:
+                    try:
+                        client.append_logs(
+                            str(task.get("task_id") or ""),
+                            [
+                                "[agent] result archive upload attempt "
+                                f"{attempt + 1}/3 failed ({type(exc).__name__}; "
+                                f"status={status_code or 'transport'})"
+                            ],
+                        )
+                    except Exception:
+                        pass
+                retryable = (
+                    status_code >= 500
+                    or status_code in {408, 409, 429}
+                    or _is_retryable_agent_transport(exc)
+                )
+                if not retryable or attempt >= 2:
+                    failure = RuntimeError("result_upload_failed")
+                    setattr(failure, "code", "result_upload_failed")
+                    setattr(failure, "cause_type", type(exc).__name__)
+                    setattr(failure, "cause_status", status_code)
+                    raise failure from exc
+                time.sleep(1.0 * (2**attempt))
+        if uploaded is None:
+            failure = RuntimeError("result_upload_failed")
+            setattr(failure, "code", "result_upload_failed")
+            setattr(failure, "cause_type", type(last_error).__name__ if last_error else "")
+            setattr(failure, "cause_status", int(getattr(last_error, "status_code", 0) or 0) if last_error else 0)
+            raise failure from last_error
         central = dict(uploaded.get("result") or central)
     return {
         "local_run_lease_ref": lease_ref,
@@ -2457,17 +2573,39 @@ class _ControlClient:
         return manifest
 
     def submit_result(self, task_id: str, *, agent_id: str, status: str, returncode: int, result: dict) -> dict:
-        return self._request(
-            "POST",
-            "/api/tasks/result",
-            {
-                "task_id": task_id,
-                "agent_id": agent_id,
-                "status": status,
-                "returncode": returncode,
-                "result": result,
-            },
-        )
+        payload = {
+            "task_id": task_id,
+            "agent_id": agent_id,
+            "status": status,
+            "returncode": returncode,
+            "result": result,
+        }
+        # The task body is immutable and the server callback is idempotent for
+        # an assigned Agent. Retry only transport/transient HTTP failures; a
+        # permanent validation/assignment error must remain visible instead of
+        # creating an infinite duplicate-result loop.
+        for attempt in range(5):
+            try:
+                return self._request("POST", "/api/tasks/result", payload)
+            except Exception as exc:
+                status_code = int(getattr(exc, "status_code", 0) or 0)
+                if not status_code:
+                    text = str(exc)
+                    marker = " failed: "
+                    if marker in text:
+                        try:
+                            status_code = int(text.split(marker, 1)[1].split(" ", 1)[0])
+                        except (TypeError, ValueError):
+                            status_code = 0
+                retryable = (
+                    status_code >= 500
+                    or status_code in {408, 429}
+                    or _is_retryable_agent_transport(exc)
+                )
+                if not retryable or attempt >= 4:
+                    raise
+                time.sleep(float(2**attempt))
+        raise RuntimeError("task result callback retry exhausted")
 
     def upload_artifact(
         self,
@@ -2482,7 +2620,12 @@ class _ControlClient:
         from core.user import current_user
         from radar_sim_sdk import RadarSimClient
 
-        with RadarSimClient(self._api_url, user=str(owner or current_user()), token=self._api_token) as sdk:
+        with RadarSimClient(
+            self._api_url,
+            user=str(owner or current_user()),
+            token=self._api_token,
+            trust_env=False,
+        ) as sdk:
             uploaded = sdk.upload_artifact(
                 build_evidence_ref,
                 source,
@@ -2507,7 +2650,12 @@ class _ControlClient:
         from core.user import current_user
         from radar_sim_sdk import RadarSimClient
 
-        with RadarSimClient(self._api_url, user=str(owner or current_user()), token=self._api_token) as sdk:
+        with RadarSimClient(
+            self._api_url,
+            user=str(owner or current_user()),
+            token=self._api_token,
+            trust_env=False,
+        ) as sdk:
             uploaded = sdk.upload_runtime_bundle(
                 build_evidence_ref,
                 source,
@@ -2559,7 +2707,7 @@ class _ControlClient:
         home = str(os.environ.get("RSIM_HOME") or "").strip()
         root = (Path(home).expanduser() if home else Path.home() / ".rsim") / "agent" / "config-assets"
         target = root / str(kind) / f"{digest}.txt"
-        with RadarSimClient(base_url, token=self._token) as sdk:
+        with RadarSimClient(base_url, token=self._token, trust_env=False) as sdk:
             return sdk.download_config_asset(
                 asset_id,
                 kind=kind,
@@ -2599,20 +2747,85 @@ class _ControlClient:
         """Upload a completed Windows-local result ZIP to the Linux catalog."""
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for result upload")
-        from core.user import current_user
-        from radar_sim_sdk import RadarSimClient
-
-        with RadarSimClient(
-            self._api_url,
-            user=str(owner or current_user()),
-            token=self._api_token,
-        ) as sdk:
-            return sdk.upload_result_archive(
-                source,
-                run_ref=run_ref,
-                files=list(files),
-                retain_until=retain_until,
-            )
+        # Keep the Windows Agent's result path on the standard library.  The
+        # Agent is a thin connector and should not depend on HTTPX's pooled
+        # sockets for a resumable upload; a stale pooled connection was able
+        # to leave a stage waiting after the create request while no PATCH
+        # reached Linux.  Each request below is short-lived, owner-scoped and
+        # resumes from the server's committed offset.
+        path = Path(source).expanduser()
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("result archive is unavailable")
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        size = int(path.stat().st_size)
+        checksum = "sha256:" + digest.hexdigest()
+        create = self._api_request(
+            "POST",
+            "/api/v1/result-uploads",
+            owner=owner,
+            payload={
+                "run_ref": str(run_ref),
+                "archive_size": size,
+                "archive_checksum": checksum,
+            },
+        )
+        session_id = str(create.get("session_id") or "")
+        if not session_id:
+            raise ValueError("result upload session is unavailable")
+        received = int(create.get("received_bytes") or 0)
+        chunk_size = max(1, int(create.get("chunk_size") or 4 * 1024 * 1024))
+        with path.open("rb") as handle:
+            handle.seek(received)
+            while received < size:
+                data = handle.read(min(chunk_size, size - received))
+                if not data:
+                    raise ValueError("local result archive ended before the expected size")
+                for attempt in range(4):
+                    try:
+                        current = self._api_request(
+                            "PATCH",
+                            "/api/v1/result-uploads/" + urllib.parse.quote(session_id, safe=""),
+                            owner=owner,
+                            data=data,
+                            headers={"Upload-Offset": str(received)},
+                        )
+                        break
+                    except Exception:
+                        if attempt >= 3:
+                            raise
+                        try:
+                            current = self._api_request(
+                                "GET",
+                                "/api/v1/result-uploads/" + urllib.parse.quote(session_id, safe=""),
+                                owner=owner,
+                            )
+                            if str(current.get("status") or "") == "finalized":
+                                received = size
+                                break
+                            server_received = int(current.get("received_bytes") or 0)
+                            if server_received > received:
+                                received = server_received
+                                handle.seek(received)
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(float(2**attempt))
+                if received == size:
+                    break
+                new_received = int(current.get("received_bytes") or 0)
+                if new_received < received:
+                    raise ValueError("result upload returned a backwards offset")
+                received = new_received
+                handle.seek(received)
+        return self._api_request(
+            "POST",
+            "/api/v1/result-uploads/" + urllib.parse.quote(session_id, safe="") + "/finalize",
+            owner=owner,
+            payload={"files": list(files), "retain_until": float(retain_until or 0)},
+        )
 
     def download_runtime_bundle(
         self,
@@ -2682,6 +2895,8 @@ class _ControlClient:
             return target
         except urllib.error.HTTPError as exc:
             raise RuntimeError("Runtime Bundle download request failed") from exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            raise _agent_transport_error("GET", endpoint, exc) from exc
         finally:
             if temporary.exists():
                 temporary.unlink()
@@ -2803,6 +3018,8 @@ class _ControlClient:
             error.code = str(envelope.get("code") or "transfer_request_failed")  # type: ignore[attr-defined]
             error.message = str(envelope.get("message") or body_text)  # type: ignore[attr-defined]
             raise error from exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            raise _agent_transport_error(method, path, exc) from exc
 
     def _transfer_request(
         self,
@@ -2849,6 +3066,8 @@ class _ControlClient:
             error.code = str(envelope.get("code") or "transfer_request_failed")  # type: ignore[attr-defined]
             error.message = str(envelope.get("message") or body_text)  # type: ignore[attr-defined]
             raise error from exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            raise _agent_transport_error(method, path, exc) from exc
 
     def _api_binary_request(
         self,
@@ -2880,7 +3099,58 @@ class _ControlClient:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"{method} {path} failed: {exc.code} {body_text}") from exc
+            error = RuntimeError(f"{method} {path} failed: {exc.code} {body_text}")
+            error.status_code = int(exc.code)  # type: ignore[attr-defined]
+            raise error from exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            raise _agent_transport_error(method, path, exc) from exc
+
+    def _api_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        owner: str = "",
+        payload: dict | None = None,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict:
+        """Issue one short-lived owner-scoped JSON/bytes request.
+
+        This is intentionally separate from the Agent polling client: upload
+        requests use the v1 API URL and the user's owner scope, while the
+        control poll uses the Agent identity and legacy endpoints.
+        """
+        from core.user import current_user
+
+        request_headers = {
+            "Accept": "application/json",
+            "X-Rsim-User": str(owner or current_user()),
+        }
+        if self._api_token:
+            request_headers["Authorization"] = f"Bearer {self._api_token}"
+        body = data
+        if payload is not None:
+            body = json.dumps(payload, sort_keys=True).encode("utf-8")
+            request_headers["Content-Type"] = "application/json"
+        request_headers.update({str(key): str(value) for key, value in (headers or {}).items()})
+        request = urllib.request.Request(
+            self._api_url + path,
+            data=body,
+            headers=request_headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                raw = response.read()
+                return json.loads(raw.decode("utf-8")) if raw else {}
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            error = RuntimeError(f"{method} {path} failed: {exc.code} {body_text}")
+            error.status_code = int(exc.code)  # type: ignore[attr-defined]
+            raise error from exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            raise _agent_transport_error(method, path, exc) from exc
 
     def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
         from core.user import USER_HEADER, current_user
@@ -2897,4 +3167,8 @@ class _ControlClient:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"{method} {path} failed: {exc.code} {body}") from exc
+            error = RuntimeError(f"{method} {path} failed: {exc.code} {body}")
+            error.status_code = int(exc.code)  # type: ignore[attr-defined]
+            raise error from exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            raise _agent_transport_error(method, path, exc) from exc

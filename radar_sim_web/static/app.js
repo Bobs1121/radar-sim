@@ -44,11 +44,30 @@ async function api(path, options = {}) {
   if (state.userId) headers.set("X-Rsim-User", state.userId);
   if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
   if (options.json !== undefined) headers.set("Content-Type", "application/json");
-  const response = await fetch(`${API}${path}`, {
-    method: options.method || "GET",
-    headers,
-    body: options.json !== undefined ? JSON.stringify(options.json) : options.body,
-  });
+  // A browser fetch has no default deadline.  Without one, a restarted or
+  // unreachable Linux service leaves the Task Center stuck on “正在加载任务”
+  // forever and also blocks later polling.  Keep the timeout local to the
+  // control-plane request; long-running simulations are observed by polling
+  // their persisted Job and are not held open in this request.
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1000, Number(options.timeoutMs || 20000));
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(`${API}${path}`, {
+      method: options.method || "GET",
+      headers,
+      body: options.json !== undefined ? JSON.stringify(options.json) : options.body,
+      signal: options.signal || controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Linux 服务响应超时，请检查服务状态；任务状态不会丢失，稍后会自动重试");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
   const type = response.headers.get("content-type") || "";
   const payload = type.includes("json") ? await response.json() : await response.text();
   if (!response.ok) {
@@ -98,12 +117,14 @@ async function saveAccessToken() {
 
 function hasWindowsCapability(mode, capabilities = state.capabilities) {
   const snapshot = capabilities?.capabilities || capabilities || {};
+  if (snapshot.windows) return Boolean(snapshot.windows.available);
   if (mode === "full") return Boolean(snapshot.windows_full?.available);
   return Boolean(snapshot.windows_light?.available || snapshot.windows_full?.available);
 }
 
 function hasConfiguredWindows(mode, capabilities = state.capabilities) {
   const snapshot = capabilities?.capabilities || capabilities || {};
+  if (snapshot.windows) return Number(snapshot.windows.configured_count || 0) > 0;
   if (mode === "full") return Number(snapshot.windows_full?.configured_count || 0) > 0;
   return Number(snapshot.windows_light?.configured_count || 0) > 0
     || Number(snapshot.windows_full?.configured_count || 0) > 0;
@@ -113,9 +134,13 @@ function updateConnectionStates(capabilities = state.capabilities) {
   const local = byId("windowsState");
   if (!local) return;
   const snapshot = capabilities?.capabilities || capabilities || {};
-  const connected = Boolean(snapshot.windows_light?.available || snapshot.windows_full?.available);
-  const configured = Number(snapshot.windows_light?.configured_count || 0) > 0
-    || Number(snapshot.windows_full?.configured_count || 0) > 0;
+  const connected = snapshot.windows
+    ? Boolean(snapshot.windows.available)
+    : Boolean(snapshot.windows_light?.available || snapshot.windows_full?.available);
+  const configured = snapshot.windows
+    ? Number(snapshot.windows.configured_count || 0) > 0
+    : Number(snapshot.windows_light?.configured_count || 0) > 0
+      || Number(snapshot.windows_full?.configured_count || 0) > 0;
   local.textContent = connected
     ? "本机已连接"
     : configured ? "本机正在自动重连" : "本机未连接";

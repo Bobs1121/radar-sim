@@ -1,4 +1,8 @@
-# Linux 控制面 Server 部署指南
+# Linux 控制面 Server 部署指南（历史兼容说明）
+
+> **当前发布版本请先看 [`docs/release-deployment.md`](release-deployment.md) 和 [`docs/windows-one-click-connector.md`](windows-one-click-connector.md)。**
+>
+> 本文件保留的是早期“模式 A / `cluster.run`”兼容链路，不能作为当前 Web/SDK/统一 Windows 连接组件的安装步骤。当前入口固定为 `serve-v1`；普通用户不填写 `RSIM_USER`、Agent 地址、节点类型或内部项目名，也不直接运行下面的 legacy `rsim agent` 示例。
 
 ## 架构（模式 A：仅 cluster 仿真链路）
 

@@ -833,6 +833,15 @@ class ApiV1Service:
         owner = self._owner(owner)
         now = float(self.now_fn())
         summary = {
+            # Public contract: one Windows connector.  The two legacy keys
+            # below remain only so older clients can roll forward safely; Web
+            # and SDK callers should consume ``windows``.
+            "windows": {
+                "available": False,
+                "count": 0,
+                "configured_count": 0,
+                "reconnecting": False,
+            },
             "windows_full": {
                 "available": False,
                 "count": 0,
@@ -885,6 +894,16 @@ class ApiV1Service:
             summary[key]["reconnecting"] = (
                 summary[key]["configured_count"] > 0 and not summary[key]["available"]
             )
+        summary["windows"] = {
+            "available": any(summary[key]["available"] for key in ("windows_full", "windows_light")),
+            "count": sum(summary[key]["count"] for key in ("windows_full", "windows_light")),
+            "configured_count": sum(
+                summary[key]["configured_count"] for key in ("windows_full", "windows_light")
+            ),
+            "reconnecting": any(
+                summary[key]["reconnecting"] for key in ("windows_full", "windows_light")
+            ),
+        }
         summary["cluster"]["count"] = min(
             summary["cluster"]["linux_executor_count"],
             summary["cluster"]["platform_gateway_count"],

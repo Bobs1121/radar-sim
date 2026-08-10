@@ -4,6 +4,8 @@
 > 更新日期：2026-07-15
 > 上游需求：`PRD.md` v5.0
 
+> **2026-08-10 当前实施覆盖：** 用户只安装一个 `unified` Windows 连接组件。它按任务领取本地路径访问、编译、数据/产物准备和本地仿真阶段；Cluster 的运行、采集和最终归档仍由 Linux/平台 Gateway 承担。本文后续出现的 `full/light`、`windows_full/windows_agent` 仅是内部兼容节点和历史迁移矩阵，不得重新暴露到 Web、SDK、YAML 或安装向导。
+
 ## 1. 设计目标与现状判断
 
 本设计把现有多套 CLI、Web handler、Profile、Mode A/B、T1/T2/T3 和控制面原型收敛为一个产品架构：同一份 `SimulationSpec` 经同一 API 和调度器生成执行计划，再由具备能力的 Windows full 本地节点、首版只做编译/上传准备的用户轻量 Agent，或平台 Cluster Worker 执行。

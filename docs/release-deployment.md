@@ -1,18 +1,27 @@
-# 发布部署：Linux 统一入口与 Windows full/light
+# 发布部署：Linux 统一入口与 Windows 统一连接组件
 
 发布入口已经收敛为同一个 `serve-v1` 进程。它同时提供 Web、REST/SDK、Job/Stage 调度、Windows Agent 接口和平台 Cluster executor。legacy `server serve`、单独的 `rsim web` 和 `rsim_server.pyz` 只保留兼容用途，不再作为 Linux 发布默认入口。
 
-## 用户部署矩阵
+## 当前用户部署矩阵
 
 | 用户环境 | 安装 | Selena | 仿真 |
 |---|---|---|---|
-| 没有 Windows | 不安装客户端，直接打开 Linux Web 或调用 SDK | 选择已有 Runtime Bundle | Cluster |
-| 有 Windows 编译环境，不做本地仿真 | `light` | 本机授权代码路径编译，上传 Runtime Bundle | Cluster；上传完成后不依赖用户电脑在线 |
-| 有 Windows 本地仿真环境 | `full` | 本机编译或已有 Runtime Bundle | 本地；需要平台 Cluster 时仍由 Linux 中央入口调度 |
+| 没有 Windows | 不安装客户端，直接打开 Linux Web 或调用 SDK | 填写 Cluster 可访问的已有 Selena 文件夹、Runtime 和配置 | Cluster |
+| Windows 有本地路径、编译或仿真环境 | 一键安装一个 `unified` 连接组件 | 按任务读取已有 Selena，或执行用户提供的编译脚本 | 本地或 Cluster；Cluster 准备完成后不依赖用户电脑在线 |
+| Selena、Runtime、配置和数据都在 Cluster 可达共享位置 | 不安装客户端 | 直接填写这些路径 | Cluster |
 
-`已有 Selena + Cluster` 是例外的轻量路径：它不需要 VS/编译脚本依赖。如果所有 Selena、Runtime、MatFilter 和数据路径都能被 Cluster 访问，用户不安装 Windows 组件；如果路径是 Windows 本地，则仅安装“文件访问/上传”连接组件，组件本身不承担编译。
+`已有 Selena + Cluster` 不需要 Visual Studio 或编译脚本依赖。如果所有 Selena、Runtime、MatFilter 和数据路径都能被 Cluster 访问，用户不安装 Windows 组件；如果路径只在 Windows 本地，则统一连接组件只做文件访问和点对点准备，不会强行要求编译依赖。
 
-`light` 的策略不是 UI 约定：Agent capability policy 会拒绝 `simulation.local`、Cluster runtime/gateway、run/collect/finalize 等能力。`full` 才能声明本地仿真能力。Linux 永不声明 Selena build capability。
+用户不选择 `light/full`。这两个名称只保留为内部节点兼容字段；统一连接组件按任务动态领取本地阶段，Linux/Gateway 负责 Cluster 运行期。Linux 永不声明 Selena build capability。
+
+## 当前 Windows 连接方式
+
+1. 在 Linux Web 的“连接这台电脑”提示中下载并双击一次连接脚本；SDK 集成也可调用 `download_windows_connector_for_run()` 得到同一脚本。
+2. 安装器自动绑定当前 Web/SDK owner 和 Linux 地址，注册登录自启、异常重连和单实例监督；用户不填写 Agent ID、模式、令牌或内部项目名。
+3. 之后 Web 与 SDK 共用这一条持久连接。任务若是本地仿真，由连接组件读取本机环境；任务若是 Cluster，连接组件只把本地 Selena/Runtime/Adapter/MatFilter/数据直接准备到 Cluster，Linux 只传递计划、进度和 Manifest。
+4. 无 Windows 用户直接在 Linux Web/SDK 中填写 Cluster 可访问路径；浏览器不能读取另一台电脑的本地路径，这是浏览器边界，不是 Linux 数据中转方案。
+
+当前验收服务为 `http://10.190.171.44:8877`，生产部署请以部署方提供的 `serve-v1` 地址为准。当前 Sprint 运行在受信内网的无认证模式；不应暴露到公网。
 
 ## Linux 一键部署
 
@@ -60,7 +69,7 @@ mountpoint /mnt/cluster
 find /mnt/cluster/loc/szh/Isilon2/OverseaData -maxdepth 1 -type d
 ```
 
-## Windows 一键安装
+## 历史 full/light 安装参数（仅兼容旧部署，不作为普通用户入口）
 
 light 连接 Linux，需管理员分配的 `ServerUrl`、`AgentId`、Agent token 和同 owner 的 API token：
 

@@ -171,28 +171,28 @@ if ($RequestedMode -eq "light") {
     }
     Write-Ok "legacy light connector uses its bundled standard-library path."
 } elseif ($RequestedMode -eq "unified") {
-    # The public connector is intentionally thin.  It needs only the control
-    # contract and YAML parser; Selena, VS and the simulation environment stay
-    # on the user's Windows machine.  Install PyYAML directly when the current
-    # venv cannot import it.  Do not install the historical full/AI extras or
-    # editable project metadata for a normal connector installation.
+    # The public connector is intentionally thin, but it must be able to use
+    # the same SDK transport as Web for owner-scoped result/artifact uploads.
+    # Install only the small control-plane set; do not pull asammdf, OpenAI or
+    # any project/AI extras.  Selena, VS and the actual simulation environment
+    # stay on the user's Windows machine.
     $sitePackages = (& $VenvPy -c "import sysconfig; print(sysconfig.get_paths()['purelib'])").Trim()
     if (-not $sitePackages -or -not (Test-Path $sitePackages)) {
         Fail "Could not locate the connector Python site-packages directory."
     }
     $sourcePathFile = Join-Path $sitePackages "radar_sim_source.pth"
     Set-Content -LiteralPath $sourcePathFile -Value $RepoRoot -Encoding ASCII
-    & $VenvPy -c "import cli.agent, core.agent_policy, core.config, core.local_selena_runner" 2>$null
+    & $VenvPy -c "import cli.agent, core.agent_policy, core.config, core.local_selena_runner, radar_sim_sdk, httpx, pydantic, yaml" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "The connector is missing its small control dependencies; installing them once..." -ForegroundColor Yellow
-        & $VenvPy -m pip install --quiet "PyYAML>=6.0"
+        & $VenvPy -m pip install --quiet "PyYAML>=6.0" "httpx==0.28.1" "pydantic==2.13.4"
         if ($LASTEXITCODE -ne 0) {
-            Fail "The connector could not install its small control dependencies. Install PyYAML for this Python and run the one-click connection again."
+            Fail "The connector could not install its small control dependencies. Check the configured Python package index or run the one-click connection again when it is available."
         }
     }
-    & $VenvPy -c "import cli.agent, core.agent_policy, core.config, core.local_selena_runner" 2>$null
+    & $VenvPy -c "import cli.agent, core.agent_policy, core.config, core.local_selena_runner, radar_sim_sdk, httpx, pydantic, yaml" 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Fail "The connector runtime is incomplete. Install PyYAML for this Python and reconnect this PC."
+        Fail "The connector runtime is incomplete. Re-run the one-click connection after the small control dependencies are available."
     }
     Write-Ok "Unified connector runtime is ready; Selena, Visual Studio and local simulation dependencies remain user-managed."
 } elseif (-not $SkipDeps) {
@@ -390,9 +390,17 @@ if ($LASTEXITCODE -ne 0) { Fail "Agent mode policy check failed." }
 if ($Mode -eq "light") {
     Write-Ok "light only allows local build/upload/data staging; simulation continues on Cluster"
 } elseif ($ControlPlane -eq "linux") {
-    Write-Ok "full + linux: central Web can schedule Windows local simulation and Linux Cluster"
+    if ($RequestedMode -eq "unified") {
+        Write-Ok "unified connector + Linux: central Web can schedule local simulation and Linux Cluster"
+    } else {
+        Write-Ok "full + linux: central Web can schedule Windows local simulation and Linux Cluster"
+    }
 } else {
-    Write-Ok "full + local: offline Web/API, build and local simulation; no Cluster executor"
+    if ($RequestedMode -eq "unified") {
+        Write-Ok "unified connector + local: local execution is available; Cluster requires the Linux service"
+    } else {
+        Write-Ok "full + local: offline Web/API, build and local simulation; no Cluster executor"
+    }
 }
 
 Write-Step "5/5 Basic verification"
@@ -442,16 +450,25 @@ if (-not $SkipCheck) {
 }
 
 Write-Host "`nInstallation complete." -ForegroundColor Cyan
-Write-Host "Mode: $Mode / control plane: $ControlPlane"
+$PublicModeLabel = if ($RequestedMode -eq "unified") { "unified connector" } else { $RequestedMode }
+Write-Host "Mode: $PublicModeLabel / control plane: $ControlPlane"
 Write-Host "Visual Studio is user-managed; every build task validates and adapts the Selena script to the installed version."
 Write-Host "Start: .\scripts\start_windows.ps1"
 Write-Host "Background: .\scripts\start_windows.ps1 -Background"
 if ($Mode -eq "light") {
     Write-Host "light has no local simulation. After upload, Linux continues Cluster scheduling without this PC."
 } elseif ($ControlPlane -eq "linux") {
-    Write-Host "full + linux Web: $ServerUrl/ (one entry for local or Cluster simulation)"
+    if ($RequestedMode -eq "unified") {
+        Write-Host "Unified connector + Linux Web: $ServerUrl/ (one entry for local or Cluster simulation)"
+    } else {
+        Write-Host "full + linux Web: $ServerUrl/ (one entry for local or Cluster simulation)"
+    }
 } else {
-    Write-Host "full + local Web: $ServerUrl/ (offline local only; use -ControlPlane linux for Cluster)"
+    if ($RequestedMode -eq "unified") {
+        Write-Host "Unified connector + local Web: $ServerUrl/ (local execution; use Linux for Cluster)"
+    } else {
+        Write-Host "full + local Web: $ServerUrl/ (offline local only; use -ControlPlane linux for Cluster)"
+    }
     Write-Host "Local loopback Web does not require an access token in this sprint."
 }
 if ($Start) {

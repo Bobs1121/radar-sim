@@ -62,3 +62,67 @@ def test_windows_result_archive_is_uploaded_and_downloadable(tmp_path):
 
     assert result_ref == local.ref
     assert downloaded_path.read_bytes() == archive.read_bytes()
+
+
+def test_result_upload_create_is_idempotent_for_one_owner_and_run(tmp_path):
+    source = tmp_path / "windows-run"
+    source.mkdir()
+    (source / "output.MF4").write_bytes(b"simulated-output")
+    local_catalog = ResultCatalog(
+        tmp_path / "windows-archives",
+        tmp_path / "windows.db",
+        allowed_source_root=source,
+    )
+    local = local_catalog.publish(
+        owner="alice",
+        run_ref="local-run-lease:sha256:" + "b" * 64,
+        source_root=source,
+        files=["output.MF4"],
+        retain_until=time.time() + 3600,
+    )
+    archive = local_catalog.resolve_archive(local.ref, owner="alice")
+    central_catalog = ResultCatalog(
+        tmp_path / "central-archives",
+        tmp_path / "central.db",
+        allowed_source_root=tmp_path / "central-archives",
+    )
+    upload_store = ArtifactStore(
+        root=central_catalog.storage_root,
+        db_path=central_catalog.storage_root / ".store" / "uploads.db",
+        object_filename="result.zip",
+        storage_ref_prefix="shared://results/",
+    )
+    upload_service = ResultUploadService(upload_store, central_catalog)
+    first = upload_service.create(
+        "alice",
+        run_ref=local.run_ref,
+        archive_size=local.archive_size,
+        archive_checksum=local.archive_checksum,
+    )
+    second = upload_service.create(
+        "alice",
+        run_ref=local.run_ref,
+        archive_size=local.archive_size,
+        archive_checksum=local.archive_checksum,
+    )
+    assert second["session_id"] == first["session_id"]
+    upload_store.append_chunk(
+        first["session_id"],
+        0,
+        archive.read_bytes(),
+        owner="alice",
+    )
+    upload_service.finalize(
+        "alice",
+        first["session_id"],
+        files=[item.to_dict() for item in local.files],
+        retain_until=local.retain_until,
+    )
+    third = upload_service.create(
+        "alice",
+        run_ref=local.run_ref,
+        archive_size=local.archive_size,
+        archive_checksum=local.archive_checksum,
+    )
+    assert third["session_id"] == first["session_id"]
+    assert third["status"] == "finalized"

@@ -2179,3 +2179,87 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 1. 任何 Web/SDK 新用户都必须从当前 Web owner 下载一键连接入口；不能让用户直接运行未配对的 `bootstrap.ps1` 作为普通安装流程。
 2. `submit_run(auto_transfer=False)` 是验证 Agent 源到源路径的明确 SDK 调用；`auto_transfer=True` 适合 SDK 进程本身作为源端时的直传，但不要和 Agent 同时抢同一 Stage。
 3. MCP/Skill 只复用 `RadarSimClient` 的 YAML、任务状态、诊断、Transfer 状态和结果下载能力；不要复制 Agent 注册、Stage binder 或 Cluster 执行代码。
+
+## 0.0.5 多用户稳定性收敛与全自动本地回归（2026-08-10）
+
+### 本轮目标
+
+本轮按“换一台电脑、换一个 Web owner、换一套路径也能工作”的验收口径处理，不针对某一台 Windows 电脑写特例。重点是统一 Agent 的长驻行为、结果归档幂等性、用户隔离和 Web 服务不可用时的可恢复反馈。
+
+### 已实施的通用修复
+
+1. `cli/agent.py` 的 Windows 结果归档不再使用长驻 HTTPX 连接池。每个创建/查询/分片/完成请求使用短生命周期的标准库请求，并从服务端 `received_bytes` 续传。分片在连接中断后最多进行有界重试，不重新运行 Selena、不重新生成结果、不重复创建业务任务。
+2. Agent 上传失败、任务回调失败和传输请求统一识别标准库 `URLError`/超时/连接异常，映射为可重试的 transport 错误；4xx 参数/权限错误仍立即失败，避免把真正的配置错误无限重试。
+3. `ResultUploadService` 对同 owner、同 run_ref、同 archive size/checksum 的上传会话复用；`ResultCatalog` 对相同不可变结果仅更新更长保留期，不因重试时刻不同造成“不同内容”假失败。
+4. `/api/v1/capabilities` 增加面向用户的统一 `windows` 能力快照；`windows_full/windows_light` 只保留向后兼容。Web 的连接提示不再要求用户理解两种模式。
+5. Web 普通 API 请求增加 20 秒控制面超时。Linux 重启、网络断开或代理错误时，任务中心显示可读的超时状态并继续轮询，不会永久停留在“正在加载任务”。前端静态资源版本号更新为 `20260810-multi-user-stability`。
+6. Windows 连接包重新构建并部署，当前 SHA-256：
+   `sha256:71cdf2bd4605e32c9af4a694bd197eadc6f6f4329d50454e4565f4bc8698b538`。
+
+### 多用户隔离实测
+
+生产 Linux 服务：`http://10.190.171.44:8877`，`/api/v1/health` 返回 `ok=true`、`authentication_required=false`；当前服务 PID 为部署环境产生的单 worker 进程，Cluster executor/gateway 均在线。
+
+使用两个完全不同的 SDK owner（`multi-user-alice`、`multi-user-bob`）提交相同 YAML、相同 `Idempotency-Key: same-key-multi-user-20260810` 的 dry-run：
+
+- Alice：`job_245223883ec5`；Bob：`job_a9f844e71deb`；两个 Job ID 不同，证明幂等键按 owner 隔离。
+- Alice 的任务列表只返回 `job_245223883ec5`；Bob 的任务列表只返回 `job_a9f844e71deb`。
+- Bob 读取 Alice 的 Job 得到 `404 not_found`。
+- 两个 owner 都能看到共享 Cluster 能力；Windows 本机能力只对配对 owner `web-19fcbd9caa3073691cbb13418` 返回 `windows.available=true`，其他 owner 返回 `false`。
+
+这证明的是受信内网下的逻辑多用户隔离和并发访问，不是企业级身份认证。当前生产仍使用 `--insecure-no-auth`，`X-Rsim-User` 是隔离标签而非强认证；不应把该部署暴露到不受信网络。认证、配额、公平调度和短期设备配对仍是后续发布项。
+
+### 全新任务自动化验收
+
+重启并加载新版本统一 Agent 后，使用真实 BYD 输入重新从 SDK 提交本地仿真：
+
+- Job：`job_93cde969f496`；owner：`web-19fcbd9caa3073691cbb13418`。
+- 输入：已有 Selena `C:/BYD_OVS_CB/ip_dc/build/ROS_PER_SIT_RPM_FCT_RECR/dc_tools/selena/core/RelWithDebInfo`、Runtime `C:/tools/Runtime_For_byd_ovrs25_bl16rc71_al2.xml`、MF4 `D:/data/byd/CRGVBYDPF-13086/0729/Gen5_2026-07-28_17-22_0118.MF4`、MatFilter 原路径；不触发编译。
+- `resolve_spec`、`environment_check`、`prepare_data`、`preflight`、`run_simulation`、`collect_results`、`finalize_manifest` 全部 `succeeded`；已有 Selena 的编译/注册阶段按设计 `skipped`。
+- Selena 本地运行返回码为 0；外围最终 Job `status=succeeded`、`progress=1.0`。
+- Manifest：`result_ref=result:sha256:a3a0bb1360ee463065425115a765ec3f0649918cd6dbe41958b6f9e431bae323`，输出 MF4 239,051,624 bytes。
+- SDK 下载结果校验通过：下载包 12,163,615 bytes，SHA-256 `sha256:0d8c30bb8a4851f902c441b25a44516f0fb09260102db20341afbbd4ac5fd717`；诊断接口返回 `job_succeeded` 且 `artifacts_available=true`。
+
+该 Job 是新版本 Agent 从领取、运行、分片归档、回调到终态的全自动证据，不是人工补回调。此前卡住的 `job_9a737fc022b8` 只用于复现旧长连接故障；新实现曾从同一 in-flight session 成功续传，随后通过新鲜 Job 完成了无人工干预验收。
+
+### 回归结果与未完成边界
+
+- 代码/前端语法：`python -m compileall -q cli core radar_sim_sdk`、`node --check radar_sim_web/static/app.js` 通过。
+- 本轮核心回归：`211 passed, 2 skipped, 1 warning`（API、SDK、Agent、ResultUpload、Local E2E、隔离能力和发布包）。
+- 全量 `python -m pytest -q` 在 244 秒门禁内超时，未把它记为通过；超时来自历史全量集合，不能据此宣称全仓全绿。后续应按测试分组继续定位慢测试。
+- 之前 `job_5722e711206a` 的真实 Windows → Cluster 源到源直传成功证据仍有效；本轮没有把本地仿真证据冒充 Cluster 直传证据。
+- Linux 本地数据通过 SDK 直传已具备；浏览器本身不能读取 Linux 客户端路径，Web 对本地路径仍依赖对应设备的 Connector 或 Cluster 可达共享路径。这是浏览器安全边界，不是 Linux 服务把文件中转到自身的理由。
+- 生产认证仍关闭；MCP/Skill 尚未作为独立服务发布，只应薄封装 `RadarSimClient` 的 YAML、状态、诊断、Transfer 和结果接口。
+
+### 继续开发时不可偏离的约束
+
+1. 普通用户只看到一个统一 Windows 连接入口；不要在 YAML、Web 表单或 SDK 参数中重新引入 Agent ID、模式、Linux URL、令牌或内部项目名。
+2. Linux 只负责控制面、TransferPlan/Manifest 和 Cluster 调度；大数据、Selena 目录、Runtime、MatFilter、Adapter 不经过 Linux API 中转。
+3. 任务失败判断以 Stage DAG 和最终 Manifest 为准；Selena 内部 warning/缺信号只能作为仿真输出，不得被外围适配层伪装为成功，也不得在外围先验中阻断用户已经确认的成熟仿真流程。
+4. 任何新增重试都必须有界、幂等、按 owner/job/stage 作用域；禁止重新编译或重复提交 Cluster Job 来掩盖传输失败。
+
+## 0.0.6 并发新用户黑盒验收与连接包刷新（2026-08-10）
+
+### 并发访问证据
+
+使用两个从未在该 Web 上提交过任务的 owner，通过 Linux `/api/v1/run-jobs` 并发提交同一份 `UserRunConfig 2.0` dry-run：
+
+- `new-user-concurrent-a` 得到 `job_6c45b50fdfa4`，列表只包含该 Job；
+- `new-user-concurrent-b` 得到 `job_e3f50f053783`，列表只包含该 Job；
+- A 读取 B 的 Job、B 读取 A 的 Job 均返回 `404/not_found`；
+- 两个请求均返回 HTTP `201`，没有共享 idempotency key、任务列表或 Agent 能力快照。
+
+这补充了顺序隔离测试，证明同一 Linux 进程下多用户并发提交不会互相串任务。由于当前生产部署仍是 `--insecure-no-auth`，owner header 仍是受信内网的逻辑隔离标签，不是企业身份认证；认证开启、租户配额和公平调度仍属于后续发布项。
+
+### 统一 Windows 连接包
+
+在补齐 PRD/安装器的统一连接文案后重新构建并部署 `dist/rsim-windows-connector.zip`：
+
+- 本地与 Linux `GET /api/v1/windows-connector/package.zip` 均为 `584079` bytes；
+- SHA-256：`sha256:71cdf2bd4605e32c9af4a694bd197eadc6f6f4329d50454e4565f4bc8698b538`；
+- 包内 `cli/agent.py`、`core/api_v1.py`、Web 静态资源和 `scripts/bootstrap.ps1` 与工作区逐字节一致；
+- `unified` 是唯一用户入口，内部 `windows_full/windows_agent` 只用于兼容旧记录；普通用户不会看到“轻量/完整”选择。
+
+### 结论
+
+当前多用户稳定性结论是：任务、幂等键、结果和 Windows 本机能力均按 owner 隔离；Cluster 能力是共享基础设施；统一连接组件一次安装后复用并自动重连。仍需在下一阶段补齐强认证/短期设备配对、租户配额和完整全量测试收敛，不得把当前受信内网逻辑隔离描述为安全多租户。

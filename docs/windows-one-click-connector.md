@@ -8,16 +8,17 @@
 2. 下载 `RadarSim-连接本机.cmd`。
 3. 双击运行，看到“本机已经连接”后回到 Web 继续任务。
 
-默认 `light` 模式只承担本机路径访问、Selena 编译、数据/产物上传，随后由 Linux 调度 Cluster 仿真。只有用户选择本地仿真能力时，Web 才下载 `full` 模式入口。
+公开入口只有一个“统一连接组件”。它会按任务自动承担本机路径访问、Selena 编译、数据/产物直传、Cluster 调度准备或本地仿真；用户不选择 `light/full`，也不需要知道这两个历史内部节点名。服务器内部仍保留旧模式字段，只用于兼容已有部署。
 
-这不是“每个任务安装一次”的临时程序：安装成功后会在当前 Windows 用户下保存服务地址、用户范围和部署模式，注册登录自启/断线重连。之后同一台电脑上的 Web 和 SDK 任务都复用这条连接，不要求用户反复填写 Agent、服务器地址或路径绑定。只有换电脑、换 Linux 服务地址、切换 full/light 能力或主动卸载时才需要重新连接；新任务的代码/数据路径由任务 YAML 提供，连接组件自动做一次性授权和健康检查。
+这不是“每个任务安装一次”的临时程序：安装成功后会在当前 Windows 用户下保存服务地址和用户范围，注册登录自启/断线重连。之后同一台电脑上的 Web 和 SDK 任务都复用这条连接，不要求用户反复填写 Agent、服务器地址或路径绑定。只有换电脑、换 Linux 服务地址或主动卸载时才需要重新连接；新任务的代码/数据路径由任务 YAML 提供，连接组件自动做一次性授权和健康检查。
 
 ## 服务端发布闭环
 
 `scripts/linux_deploy.sh` 会在启动服务前构建 `dist/rsim-windows-connector.zip`。同一个 `serve-v1` 进程提供：
 
-- `GET /api/v1/windows-connector/connect.cmd?mode=light|full`：给普通用户双击运行。
-- `GET /api/v1/windows-connector/install.ps1?mode=light|full`：内部和管理员入口。
+- `GET /api/v1/windows-connector/connect.cmd?mode=unified`：给普通用户双击运行。
+- `GET /api/v1/windows-connector/install.ps1?mode=unified`：内部和管理员入口。
+- `mode=light|full` 仅为旧版本兼容参数，不应出现在用户文案或 YAML 中。
 - `GET /api/v1/windows-connector/package.zip`：只包含白名单中的运行文件，不包含工作树其他文件、日志、输出和凭证。
 
 入口按浏览器正在访问的 Linux 地址生成；反向代理部署可设置 `RSIM_PUBLIC_URL`。因此不会再把 Windows 错连到 `127.0.0.1`。
@@ -48,8 +49,8 @@ SDK 只是 Linux 控制面的调用客户端，不会把编译器或 Selena 仿�
 
 | SDK 调用位置 | `existing + cluster` 且输入可访问 | 需要本机 Windows 路径/编译/本地仿真 |
 |---|---|---|
-| Linux/服务器 | `python -m pip install "radar-sim[sdk]"`；共享路径或 Linux 可读路径即可，完全不需要 Windows 组件 | 把输入放到 Cluster 可访问共享位置，或在实际存放文件的 Windows 电脑一键连接 `light/full`；Linux 不读取 `C:/`、`D:/` |
-| Windows 集成产品 | 同样安装 `radar-sim[sdk]`；SDK 会将本地已有 Selena 目录、Runtime、可选资产和 Cluster 数据按需上传 | `source=build` 或 `target=local` 时，先一次性连接对应 `light/full` 组件；SDK 进程本身不承担持续编译/本地仿真调度 |
+| Linux/服务器 | `python -m pip install "radar-sim[sdk]"`；共享路径或 Linux 可读路径即可，完全不需要 Windows 组件。SDK 进程会按 TransferPlan 从 Linux 调用机直接写 Cluster 数据面 | Linux 不读取 `C:/`、`D:/`；若输入只在 Windows，本任务应从存放文件的 Windows 电脑一次性连接统一组件，或先放到 Cluster 可访问共享位置 |
+| Windows 集成产品 | 同样安装 `radar-sim[sdk]`；SDK 会将本地已有 Selena 目录、Runtime、可选资产和 Cluster 数据按需直传 | `source=build` 或 `target=local` 时，先一次性连接统一组件；SDK 进程本身不承担持续编译/本地仿真调度 |
 
 在没有 Web 的 SDK 集成中，优先使用 SDK 下载同一个一次性连接入口（当前可信内网、未开启认证的服务）：
 

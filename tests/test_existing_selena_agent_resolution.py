@@ -32,7 +32,7 @@ def _existing_config(tmp_path, *, target):
 
 
 def _register(control, *, agent_id, mode):
-    full = mode == "full"
+    full = mode in {"full", "unified"}
     control.register_agent(
         mode,
         agent_id=agent_id,
@@ -282,7 +282,7 @@ def test_agent_existing_resolution_imports_bundle_for_task_owner(tmp_path, monke
     )
 
 
-def _complete_existing_resolution(control, api, config, *, agent_id, mode):
+def _complete_existing_resolution(control, api, config, *, agent_id, mode, shared_storage=True):
     _register(control, agent_id=agent_id, mode=mode)
     job = api.submit_user_run("alice", config_payload=config)
     task = api.poll_agent("alice", agent_id)["task"]
@@ -301,7 +301,11 @@ def _complete_existing_resolution(control, api, config, *, agent_id, mode):
                 "runtime_bundle_lease_ref": "runtime-bundle-lease:sha256:" + "b" * 64,
                 "registered_runtime_bundle": {
                     "id": bundle_id,
-                    "storage_ref": "shared://selena-bundles/ovrs25/opaque",
+                    **(
+                        {"storage_ref": "shared://selena-bundles/ovrs25/opaque"}
+                        if shared_storage
+                        else {}
+                    ),
                     "archive_checksum": "sha256:" + "c" * 64,
                     "archive_size": 123,
                 },
@@ -362,4 +366,27 @@ def test_existing_folder_local_handoff_reuses_bundle_on_full_agent(tmp_path):
     assert bound["assigned_agent_id"] == "full-1"
     assert bound["payload"]["dispatch_scope"] == "existing_runtime"
     assert bound["payload"]["data_binding_id"].startswith("data-root:sha256:")
+    assert stages["register_artifact"]["status"] == "skipped"
+
+
+def test_existing_folder_local_handoff_does_not_require_cluster_storage_ref(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config, *_ = _existing_config(tmp_path, target="local")
+
+    job, bound = _complete_existing_resolution(
+        control,
+        api,
+        config,
+        agent_id="unified-1",
+        mode="unified",
+        shared_storage=False,
+    )
+    stages = {item["stage_type"]: item for item in job["stages"]}
+
+    assert bound["stage_type"] == "environment_check"
+    assert bound["payload"]["dispatch_scope"] == "existing_runtime"
+    assert bound["payload"]["runtime_bundle_lease_ref"].startswith(
+        "runtime-bundle-lease:sha256:"
+    )
     assert stages["register_artifact"]["status"] == "skipped"

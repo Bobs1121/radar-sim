@@ -368,9 +368,19 @@ class ResultCatalog:
                 if (
                     current.archive_checksum != result.archive_checksum
                     or current.files != result.files
-                    or current.retain_until != result.retain_until
                 ):
                     raise ResultCatalogError("result run already has different immutable content")
+                # Retention is delivery metadata, not result content.  A
+                # caller retrying the same upload through the SDK may omit
+                # ``retain_until`` or use a different policy; preserve the
+                # longer existing retention instead of turning an otherwise
+                # idempotent callback into a conflict.
+                if result.retain_until > current.retain_until:
+                    conn.execute(
+                        "UPDATE local_results SET retain_until=? WHERE owner=? AND run_ref=?",
+                        (result.retain_until, owner, result.run_ref),
+                    )
+                    conn.commit()
                 return
             conn.execute(
                 """

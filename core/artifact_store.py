@@ -469,6 +469,51 @@ class ArtifactStore:
             finally:
                 conn.close()
 
+    def find_upload_session(
+        self,
+        owner: str,
+        project: str,
+        *,
+        evidence_ref: str,
+        expected_size: int,
+        expected_checksum: str,
+    ) -> UploadSession | None:
+        """Find an idempotent upload session for one logical operation.
+
+        Agents retry after a process or network interruption.  Creating a new
+        session for every retry leaves orphaned zero-byte files and makes the
+        control plane appear stuck even though the same immutable archive is
+        being sent.  The evidence reference, size and checksum form the
+        operation identity; sessions belonging to another owner or another
+        archive are never reused.
+        """
+        owner = normalize_user(owner)
+        project = _validate_segment(project)
+        evidence_ref = _validate_evidence_ref(evidence_ref)
+        expected_size = _validate_size(expected_size)
+        expected_checksum = _validate_checksum(expected_checksum)
+        now = self._now()
+        with self._lock:
+            conn = self._conn()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT * FROM artifact_upload_sessions
+                    WHERE owner=? AND project=? AND evidence_ref=?
+                      AND expected_size=? AND expected_checksum=?
+                      AND (
+                        status='finalized'
+                        OR (status='active' AND expires_at>=?)
+                      )
+                    ORDER BY updated_at DESC, rowid DESC
+                    LIMIT 1
+                    """,
+                    (owner, project, evidence_ref, expected_size, expected_checksum, now),
+                ).fetchone()
+                return self._get_session_locked(conn, str(row["session_id"])) if row is not None else None
+            finally:
+                conn.close()
+
     def get_session(self, session_id: str, *, owner: str = "") -> UploadSession:
         """Return an upload session, including its terminal status."""
         session_id = str(session_id or "").strip()

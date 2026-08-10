@@ -200,11 +200,27 @@ def bind_existing_runtime_resolution(
         raise StageBindingError("existing Selena resolution has not succeeded")
     recognition = dict((resolution.get("result") or {}).get("recognition") or {})
     config_assets = dict(recognition.get("config_assets") or {})
-    bundle = dict(recognition.get("registered_runtime_bundle") or {})
+    # The node-local resolver always keeps the manifest in ``runtime_bundle``
+    # so a local run can use its private lease without publishing bytes to
+    # Linux.  Older Cluster handoffs may additionally provide the public
+    # ``registered_runtime_bundle`` projection; prefer it when present.
+    bundle = dict(
+        recognition.get("registered_runtime_bundle")
+        or recognition.get("runtime_bundle")
+        or {}
+    )
     lease_ref = str(recognition.get("runtime_bundle_lease_ref") or "")
     project = str(recognition.get("internal_project") or "")
     agent_id = str(resolution.get("required_agent_id") or resolution.get("assigned_agent_id") or "")
     attempt = int(resolution.get("attempt_count") or 0)
+    target = _selected_execution_target(job)
+    # A local run only needs the Agent-private Runtime Bundle lease created
+    # during recognition.  A Cluster run additionally needs a path-free
+    # shared storage reference, because the Cluster executor cannot read the
+    # Windows Agent's private cache.  Requiring ``storage_ref`` for both
+    # routes made an otherwise valid local existing-Selena run stop after
+    # resolve_spec with a misleading handoff block.
+    requires_shared_bundle = target == "cluster"
     if (
         recognition.get("source") != "existing"
         or not agent_id
@@ -212,7 +228,7 @@ def bind_existing_runtime_resolution(
         or not project
         or not lease_ref.startswith("runtime-bundle-lease:sha256:")
         or not str(bundle.get("id") or "").startswith("selena-bundle:sha256:")
-        or not str(bundle.get("storage_ref") or "").startswith("shared://selena-bundles/")
+        or (requires_shared_bundle and not str(bundle.get("storage_ref") or "").startswith("shared://selena-bundles/"))
         or attempt < 1
     ):
         raise StageBindingError("existing Selena resolution evidence is invalid")
@@ -244,7 +260,6 @@ def bind_existing_runtime_resolution(
     resolved_spec["status"] = "partial"
     control.update_resolved_spec(job_id, resolved_spec)
 
-    target = _selected_execution_target(job)
     if not register:
         raise StageBindingError("existing Selena registration Stage is unavailable")
     if register.get("status") == "queued":

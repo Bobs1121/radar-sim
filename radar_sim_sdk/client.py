@@ -930,8 +930,43 @@ class RadarSimClient:
                 data = handle.read(min(chunk_size, size - received))
                 if not data:
                     raise ValueError("local result archive ended before the expected size")
-                current = self.append_result_upload(session_id, received, data)
-                received = int(current.get("received_bytes") or 0)
+                # A connection can fail after the server has committed a
+                # chunk. Re-read the resumable session before retrying so a
+                # transient network failure cannot strand the stage or send
+                # different bytes at the same offset.
+                for attempt in range(4):
+                    try:
+                        current = self.append_result_upload(session_id, received, data)
+                        break
+                    except (RadarSimTransportError, RadarSimApiError, TimeoutError, OSError) as exc:
+                        if isinstance(exc, RadarSimApiError) and exc.status_code not in {408, 409, 429} and exc.status_code < 500:
+                            raise
+                        if attempt >= 3:
+                            raise
+                        try:
+                            current = self.get_result_upload(session_id)
+                            if str(current.get("status") or "") == "finalized":
+                                received = size
+                                break
+                            server_received = int(current.get("received_bytes") or 0)
+                            if server_received > received:
+                                received = server_received
+                                handle.seek(received)
+                                break
+                        except Exception:
+                            # The next bounded append retry still uses the
+                            # same bytes and exact offset.
+                            pass
+                        time.sleep(float(2**attempt))
+                else:  # pragma: no cover - defensive
+                    raise RadarSimTransportError("result upload chunk retry exhausted")
+                if received == size:
+                    break
+                new_received = int(current.get("received_bytes") or 0)
+                if new_received < received:
+                    raise ValueError("result upload returned a backwards offset")
+                received = new_received
+                handle.seek(received)
         return self.finalize_result_upload(
             session_id,
             files=files,
@@ -1226,12 +1261,20 @@ class RadarSimClient:
         self.close()
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        response: httpx.Response | None = None
         try:
             response = self._client.request(method, path, **kwargs)
             self._raise_for_status(response)
             return response.json() if response.content else {}
         except httpx.TransportError as exc:
             raise RadarSimTransportError(str(exc)) from exc
+        finally:
+            # ``Client.request`` buffers the response body, but does not close
+            # the response object for us.  Release every non-streaming
+            # response explicitly so a long-lived Agent cannot retain a stale
+            # connection between create and PATCH upload requests.
+            if response is not None:
+                response.close()
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code < 400:

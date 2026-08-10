@@ -588,7 +588,50 @@ def build_effective_simulation(
         with _RADAR_DETECTION_CACHE_LOCK:
             detection = copy.deepcopy(_RADAR_DETECTION_CACHE.get(cache_key))
         if detection is None:
-            detection = detect_radar_orientation(input_mf4)
+            # Keep local execution consistent with the Cluster direct-transfer
+            # path.  Acquisition-source metadata is the authoritative source
+            # selection (a recording may contain more than one radar group),
+            # while the sample-based mounting probe is only a fallback.  The
+            # helper uses the stdlib MDF4 reader when asammdf is unavailable,
+            # so a newly installed unified Agent does not need an extra
+            # heavyweight dependency just to prepare a paramconfig.
+            try:
+                available_sources = discover_radar_acquisition_sources(input_mf4)
+            except Exception:
+                available_sources = []
+            if available_sources:
+                selected_source = available_sources[0]
+                mapping = next(
+                    (
+                        item
+                        for item in RADAR_POSITION_MAP.values()
+                        if item["source"] == selected_source
+                    ),
+                    None,
+                )
+                if mapping:
+                    detection = {
+                        "position": next(
+                            position
+                            for position, item in RADAR_POSITION_MAP.items()
+                            if item["source"] == selected_source
+                        ),
+                        "source": mapping["source"],
+                        "mounting_position": mapping["mounting_position"],
+                        "method": "acquisition_source",
+                        "confidence": 0.9 if len(available_sources) == 1 else 0.85,
+                        "evidence": {
+                            "available_sources": list(available_sources),
+                            "selected_source": selected_source,
+                            "selection_method": (
+                                "single_acq_source"
+                                if len(available_sources) == 1
+                                else "first_acq_source"
+                            ),
+                        },
+                    }
+            if detection is None:
+                detection = detect_radar_orientation(input_mf4)
             if detection:
                 with _RADAR_DETECTION_CACHE_LOCK:
                     if len(_RADAR_DETECTION_CACHE) >= 128:

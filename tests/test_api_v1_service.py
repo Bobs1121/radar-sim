@@ -133,6 +133,12 @@ def test_execution_capabilities_require_both_cluster_roles_and_hide_agent_detail
         "configured_count": 1,
         "reconnecting": False,
     }
+    assert partial["capabilities"]["windows"] == {
+        "available": True,
+        "count": 1,
+        "configured_count": 1,
+        "reconnecting": False,
+    }
     assert partial["capabilities"]["cluster"] == {
         "available": False,
         "count": 0,
@@ -164,6 +170,12 @@ def test_execution_capabilities_reports_configured_windows_reconnecting(tmp_path
 
     full = api.execution_capabilities("alice")["capabilities"]["windows_full"]
     assert full == {
+        "available": False,
+        "count": 0,
+        "configured_count": 1,
+        "reconnecting": True,
+    }
+    assert api.execution_capabilities("alice")["capabilities"]["windows"] == {
         "available": False,
         "count": 0,
         "configured_count": 1,

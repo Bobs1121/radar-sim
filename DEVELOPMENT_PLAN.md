@@ -5,6 +5,8 @@
 > 产品口径：`PRD.md` v5.0
 > 架构依据：`docs/DETAILED_DESIGN.md`
 
+> **2026-08-10 当前实施覆盖：** 对外只发布一个 Windows `unified` 连接组件；`full/light` 只保留内部兼容。计划中的本地阶段（路径访问、编译、数据/产物准备、本地仿真）均由同一组件按任务领取，Cluster 运行期由 Linux/Gateway 承担。新增工作不得把模式选择、Agent ID、服务地址或内部项目名重新放回用户合同。
+
 > 2026-07-15 纠偏状态：以 `docs/PRODUCT_CONTRACT.md` 为权威基线。旧版把 Runtime Bundle 暴露给用户并要求先登记的路径不算交付；当前必须收敛 `existing_path + runtime_xml`、Web/SDK 透明上传/解析、build/existing × local/cluster 四组合和 10.190.171.44 真实验收。Linux 仍只调度与传输，不编译 Selena、不执行本地仿真。
 
 ## 0. 文档定位

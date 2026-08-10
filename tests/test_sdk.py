@@ -25,6 +25,7 @@ from core.simulation import (
     _MF4_HEADER,
     _MF4_SOURCE_INFORMATION,
     _discover_mf4_acquisition_sources_stdlib,
+    build_effective_simulation,
     detect_radar_transfer_metadata,
 )
 from radar_sim_sdk import Job, RadarSimApiError, RadarSimClient, SimulationSpec, UserRunConfig
@@ -124,6 +125,36 @@ def test_radar_transfer_metadata_prefers_first_acquisition_source(monkeypatch, t
         "radar_source": "RadarRL",
         "radar_mounting_position": "CRL",
     }
+
+
+def test_local_effective_simulation_uses_acquisition_source_before_orientation(
+    monkeypatch, tmp_path: Path
+):
+    """Local and Cluster runs must select the same source from an MF4."""
+
+    mf4 = tmp_path / "recording.MF4"
+    mf4.write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation.discover_radar_acquisition_sources",
+        lambda _path: ["RadarRL", "RadarRR"],
+    )
+    monkeypatch.setattr(
+        "core.simulation.detect_radar_orientation",
+        lambda _path: pytest.fail("orientation is only a fallback when acquisition metadata is absent"),
+    )
+
+    result = build_effective_simulation(
+        {"_meta": {"project": "anonymous", "_run_id": "run-1"}, "simulation": {}},
+        str(mf4),
+    )
+
+    assert result["source"] == "RadarRL"
+    assert result["mounting_position"] == "CRL"
+    assert result["radar_detection"]["method"] == "acquisition_source"
+    assert result["radar_detection"]["evidence"]["available_sources"] == [
+        "RadarRL",
+        "RadarRR",
+    ]
 
 
 def test_light_agent_mf4_reader_preserves_acquisition_group_order(tmp_path: Path):

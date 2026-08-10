@@ -58,6 +58,15 @@ class ResultUploadService:
         run_ref = self._validate_run_ref(run_ref)
         checksum = self._validate_checksum(archive_checksum)
         try:
+            existing = self._store.find_upload_session(
+                owner,
+                self._PROJECT,
+                evidence_ref=run_ref,
+                expected_size=int(archive_size),
+                expected_checksum=checksum,
+            )
+            if existing is not None:
+                return self._session_dict(existing)
             session = self._store.create_upload_session(
                 owner,
                 self._PROJECT,

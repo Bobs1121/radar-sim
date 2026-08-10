@@ -35,14 +35,14 @@
 | 用户环境 | 允许路径 |
 |---|---|
 | Windows 完全部署 | 本地编译；本地或 Cluster 仿真 |
-| Windows 轻量部署 | 本地编译、完整 Selena 目录所需内容/必要数据上传；只由 Cluster 仿真，不支持本地仿真 |
+| Windows 统一连接组件 | 按任务需要提供本地路径访问、本地编译、产物/数据点对点准备，以及本地仿真；用户不选择 light/full |
 | 完全不部署/无 Windows | 填写共享可达的已有 Selena 文件夹，或从 Web/SDK 选择并上传；由 Linux 服务直接触发 Cluster |
 
 内部登记后的 Selena 资产可以多用户可见和复用，但用户也可以始终以文件夹路径定位；Adapter/MatFilter 中央上传引用首版按用户隔离。所有对外 Job、Stage、Manifest 只返回逻辑引用，不返回物理路径、提交命令、密码或平台凭据。
 
 ### 1.1 当前实现边界
 
-当前仓库已经形成 v5 对外合同：`UserRunConfig 2.0`、`/api/v1`、Python SDK、统一 Job DAG、隔离 worktree、Runtime Bundle、数据/配置上传、Windows full 本地仿真、Linux Cluster Stage、Bearer 鉴权和 full/light 安装脚本均已实现。
+当前仓库已经形成 v5 对外合同：`UserRunConfig 2.0`、`/api/v1`、Python SDK、统一 Job DAG、隔离 worktree、数据/配置上传、Windows 本地仿真、Linux Cluster Stage 和统一 Windows 连接组件均已实现。连接组件内部仍兼容历史 full/light 节点类型，但不再作为用户可见的部署选择。
 
 发布限制只有三项：真实企业 Cluster 共享盘/manager 需在目标环境验收；真实 Selena build 被目标源码 `runtime.cpp(20) error C2382` 阻塞；当前版本只复用已登记 Runtime Bundle，不接受裸 `Selena.exe` 路径自动导入。Windows `full + linux` 使用同一中央入口选择 local/Cluster；`full + local` 是不带 Cluster executor 的离线本地模式。
 
@@ -73,8 +73,8 @@ radar-sim 通过统一的 Web 和 Python SDK/API，让用户使用一份可复�
 4. **编译来源与仿真目标解耦**：Selena 从哪里来，不决定仿真在哪里执行。
 5. **Cluster 不依赖用户电脑**：数据和 Selena 就绪后，Cluster 任务由 Linux 服务及平台自有 Gateway/Worker 完成。
 6. **Linux 不编译 Selena**：所有 Selena 编译只在具备编译能力的 Windows 节点执行。
-7. **轻量 Agent 首版不是仿真节点**：Windows 轻量 Agent 只执行授权工作区 Selena 本地编译、产物登记/校验/上传、必要数据检索/校验/上传，并把任务交还中央调度；它不支持本地仿真，也不得成为 Cluster 仿真运行期间依赖。
-8. **本地仿真只属于 Windows 完整部署**：需要本地仿真的用户必须安装 Windows full deployment；无部署用户只能使用 existing Selena + shared/uploaded data 进行 Cluster 仿真。
+7. **Windows 只安装一个统一连接组件**：组件按任务动态领取本地路径访问、本地编译、产物/数据准备和本地仿真阶段；用户不需要理解或选择 light/full。Cluster 运行阶段在数据和产物准备完成后交还中央调度，不依赖用户电脑持续在线。
+8. **本地仿真依赖本机能力而不是部署模式名称**：用户若选择本地仿真，统一连接组件只检查并提示本机已有的 Selena/运行环境；无 Windows 用户仍可使用 existing Selena + shared/uploaded data 进行 Cluster 仿真。
 9. **环境参数不进入用户配置**：工具路径、共享盘映射、Agent ID、队列、端口和密钥由平台管理。
 10. **用户不感知 Agent**：任务需要访问 Windows 本地路径、编译 Selena 或执行本地仿真时，Web 只提示“一键连接本机”并自动选择所需能力。用户不填写服务地址、Agent ID、部署模式或令牌；连接完成后原任务自动继续。
 11. **脚本识别不是项目白名单**：`code_path + selena_build_script` 能唯一推导工作区和构建输出时必须直接执行；可选 `package_build_script` 只补充依赖证据。内部项目适配只提供已知默认值，不能成为新代码仓的准入条件。
@@ -88,9 +88,9 @@ radar-sim 通过统一的 Web 和 Python SDK/API，让用户使用一份可复�
 
 | 用户情况 | 可用 Selena | 可用仿真目标 | 产品行为 |
 |---|---|---|---|
-| Windows full deployment，具备源码、编译和本地仿真环境 | 当前工作区、指定分支编译、已有产物 | 本地、Cluster | 可本地仿真；Cluster 仍需登记/上传产物和数据后由平台执行 |
-| Linux central + Windows 轻量 Agent，具备授权源码和编译环境 | 当前工作区、指定分支编译、已有产物 | Cluster | Agent 只做编译、产物登记/校验/上传和数据准备；后续 Cluster 仿真由中央执行 |
-| Windows full deployment，无编译能力但有本地仿真环境 | 已有产物 | 本地、Cluster | 禁止安排编译任务；本地仿真仅在 full deployment 内执行 |
+| Windows 已安装统一连接组件，具备源码、编译和本地仿真环境 | 当前工作区、指定分支编译、已有产物 | 本地、Cluster | 按任务选择本地仿真；Cluster 仍需登记/上传产物和数据后由平台执行 |
+| Linux central + Windows 统一连接组件，具备授权源码和编译环境 | 当前工作区、指定分支编译、已有产物 | 本地、Cluster | 连接组件按任务执行本地阶段；后续 Cluster 仿真由中央执行 |
+| Windows 已安装统一连接组件，无编译能力但有本地仿真环境 | 已有产物 | 本地、Cluster | 不安排编译任务；本地仿真只检查并使用用户已有环境 |
 | 无部署用户，或没有 Windows 源码/本地环境 | 已有产物 | Cluster | 只能使用 existing Selena + shared/uploaded data，无需安装客户端 |
 
 ### 3.1 核心场景 A：当前工作区修改后编译并仿真
@@ -102,7 +102,7 @@ radar-sim 通过统一的 Web 和 Python SDK/API，让用户使用一份可复�
 1. 检查工作区、分支、修改状态和编译环境；
 2. 编译当前真实工作区，包含未提交修改；
 3. 记录 branch、commit、dirty fingerprint、构建参数和产物校验值；
-4. Windows full 可将 Selena 产物交给本地仿真；Cluster 目标必须登记并上传至 Cluster 可访问位置后交由中央执行；
+4. Windows 连接组件可将 Selena 产物交给本地仿真；Cluster 目标必须登记并上传至 Cluster 可访问位置后交由中央执行；
 5. 持续展示编译、数据准备、仿真和归档进度。
 
 ### 3.2 核心场景 B：指定分支自动编译
@@ -135,7 +135,7 @@ radar-sim 通过统一的 Web 和 Python SDK/API，让用户使用一份可复�
 
 ### 4.1 Web
 
-Web 是统一服务能力的可视化入口，不拥有独立业务或调度逻辑。Windows 完整部署和 Linux 中央服务使用同一套页面与 API。
+Web 是统一服务能力的可视化入口，不拥有独立业务或调度逻辑。Windows 连接组件、本机运行模式和 Linux 中央服务使用同一套页面与 API。
 
 一级导航：
 
@@ -185,35 +185,34 @@ result = client.wait(job.id)
 
 部署形态是运行位置选择，不是另一套产品。
 
-### 5.1 Windows 完整部署
+### 5.1 Windows 连接组件与本机运行模式
 
-面向经常进行本地编译和仿真的 Windows 用户。一键安装以下组件：
+面向需要本地路径访问、编译或仿真的 Windows 用户。一键安装一个统一连接组件；本机是否承担调度和本地执行，由任务目标自动决定：
 
-- 本机 Web；
-- 本机 REST API 和统一调度器；
-- 本地执行节点；
+- 本机连接服务和本地执行节点；
 - 环境检查与修复组件；
-- 可选的 Cluster 接入组件。
+- 本地路径选择、数据/产物准备能力；
+- 本地仿真所需的任务执行适配能力。
 
 能力：
 
-- 断开 Linux 服务时仍可完成本地编译和本地仿真；
-- 配置 Cluster 后可提交 Cluster 任务；
-- SDK 只需把 `base_url` 指向本机服务；
-- 可选择连接中央 Linux 服务以共享产物和统一查看任务。
+- 任务选择本地目标时，可在本机完成编译和仿真；
+- 任务选择 Cluster 目标时，本机只准备本地文件和产物，完成后由 Linux 中央服务继续；
+- SDK 和 Web 不要求用户填写 Agent 地址、ID、令牌或内部部署模式；
+- 连接组件一次安装、开机启动、断线自动重连，同一用户的多个任务按 owner 和 workspace 隔离。
 
 ### 5.2 Linux 中央服务
 
 Linux 提供中央 Web、REST API、调度器、元数据、日志和结果索引。
 
 - 无 Windows 用户：无需安装任何组件，只能使用已有 Selena + shared/uploaded data 进行 Cluster 仿真；
-- 有 Windows 编译或本地数据能力的用户：一键安装轻量 Agent，提供授权工作区 Selena 本地编译、产物登记/校验/上传、路径选择和数据检索/校验/上传能力；
+- 有 Windows 编译、本地数据或本地仿真能力的用户：一键安装统一 Windows 连接组件；系统按任务需要提供授权路径访问、Selena 编译、产物/数据准备和本地仿真能力；
 - Linux 不执行 Selena 编译；
 - Cluster 仿真由 Linux 可直接执行的适配器或平台自有 Gateway/Worker 执行，不依赖用户 Agent 保持在线。
 
-### 5.3 Windows 轻量 Agent
+### 5.3 Windows 统一连接组件
 
-轻量 Agent 必须支持：
+统一连接组件必须支持：
 
 - 一键安装、一次注册、开机启动和原位升级；
 - 安装入口由当前 Linux Web 同源生成并自动绑定当前服务；普通用户下载后双击一次即可，断线和进程异常由后台监督自动重连；
@@ -227,7 +226,7 @@ Linux 提供中央 Web、REST API、调度器、元数据、日志和结果索�
 - 网络中断后可恢复日志和任务状态；
 - 卸载后不删除用户源码、数据和仿真结果。
 
-轻量 Agent 首版明确不支持本地仿真，不声明 `simulation.local` capability，也不得执行或维持 Cluster 仿真运行期。需要本地仿真的用户必须使用 Windows full deployment。
+连接组件是否执行 `simulation.local` 由任务目标和本机环境共同决定；它不得成为 Cluster 仿真运行期依赖。历史 `windows_full`/`windows_light` 仅保留为内部兼容标识，不出现在用户配置、安装向导或任务选择中。
 
 ## 6. 统一业务配置：SimulationSpec v1
 
@@ -384,28 +383,28 @@ Cluster 任务的数据和 Selena 就绪后，必须可从平台执行节点独�
 
 能力归属规则：
 
-| capability | Windows full | Windows 轻量 Agent 首版 | Linux central / platform Gateway |
-|---|---|---|---|
-| `build.selena` | 支持 | 仅限用户授权工作区/绑定 workspace | 不支持 |
-| `data.local.read` / `data.upload` | 支持 | 仅限用户授权目录并用于 Cluster staging | shared/browser/SDK upload 或平台 staging |
-| `artifact.register` / `artifact.validate` / `artifact.upload` | 支持；绑定同一构建节点和授权输出目录 | 支持；仅限同一 light Agent 构建节点和授权输出目录 | 只消费已形成的平台 `SelenaArtifact`，不替用户节点补登记 |
-| `simulation.local` | 支持 | 不支持 | 不支持 |
-| `simulation.cluster` / `cluster.gateway` | 可通过适配器或 Gateway 提交 | 不支持运行期；只交还中央调度 | 支持并承担 Cluster 运行期 |
+| capability | Windows 统一连接组件 | Linux central / platform Gateway |
+|---|---|---|
+| `build.selena` | 支持用户授权工作区；不修改用户当前工作区 | 不支持 |
+| `data.local.read` / `data.upload` | 支持用户确认目录，并按目标点对点准备 | shared/browser/SDK upload 或平台 staging |
+| `artifact.register` / `artifact.validate` / `artifact.upload` | 支持；绑定同一构建节点和授权输出目录 | 只消费已形成的平台 `SelenaArtifact`，不替用户节点补登记 |
+| `simulation.local` | 本机已有环境满足时支持 | 不支持 |
+| `simulation.cluster` / `cluster.gateway` | 只负责准备并交还中央调度，不承担 Cluster 运行期 | 支持并承担 Cluster 运行期 |
 
-light build-to-cluster 的 Stage -> capability -> node-kind 矩阵：
+统一连接组件参与本地阶段、中央节点负责 Cluster 运行期的 Stage -> capability -> node-kind 矩阵：
 
 | Stage | capability / 责任 | Cluster build-to-cluster node kind | local target node kind |
 |---|---|---|---|
-| `resolve_spec` | central scheduler 解析 `SimulationSpec`、策略和候选 | central scheduler | Windows full 内置 scheduler |
-| `environment_check` | 按阶段目标拆分检查；light Agent 只检查其 build/data staging 所需本机环境，Cluster 环境检查在 central/Gateway | central scheduler + `windows_agent` light build/data checks + `linux_executor`/`platform_gateway` Cluster checks | `windows_full` |
-| `prepare_source` | `source.workspace.read` / `source.git.worktree` | `windows_full` 或 `windows_agent` light | `windows_full` |
-| `build_selena` | `build.selena` | `windows_full` 或 `windows_agent` light | `windows_full` |
-| `register_artifact` | `artifact.register` + `artifact.validate` + `artifact.upload`，必须在同一构建节点和授权目录内完成；平台形成 `SelenaArtifact` 后解除对 Agent 在线依赖 | 构建节点为 `windows_full` 或 `windows_agent` light；完成后由 central catalog 持有 `SelenaArtifact` | `windows_full` |
-| `prepare_data` | `data.local.read` / `data.upload`；本地路径由 Windows 节点处理，shared/browser/SDK 路径由 central 处理 | 本地路径：`windows_full` 或 `windows_agent` light；shared/browser/SDK：central scheduler/upload service | `windows_full` |
-| `preflight` | 产物、数据和 Cluster 目标强校验 | `linux_executor` 或 `platform_gateway`；light Agent 不领取 | `windows_full` |
-| `run_simulation` | `simulation.cluster` / `cluster.gateway` 或 `simulation.local` | `linux_executor` 或 `platform_gateway`；light Agent 不领取 | `windows_full` only |
-| `collect_results` | `result.collect` | `linux_executor` 或 `platform_gateway`；light Agent 不领取 | `windows_full` |
-| `finalize_manifest` | central manifest finalization | central scheduler / `linux_executor` / `platform_gateway`；light Agent 不领取 | `windows_full` |
+| `resolve_spec` | central scheduler 解析 `SimulationSpec`、策略和候选 | central scheduler | `windows_agent` 本机执行 |
+| `environment_check` | 按阶段目标拆分检查；连接组件只检查本机阶段所需环境，Cluster 环境检查在 central/Gateway | central scheduler + `windows_agent` 本地阶段检查 + `linux_executor`/`platform_gateway` Cluster checks | `windows_agent` |
+| `prepare_source` | `source.workspace.read` / `source.git.worktree` | `windows_agent` | `windows_agent` |
+| `build_selena` | `build.selena` | `windows_agent` | `windows_agent` |
+| `register_artifact` | `artifact.register` + `artifact.validate` + `artifact.upload`，必须在同一构建节点和授权目录内完成；平台形成 `SelenaArtifact` 后解除对 Agent 在线依赖 | 构建节点为 `windows_agent`；完成后由 central catalog 持有 `SelenaArtifact` | `windows_agent` |
+| `prepare_data` | `data.local.read` / `data.upload`；本地路径由 Windows 节点处理，shared/browser/SDK 路径由 central 处理 | 本地路径：`windows_agent`；shared/browser/SDK：central scheduler/upload service | `windows_agent` |
+| `preflight` | 产物、数据和 Cluster 目标强校验 | `linux_executor` 或 `platform_gateway`；统一连接组件不领取 | `windows_agent` |
+| `run_simulation` | `simulation.cluster` / `cluster.gateway` 或 `simulation.local` | `linux_executor` 或 `platform_gateway`；统一连接组件不领取 Cluster 运行期 | `windows_agent` only |
+| `collect_results` | `result.collect` | `linux_executor` 或 `platform_gateway`；统一连接组件不领取 | `windows_agent` |
+| `finalize_manifest` | central manifest finalization | central scheduler / `linux_executor` / `platform_gateway`；统一连接组件不领取 | `windows_agent` |
 
 入口状态必须区分“用户缺配置”和“等待机器完成检查”。中央已有 logical workspace binding、但 Linux 无法读取 Windows fingerprint 时，Job 进入 `pending_node` 并等待匹配 Agent；只有没有 binding、或多个 binding 需要用户选择时才进入 `needs_input`。Agent 只向中央广告 binding ID/project/health，不上报绝对路径。build 成功后的绝对产物路径保存在 Agent-local lease 中，`register_artifact` 以 `build_stage:attempt + lease_id` 回到同一 Agent执行可续传上传；上传完成形成共享 `storage_ref` 后，Cluster 后续不再依赖用户电脑在线。
 
@@ -526,7 +525,7 @@ YAML 保持业务路径。内部位置、上传会话和共享映射只存在于
 
 ### 12.4 兼容性
 
-- Windows 完整部署与轻量 Agent 支持项目实际使用的 Windows 版本；
+- Windows 统一连接组件支持项目实际使用的 Windows 版本；
 - Linux 中央服务不得引入 Selena 编译依赖；
 - 首版 SDK 支持 Python 3.10+；
 - 用户 YAML 使用正斜杠或反斜杠均可，路径归一化由解析器处理。
@@ -544,10 +543,10 @@ P0 是可发布的最小一致产品，不要求重写所有历史模块，但�
 5. 编译来源与仿真目标的统一解析和 capability 路由；
 6. 当前 dirty 工作区构建必须进入构建，记录 branch、commit、dirty fingerprint 和前后 fingerprint；
 7. 指定分支自动编译必须使用隔离 worktree，移除 Web/API 自动流程中的 checkout、stash、reset、force；
-8. Windows 完整部署可离线完成本机 Web/API/scheduler/worker、当前工作区或分支编译、本地仿真；
+8. Windows 统一连接组件可在中央服务暂时不可达时，按已缓存能力完成本机阶段、当前工作区或分支编译、本地仿真；
 9. Linux 中央服务可在无 Windows 用户场景下使用已有 Selena + 共享/上传数据完成 Cluster 仿真；
 10. 旧 Cluster 接入若不能在 Linux 直接运行，必须路由到平台自有 Windows Gateway/Worker，不能退回依赖用户 Agent；
-11. 轻量 Windows Agent 一键安装/注册/启动，提供授权工作区 Selena 本地编译、产物登记/校验/上传、文件夹确认、数据检索/校验/上传能力，并在准备完成后交还中央调度；
+11. Windows 统一连接组件一键安装/注册/启动，提供授权工作区 Selena 本地编译、产物登记/校验/上传、文件夹确认、数据检索/校验/上传和本地仿真能力，并在 Cluster 准备完成后交还中央调度；
 12. 数据解析只要求用户提供路径；共享路径、Agent 本地路径、SDK 本地路径和浏览器文件夹上传都解析为内部 `DatasetRef`；
 13. 环境检查、自动处理、Preflight、结构化进度和最终 Manifest 接入真实执行链；
 14. 兼容现有 profile/config、CLI 和 legacy `/api/*`，但新能力只能进入 `SimulationSpec`、`/api/v1`、调度器和 Stage adapter。
@@ -568,7 +567,7 @@ P0 是可发布的最小一致产品，不要求重写所有历史模块，但�
 - 让浏览器绕过用户确认读取任意本地路径；
 - 为 Web、SDK、CLI 各维护一套调度规则；
 - 把 Agent、共享盘和工具链参数暴露为日常用户配置；
-- 让 Windows 轻量 Agent 在首版执行本地仿真，或成为 Cluster 仿真运行期间依赖；
+- 让 Windows 连接组件成为 Cluster 仿真运行期间依赖；
 - 首版同时发布多语言 SDK；
 - 为迁就历史文档继续扩展 Mode A/B 或 T1/T2/T3 分支流程。
 
@@ -580,9 +579,9 @@ P0 是可发布的最小一致产品，不要求重写所有历史模块，但�
 - Web 和 SDK 提交后得到相同的 Resolved Plan、状态和结果；
 - YAML 不包含机器、工具链、Cluster 和调度内部参数。
 
-### 14.2 Windows 完整部署
+### 14.2 Windows 统一连接组件
 
-- 一次安装后可离线打开本机 Web；
+- 一次安装后可持续连接中央 Web，并在服务短暂不可达时保持本地阶段可恢复；
 - 可选择当前 dirty 工作区完成 Selena 编译和本地仿真；
 - 可指定其他分支在隔离 worktree 编译；
 - 不修改用户当前分支和未提交文件；
@@ -595,12 +594,12 @@ P0 是可发布的最小一致产品，不要求重写所有历史模块，但�
 - 任务提交和运行不依赖用户电脑在线；
 - Linux 进程不会触发 Selena 编译。
 
-### 14.4 轻量 Agent
+### 14.4 Windows 连接组件
 
 - 用户通过一次操作完成安装、注册和启动；
 - 中央 Web 可请求用户确认本机文件夹；
-- Agent 能上报授权工作区编译、产物登记/校验/上传、数据读取/校验/上传能力；
-- Agent 不上报 `simulation.local`、`simulation.cluster`、`cluster.gateway` 或 Cluster run/collect/finalize 阶段能力，本地仿真和 Cluster 运行期请求不会路由到轻量 Agent；
+- 连接组件能上报授权工作区编译、产物登记/校验/上传、数据读取/校验/上传和本地仿真能力；
+- 连接组件可领取 `simulation.local`，但不领取 `simulation.cluster`、`cluster.gateway` 或 Cluster run/collect/finalize 阶段；
 - 编译产物和数据上传完成后，Cluster 仿真可在 Agent 离线情况下继续；
 - 本地数据 E2E 必须证明：授权本地路径 -> Agent 检索/校验/上传 -> 生成 `DatasetRef` -> 中央 Cluster 使用该 `DatasetRef` -> Agent 离线仍能完成；
 - Agent 断线重连后其负责的准备阶段状态和日志不丢失。
@@ -618,11 +617,11 @@ P0 是可发布的最小一致产品，不要求重写所有历史模块，但�
 |---|---|
 | 用户入口 | Web + Python SDK/API |
 | 调度位置 | 当前部署中的统一后端调度器 |
-| 部署 | Windows 完整部署；Linux 中央服务 + 可选轻量 Agent |
+| 部署 | Windows 一键统一连接组件；Linux 中央服务可独立运行 |
 | Linux 编译 Selena | 不支持 |
 | 无 Windows 用户 | 已有 Selena + Cluster |
 | Cluster 依赖旧 Windows 工具 | 使用平台自有 Gateway/Worker |
-| 轻量 Agent 首版边界 | 只做授权编译、产物/数据校验上传和交还中央调度；不做本地仿真，不承担 Cluster 运行期 |
+| Windows 连接组件边界 | 按任务执行授权本地阶段（路径访问、编译、数据/产物准备、本地仿真）；不承担 Cluster 运行期，准备完成后交还中央调度 |
 | 数据来源选择 | 用户只提供路径，系统自动解析和准备 |
 | 配置合同 | SimulationSpec YAML，Web/SDK 共用 |
 | 分支自动编译 | 隔离 worktree，不修改用户工作区 |

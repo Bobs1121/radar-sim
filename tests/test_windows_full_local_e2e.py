@@ -66,7 +66,8 @@ def test_windows_full_local_preflight_run_collect_finalize_path_free(tmp_path, m
     adapter.write_text("adapter", encoding="utf-8")
     mat_filter.write_text("filter", encoding="utf-8")
     template.write_text("input={{INPUT_MF4}}\noutput={{OUTPUT_MF4}}\n", encoding="utf-8")
-    AgentAssetBindingStore().register(assets_root)
+    # First-use auto configuration: a unified Agent may receive the
+    # MatFilter/Adapter directory only through the run YAML.
     base_config = {
         "_meta": {"project": "demo"},
         "project": {"name": "demo"},
@@ -94,6 +95,7 @@ def test_windows_full_local_preflight_run_collect_finalize_path_free(tmp_path, m
     preflight = _execute_v5_local_preflight(
         {"task_id": "preflight-stage", "job_id": "job-local", "payload": payload}
     )
+    assert AgentAssetBindingStore().list()
     lease_ref = preflight["local_run_lease_ref"]
     assert preflight["preflight"]["ok"] is True
 
@@ -118,6 +120,30 @@ def test_windows_full_local_preflight_run_collect_finalize_path_free(tmp_path, m
         "job_id": "job-local",
     }
     collected = _execute_v5_local_collect({"payload": successor})
+    # Collection is resumable: a retry after an upload/network interruption
+    # must reuse the immutable local archive instead of conflicting on the
+    # newly computed retention timestamp.
+    collected_again = _execute_v5_local_collect({"payload": successor})
+    assert collected_again["result_ref"] == collected["result_ref"]
+
+    class TransportError(RuntimeError):
+        pass
+
+    class FlakyResultClient:
+        _api_url = "http://control-plane"
+        attempts = 0
+
+        def upload_result_archive(self, *args, **kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise TransportError("temporary connection reset")
+            return {"result": {"ref": collected["result_ref"]}}
+
+    monkeypatch.setattr("cli.agent.time.sleep", lambda _seconds: None)
+    uploaded = _execute_v5_local_collect(
+        {"payload": successor}, client=FlakyResultClient()
+    )
+    assert uploaded["result_ref"] == collected["result_ref"]
     successor["result_ref"] = collected["result_ref"]
     finalized = _execute_v5_local_finalize({"job_id": "job-local", "payload": successor})
     manifest = finalized["manifest"]

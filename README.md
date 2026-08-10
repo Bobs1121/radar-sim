@@ -14,7 +14,7 @@ radar-sim v5 的产品入口是 **Web** 和 **Python SDK / versioned REST API**�
 
 当前统一入口已经收敛为 `Web / Python SDK -> Linux serve-v1 -> Stage 调度 -> Windows 本机或 Cluster`。Windows 执行组件属于平台内部实现：用户只在任务提示时点击“一键连接本机”，不填写服务地址、节点 ID、部署模式或令牌。
 
-发布边界：Linux 永不编译 Selena 或执行本地仿真；light 只编译并从源端直传后交给 Cluster；full 才能本地仿真；没有 Windows 时填写 Cluster 可访问的已有 Selena 文件夹，或在文件所在 Linux 设备运行 SDK 直传后由中央 Linux 调度 Cluster。用户不选择 Runtime Bundle；系统从目录校验 `Selena.exe + 同目录 DLL + Runtime XML` 并在内部登记。真实企业 Cluster 共享盘/manager 仍需在目标环境最终验收。
+发布边界：Linux 永不编译 Selena 或执行本地仿真；Windows 用户只安装一个统一连接组件，系统按任务自动决定本机编译、本地仿真或源端直传，随后由 Linux 调度 Cluster；没有 Windows 时填写 Cluster 可访问的已有 Selena 文件夹，或在文件所在 Linux 设备运行 SDK 直传后由中央 Linux 调度 Cluster。用户不选择 Runtime Bundle；系统从目录校验 `Selena.exe + 同目录 DLL + Runtime XML` 并在内部登记。真实企业 Cluster 共享盘/manager 仍需在目标环境最终验收。
 
 OD25 发布用户请直接使用 [`docs/OD25_USER_GUIDE.md`](docs/OD25_USER_GUIDE.md)，其中包含可导入 Web 的两份 YAML、Windows 一键连接、Linux 后端 SDK 调用和当前验收边界。
 
@@ -62,7 +62,7 @@ bash scripts/linux_deploy.sh status
 bash scripts/linux_deploy.sh test
 ```
 
-Linux 发布启动统一 `serve-v1`（默认 8878），同时提供 Web、API/SDK、Windows 执行接口和 Cluster 调度。当前 Sprint 按产品决定在可信内网关闭登录；下一 Sprint 恢复认证时，一键连接必须先增加短期设备配对。无 Windows 用户直接填写 Cluster 可访问的已有 Selena 文件夹、Runtime、数据和配置文件。
+Linux 发布启动统一 `serve-v1`（脚本默认 8878，部署方可配置；当前验收服务器为 `10.190.171.44:8877`），同时提供 Web、API/SDK、Windows 执行接口和 Cluster 调度。当前 Sprint 按产品决定在可信内网关闭登录；下一 Sprint 恢复认证时，一键连接必须先增加短期设备配对。无 Windows 用户直接填写 Cluster 可访问的已有 Selena 文件夹、Runtime、数据和配置文件。
 
 ### 开发安装
 
@@ -121,7 +121,7 @@ rsim --project ovrs25 ask "FCTA 为什么没有激活？"
 
 ### 控制平面（legacy/历史兼容双模式）
 
-控制平面把"调度入口"和"执行"解耦。下面的 Mode A/Mode B 仅描述当前 legacy CLI/control-plane 兼容用法，不是 v5 当前产品模式；v5 产品部署以 Windows full 和 Linux central + optional light Agent 为准。
+控制平面把"调度入口"和"执行"解耦。下面的 Mode A/Mode B 仅描述当前 legacy CLI/control-plane 兼容用法，不是 v5 当前产品模式；v5 产品部署以 Windows 统一连接组件和 Linux central 为准，旧 light/full 只保留为内部兼容节点类型。
 
 - **legacy Mode A（Linux cluster-only）**：server 用 `--allowed-task-types cluster.run` 启动，拒绝 local task；agent 默认只认领 cluster.run。Windows 端无需繁重依赖。
 - **legacy Mode B（Windows 本机仓）**：server 不带白名单（全允许），agent 显式 `--capability local.*` 启用本机编译/仿真。`rsim web` 内置 server+agent，单机一条命令即用。

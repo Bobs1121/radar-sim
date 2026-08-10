@@ -1,4 +1,6 @@
-# 模式 A 快速开始：Linux 服务 + Windows 接入 cluster 仿真
+# 模式 A 快速开始：Linux 服务 + Windows 接入 Cluster 仿真（历史兼容说明）
+
+> **当前发布版本不要按本页的 legacy `rsim server serve`、`rsim agent` 或模式 A/B 步骤安装。** 请使用 [`docs/release-deployment.md`](release-deployment.md)、[`docs/windows-one-click-connector.md`](windows-one-click-connector.md) 和项目根目录的 `README.md`：当前只有一个 Web/SDK 入口和一个统一 Windows 连接组件，Linux 统一运行 `serve-v1`。
 
 > 适用场景：Linux 上提供仿真服务（前端页面 + 后端接口），Windows 用户**无需安装 MATLAB/Qt/Boost/VS**，通过集群完成数据仿真。Selena 用集群共享路径上的预置包（`source: path`），或本机编译的（`source: build`）。
 >
