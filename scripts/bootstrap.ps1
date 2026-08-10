@@ -220,7 +220,7 @@ if (-not $AgentId) {
     $AgentId = if ($existing.agent_id) { [string]$existing.agent_id } else { "agent-$env:USERNAME-$env:COMPUTERNAME" }
 }
 if (-not $ControlPlane) {
-    if ($Mode -eq "light") { $ControlPlane = "linux" }
+    if ($RequestedMode -in @("unified", "light")) { $ControlPlane = "linux" }
     elseif ($existing.control_plane) { $ControlPlane = [string]$existing.control_plane }
     else { $ControlPlane = "local" }
 }
@@ -266,7 +266,10 @@ if ($UseLocalControl) {
 
 $installConfig = [ordered]@{
     version = 2
-    mode = $Mode
+    # Persist the public value.  start_windows.ps1 and cli.agent accept
+    # ``unified`` and map it to the internal full execution policy.
+    mode = $RequestedMode
+    internal_mode = $Mode
     control_plane = $ControlPlane
     server_url = $ServerUrl.TrimEnd('/')
     agent_id = $AgentId

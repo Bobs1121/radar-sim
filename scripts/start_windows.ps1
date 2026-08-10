@@ -1,4 +1,4 @@
-<# Start a persisted radar-sim Windows full/light deployment. #>
+<# Start a persisted radar-sim Windows connector (legacy full/light compatible). #>
 [CmdletBinding()]
 param(
     [string]$InstallRoot = "",
@@ -16,7 +16,7 @@ if (-not $InstallRoot) {
 $configPath = Join-Path $InstallRoot "install.json"
 $secretsPath = Join-Path $InstallRoot "credentials.json"
 if (-not (Test-Path $configPath)) {
-    throw "Not installed. Run .\scripts\bootstrap.ps1 -Mode full|light first."
+    throw "Not installed. Run .\scripts\bootstrap.ps1 once to connect this PC."
 }
 $config = Get-Content -Raw -Encoding UTF8 $configPath | ConvertFrom-Json
 $secrets = if (Test-Path $secretsPath) {
@@ -39,6 +39,7 @@ $bypass = @($env:NO_PROXY -split ',' | ForEach-Object { $_.Trim() } | Where-Obje
 if ($bypass -notcontains $serverHost) { $bypass += $serverHost }
 $env:NO_PROXY = ($bypass -join ',')
 $env:no_proxy = $env:NO_PROXY
+$unifiedMode = [string]$config.mode -in @("unified", "full")
 $controlPlane = if ($config.control_plane) { [string]$config.control_plane }
     elseif ([string]$config.mode -eq "full") { "local" } else { "linux" }
 if ([string]$config.mode -eq "light" -and $controlPlane -ne "linux") {
@@ -53,7 +54,7 @@ function Quote-ProcessArgument([string]$value) {
     return '"' + $value.Replace('"', '\"') + '"'
 }
 
-if ([string]$config.mode -eq "full" -and $controlPlane -eq "local") {
+if ($unifiedMode -and $controlPlane -eq "local") {
     $uri = [Uri]$serverUrl
     if (-not $uri.IsLoopback) { throw "Full local control plane requires a loopback ServerUrl." }
     $serverArgs = @(
@@ -64,7 +65,7 @@ if ([string]$config.mode -eq "full" -and $controlPlane -eq "local") {
     try {
         Invoke-RestMethod -Method Get -Uri "$serverUrl/api/v1/health" -TimeoutSec 2 | Out-Null
         $ready = $true
-        Write-Host "Full Web/API is already running: $serverUrl/" -ForegroundColor Green
+        Write-Host "Local Web/API is already running: $serverUrl/" -ForegroundColor Green
     } catch { }
     if (-not $ready) {
         $serverArgumentLine = ($serverArgs | ForEach-Object { Quote-ProcessArgument ([string]$_) }) -join ' '
@@ -79,7 +80,7 @@ if ([string]$config.mode -eq "full" -and $controlPlane -eq "local") {
         } catch { Start-Sleep -Milliseconds 500 }
     }
     if (-not $ready) { throw "Local serve-v1 failed to start." }
-    if ($server) { Write-Host "Full Web/API started: $serverUrl/ (PID $($server.Id))." -ForegroundColor Green }
+    if ($server) { Write-Host "Local Web/API started: $serverUrl/ (PID $($server.Id))." -ForegroundColor Green }
     if (-not $NoBrowser) { Start-Process "$serverUrl/" }
 } else {
     $controlPlaneHealthy = $false
@@ -93,9 +94,9 @@ if ([string]$config.mode -eq "full" -and $controlPlane -eq "local") {
         Write-Warning "Linux control plane is temporarily unavailable: $serverUrl. The supervisor will keep retrying."
     }
     if ($controlPlaneHealthy) {
-        Write-Host "$($config.mode) Agent will use Linux control plane: $serverUrl/" -ForegroundColor Green
+        Write-Host "Windows connector will use Linux control plane: $serverUrl/" -ForegroundColor Green
     } else {
-        Write-Host "$($config.mode) Agent is starting in reconnect mode for Linux control plane: $serverUrl/" -ForegroundColor Yellow
+        Write-Host "Windows connector is starting in reconnect mode for Linux control plane: $serverUrl/" -ForegroundColor Yellow
     }
     if (-not $NoBrowser -and $controlPlaneHealthy) { Start-Process "$serverUrl/" }
 }
@@ -181,6 +182,6 @@ if ($Supervise) {
     }
 }
 
-Write-Host "$($config.mode) Agent is running; press Ctrl+C to stop." -ForegroundColor Cyan
+Write-Host "Windows connector is running; press Ctrl+C to stop." -ForegroundColor Cyan
 & $venvPy @agentArgs
 exit $LASTEXITCODE

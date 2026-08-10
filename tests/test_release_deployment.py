@@ -74,7 +74,7 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "authentication_required" in bootstrap
     assert "no token is stored" in bootstrap
     assert "radar_sim_source.pth" in bootstrap
-    assert "no pip or package-index access is required" in bootstrap
+    assert "Do not install the historical full/AI extras" in bootstrap
     assert "small control dependencies" in bootstrap
     assert 'pip install --quiet "PyYAML>=6.0"' in bootstrap
     assert "RegisterStartup" in bootstrap
