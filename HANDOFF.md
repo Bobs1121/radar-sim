@@ -2375,3 +2375,13 @@ Linux 控制面只保存数据集逻辑引用，不会从历史 Job 反查或复
 - Windows Connector 已重建并由下载接口提供：`8,342,315` bytes，SHA-256 `sha256:df961485ba218fbf77e89878a5abc488aaf83045290a47a58774dbf75fbeeb9f`。包中已包含部分成功的逐输入诊断和 Manifest 归档逻辑。
 - 发布后使用一个未配对 owner 查询能力，Cluster 仍为 `available=true`，Windows 能力按 owner 返回 `false`；没有把其他用户的 Agent 能力错误暴露给新用户。
 - 部署后先用离线/单元混合批次验收，再在获得 `0014.mf4` 完整路径后执行真实单条任务；不得使用猜测路径污染用户任务历史。
+
+### 真实单条 `0014` 黑盒验证
+
+从历史 `job_633162f59b32` 的输出 stem 推导并提交了只包含 `Vehicle_FR5CP_20260805_102529_0014.MF4` 的单文件配置（已有 Selena、同一 Runtime/MatFilter/Adapter、`target=local`，不编译）。任务为 `job_21f8bc592294`：
+
+- `resolve_spec`、`environment_check`、`prepare_data`、`preflight`、`run_simulation`、`collect_results`、`finalize_manifest` 全部 `succeeded`；`prepare_source/build_selena/register_artifact` 按已有 Selena 设计 `skipped`。
+- Selena 本地执行返回成功，最终 Job `status=succeeded`、`progress=1.0`；Manifest `status=succeeded`，输出 1 个 MF4：`outputs/0001-Vehicle_FR5CP_20260805_102529_0014--out.MF4`，大小 `696,314,968` bytes。
+- `result_ref=result:sha256:6ad9e78f392710f43d56c2bc1bd5e3a5db6b29839459bf61383bb7fb5c068af5`；Web API 与 Python SDK 分别读取 Diagnosis/Manifest 均返回 `job_succeeded`、`artifacts_available=true`。
+
+这次验证同时证明：数据路径、已有 Selena、Runtime、MatFilter、Adapter 由 Agent 侧接入，Linux 只编排 Stage；用户确认可成功的单条输入可以独立跑通。由于原历史事件不公开原始文件列表，提交前的文件名是由输出 stem 推导的；后续不要把这种推导替代 Web 文件选择器或用户提供的完整路径。
