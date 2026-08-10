@@ -16,7 +16,7 @@ Web、Python SDK、未来 Skill/MCP 只使用同一套 `/api/v1`，不得复制�
 8. `list_results()` / `get_result()` / `download_result()` 获取并校验结果。
 
 当任务需要读取 Windows 本地路径或执行 Windows 编译/本地仿真时，SDK 集成方可先调用
-`RadarSimClient.download_windows_connector(destination, mode="light"|"full")` 下载同源的一键连接入口，
+`RadarSimClient.download_windows_connector(destination)` 下载同源的一键连接入口（内部兼容参数固定为 `unified`），
 并由实际的 Windows 用户执行一次。该方法不在 Linux 上执行 PowerShell，也不把 Agent Token 写入 YAML；
 安装后的连接由 Windows 登录自启和监督进程持久复用。若电脑关机、睡眠或尚未登录，SDK/Web 只能等待连接恢复，
 不能远程唤醒电源。`existing + cluster` 且输入已在 Cluster 可访问位置时不需要调用此方法。
@@ -33,7 +33,7 @@ Web 与 SDK 的差别只在源端执行者：浏览器不能从路径文本读�
 
 远程 Linux SDK 调用机通过请求内、非 YAML 的 `client_transfer_roles` 告知控制面哪些输入由该进程可读；该提示只决定签发哪些 owner/Job-bound TransferPlan，不携带路径正文、目标路径或凭据。独立挂载的共享/Cluster 文件系统仍按零复制处理。
 
-本地仿真中，本机可达输入原地使用；远端输入不可原地读取时可由源端直达 Windows full。Cluster 仿真中，共享输入原地引用，本地输入直达 Cluster。两类数据流都不经过 Linux 控制面。完整产品合同见 `docs/PRODUCT_CONTRACT.md`，实施合同见 `docs/CONTROL_DATA_PLANE_PLAN.md`。
+本地仿真中，本机可达输入原地使用；远端输入不可原地读取时可由源端直达统一 Windows Connector。Cluster 仿真中，共享输入原地引用，本地输入直达 Cluster。两类数据流都不经过 Linux 控制面。完整产品合同见 `docs/PRODUCT_CONTRACT.md`，实施合同见 `docs/CONTROL_DATA_PLANE_PLAN.md`。
 
 ## Diagnosis 契约
 
