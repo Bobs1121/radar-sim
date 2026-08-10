@@ -412,6 +412,34 @@ def test_diagnosis_classifies_agent_selena_failure_as_simulation(tmp_path):
     assert diagnosis["action"]["type"] == "retry_stage"
 
 
+def test_diagnosis_recovers_selena_code_from_historical_stage_event(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    job = control.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "run_simulation", "stage_type": "run_simulation"}],
+    )
+    control.register_agent("windows", agent_id="windows", capabilities=["*"])
+    stage = control.claim_next_task("windows")
+    control.submit_task_result(
+        stage["stage_id"],
+        agent_id="windows",
+        status="failed",
+        returncode=1,
+        result={"summary": {"error_code": "selena_failed"}},
+    )
+    with sqlite3.connect(tmp_path / "control.db") as conn:
+        conn.execute("UPDATE tasks SET error_json='{}' WHERE task_id=?", (stage["stage_id"],))
+        conn.commit()
+
+    diagnosis = api.diagnosis("alice", job["job_id"])
+
+    assert diagnosis["code"] == "simulation_failed"
+    assert diagnosis["category"] == "simulation"
+    assert diagnosis["evidence"]["failed_stage"]["source_code"] == "selena_failed"
+
+
 def project_catalog(project: str = "bydod25") -> ProjectCatalog:
     return ProjectCatalog(
         project=project,

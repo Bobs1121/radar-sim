@@ -1502,6 +1502,16 @@ class ApiV1Service:
             or (problem_stage or {}).get("task_id")
             or ""
         )
+        if not source_code and stage_id:
+            # Older Agent versions recorded the structured failure only in the
+            # immutable stage.failed event.  Recover its stable code for
+            # diagnosis without exposing the historical result body or
+            # changing the audit record in-place.
+            source_code = _historical_stage_failure_code(
+                self._control(owner),
+                str(job["job_id"]),
+                stage_id,
+            )
 
         warnings: list[str] = []
         manifest_failed = manifest_status == "failed"
@@ -3027,6 +3037,32 @@ def _safe_diagnostic_code(value: Any) -> str:
         return ""
     if all(char.isalnum() or char in "._-" for char in code):
         return code
+    return ""
+
+
+def _historical_stage_failure_code(control: Any, job_id: str, stage_id: str) -> str:
+    """Recover a path-free failure code from an older stage event, if present."""
+    try:
+        page = control.list_events(job_id, since=0, limit=1000, tail=False)
+    except Exception:
+        return ""
+    events = page.get("events") if isinstance(page, dict) else []
+    for event in reversed(events if isinstance(events, list) else []):
+        if str(event.get("type") or event.get("event") or "") != "stage.failed":
+            continue
+        if str(event.get("stage_id") or "") != str(stage_id):
+            continue
+        detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+        result = detail.get("result") if isinstance(detail.get("result"), dict) else {}
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        for candidate in (
+            summary.get("error_code"),
+            result.get("code"),
+            event.get("code"),
+        ):
+            code = _safe_diagnostic_code(candidate)
+            if code:
+                return code
     return ""
 
 
