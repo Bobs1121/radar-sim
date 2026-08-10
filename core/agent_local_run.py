@@ -68,6 +68,7 @@ class LocalRunOutcome:
 
     exit_code: int
     error_code: str = ""
+    diagnostics: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int):
@@ -76,6 +77,18 @@ class LocalRunOutcome:
         if code and not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code):
             raise AgentLocalRunError("local runner returned an invalid error code")
         object.__setattr__(self, "error_code", code)
+        raw_diagnostics = self.diagnostics
+        if isinstance(raw_diagnostics, str):
+            raw_diagnostics = (raw_diagnostics,)
+        try:
+            normalized = tuple(
+                str(line).replace("\x00", "")[:2000]
+                for line in (raw_diagnostics or ())
+                if str(line).strip()
+            )[-200:]
+        except TypeError as exc:
+            raise AgentLocalRunError("local runner returned invalid diagnostics") from exc
+        object.__setattr__(self, "diagnostics", normalized)
 
 
 class LocalSimulationRunner(Protocol):
@@ -118,11 +131,24 @@ class AgentLocalRunLeaseStore:
                     outputs_json TEXT NOT NULL DEFAULT '[]',
                     error_count INTEGER NOT NULL DEFAULT 0,
                     error_code TEXT NOT NULL DEFAULT '',
+                    diagnostics_json TEXT NOT NULL DEFAULT '{}',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
                 """
             )
+            columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(agent_local_runs)")
+            }
+            if "diagnostics_json" not in columns:
+                # Existing Windows installations keep this database across
+                # Agent upgrades.  Add diagnostics without invalidating old
+                # leases or requiring a destructive migration.
+                conn.execute(
+                    "ALTER TABLE agent_local_runs ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '{}'"
+                )
+                conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=10)
@@ -262,6 +288,7 @@ class AgentLocalRunLeaseStore:
             "outputs": json.loads(row["outputs_json"]),
             "error_count": int(row["error_count"]),
             "error_code": str(row["error_code"]),
+            "diagnostics": json.loads(row["diagnostics_json"] or "{}"),
         }
 
     def mark_running(self, lease_id: str) -> dict[str, Any]:
@@ -278,6 +305,7 @@ class AgentLocalRunLeaseStore:
         outputs: list[dict[str, Any]],
         error_count: int,
         error_code: str = "",
+        diagnostics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if status not in _TERMINAL:
             raise AgentLocalRunError("local run terminal status is invalid")
@@ -287,6 +315,7 @@ class AgentLocalRunLeaseStore:
             outputs=outputs,
             error_count=max(0, int(error_count)),
             error_code=_safe_error_code(error_code),
+            diagnostics=diagnostics,
         )
 
     def result(self, lease_id: str) -> dict[str, Any]:
@@ -305,12 +334,19 @@ class AgentLocalRunLeaseStore:
             "error_count": private["error_count"],
             "error_code": private["error_code"],
         }
+        diagnostics = dict(private.get("diagnostics") or {})
+        if private["status"] == "failed":
+            items = diagnostics.get("items") if isinstance(diagnostics.get("items"), list) else []
+            summary["failed_input_count"] = sum(
+                1 for item in items if str(item.get("status") or "") == "failed"
+            )
         payload = {"lease_id": lease_id, "status": private["status"], "files": files, "summary": summary}
         return {
             "result_ref": "result:sha256:" + _json_digest(payload),
             "status": private["status"],
             "files": files,
             "summary": summary,
+            "diagnostics": diagnostics,
         }
 
     def _row(self, lease_id: str) -> sqlite3.Row:
@@ -330,6 +366,7 @@ class AgentLocalRunLeaseStore:
         outputs: list[dict[str, Any]] | None = None,
         error_count: int | None = None,
         error_code: str | None = None,
+        diagnostics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._row(lease_id)
         now = float(self._now_fn())
@@ -337,12 +374,15 @@ class AgentLocalRunLeaseStore:
             conn.execute(
                 """
                 UPDATE agent_local_runs SET status=?,outputs_json=COALESCE(?,outputs_json),
-                    error_count=COALESCE(?,error_count),error_code=COALESCE(?,error_code),updated_at=?
+                    error_count=COALESCE(?,error_count),error_code=COALESCE(?,error_code),
+                    diagnostics_json=COALESCE(?,diagnostics_json),updated_at=?
                 WHERE lease_id=?
                 """,
                 (
                     status, _json(outputs) if outputs is not None else None,
-                    error_count, error_code, now, lease_id,
+                    error_count, error_code,
+                    _json(diagnostics) if diagnostics is not None else None,
+                    now, lease_id,
                 ),
             )
             conn.commit()
@@ -384,14 +424,18 @@ def execute_local_run(
     outputs: list[dict[str, Any]] = []
     failures = 0
     terminal_error = ""
+    execution_items: list[dict[str, Any]] = []
+    engine_log_tail: list[str] = []
 
     for index, item in enumerate(lease["inputs"], start=1):
         if cancel():
             store.finish(
                 lease_id, status="cancelled", outputs=outputs,
                 error_count=failures, error_code="cancelled",
+                diagnostics={"items": execution_items, "engine_log_tail": _bounded_lines(engine_log_tail)},
             )
             return 130
+        output_relative = str(item.get("output_relative_path") or "")
         try:
             output_relative = _safe_output_relative(item["output_relative_path"])
             output = _safe_child(lease["run_root"], *PurePosixPath(output_relative).parts)
@@ -427,28 +471,75 @@ def execute_local_run(
                 store.finish(
                     lease_id, status="cancelled", outputs=outputs,
                     error_count=failures, error_code="cancelled",
+                    diagnostics={"items": execution_items, "engine_log_tail": _bounded_lines(engine_log_tail)},
                 )
                 return 130
             if outcome.exit_code == 0:
                 _sha256_regular_file(output)
                 outputs.append({"relative_path": output_relative})
+                execution_items.append(
+                    {
+                        "index": index,
+                        "input_relative_path": _relative_input_path(item),
+                        "output_relative_path": output_relative,
+                        "status": "succeeded",
+                        "returncode": int(outcome.exit_code),
+                    }
+                )
             else:
                 failures += 1
                 terminal_error = outcome.error_code or "runner_failed"
+                item_detail = {
+                    "index": index,
+                    "input_relative_path": _relative_input_path(item),
+                    "output_relative_path": output_relative,
+                    "status": "failed",
+                    "returncode": int(outcome.exit_code),
+                    "error_code": terminal_error,
+                }
+                diagnostics = _redact_runner_diagnostics(outcome.diagnostics, request)
+                if diagnostics:
+                    item_detail["engine_log_tail"] = diagnostics
+                    engine_log_tail.extend(diagnostics)
+                execution_items.append(item_detail)
         except LocalRunnerUnavailable:
             failures += 1
             terminal_error = "runner_unavailable"
+            execution_items.append(
+                {
+                    "index": index,
+                    "input_relative_path": _relative_input_path(item),
+                    "output_relative_path": output_relative,
+                    "status": "failed",
+                    "returncode": 1,
+                    "error_code": terminal_error,
+                }
+            )
             break
         except Exception:
             # Runner exceptions are untrusted implementation details and may
             # include local paths.  Persist only a stable public error code.
             failures += 1
             terminal_error = "runner_contract_failed"
+            execution_items.append(
+                {
+                    "index": index,
+                    "input_relative_path": _relative_input_path(item),
+                    "output_relative_path": output_relative,
+                    "status": "failed",
+                    "returncode": 1,
+                    "error_code": terminal_error,
+                }
+            )
 
     status = "succeeded" if failures == 0 and len(outputs) == len(lease["inputs"]) else "failed"
+    diagnostics_payload: dict[str, Any] = {"items": execution_items}
+    if engine_log_tail:
+        diagnostics_payload["engine_log_tail"] = _bounded_lines(engine_log_tail)
     store.finish(
         lease_id, status=status, outputs=outputs,
         error_count=failures, error_code=terminal_error,
+        diagnostics=diagnostics_payload,
     )
     return 0 if status == "succeeded" else 1
 
@@ -456,6 +547,61 @@ def execute_local_run(
 def _runner_unavailable(request: LocalRunRequest, cancel_requested: Callable[[], bool]) -> LocalRunOutcome:
     del request, cancel_requested
     raise LocalRunnerUnavailable("native local Selena runner is not connected")
+
+
+def _relative_input_path(item: Mapping[str, Any]) -> str:
+    """Return one validated logical input name for public diagnostics."""
+    value = str(item.get("relative_path") or "").replace("\\", "/").strip()
+    if not value or value.startswith("/") or ".." in PurePosixPath(value).parts:
+        return "<input>"
+    return value[:512]
+
+
+def _bounded_lines(lines: list[str] | tuple[str, ...], *, limit: int = 200, chars: int = 16000) -> list[str]:
+    """Keep engine diagnostics useful without allowing a log storm."""
+    selected = [str(line).replace("\x00", "")[:2000] for line in lines if str(line).strip()]
+    selected = selected[-max(1, int(limit)):]
+    total = 0
+    result: list[str] = []
+    for line in reversed(selected):
+        if total + len(line) > max(1000, int(chars)) and result:
+            break
+        result.append(line)
+        total += len(line)
+    return list(reversed(result))
+
+
+def _redact_runner_diagnostics(
+    lines: tuple[str, ...] | list[str], request: LocalRunRequest,
+) -> list[str]:
+    """Remove Agent-local physical paths before diagnostics reach Linux."""
+    replacements: list[str] = []
+    values = [
+        request.input_mf4,
+        request.output_mf4,
+        request.executable,
+        request.runtime_xml,
+        request.adapter_file,
+        request.mat_filter,
+        request.working_directory,
+    ]
+    controlled_work = str((request.config.get("_local_run") or {}).get("controlled_work_directory") or "").strip()
+    if controlled_work:
+        values.append(Path(controlled_work))
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            replacements.extend((text, text.replace("\\", "/"), text.replace("/", "\\")))
+    sanitized: list[str] = []
+    drive_path = re.compile(r"(?i)(?:[a-z]:[\\/]|\\\\)[^\s\"'<>]+")
+    for raw in lines or ():
+        line = str(raw).replace("\x00", "")
+        for value in sorted(set(replacements), key=len, reverse=True):
+            line = line.replace(value, "<local-path>")
+        line = drive_path.sub("<local-path>", line)
+        if line.strip():
+            sanitized.append(line[:2000])
+    return _bounded_lines(sanitized)
 
 
 def _private_config(

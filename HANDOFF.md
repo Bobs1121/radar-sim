@@ -2310,3 +2310,34 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 - wheelhouse 总大小约 `7.8 MB`；不会把实际仿真环境打进 Agent。
 - Connector ZIP 已改为固定时间戳和文件属性生成；相同源码/轮子重复构建得到相同 hash，不再因工作区文件 mtime 变化而产生无意义的下载校验差异。
 - 新包已同步 Linux 并通过下载接口校验：`8294770` bytes，SHA-256 `sha256:3641299cf7ac4071abb949b68f580a061876cfc5885583f480669c995ebff4dd`。此前 `b24c...` 的 source-only 包已被替换。
+
+## 0.0.9 Selena 内部失败与外围故障分层（2026-08-10）
+
+### `job_633162f59b32` 证据结论
+
+使用 owner `web-19fea3ee69ee9c044e2f4b3e8` 从 Linux 服务读取了该 Job 的完整 Stage DAG。`resolve_spec`、`environment_check`、已有 Selena 复用、数据准备、预检全部成功；`run_simulation` 才失败，返回的本地执行结果为 `returncode=1`、`summary.error_code=selena_failed`，并且已经产生了两个输出文件。后续 `collect_results` 与 `finalize_manifest` 被 DAG 正确标记为 `UPSTREAM_FAILED` 取消。因此：
+
+- 这次不是 Linux 调度、数据准备、Agent 连接或依赖安装导致的外围失败；是 Selena/仿真引擎对至少一个输入返回非零。
+- 旧版本的缺陷是只把 Stage 标成 `failed`，没有把 Agent 的结构化 `summary.error_code` 提升到 Stage `error_json`，也没有把 Selena 输出尾部写入任务日志，Web/SDK 因而把内部失败误显示为普通系统失败。
+- 该历史 Job 的执行记录不会被事后篡改；新代码从下一次本地运行开始提供正确分类和诊断。旧 Job 仍可用其原始结果/日志（若已归档）排查内部问题。
+
+### 已实施的通用修复
+
+1. `core/local_selena_runner.py` 在 Selena 进程结束、超时、取消或启动异常后读取受控 lease 中的 stdout/stderr 尾部，同时读取同一受控目录下的 `CRlog-*.log`。读取发生在文件句柄关闭之后，避免缓冲尚未落盘；只携带最多 200 行/约 16 KB 的尾部。
+2. `core/agent_local_run.py` 为已有 Agent SQLite 数据库做非破坏性迁移，增加 `diagnostics_json`；按输入记录成功/失败、稳定错误码、returncode 和逻辑相对路径，并在 Agent 离开 Windows 前移除盘符路径、UNC 路径和工作目录。完整日志仍留在本机 lease，不由 Linux 做文件中转。
+3. `cli/agent.py` 将本地 Selena 失败的稳定摘要、失败输入序号和脱敏日志尾部写入对应 Stage 的 `stderr` 日志；日志回调采用 advisory 语义，控制面日志接口短暂失败不会改变最终 Stage 结果。终态结果回调仍是唯一权威来源。
+4. `core/control_service.py` 在收到失败结果但没有单独 `error_json` 时，从结构化 `summary.error_code` 生成路径无关的 Stage 错误；`selena_failed`、超时、启动失败、连接器依赖缺失分别映射到稳定消息。
+5. `core/api_v1.py`/`docs/AI_INTEGRATION_CONTRACT.md` 将 Selena/引擎失败归入 `diagnosis.category=simulation`，将 Agent 启动/安全调用错误归入 `configuration`；未来 Skill/MCP 只需读取 `diagnosis` 和 Stage 日志，不需要识别项目或解析堆栈。
+
+### 验证结果
+
+- 定向回归：`126 passed`（Agent 本地运行、Selena runner、API/控制服务、Windows full E2E）；补充控制服务组合回归后 `83 passed`。
+- 语法检查：`python -m py_compile core/agent_local_run.py core/local_selena_runner.py cli/agent.py core/control_service.py core/api_v1.py` 通过；`git diff --check` 通过。
+- 全量 `python -m pytest -q` 在 120 秒和 300 秒窗口内均未结束，不能记为全仓通过；定向范围已通过，慢测试仍作为独立门禁项，不把超时冒充业务失败。
+
+### 发布/运维注意
+
+- 发布 Windows Connector 时必须重新生成包，使 `core/agent_local_run.py`、`core/local_selena_runner.py` 和 `cli/agent.py` 进入 ZIP；只更新 Linux 服务源码而不更新 Connector 包会让旧 Agent 继续缺少本轮诊断能力。
+- 本次已同步并重建生产包：`GET /api/v1/windows-connector/package.zip` 返回 `8308678` bytes，响应头与下载文件均为 `sha256:6d0ec9a2861c090a0326ae9a54cf296cc53a409627e103a55096c6db22a59ec9`；Linux `/api/v1/health` 返回 `ok=true`，Cluster 与配对 Windows 能力仍在线。
+- Linux 重启仍必须使用生产环境 `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke` 及 `/home/hoz2wx/.rsim-v1-cluster.env`，单 worker `serve-v1` 监听 `0.0.0.0:8877`；禁止落到默认 DB 造成任务/Agent 假性消失。
+- 任务业务结果仍以真实 Selena/Cluster 输出和最终 Manifest 为准：外围层负责把命令、数据、配置、状态和日志安全接入；不替用户修复仿真内部 runnable、信号或算法错误。内部失败要可见、可定位、可重试 Stage，但不能伪装成外围故障或成功。

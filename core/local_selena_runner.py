@@ -35,6 +35,7 @@ def run_local_selena(
         or request.output_mf4.parent.name != "outputs"
     ):
         return LocalRunOutcome(1, "runner_contract_failed")
+    log_files: list[Path] = []
     try:
         controlled_work.mkdir(parents=True, exist_ok=True)
         paramconfig = controlled_work / f"paramconfig-{request.item_index:04d}.txt"
@@ -43,6 +44,7 @@ def run_local_selena(
         sim_base["paramconfig_dir"] = str(controlled_work)
         sim_base["paramconfig_path"] = str(paramconfig)
         sim_base["log_file"] = str(controlled_work / f"CRlog-{request.item_index:04d}.log")
+        log_files = [private_log, Path(sim_base["log_file"])]
         sim_base["input_mf4"] = str(request.input_mf4)
         sim_base["output_mf4"] = str(request.output_mf4)
         config.setdefault("assets", {})["fixed_config_path"] = str(paramconfig)
@@ -71,6 +73,11 @@ def run_local_selena(
             extra.append("--tolerant")
         command = [str(request.executable), "--paramconfig", str(paramconfig), *extra]
         environment = _runtime_environment(config)
+        rendered_log = str((config.get("simulation") or {}).get("log_file") or "").strip()
+        if rendered_log:
+            rendered_log_path = Path(rendered_log)
+            if _contained(lease_root, rendered_log_path):
+                log_files.append(rendered_log_path)
     except Exception:
         return LocalRunOutcome(1, "paramconfig_failed")
 
@@ -93,21 +100,28 @@ def run_local_selena(
             while process.poll() is None:
                 if cancel_requested():
                     job.terminate(130)
-                    return LocalRunOutcome(130, "cancelled")
+                    outcome = LocalRunOutcome(130, "cancelled")
+                    break
                 if time.monotonic() - started >= timeout:
                     job.terminate(124)
-                    return LocalRunOutcome(124, "runtime_timeout")
+                    outcome = LocalRunOutcome(124, "runtime_timeout")
+                    break
                 time.sleep(0.25)
-            return LocalRunOutcome(int(process.returncode or 0), "" if process.returncode == 0 else "selena_failed")
+            else:
+                outcome = LocalRunOutcome(
+                    int(process.returncode or 0),
+                    "" if process.returncode == 0 else "selena_failed",
+                )
     except (OSError, subprocess.SubprocessError):
         if job is not None:
             job.terminate(1)
         elif process is not None and process.poll() is None:
             process.kill()
-        return LocalRunOutcome(1, "selena_launch_failed")
+        outcome = LocalRunOutcome(1, "selena_launch_failed")
     finally:
         if job is not None:
             job.close()
+    return _with_private_logs(outcome, log_files)
 
 
 def _runtime_environment(config: dict) -> dict[str, str]:
@@ -130,6 +144,38 @@ def _runtime_environment(config: dict) -> dict[str, str]:
     if boost:
         env["BOOST_ROOT"] = boost
     return env
+
+
+def _with_private_logs(outcome: LocalRunOutcome, log_files: list[Path]) -> LocalRunOutcome:
+    """Attach a bounded tail of Selena output to the logical run outcome.
+
+    The full log remains inside the Agent lease.  Only a small tail is carried
+    to the control plane so a failed internal simulation is diagnosable without
+    turning Linux into a log-file proxy or leaking an Agent-local path.
+    """
+    lines: list[str] = []
+    seen: set[Path] = set()
+    for log_file in log_files:
+        try:
+            resolved = log_file.resolve(strict=False)
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            with resolved.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                handle.seek(max(0, size - 256 * 1024), os.SEEK_SET)
+                text = handle.read().decode("utf-8", errors="replace")
+            lines.extend(line.rstrip() for line in text.splitlines() if line.strip())
+        except (OSError, UnicodeError):
+            continue
+    lines = lines[-200:]
+    if not lines:
+        return outcome
+    return LocalRunOutcome(outcome.exit_code, outcome.error_code, lines)
 
 
 def _safe_extra_arg(value: str) -> bool:

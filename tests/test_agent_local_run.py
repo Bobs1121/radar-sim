@@ -245,3 +245,26 @@ def test_runner_exception_becomes_terminal_without_leaking_message(tmp_path):
     assert result["status"] == "failed"
     assert result["summary"]["error_code"] == "runner_contract_failed"
     assert str(tmp_path) not in json.dumps(result)
+
+
+def test_failed_runner_persists_per_input_engine_diagnostics_without_paths(tmp_path):
+    store, kwargs = _fixture(tmp_path)
+    lease = store.create_from_authorized_inputs(**kwargs)
+
+    def runner(request, _cancel):
+        return LocalRunOutcome(
+            1,
+            "selena_failed",
+            (f"fatal: unable to open {request.input_mf4}", "runnable failed"),
+        )
+
+    assert execute_local_run(lease["lease_id"], store, runner=runner) == 1
+    result = store.result(lease["lease_id"])
+
+    assert result["status"] == "failed"
+    assert result["summary"]["error_code"] == "selena_failed"
+    assert result["summary"]["failed_input_count"] == 2
+    assert len(result["diagnostics"]["items"]) == 2
+    assert result["diagnostics"]["items"][0]["error_code"] == "selena_failed"
+    assert "runnable failed" in json.dumps(result)
+    assert str(tmp_path) not in json.dumps(result)

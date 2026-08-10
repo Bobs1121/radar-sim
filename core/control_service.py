@@ -53,6 +53,24 @@ def _normalize_manifest_outcome(manifest: dict[str, Any]) -> tuple[dict[str, Any
     return normalized, status in _NON_SUCCESS_MANIFEST_STATUSES
 
 
+def _stable_stage_failure_message(code: str) -> str:
+    """Map Agent result codes to path-free operator-facing messages."""
+    normalized = str(code or "").strip().lower()
+    if normalized in {"selena_failed", "simulation_engine_failed", "engine_failed"}:
+        return "Selena returned a non-zero result; inspect the simulation engine log in this Stage."
+    if normalized == "runtime_timeout":
+        return "Selena exceeded the configured runtime limit; inspect the simulation engine log in this Stage."
+    if normalized in {"selena_launch_failed", "runner_unavailable"}:
+        return "The Windows Agent could not start the configured Selena runner."
+    if normalized == "connector_dependency_missing":
+        return "The Windows connector is missing an optional package required for this task."
+    if normalized in {"paramconfig_failed", "paramconfig_outside_lease", "unsafe_runtime_argument"}:
+        return "The Windows Agent could not prepare a safe Selena invocation."
+    if normalized == "runner_contract_failed":
+        return "The Windows Agent runner returned an invalid execution result."
+    return "The execution stage returned a failed result; inspect the Stage log for details."
+
+
 def _apply_node_policy(
     node_kind: Any,
     metadata: Optional[dict[str, Any]],
@@ -1910,6 +1928,9 @@ class ControlService:
                         error_obj["diagnostic"] = dict(diagnostic)
                         if diagnostic.get("action"):
                             error_obj["action"] = str(diagnostic["action"])
+                    for field in ("dependency", "repair_hint"):
+                        if result.get(field):
+                            error_obj[field] = str(result[field])
                 elif final_status == "failed" and result.get("message") and not error_obj:
                     error_obj = {
                         "code": str(result.get("code") or "stage_failed"),
@@ -1919,6 +1940,21 @@ class ControlService:
                             else str(result.get("message"))
                         ),
                     }
+                elif final_status == "failed" and not error_obj:
+                    # Local Windows runs report per-input failures in their
+                    # structured summary.  Promote that stable code to the
+                    # Stage error so Web/SDK diagnosis can distinguish a
+                    # Selena-engine failure from a scheduler failure even
+                    # when the Agent did not send a separate ``error`` field.
+                    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+                    summary_code = str(summary.get("error_code") or "").strip()
+                    if summary_code:
+                        error_obj = {
+                            "code": summary_code,
+                            "message": _stable_stage_failure_message(summary_code),
+                        }
+                        if isinstance(result.get("diagnostics"), dict):
+                            error_obj["diagnostics"] = dict(result["diagnostics"])
                 output_ref = result.get("output_ref") if isinstance(result.get("output_ref"), dict) else {}
 
                 conn.execute(

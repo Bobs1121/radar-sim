@@ -58,6 +58,16 @@ SDK：`RadarSimClient.diagnosis(job_id)`
 | `evidence` | 只含状态、Stage 类型、稳定错误码等安全证据 |
 | `consistency` | 历史 Job 与 Manifest 不一致时返回 warning |
 
+Stage 失败码也遵循同一归类，不需要 Skill/MCP 识别项目或解析堆栈：
+
+| Stage 错误码 | `diagnosis.category` | 含义 |
+|---|---|---|
+| `selena_failed`、`simulation_engine_failed`、`engine_failed`、`runtime_timeout` | `simulation` | 外围已经完成调度，Selena/仿真引擎返回失败或超时；查看该 Stage 日志，不把它误报成 Linux 调度故障 |
+| `selena_launch_failed`、`runner_unavailable`、`runner_contract_failed` | `configuration` | Windows Agent 无法启动或执行安全的 Selena 调用 |
+| `connector_dependency_missing` | `configuration` | 连接器脚手架缺少可选 Python 依赖；安装器/Agent 给出可执行补齐提示 |
+
+Windows 本地运行的 Stage 结果会携带有限的 `diagnostics`（失败输入序号、稳定错误码和 Selena 日志尾部）；完整日志只保留在 Agent lease/结果归档中。Agent 在提交前会移除本机盘符、UNC 和工作目录，Linux、Web、SDK 只看到逻辑输入名和脱敏日志。日志上报是辅助通道，若控制面短暂不可达，终态结果仍以 Stage 回调为准，不会因为“日志接口失败”把成功任务改成失败。
+
 `outcome=failed` 与 `artifacts_available=true` 可以同时成立。它表示仿真业务失败，但失败现场、`result.ini`、日志或部分输出已经归档；调用方应下载结果诊断，不能因为有产物而把任务判断为成功。
 
 结果判断优先级：

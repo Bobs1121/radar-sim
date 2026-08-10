@@ -1510,7 +1510,7 @@ def _run_v5_local_stage(
             except Exception:
                 pass
 
-    client.append_logs(task_id, [f"[agent] Windows-full {stage_type} started"])
+    _safe_append_logs(client, task_id, [f"[agent] Windows-full {stage_type} started"])
     thread = threading.Thread(target=heartbeat_loop, daemon=True)
     thread.start()
     status = "failed"
@@ -1542,7 +1542,14 @@ def _run_v5_local_stage(
             }
         elif returncode == 0:
             status = "succeeded"
-        client.append_logs(task_id, [f"[agent] Windows-full {stage_type} {status}"])
+        if stage_type == "run_simulation":
+            _append_local_simulation_diagnostics(
+                client,
+                task_id,
+                result,
+                failed=(status == "failed"),
+            )
+        _safe_append_logs(client, task_id, [f"[agent] Windows-full {stage_type} {status}"])
     except Exception as exc:
         # Local exceptions often carry paths.  Keep details in local diagnostics
         # and send one stable public code only.
@@ -1562,7 +1569,8 @@ def _run_v5_local_stage(
         returncode = 1
         cause = str(getattr(exc, "cause_type", "") or "")
         cause_status = int(getattr(exc, "cause_status", 0) or 0)
-        client.append_logs(
+        _safe_append_logs(
+            client,
             task_id,
             [
                 (
@@ -1575,6 +1583,7 @@ def _run_v5_local_stage(
                     + ")"
                 )
             ],
+            stream="stderr",
         )
     finally:
         stop_event.set()
@@ -1587,6 +1596,53 @@ def _run_v5_local_stage(
         result=result,
     )
     return 0 if status == "succeeded" else (130 if status == "cancelled" else 1)
+
+
+def _safe_append_logs(
+    client: "_ControlClient",
+    task_id: str,
+    lines: list[str],
+    *,
+    stream: str = "stdout",
+) -> None:
+    """Treat task-log transport as advisory; terminal result remains authoritative."""
+    try:
+        client.append_logs(task_id, lines, stream=stream)
+    except Exception:
+        pass
+
+
+def _append_local_simulation_diagnostics(
+    client: "_ControlClient",
+    task_id: str,
+    result: dict,
+    *,
+    failed: bool,
+) -> None:
+    """Publish a compact, path-free internal-engine diagnostic to the Stage log."""
+    summary = dict(result.get("summary") or {})
+    diagnostics = dict(result.get("diagnostics") or {})
+    lines: list[str] = []
+    if failed:
+        lines.append(
+            "[simulation] Selena returned a failed outcome "
+            f"(error_code={summary.get('error_code') or 'unknown'}, "
+            f"failed_inputs={summary.get('failed_input_count', summary.get('error_count', 0))})"
+        )
+    for item in diagnostics.get("items") or []:
+        if str(item.get("status") or "") != "failed":
+            continue
+        lines.append(
+            "[simulation] input #{} failed: error_code={}, returncode={}".format(
+                item.get("index", "?"),
+                item.get("error_code", "unknown"),
+                item.get("returncode", "unknown"),
+            )
+        )
+    for line in diagnostics.get("engine_log_tail") or []:
+        lines.append(f"[selena] {line}")
+    if lines:
+        _safe_append_logs(client, task_id, lines[-220:], stream="stderr" if failed else "stdout")
 
 
 def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" = None) -> dict:
@@ -2444,10 +2500,15 @@ class _ControlClient:
             },
         )
 
-    def append_logs(self, task_id: str, lines: list[str]) -> dict:
+    def append_logs(self, task_id: str, lines: list[str], *, stream: str = "stdout") -> dict:
         return self._request(
             "POST", "/api/tasks/logs",
-            {"task_id": task_id, "agent_id": self._agent_id, "lines": lines, "stream": "stdout"},
+            {
+                "task_id": task_id,
+                "agent_id": self._agent_id,
+                "lines": lines,
+                "stream": str(stream or "stdout"),
+            },
         )
 
     def report_progress(self, task_id: str, progress: float, *, message: str = "") -> dict:

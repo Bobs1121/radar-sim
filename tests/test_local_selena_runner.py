@@ -100,3 +100,32 @@ def test_runner_rejects_control_char_runtime_argument(tmp_path):
     request.config["simulation"]["extra_args"] = ["--ok\n--bad"]
     outcome = run_local_selena(request, lambda: False)
     assert outcome.error_code == "unsafe_runtime_argument"
+
+
+def test_runner_attaches_bounded_engine_log_tail_on_failure(tmp_path, monkeypatch):
+    request = _request(tmp_path)
+
+    class Process:
+        returncode = 7
+        _handle = 0
+
+        def __init__(self, command, **kwargs):
+            del command
+            stream = kwargs["stdout"]
+            stream.write(b"fatal runnable failure\n")
+            stream.write(("local path: " + str(request.input_mf4) + "\n").encode("utf-8"))
+            stream.flush()
+            crlog = request.output_mf4.parent.parent / "work" / "CRlog-0001.log"
+            crlog.write_text("CRlog: runnable=RadarRL failed\n", encoding="utf-8")
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr("core.local_selena_runner.subprocess.Popen", Process)
+    outcome = run_local_selena(request, lambda: False)
+
+    assert outcome.exit_code == 7
+    assert outcome.error_code == "selena_failed"
+    assert "fatal runnable failure" in outcome.diagnostics
+    assert "CRlog: runnable=RadarRL failed" in outcome.diagnostics
+    assert str(request.input_mf4) in "\n".join(outcome.diagnostics)

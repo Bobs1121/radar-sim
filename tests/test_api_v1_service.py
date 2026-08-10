@@ -379,6 +379,39 @@ def test_diagnosis_normalizes_historical_manifest_mismatch_and_infrastructure_fa
     }
 
 
+def test_diagnosis_classifies_agent_selena_failure_as_simulation(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    job = control.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "run_simulation", "stage_type": "run_simulation"}],
+    )
+    control.register_agent("windows", agent_id="windows", capabilities=["*"])
+    stage = control.claim_next_task("windows")
+    control.submit_task_result(
+        stage["stage_id"],
+        agent_id="windows",
+        status="failed",
+        returncode=1,
+        result={
+            "status": "failed",
+            "summary": {"file_count": 1, "error_count": 1, "error_code": "selena_failed"},
+            "diagnostics": {
+                "items": [{"index": 2, "status": "failed", "error_code": "selena_failed"}],
+                "engine_log_tail": ["runnable failed"],
+            },
+        },
+    )
+
+    diagnosis = api.diagnosis("alice", job["job_id"])
+
+    assert diagnosis["code"] == "simulation_failed"
+    assert diagnosis["category"] == "simulation"
+    assert diagnosis["evidence"]["failed_stage"]["source_code"] == "selena_failed"
+    assert diagnosis["action"]["type"] == "retry_stage"
+
+
 def project_catalog(project: str = "bydod25") -> ProjectCatalog:
     return ProjectCatalog(
         project=project,

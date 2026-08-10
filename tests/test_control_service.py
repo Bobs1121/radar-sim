@@ -211,6 +211,30 @@ def test_failed_task_promotes_structured_diagnostic_to_public_stage_error(tmp_pa
     assert error["diagnostic"]["category"] == "environment"
 
 
+def test_failed_local_selena_result_promotes_engine_code_and_diagnostics(tmp_path):
+    service = make_service(tmp_path)
+    job = service.create_job("run_simulation", payload={})
+    agent = service.register_agent("windows", capabilities=["run_simulation"])
+    task = service.claim_next_task(agent["agent_id"])
+
+    completed = service.submit_task_result(
+        task["task_id"],
+        agent_id=agent["agent_id"],
+        status="failed",
+        returncode=1,
+        result={
+            "status": "failed",
+            "summary": {"error_code": "selena_failed", "failed_input_count": 1},
+            "diagnostics": {"items": [{"index": 1, "status": "failed"}]},
+        },
+    )
+
+    error = completed["tasks"][0]["error"]
+    assert error["code"] == "selena_failed"
+    assert "Selena returned a non-zero result" in error["message"]
+    assert error["diagnostics"]["items"][0]["index"] == 1
+
+
 def test_cancel_completed_job_is_noop(tmp_path):
     service = make_service(tmp_path)
     job = service.create_job("local.check", payload={"project": "ovrs25"})

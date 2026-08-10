@@ -3031,8 +3031,24 @@ def _safe_diagnostic_code(value: Any) -> str:
 
 
 def _diagnostic_category(source_code: str, stage_type: str) -> str:
-    if source_code == "simulation_failed":
+    if source_code in {
+        "simulation_failed",
+        "selena_failed",
+        "simulation_engine_failed",
+        "engine_failed",
+        "runtime_timeout",
+    }:
         return "simulation"
+    if source_code in {
+        "selena_launch_failed",
+        "runner_unavailable",
+        "runner_contract_failed",
+        "paramconfig_failed",
+        "paramconfig_outside_lease",
+        "unsafe_runtime_argument",
+        "connector_dependency_missing",
+    }:
+        return "configuration"
     if any(
         token in source_code
         for token in (
