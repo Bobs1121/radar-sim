@@ -340,6 +340,10 @@ class AgentLocalRunLeaseStore:
             summary["failed_input_count"] = sum(
                 1 for item in items if str(item.get("status") or "") == "failed"
             )
+            summary["succeeded_input_count"] = sum(
+                1 for item in items if str(item.get("status") or "") == "succeeded"
+            )
+            summary["total_input_count"] = len(private["inputs"])
         payload = {"lease_id": lease_id, "status": private["status"], "files": files, "summary": summary}
         return {
             "result_ref": "result:sha256:" + _json_digest(payload),

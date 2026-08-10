@@ -2342,3 +2342,32 @@ Cluster Manager 重置完成后，复用上一条任务 `job_d2c7917f0c90` 的�
 - 本次已同步并重建生产包：`GET /api/v1/windows-connector/package.zip` 返回 `8309135` bytes，响应头与下载文件均为 `sha256:b9767cdef58826ad0399b8ab34d10a60b5bce4ced32e6f96a51e7f9162106bfb`；Linux `/api/v1/health` 返回 `ok=true`，Cluster 与配对 Windows 能力仍在线。
 - Linux 重启仍必须使用生产环境 `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke` 及 `/home/hoz2wx/.rsim-v1-cluster.env`，单 worker `serve-v1` 监听 `0.0.0.0:8877`；禁止落到默认 DB 造成任务/Agent 假性消失。
 - 任务业务结果仍以真实 Selena/Cluster 输出和最终 Manifest 为准：外围层负责把命令、数据、配置、状态和日志安全接入；不替用户修复仿真内部 runnable、信号或算法错误。内部失败要可见、可定位、可重试 Stage，但不能伪装成外围故障或成功。
+
+## 0.0.10 批量输入部分成功与 `0014.mf4` 验证准备（2026-08-10）
+
+### 用户场景与产品结论
+
+历史 Job `job_633162f59b32` 的本地 Selena 批次产生了两个输出，但执行返回 `selena_failed`；用户确认其中一个后缀为 `0014.mf4` 的输入可手动成功运行。本轮将“单条输入失败不阻断其余输入”固化为通用行为，不针对 BYD、Xpeng 或任何项目做特判。
+
+### 已实施的行为
+
+1. `AgentLocalRunLeaseStore.result()` 对多输入结果补充 `total_input_count`、`succeeded_input_count`、`failed_input_count`。
+2. `cli/agent.py` 识别“至少一条成功、至少一条失败且存在输出”的混合结果，将 Run Stage 暴露为 `status=partial` 且以可继续的返回码进入 `collect_results` 与 `finalize_manifest`；全失败、Runner 不可用、租约失败仍立即失败。
+3. `finalize_manifest` 归档 `status=partial`、逐输入 `input_results[]` 和有限的 Selena 日志尾部。成功输出不因另一条输入失败而丢弃；最终 Job 仍归一化为 `simulation_failed`，避免把批次部分成功误报为全成功，同时保留 `artifacts_available=true`。
+4. Stage 日志会明确写出成功/失败输入序号、逻辑相对路径、returncode 和稳定错误码；不上传盘符、UNC 或用户工作目录。
+5. `ControlService` 保留 `partial` Manifest 状态，并以 `failed_input_count` 参与稳定失败结论归一化。Web/SDK/未来 Skill/MCP 均通过现有 Manifest/Diagnosis 接口读取，不新增项目适配层。
+
+### 回归证据
+
+- `tests/test_agent_local_run.py`、`tests/test_control_stages.py`、`tests/test_windows_full_local_e2e.py` 新增混合批次测试，验证一条失败后仍收集成功输出、Manifest 逐条记录和最终诊断。
+- 本轮定向回归：`40 passed`（Windows full E2E、Agent 本地运行、控制 Stage）；此前外围核心集合 `151 passed, 1 warning`。全仓测试仍未在 300 秒门禁内结束，不能记为全仓全绿。
+
+### `0014.mf4` 实际验证边界
+
+Linux 控制面只保存数据集逻辑引用，不会从历史 Job 反查或复制用户 Windows 的原始盘符路径；当前历史事件也只记录了数据数量，没有公开完整输入文件名。因此不能凭输出文件名猜测并触发新的真实任务。要执行单条黑盒验证，需要用户提供该 `0014.mf4` 的完整路径，或在 Web/SDK 中提交一个只包含该文件的 `data.path`。拿到路径后沿用已有 Selena、Runtime、MatFilter、Adapter 和原目标，不触发编译，验证重点是外围接入、任务收集和逐条 Manifest，而不是 Selena 内部信号结果。
+
+### 发布前必须完成
+
+- 将本节代码与测试提交并推送；重建 Windows Connector ZIP，使新的 `cli/agent.py`、`core/agent_local_run.py`、`core/control_service.py` 进入包。
+- 同步 Linux `serve-v1`，校验 `/api/v1/health`、Cluster 能力和连接器下载 hash。
+- 部署后先用离线/单元混合批次验收，再在获得 `0014.mf4` 完整路径后执行真实单条任务；不得使用猜测路径污染用户任务历史。

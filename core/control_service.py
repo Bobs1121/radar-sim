@@ -37,14 +37,14 @@ def _normalize_manifest_outcome(manifest: dict[str, Any]) -> tuple[dict[str, Any
     normalized = dict(manifest or {})
     summary = normalized.get("summary") if isinstance(normalized.get("summary"), dict) else {}
     summary_failed = False
-    for key in ("fail_count", "failed_count"):
+    for key in ("fail_count", "failed_count", "failed_input_count"):
         try:
             if int(summary.get(key)) > 0:
                 summary_failed = True
         except (TypeError, ValueError):
             continue
     status = str(normalized.get("status") or "").strip().lower()
-    if summary_failed:
+    if summary_failed and status not in {"partial", "failed"}:
         normalized["status"] = "failed"
         status = "failed"
     elif status == "failure":

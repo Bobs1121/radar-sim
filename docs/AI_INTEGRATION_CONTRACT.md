@@ -70,6 +70,18 @@ Windows 本地运行的 Stage 结果会携带有限的 `diagnostics`（失败输
 
 `outcome=failed` 与 `artifacts_available=true` 可以同时成立。它表示仿真业务失败，但失败现场、`result.ini`、日志或部分输出已经归档；调用方应下载结果诊断，不能因为有产物而把任务判断为成功。
 
+### 批量输入的部分成功
+
+一次任务的 `data.path` 可以解析为多个输入文件。Windows 本地执行时，单个输入返回非零不再直接截断整个批次：只要至少有一个输入成功并产生输出，控制面会继续执行结果收集与 Manifest 归档。最终 Job 仍以 `failed` 结论表示“批次不是全成功”，但 `artifacts_available=true`，成功输出和失败诊断都可读取。
+
+Manifest 在这种情况下使用 `status=partial`，并提供：
+
+- `summary.total_input_count`、`summary.succeeded_input_count`、`summary.failed_input_count`；
+- `input_results[]`，每条包含逻辑 `input_relative_path`、`output_relative_path`、`status`、`returncode` 和稳定 `error_code`；
+- `diagnostics.engine_log_tail`（若 Selena 产生了可安全归档的日志尾部）。
+
+`input_results[].status=succeeded` 的条目可以继续被下载或交给后续处理；`failed` 条目只作为业务诊断，不会被伪装为成功。若所有输入都失败、Runner 不可用或控制面无法建立执行租约，仍按普通 Stage 失败处理，不进入部分成功分支。Web、SDK、Skill/MCP 都应展示逐条结果，而不是只显示一个批次级布尔值。
+
 结果判断优先级：
 
 1. Manifest 明确为 failed/failure/cancelled/partial 时，业务结果为 `simulation_failed`。

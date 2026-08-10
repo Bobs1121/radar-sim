@@ -550,6 +550,45 @@ def test_failed_manifest_marks_job_failed_but_remains_available(tmp_path):
     }
 
 
+def test_partial_manifest_continues_to_finalize_and_keeps_successful_outputs(tmp_path):
+    service = ControlService(tmp_path / "control.db")
+    service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "finalize_manifest", "stage_type": "finalize_manifest"}],
+    )
+    service.register_agent("finalizer", agent_id="finalizer", capabilities=["*"])
+    task = service.claim_next_task("finalizer")
+    manifest = {
+        "schema_version": "radar-sim.run-manifest/2.0",
+        "status": "partial",
+        "result_ref": "result:sha256:" + "d" * 64,
+        "summary": {
+            "file_count": 1,
+            "failed_input_count": 1,
+            "succeeded_input_count": 1,
+            "total_input_count": 2,
+        },
+        "input_results": [
+            {"index": 1, "status": "failed", "input_relative_path": "bad.MF4"},
+            {"index": 2, "status": "succeeded", "input_relative_path": "good.MF4"},
+        ],
+    }
+
+    completed = service.submit_task_result(
+        task["stage_id"],
+        agent_id="finalizer",
+        status="succeeded",
+        returncode=0,
+        result={"manifest": manifest},
+    )
+
+    assert completed["status"] == "failed"
+    assert completed["result"]["manifest"]["status"] == "partial"
+    assert completed["result"]["manifest"]["input_results"][1]["status"] == "succeeded"
+    assert completed["result"]["code"] == "simulation_failed"
+
+
 def test_structured_failure_count_overrides_succeeded_manifest_status(tmp_path):
     service = ControlService(tmp_path / "control.db")
     service.create_job(

@@ -268,3 +268,26 @@ def test_failed_runner_persists_per_input_engine_diagnostics_without_paths(tmp_p
     assert result["diagnostics"]["items"][0]["error_code"] == "selena_failed"
     assert "runnable failed" in json.dumps(result)
     assert str(tmp_path) not in json.dumps(result)
+
+
+def test_mixed_batch_continues_after_one_input_failure(tmp_path):
+    store, kwargs = _fixture(tmp_path)
+    lease = store.create_from_authorized_inputs(**kwargs)
+    seen: list[int] = []
+
+    def runner(request, _cancel):
+        seen.append(request.item_index)
+        if request.item_index == 1:
+            return LocalRunOutcome(1, "selena_failed", ("first input failed",))
+        request.output_mf4.write_bytes(b"second input succeeded")
+        return LocalRunOutcome(0)
+
+    assert execute_local_run(lease["lease_id"], store, runner=runner) == 1
+    result = store.result(lease["lease_id"])
+
+    assert seen == [1, 2]
+    assert result["status"] == "failed"
+    assert len(result["files"]) == 1
+    assert result["summary"]["failed_input_count"] == 1
+    assert result["summary"]["succeeded_input_count"] == 1
+    assert [item["status"] for item in result["diagnostics"]["items"]] == ["failed", "succeeded"]

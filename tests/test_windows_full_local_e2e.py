@@ -1,12 +1,109 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from cli.agent import (
+    _is_partial_local_result,
+    _local_stage_result,
     _execute_v5_local_collect,
     _execute_v5_local_finalize,
     _execute_v5_local_preflight,
     _execute_v5_local_simulation,
 )
+
+
+def test_partial_local_result_is_collectible_stage_outcome():
+    result = {
+        "status": "failed",
+        "files": [{"relative_path": "outputs/good.MF4"}],
+        "summary": {
+            "error_count": 1,
+            "failed_input_count": 1,
+            "succeeded_input_count": 1,
+        },
+        "diagnostics": {
+            "items": [
+                {"index": 1, "status": "failed"},
+                {"index": 2, "status": "succeeded"},
+            ]
+        },
+    }
+
+    assert _is_partial_local_result(result) is True
+    stage_result, returncode = _local_stage_result("lease", result)
+    assert returncode == 0
+    assert stage_result["status"] == "partial"
+
+
+def test_partial_local_result_collects_and_finalizes_input_results(tmp_path, monkeypatch):
+    monkeypatch.setenv("RSIM_HOME", str(tmp_path / "home"))
+    run_root = tmp_path / "home" / "agent" / "runs" / "partial-run"
+    output = run_root / "outputs" / "good.MF4"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"successful output")
+    local_result = {
+        "status": "failed",
+        "files": [{"relative_path": "outputs/good.MF4"}],
+        "summary": {
+            "file_count": 1,
+            "error_count": 1,
+            "error_code": "selena_failed",
+            "failed_input_count": 1,
+            "succeeded_input_count": 1,
+            "total_input_count": 2,
+        },
+        "diagnostics": {
+            "items": [
+                {
+                    "index": 1,
+                    "input_relative_path": "bad.MF4",
+                    "output_relative_path": "outputs/bad.MF4",
+                    "status": "failed",
+                    "returncode": 1,
+                    "error_code": "selena_failed",
+                },
+                {
+                    "index": 2,
+                    "input_relative_path": "good.MF4",
+                    "output_relative_path": "outputs/good.MF4",
+                    "status": "succeeded",
+                    "returncode": 0,
+                    "error_code": "",
+                },
+            ],
+            "engine_log_tail": ["one runnable failed"],
+        },
+    }
+
+    class FakeStore:
+        runs_root = tmp_path
+
+        def get_private(self, _lease_ref):
+            return {"run_root": Path(run_root)}
+
+        def result(self, _lease_ref):
+            return dict(local_result)
+
+    monkeypatch.setattr("core.agent_local_run.AgentLocalRunLeaseStore", FakeStore)
+    payload = {
+        "local_run_lease_ref": "local-run-lease:sha256:" + "1" * 64,
+        "owner": "alice",
+        "job_id": "job-partial",
+        "runtime_bundle_id": "selena-bundle:sha256:" + "2" * 64,
+        "dataset_id": "dataset:sha256:" + "3" * 64,
+        "retain_days": 1,
+    }
+
+    collected = _execute_v5_local_collect({"payload": payload})
+    payload["result_ref"] = collected["result_ref"]
+    finalized = _execute_v5_local_finalize({"payload": payload})
+
+    manifest = finalized["manifest"]
+    assert manifest["status"] == "partial"
+    assert manifest["summary"]["failed_input_count"] == 1
+    assert [item["status"] for item in manifest["input_results"]] == ["failed", "succeeded"]
+    assert manifest["diagnostics"]["engine_log_tail"] == ["one runnable failed"]
+    assert str(tmp_path) not in json.dumps(manifest)
 from core.agent_asset_bindings import AgentAssetBindingStore
 from core.agent_data_bindings import AgentDataBindingStore
 from core.agent_data_lease import AgentDataLeaseStore

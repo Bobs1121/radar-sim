@@ -1548,6 +1548,7 @@ def _run_v5_local_stage(
                 task_id,
                 result,
                 failed=(status == "failed"),
+                partial=(str(result.get("status") or "") == "partial"),
             )
         _safe_append_logs(client, task_id, [f"[agent] Windows-full {stage_type} {status}"])
     except Exception as exc:
@@ -1618,6 +1619,7 @@ def _append_local_simulation_diagnostics(
     result: dict,
     *,
     failed: bool,
+    partial: bool = False,
 ) -> None:
     """Publish a compact, path-free internal-engine diagnostic to the Stage log."""
     summary = dict(result.get("summary") or {})
@@ -1629,20 +1631,42 @@ def _append_local_simulation_diagnostics(
             f"(error_code={summary.get('error_code') or 'unknown'}, "
             f"failed_inputs={summary.get('failed_input_count', summary.get('error_count', 0))})"
         )
-    for item in diagnostics.get("items") or []:
-        if str(item.get("status") or "") != "failed":
-            continue
+    elif partial:
         lines.append(
-            "[simulation] input #{} failed: error_code={}, returncode={}".format(
-                item.get("index", "?"),
-                item.get("error_code", "unknown"),
-                item.get("returncode", "unknown"),
-            )
+            "[simulation] Selena completed with a partial outcome; "
+            f"successful_inputs={summary.get('succeeded_input_count', 0)}, "
+            f"failed_inputs={summary.get('failed_input_count', summary.get('error_count', 0))}"
         )
+    for item in diagnostics.get("items") or []:
+        item_status = str(item.get("status") or "").strip().lower()
+        if item_status not in {"succeeded", "failed"}:
+            continue
+        if item_status == "failed":
+            lines.append(
+                "[simulation] input #{} failed: path={}, error_code={}, returncode={}".format(
+                    item.get("index", "?"),
+                    item.get("input_relative_path", "<input>"),
+                    item.get("error_code", "unknown"),
+                    item.get("returncode", "unknown"),
+                )
+            )
+        else:
+            lines.append(
+                "[simulation] input #{} succeeded: path={}, returncode={}".format(
+                    item.get("index", "?"),
+                    item.get("input_relative_path", "<input>"),
+                    item.get("returncode", "0"),
+                )
+            )
     for line in diagnostics.get("engine_log_tail") or []:
         lines.append(f"[selena] {line}")
     if lines:
-        _safe_append_logs(client, task_id, lines[-220:], stream="stderr" if failed else "stdout")
+        _safe_append_logs(
+            client,
+            task_id,
+            lines[-220:],
+            stream="stderr" if failed or partial else "stdout",
+        )
 
 
 def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" = None) -> dict:
@@ -1906,7 +1930,7 @@ def _execute_v5_local_simulation(task: dict, cancel_requested) -> tuple[dict, in
     private = store.get_private(lease_ref)
     if private["status"] in {"succeeded", "failed", "cancelled"}:
         result = store.result(lease_ref)
-        return {"local_run_lease_ref": lease_ref, **result}, 0 if result["status"] == "succeeded" else 1
+        return _local_stage_result(lease_ref, result)
     returncode = execute_local_run(
         lease_ref,
         store,
@@ -1914,7 +1938,32 @@ def _execute_v5_local_simulation(task: dict, cancel_requested) -> tuple[dict, in
         cancel_requested=cancel_requested,
     )
     result = store.result(lease_ref)
+    if returncode == 0 or _is_partial_local_result(result):
+        return _local_stage_result(lease_ref, result)
     return {"local_run_lease_ref": lease_ref, **result}, returncode
+
+
+def _is_partial_local_result(result: dict) -> bool:
+    """True when at least one input succeeded and another failed.
+
+    A runner-unavailable or all-input failure remains a hard Stage failure;
+    only a real mixed outcome is allowed to continue to result collection.
+    """
+    if str(result.get("status") or "") != "failed":
+        return False
+    summary = dict(result.get("summary") or {})
+    try:
+        successful = int(summary.get("succeeded_input_count") or 0)
+        failed = int(summary.get("failed_input_count") or summary.get("error_count") or 0)
+    except (TypeError, ValueError):
+        return False
+    return successful > 0 and failed > 0 and bool(result.get("files"))
+
+
+def _local_stage_result(lease_ref: str, result: dict) -> tuple[dict, int]:
+    if _is_partial_local_result(result):
+        return {"local_run_lease_ref": lease_ref, **result, "status": "partial"}, 0
+    return {"local_run_lease_ref": lease_ref, **result}, 0 if result["status"] == "succeeded" else 1
 
 
 def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = None) -> dict:
@@ -1929,7 +1978,7 @@ def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = N
     store = AgentLocalRunLeaseStore()
     private = store.get_private(lease_ref)
     local_result = store.result(lease_ref)
-    if local_result["status"] != "succeeded":
+    if local_result["status"] != "succeeded" and not _is_partial_local_result(local_result):
         raise ValueError("local run did not succeed")
     owner = normalize_user(str(payload.get("owner") or ""))
     retain_days = max(1, int(payload.get("retain_days") or 30))
@@ -2024,19 +2073,41 @@ def _execute_v5_local_finalize(task: dict) -> dict:
         owner=normalize_user(str(payload.get("owner") or "")),
     )
     local = AgentLocalRunLeaseStore().result(lease_ref)
+    local_summary = dict(local["summary"])
+    partial = _is_partial_local_result(local)
+    manifest_diagnostics = dict(local.get("diagnostics") or {})
+    input_results = []
+    for item in manifest_diagnostics.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        input_results.append(
+            {
+                "index": item.get("index"),
+                "input_relative_path": str(item.get("input_relative_path") or "<input>"),
+                "output_relative_path": str(item.get("output_relative_path") or ""),
+                "status": str(item.get("status") or "unknown"),
+                "returncode": item.get("returncode"),
+                "error_code": str(item.get("error_code") or ""),
+            }
+        )
     manifest = {
         "schema_version": "radar-sim.run-manifest/2.0",
         "job_id": str(payload.get("job_id") or task.get("job_id") or ""),
-        "status": local["status"],
+        "status": "partial" if partial else local["status"],
         "config_fingerprint": str(payload.get("config_fingerprint") or ""),
         "runtime_bundle_id": str(payload.get("runtime_bundle_id") or ""),
         "dataset_id": str(payload.get("dataset_id") or ""),
         "result_ref": result.ref,
         "files": [item.to_dict() for item in result.files],
-        "summary": dict(local["summary"]),
+        "summary": local_summary,
+        "input_results": input_results,
         "created_at": result.created_at,
         "retain_until": result.retain_until,
     }
+    if manifest_diagnostics.get("engine_log_tail"):
+        manifest["diagnostics"] = {
+            "engine_log_tail": list(manifest_diagnostics["engine_log_tail"])[-200:]
+        }
     if (
         not manifest["runtime_bundle_id"].startswith("selena-bundle:sha256:")
         or not manifest["dataset_id"].startswith("dataset:sha256:")
