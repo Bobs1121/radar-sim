@@ -1515,7 +1515,7 @@ class ApiV1Service:
         """
         owner = self._owner(owner)
         job = self._get_owned_job(owner, job_id)
-        status = self._v1_status(job)
+        status = self._job_response(job)["status"]
         manifest_payload = self.manifest(owner, job_id)
         manifest = (
             dict(manifest_payload["manifest"])
@@ -2298,12 +2298,18 @@ class ApiV1Service:
             "tasks": stages if is_run_config else list(job.get("tasks") or []),
             "metadata": dict(job.get("metadata") or {}),
         }
-        response["waiting"] = self._windows_waiting(
+        waiting = self._windows_waiting(
             job,
             raw_stages,
             status,
             execution_capabilities=execution_capabilities,
         ) if is_run_config else None
+        response["waiting"] = waiting
+        if waiting and waiting.get("reason") == "windows_connector_update_required":
+            response["status"] = "needs_input"
+            update_action = dict(waiting.get("action") or {})
+            if update_action and update_action not in response["available_actions"]:
+                response["available_actions"].append(update_action)
         return response
 
     def _windows_waiting(
@@ -2317,6 +2323,8 @@ class ApiV1Service:
         """Describe a path-free Windows connection wait for Web and SDK clients."""
         if status in TERMINAL_STATUSES or status == "cancelling":
             return None
+        owner = str(job.get("owner") or (job.get("metadata") or {}).get("owner") or "")
+        capabilities = execution_capabilities or self.execution_capabilities(owner)["capabilities"]
         current = next(
             (
                 stage for stage in stages
@@ -2326,6 +2334,25 @@ class ApiV1Service:
             ),
             None,
         )
+        if current is None and bool(
+            (capabilities.get("windows_connector") or {}).get("update_required")
+        ):
+            owner_token = owner.strip().casefold()
+            outdated_agent_ids = {
+                str(agent.get("agent_id") or "")
+                for agent in self._control(owner).list_agents()
+                if str((agent.get("metadata") or {}).get("user") or "").strip().casefold()
+                == owner_token
+                and not windows_connector_contract_is_current(agent.get("metadata") or {})
+            }
+            current = next(
+                (
+                    stage for stage in stages
+                    if str(stage.get("status") or "") == "running"
+                    and str(stage.get("assigned_agent_id") or "") in outdated_agent_ids
+                ),
+                None,
+            )
         if current is None:
             return None
 
@@ -2340,10 +2367,6 @@ class ApiV1Service:
         target = str(execution.get("selected_target") or simulation.get("target") or "auto")
         source = str(selena.get("source") or selena.get("mode") or "auto")
         selena_decision = dict(decisions.get("selena") or {})
-        capabilities = execution_capabilities or self.execution_capabilities(
-            str(job.get("owner") or (job.get("metadata") or {}).get("owner") or "")
-        )["capabilities"]
-
         # Filter local inputs independently by the direct-transfer role that
         # has already received a resolved Manifest.  A direct runtime bundle
         # decision itself is not enough: dataset/Runtime XML/MatFilter/Adapter

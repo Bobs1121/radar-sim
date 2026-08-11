@@ -284,6 +284,54 @@ def test_v1_task_center_lists_only_owner_v1_jobs_with_progress_and_filter(tmp_pa
     assert [item["id"] for item in cancelled["jobs"]] == [first["id"]]
 
 
+def test_running_stage_on_outdated_connector_projects_as_needs_input(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config = run_config_dict()
+    config["selena"] = {
+        "source": "existing",
+        "existing_path": "D:/Selena/RelWithDebInfo",
+        "runtime_xml": "D:/data/runtime.xml",
+    }
+    job = control.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        metadata={"contract": "user-run-config/2.0"},
+        spec=config,
+        tasks=[{"task_type": "prepare_data", "stage_type": "prepare_data"}],
+    )
+    current_metadata = {
+        "node_kind": "windows_full",
+        "user": "alice",
+        "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+    }
+    control.register_agent(
+        "windows",
+        agent_id="windows-a",
+        capabilities=["data.local.read", "data.upload"],
+        metadata=current_metadata,
+    )
+    claimed = control.claim_next_task("windows-a")
+    assert claimed is not None
+    control.register_agent(
+        "windows-old",
+        agent_id="windows-a",
+        capabilities=["data.local.read", "data.upload"],
+        metadata={**current_metadata, "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION - 1},
+    )
+
+    public_job = api.get_job("alice", job["job_id"])
+    diagnosis = api.diagnosis("alice", job["job_id"])
+
+    assert control.get_job(job["job_id"])["status"] == "running"
+    assert public_job["status"] == "needs_input"
+    assert public_job["waiting"]["reason"] == "windows_connector_update_required"
+    assert public_job["waiting"]["stage"] == "prepare_data"
+    assert public_job["waiting"]["action"]["type"] == "update_windows_connector"
+    assert diagnosis["status"] == "needs_input"
+    assert diagnosis["outcome"] == "needs_input"
+
+
 def test_diagnosis_reports_pending_job_without_exposing_user_paths(tmp_path):
     api, _ = make_api(tmp_path)
     job = api.submit_job("alice", spec_payload=spec_dict())

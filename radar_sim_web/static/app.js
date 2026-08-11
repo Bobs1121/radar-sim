@@ -640,19 +640,21 @@ function selectedExecutionTarget(job) {
 
 function windowsWaitState(job, candidateStage = null) {
   if (!job || job.cancel_requested || ["failed", "cancelled", "cancelling", "partial", "succeeded"].includes(job.status)) return null;
+  const serverWaiting = ["windows_connection_required", "windows_path_access_required", "windows_connector_update_required"].includes(job.waiting?.reason)
+    ? job.waiting : null;
   if (candidateStage && (candidateStage.stage_type || candidateStage.task_type) !== job.current_stage) return null;
   const stage = candidateStage || (job.stages || []).find((item) =>
     (item.stage_type || item.task_type) === job.current_stage
-    && ["queued", "blocked"].includes(item.status)
+    && (["queued", "blocked"].includes(item.status)
+      || (serverWaiting?.reason === "windows_connector_update_required" && item.status === "running"))
   );
-  if (!stage || !["queued", "blocked"].includes(stage.status)) return null;
+  if (!stage || (!["queued", "blocked"].includes(stage.status)
+    && !(serverWaiting?.reason === "windows_connector_update_required" && stage.status === "running"))) return null;
 
   const stageType = stage.stage_type || stage.task_type || "";
   const spec = job.spec || {};
   const source = spec.selena?.source || spec.selena?.mode || "auto";
   const target = selectedExecutionTarget(job);
-  const serverWaiting = ["windows_connection_required", "windows_path_access_required", "windows_connector_update_required"].includes(job.waiting?.reason)
-    ? job.waiting : null;
   const pathMismatch = serverWaiting?.reason === "windows_path_access_required";
   const updateRequired = serverWaiting?.reason === "windows_connector_update_required";
   if (serverWaiting && (updateRequired || pathMismatch || !hasWindowsCapability(serverWaiting.mode))) {

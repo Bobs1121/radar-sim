@@ -2426,6 +2426,7 @@ Linux 控制面只保存数据集逻辑引用，不会从历史 Job 反查或复
 4. 任务恢复采用 at-least-once 语义：进程重启后从该 Stage 的幂等入口继续；协议不伪装成 exactly-once。旧 Connector 不允许恢复新协议任务，更新后沿用稳定 Agent ID 自动续接。
 5. 数据传输前的雷达方位推导优先使用项目无关的标准库 MDF4 acquisition-source 读取器。需要兼容解析器时放入短生命周期子进程；即使 asammdf/native DLL 退出、超时或输出异常，只降级为空的可选 metadata，不能杀死长驻 Connector，也不能阻断数据直传。
 6. Windows Connector 执行协议从 `2` 提升为 `3`。Linux 会要求旧安装执行一次“一键更新”；Agent ID、owner 配对、路径绑定和原任务保持不变，无需卸载或重新提交。
+7. 生产首轮读取发现：旧 Connector 被门禁挡住后，历史 `running` 孤儿虽然不会继续错误执行，但公共任务仍显示运行中。状态投影随后补齐：仅当 running Stage 明确绑定到当前 owner 的过期 Connector 时，Web/SDK/Diagnosis 显示 `needs_input + windows_connector_update_required`，数据库仍保留原 attempt；更新组件后继续走同一恢复逻辑。不会因为同一 owner 另有过期电脑而误改一个由当前 Connector 正常执行的任务。
 
 ### 回归证据
 
@@ -2440,3 +2441,4 @@ Linux 控制面只保存数据集逻辑引用，不会从历史 Job 反查或复
 - 提交并推送 `codex/new-branch`，构建包含 contract 3 的 Windows Connector ZIP，部署新的不可变 Linux release，保留上一版本回滚目录。
 - 发布后直接重读 `job_098f0c2caa50`：公共状态应为 `partial`、进度 100%、Diagnosis 为 `simulation_partial`，结果下载 Range 请求应返回 206；不修改历史数据库审计记录。
 - `job_81f44ccae6c4` 的 Windows 用户需运行一次 Web 提供的“一键更新本机组件”。更新后的第一次 poll 应恢复原 `prepare_data` task；若原 MF4 兼容解析器再次异常，父 Connector 仍应继续并请求直传计划。
+- 第一轮生产 release `/home/hoz2wx/radar-sim-340226f` 已切换且 service active/NRestarts=0；线上重读 `job_098f0c2caa50` 已得到 `status=partial`、`progress=1.0`、`diagnosis.code=simulation_partial`、`2/3` 成功且 `artifacts_available=true`。随后为上述 running-stale 状态投影追加小补丁，最终 release/hash 以紧随其后的提交和部署记录为准。
