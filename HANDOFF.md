@@ -4,6 +4,31 @@
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
+## 0.0.9 结果目录、SDK 取件、RadarFC 与生产收口（2026-08-11）
+
+### 当前已发布状态
+
+- 生产 Linux 服务已原子切换到不可变 release `/home/hoz2wx/radar-sim-ce236bb`，入口 `http://10.190.171.44:8877`；systemd `ActiveState=active/SubState=running/NRestarts=0`。发布提交 `ce236bb Deliver local results to configured directories` 已推送 `origin/codex/new-branch`。
+- 生产统一 Connector ZIP 为 `8,329,620` bytes、172 files、SHA-256 `45cc9a9c39a5dac5d40924d9bc0567d571b92d416caf9c74a9c83f818a2c2b38`。执行合同为 v6；本机已通过同源一键入口原地更新，线上能力为 `update_required=false/outdated_count=0/required_contract_version=6`、`windows_full.available=true,count=1`，Cluster 为 `linux_executor_count=2/platform_gateway_count=2`。
+- Windows 发布门禁 `361 passed, 3 skipped, 1 warning`；Linux 候选发布门禁 `253 passed, 1 skipped`。唯一 warning 是现有 Starlette/httpx 弃用提示，不是业务失败。
+
+### 本轮收口功能与真实证据
+
+1. 用户 YAML、Web 与 SDK 共用可选 `result.path`，语义是“结果保存根目录”。执行端最终写入 `<result.path>/<job_id>`；留空只在接收设备解析为 `~/RadarSim/results/<job_id>`，Linux 公共 Job/Manifest 不解析或回写用户物理目录。
+2. Windows 本地仿真在 `collect_results` 只做一次原子、幂等结果目录物化，保存原始输出和 path-free `manifest.json`；`finalize_manifest` 只复用 `status/file_count/checksum/code` 摘要，不再次扫描大结果。交付目录失败不篡改仿真业务结论，owner-scoped ZIP 继续保留。
+3. 用真实成功任务 `job_d8b902defaad` 的本机私有 run 输出做了非夹具验收：`239,051,624` bytes MF4 已写到 `.acceptance/result-root/job_d8b902defaad/outputs/`，文件 SHA-256 为 `c7dd6cc58e9db120ba95bf77f07325a3266660875a299493a68a440da643b6e7`；目录 Manifest 记录 1/1 succeeded 且不含源/目标物理路径。第一次返回 `delivered`，第二次返回 `already_present`，内容校验和均为 `sha256:d90450c830f7bd343f967f44655e9c51a6f5dcef546de3c0501f33e3de29cb40`。
+4. SDK 新增 `download_job_result(job_or_id, destination=None)`，按 `Job -> Manifest -> result_ref` 流式下载并校验 ZIP；真实 `job_d8b902defaad` 下载成功，归档 `12,163,891` bytes。低层 `download_result(result_ref, destination)` 保留。
+5. Web `Result is unavailable` 根因是 Blob 二进制请求漏带 `X-Rsim-User`；现在结果与 Connector 下载共用 owner/auth header 和同一个 Blob helper。真实浏览器点击得到 HTTP 200 `application/zip`、完整 `12,163,891` bytes 并显示“结果 ZIP 已开始下载”，不再返回 `result_unavailable`。Codex 内置浏览器的受控下载仍保留为 `Unconfirmed *.crdownload`，因此普通用户浏览器最终文件名仍需要一次人工确认，不能把自动化壳的下载行为冒充为 Chrome 最终验收。
+6. `FC`/`RadarFC` 已贯通 YAML、Web、SDK、本地与 Cluster 公共映射；真实前雷达 MF4 `Vehicle_FR5CP_20090101_001306_0001.MF4` 再验证为 `sources=['RadarFC']`、`source=RadarFC`、`mounting_position=front`、`method=acquisition_source`。
+
+### Coding Agent / MCP / Skill 的真实边界
+
+- 今天可用的自动化入口是 Python SDK。Coding Agent 可在用户 Windows 终端调用 SDK 提交同一 YAML；同 owner 的持久统一 Connector 负责读取并编译当前工作区（包括未提交修改）、执行本地仿真或把输入直传 Cluster，SDK 可等待、诊断、读 Manifest 并下载结果。
+- 仓库目前没有可安装的 radar-sim MCP Server 或 Skill 包。`docs/AI_INTEGRATION_CONTRACT.md` 只定义了未来薄封装合同；不得对外宣称“安装 MCP/Skill 即可使用”。下一轮只允许把 SDK 方法映射成薄工具，不得复制调度、项目识别、传输或结果判断。
+- 本轮没有实现 Cluster 到 Connector/SDK 的安全反向 `source_to_local`。Cluster 结果仍可靠进入 owner-scoped ResultCatalog/ZIP；自动落用户本地 `result.path` 需要下一轮补目标设备授权和反向 TransferPlan，禁止让正文经过 Linux Web API，也禁止新建第二套上传协议。
+
+详细逐项状态和下一动作见 `docs/handoffs/2026-08-11-result-delivery-mcp-acceptance.md`。
+
 ## 0.0.8 统一 Connector、MatFilter 推导与真实验收（2026-08-11）
 
 ### 已发布状态

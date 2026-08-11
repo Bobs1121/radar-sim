@@ -1,6 +1,6 @@
 # Result delivery, RadarFC and Coding-Agent acceptance handoff
 
-> Updated: 2026-08-11 15:40 Asia/Shanghai
+> Updated: 2026-08-11 16:05 Asia/Shanghai
 > Owner: root
 > Status: active; do not report the whole scenario complete until every P0 gate below is checked.
 
@@ -50,40 +50,37 @@ Accepted result contract:
   one-click endpoint. Online capability evidence is
   `update_required=false`, `outdated_count=0`, `required_contract_version=5`,
   Windows unified available count 1.
-- [ ] The local `result.path` execution change requires Connector contract v6.
-  The source constant is now v6, but the production Connector must not be
-  reported current until the final bundle is deployed and this PC is updated.
+- [x] The local `result.path` execution change requires Connector contract v6.
+  Production and this PC now report `update_required=false`,
+  `outdated_count=0`, `required_contract_version=6`.
 - [x] The apparent two Python processes are one supervised process chain, not
   duplicate Agents: hidden PowerShell supervisor -> venv Python launcher ->
   base Python interpreter. The server registers one Windows device.
 
 ## Current deployment truth
 
-- Production currently runs immutable release
-  `/home/hoz2wx/radar-sim-60299a8` at `http://10.190.171.44:8877`.
-- `f32cf99` is pushed to `origin/codex/new-branch` and extracted as deployment
-  candidate `/home/hoz2wx/radar-sim-f32cf99`.
-- Candidate Linux focused Web/result gate: `8 passed, 19 deselected`.
-- Production has not yet been switched to `f32cf99`; do not claim the delayed
-  Blob fix is online until the systemd WorkingDirectory and real browser
-  download are rechecked.
+- Production runs immutable release `/home/hoz2wx/radar-sim-ce236bb` at
+  `http://10.190.171.44:8877`; systemd is active with `NRestarts=0`.
+- `ce236bb` is pushed to `origin/codex/new-branch`.
+- Production Connector package: 8,329,620 bytes, SHA-256
+  `45cc9a9c39a5dac5d40924d9bc0567d571b92d416caf9c74a9c83f818a2c2b38`.
 
 ## P0 remaining implementation and acceptance
 
-- [ ] Switch Linux service atomically to `/home/hoz2wx/radar-sim-f32cf99`,
+- [x] Switch Linux service atomically to `/home/hoz2wx/radar-sim-ce236bb`,
   verify health, service restart count and Connector/Cluster capabilities.
 - [ ] In a real browser, refresh the cache-busted page, open
   `job_d8b902defaad`, click `下载结果 ZIP`, and verify a final `.zip` rather
   than `Result is unavailable` or a lingering `.crdownload`.
-- [ ] Add `result.path` to the one user YAML contract, Web import/edit/export
+- [x] Add `result.path` to the one user YAML contract, Web import/edit/export
   and SDK model without exposing device IDs, transfer roots or project names.
-- [ ] Add a job-oriented SDK convenience that waits/reads the manifest and
+- [x] Add a job-oriented SDK convenience that reads the manifest and
   downloads the owner-scoped ZIP with checksum verification; preserve the
   existing low-level `download_result(result_ref, destination)` API.
-- [ ] Resolve an empty result destination only on the receiving device. Never
+- [x] Resolve an empty result destination only on the receiving device. Never
   put a resolved home directory or physical path in public Job/Manifest/MCP
   responses.
-- [ ] Local simulation copies/extracts successful and partial outputs directly
+- [x] Local simulation copies/extracts successful and partial outputs directly
   to `result.path` while retaining catalog ZIP publication.
 - [ ] Cluster result delivery reuses the existing direct-transfer kernel for a
   reverse Cluster-to-device plan. Result bytes must not traverse the Linux Web
@@ -91,10 +88,10 @@ Accepted result contract:
 - [ ] If the target Connector/SDK device is offline, the Job/result remains
   durable and exposes a structured waiting/action state; simulation success is
   not rewritten as failure. Delivery retry must be idempotent.
-- [ ] Batch/partial success preserves every input outcome in both the extracted
+- [x] Batch/partial success preserves every input outcome in both the extracted
   directory manifest and owner-scoped ZIP.
-- [ ] Web, SDK and future AI adapter tests cover the same owner, destination and
-  result truth semantics.
+- [x] Web and SDK tests cover the same owner, destination and result truth
+  semantics. Future AI adapter coverage remains pending with the adapter.
 
 ## MCP and Skill readiness review
 
@@ -114,8 +111,13 @@ Accepted result contract:
 
 ## Validation already run for the current code
 
-- Windows focused Web/API/SDK/user config gate after `f32cf99`: 58 passed,
-  one existing Starlette/httpx deprecation warning.
+- Windows release gate for result delivery, Web/API/SDK/config, local/Cluster
+  stages, direct transfer, Connector policy and deployment: 361 passed,
+  3 skipped, one existing Starlette/httpx deprecation warning.
+- Linux candidate release gate for `/home/hoz2wx/radar-sim-ce236bb`:
+  253 passed, 1 skipped.
+- Real local result materialization from `job_d8b902defaad`: 239,051,624-byte
+  MF4 plus path-free manifest, followed by an idempotent `already_present` retry.
 - Earlier RadarFC/result broad Windows gate: 192 passed, 1 skipped, 1 warning.
 - Earlier Linux server-relevant gate for `60299a8`: 151 passed, 1 skipped.
 - Do not use the old broad `tests/test_cluster.py` Linux run as a release gate:
@@ -124,12 +126,11 @@ Accepted result contract:
 
 ## Next executable actions
 
-1. Finish the `f32cf99` service switch and real browser download acceptance.
-2. Integrate the bounded `result_contract` and `result_delivery` worker slices;
-   reject any second upload protocol or service-side physical result path.
-3. Run Web + SDK + local execution + direct-transfer regression gates.
-4. Run one real local result-path delivery with the historical successful job
-   or a deterministic existing result, then one real Cluster-to-device result
-   delivery when the Cluster endpoint is available.
-5. Update this file, root `HANDOFF.md`, release docs, commit, push and deploy.
-6. Only after all P0 boxes are checked, start the thin MCP/Skill package.
+1. Have one normal user browser confirm the final ZIP filename; automated
+   browser evidence already proves owner-scoped HTTP 200 and complete bytes.
+2. Next sprint: design one authorized Cluster-to-device reverse TransferPlan;
+   do not route result bodies through Linux and do not create a second protocol.
+3. Add a durable delivery retry action for a temporarily offline destination
+   while preserving simulation success and the catalog ZIP.
+4. After those result gates, implement the thin MCP/Skill package over the SDK
+   and run one real dirty-workspace Coding-Agent end-to-end acceptance.
