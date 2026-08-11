@@ -2095,6 +2095,92 @@ def _local_stage_result(lease_ref: str, result: dict) -> tuple[dict, int]:
     return {"local_run_lease_ref": lease_ref, **result}, 0 if result["status"] == "succeeded" else 1
 
 
+def _local_result_input_results(local_result: dict) -> list[dict]:
+    """Return path-free per-input outcomes for the extracted manifest."""
+    diagnostics = dict(local_result.get("diagnostics") or {})
+    input_results: list[dict] = []
+    for item in diagnostics.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        input_results.append(
+            {
+                "index": item.get("index"),
+                "input_relative_path": str(item.get("input_relative_path") or "<input>"),
+                "output_relative_path": str(item.get("output_relative_path") or ""),
+                "status": str(item.get("status") or "unknown"),
+                "returncode": item.get("returncode"),
+                "error_code": str(item.get("error_code") or ""),
+            }
+        )
+    return input_results
+
+
+def _result_path_from_payload(payload: dict) -> str:
+    """Read the canonical ``result.path`` field without exposing it upstream."""
+    if "result_path" in payload:
+        return str(payload.get("result_path") or "")
+    section = payload.get("result")
+    if isinstance(section, dict):
+        return str(section.get("path") or "")
+    return ""
+
+
+def _materialize_local_result(
+    task: dict,
+    *,
+    source_root: Path,
+    local_result: dict,
+    result_ref: str,
+) -> dict:
+    """Deliver local outputs to the Connector device, keeping ZIP publication.
+
+    Delivery is deliberately best-effort from the simulation business
+    outcome's perspective: a filesystem conflict/unavailability returns a
+    stable path-free status and the caller can still finalize the catalog ZIP.
+    """
+    from core.result_delivery import (
+        ResultDeliveryError,
+        materialize_result_directory,
+        resolve_result_destination,
+    )
+
+    payload = dict(task.get("payload") or {})
+    job_id = str(payload.get("job_id") or task.get("job_id") or "").strip()
+    result_ref = str(result_ref or local_result.get("result_ref") or "").strip()
+    files = list(local_result.get("files") or [])
+    partial = _is_partial_local_result(local_result)
+    manifest = {
+        "job_id": job_id,
+        "status": "partial" if partial else str(local_result.get("status") or "succeeded"),
+        "result_ref": result_ref,
+        "files": files,
+        "summary": dict(local_result.get("summary") or {}),
+        "input_results": _local_result_input_results(local_result),
+    }
+    try:
+        destination = resolve_result_destination(
+            _result_path_from_payload(payload),
+            job_id,
+        )
+        return materialize_result_directory(
+            source_root,
+            destination,
+            files=files,
+            input_results=manifest["input_results"],
+            manifest=manifest,
+        )
+    except ResultDeliveryError as exc:
+        # The physical path is intentionally absent from the callback.  The
+        # ZIP result remains available and a later local retry can re-run this
+        # best-effort delivery using the same immutable source lease.
+        return {
+            "status": "failed",
+            "file_count": 0,
+            "checksum": "",
+            "code": str(exc.code or "result_delivery_failed"),
+        }
+
+
 def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = None) -> dict:
     import time
 
@@ -2131,6 +2217,12 @@ def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = N
             retain_until=time.time() + retain_days * 86400,
         )
     central = published.public_dict
+    delivery = _materialize_local_result(
+        task,
+        source_root=Path(private["run_root"]),
+        local_result=local_result,
+        result_ref=published.ref,
+    )
     if client is not None and getattr(client, "_api_url", ""):
         archive = catalog.resolve_archive(
             published.ref,
@@ -2186,6 +2278,7 @@ def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = N
         "local_run_lease_ref": lease_ref,
         "result_ref": str(central.get("ref") or published.ref),
         "result": central,
+        "delivery": delivery,
     }
 
 
@@ -2205,20 +2298,20 @@ def _execute_v5_local_finalize(task: dict) -> dict:
     local_summary = dict(local["summary"])
     partial = _is_partial_local_result(local)
     manifest_diagnostics = dict(local.get("diagnostics") or {})
-    input_results = []
-    for item in manifest_diagnostics.get("items") or []:
-        if not isinstance(item, dict):
-            continue
-        input_results.append(
-            {
-                "index": item.get("index"),
-                "input_relative_path": str(item.get("input_relative_path") or "<input>"),
-                "output_relative_path": str(item.get("output_relative_path") or ""),
-                "status": str(item.get("status") or "unknown"),
-                "returncode": item.get("returncode"),
-                "error_code": str(item.get("error_code") or ""),
-            }
-        )
+    input_results = _local_result_input_results(local)
+    # ``collect_results`` already performed the one physical copy.  Finalize
+    # receives only its path-free summary through the signed successor payload
+    # and must not traverse/copy a large local run a second time.
+    delivery = dict(payload.get("delivery") or {})
+    if not delivery:
+        # Compatibility with direct embedded callers that invoke finalize
+        # without the stage binder.  The catalog ZIP remains authoritative;
+        # no second materialization is attempted here.
+        delivery = {
+            "status": "not_reported",
+            "file_count": len(result.files),
+            "checksum": "",
+        }
     manifest = {
         "schema_version": "radar-sim.run-manifest/2.0",
         "job_id": str(payload.get("job_id") or task.get("job_id") or ""),
@@ -2232,6 +2325,7 @@ def _execute_v5_local_finalize(task: dict) -> dict:
         "input_results": input_results,
         "created_at": result.created_at,
         "retain_until": result.retain_until,
+        "delivery": delivery,
     }
     if manifest_diagnostics.get("engine_log_tail"):
         manifest["diagnostics"] = {
@@ -2242,7 +2336,7 @@ def _execute_v5_local_finalize(task: dict) -> dict:
         or not manifest["dataset_id"].startswith("dataset:sha256:")
     ):
         raise ValueError("local manifest logical inputs are invalid")
-    return {"manifest": manifest}
+    return {"manifest": manifest, "delivery": delivery}
 
 
 def _resolve_v2_run_config(

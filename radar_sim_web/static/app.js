@@ -392,6 +392,7 @@ function runConfigFromForm() {
   const runtimeXml = byId("runtimeXml").value.trim();
   const adapterFile = byId("adapterFile").value.trim();
   const matFilter = byId("matFilter").value.trim();
+  const resultPath = byId("resultPath").value.trim();
   const radarSource = byId("radarSource").value.trim();
   if (source === "build" && !codePath) throw new Error("本地编译需要填写代码路径");
   if (source === "build" && !selenaBuildScript) throw new Error("本地编译需要填写 Selena 编译脚本");
@@ -421,6 +422,7 @@ function runConfigFromForm() {
       adapter_file: adapterFile,
       mat_filter: matFilter,
     },
+    result: { path: resultPath },
   };
 }
 
@@ -441,6 +443,7 @@ function applyRunConfig(config) {
   byId("radarSource").value = config.simulation?.source || "";
   byId("adapterFile").value = config.simulation?.adapter_file || "";
   byId("matFilter").value = config.simulation?.mat_filter || "";
+  byId("resultPath").value = config.result?.path || "";
   updateConditionalFields();
   updateRouteSummary();
 }

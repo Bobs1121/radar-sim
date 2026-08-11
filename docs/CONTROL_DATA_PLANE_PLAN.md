@@ -35,6 +35,13 @@ Linux 服务是自动化脚手架，不是文件服务器。Web、SDK 和未来 
 
 `target=auto` 必须先选择执行目标，再决定是否需要传输。无论目标本地还是 Cluster，都遵循“执行端可读则原地使用、否则源端直传执行端”；Cluster 目标优先原地共享引用，其次复用已登记引用，最后才签发客户端直传计划。本地目标不得上传本机已有输入，但允许远端输入直接进入 Windows full。
 
+结果交付保留两条能力：执行端/连接端按 `result.path` 将原始结果文件和 Manifest
+解压到 `<result.path>/<job_id>`；ZIP 归档和 `result_ref` 继续作为并行保留/手动下载
+能力。`result.path` 为空保持 `auto`，不能被控制面替换为 Linux 物理路径，也不能写回
+公共 Manifest。SDK 的 `download_job_result()` 仅手动下载 ZIP；未显式传入 destination
+时使用 `<result.path>/<job_id>`，空值根目录为 `Path.home()/RadarSim/results`。执行端解压结果和手动 ZIP 可在同一 Job 目录并行存在。
+纯浏览器不能保证写入该目录，只保留 ZIP 下载。
+
 ### 3.1 通用资源图，而不是项目特例
 
 内部把一次任务表示为资源图：`source workspace`、`Selena runtime directory`、`runtime_xml`、`mat_filter`、`adapter`、一个或多个 `MF4` 是资源节点，Windows full 或 Cluster 是执行节点。Resolver 为每项资源选择一个能够读它的源节点，再计算到执行节点的零复制引用或直传边。项目识别只帮助推导编译命令、环境依赖和产物目录，不参与数据传输与仿真参数的固定分支。

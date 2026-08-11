@@ -21,7 +21,7 @@
 
 ## 2. 用户唯一配置
 
-用户只关心下面的业务信息，不关心项目、profile、recipe、输出目录、共享盘类型、Agent ID、Cluster manager、工具链或 Runtime Bundle。
+用户只关心下面的业务信息，不关心项目、profile、recipe、内部产物目录、共享盘类型、Agent ID、Cluster manager、工具链或 Runtime Bundle。`result.path` 只表示接收端希望直接消费的解压结果位置，不是服务端工作区。
 
 ```yaml
 schema_version: "2.0"
@@ -51,6 +51,10 @@ simulation:
   # 可选；显式填写时严格使用用户值。留空时由 SDK/Connector 从代码仓
   # 推导唯一高置信候选，无法唯一确定时再提示用户选择。
   mat_filter: ""
+
+result:
+  # 接收端结果保存根目录；每个 Job 落在 <path>/<job_id>；留空表示 auto
+  path: ""
 ```
 
 强制约束：
@@ -63,6 +67,7 @@ simulation:
 - `source=existing` 时，用户只填写 Selena 文件夹路径和 Runtime XML。系统必须使用该目录中的 `Selena.exe` 和所需 DLL，不能只复制一个 exe。
 - Runtime Bundle、artifact id、bundle ref 等可以作为内部传输/缓存实现，但绝不出现在用户配置和 Web 表单中。
 - 仿真执行必须项目无关：Runtime、Adapter、MatFilter 只取本次任务输入，显式空值不得回退到项目资产；Cluster 使用框架统一 ParamConfig，不套用项目模板。项目识别只可用于本地编译脚本、工具链依赖和产物路径推导。
+- `result.path` 是可选的接收端结果保存根目录。显式填写时，执行端/连接端在完成 Manifest 后把可直接消费的结果文件和 Manifest 写入 `<result.path>/<job_id>`；留空保持 `auto` 语义，由接收端选择默认根目录，不得被 Linux 服务解析成用户可见的绝对路径。ZIP 归档作为并行保留能力继续通过逻辑 `result_ref` 提供；公共 Job/Manifest 不回写物理保存路径。
 - Web 必须支持同一 YAML 的导入、修改和导出；SDK 直接使用同一 YAML/JSON。
 - 路径输入在 Web 中应提供文件/文件夹选择器；选择只改善体验，不改变配置字段。
 
@@ -149,6 +154,10 @@ Connector 不是所有用户的必需组件：`source=existing + target=cluster`
 9. 结果收集与 Manifest。
 
 Web 和 SDK 必须能读取同样的 Job/Stage/Event。Web 至少展示：当前 Stage、执行节点、自动路由原因、进度、日志、失败字段、修复建议、重试/取消动作和最终结果。
+
+结果下载继续保留 ZIP 归档。SDK 的 `download_job_result()` 是手动下载便捷方法，按
+`Job -> Manifest -> result_ref` 顺序获取并校验归档；未显式传入 `destination` 时，接收设备默认保存到
+`<result.path>/<job_id>`；空值时使用 `Path.home()/RadarSim/results/<job_id>`。执行端解压结果和手动下载 ZIP 并行放在同一 Job 目录；浏览器受下载权限模型约束，不能保证写入 `result.path`，但仍保留 ZIP 下载。
 
 ## 6. 发布门禁
 

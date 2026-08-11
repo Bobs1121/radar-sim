@@ -298,6 +298,7 @@ def test_project_free_run_config_routes_share_one_contract(tmp_path):
     assert validated.status_code == 200
     assert len(validated.json()["execution_plan"]) == 10
     assert validated.json()["execution"]["selected_target"] in {"local", "cluster"}
+    assert validated.json()["config"]["result"] == {"path": ""}
     created = client.post(
         "/api/v1/run-jobs",
         json={"config": config},
@@ -456,6 +457,8 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert "首次使用准备" in index.text
     assert "connectorUpdateBanner" in index.text
     assert "一键更新本机组件" in index.text
+    assert 'id="resultPath"' in index.text
+    assert 'result: { path: resultPath }' in app_js.text
     assert "本机连接暂时中断，正在自动重连" in app_js.text
     assert "无需重新安装或重新提交" in app_js.text
     assert "通常会自动恢复；长时间未连接时可重新连接本机" in app_js.text

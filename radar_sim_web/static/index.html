@@ -176,6 +176,18 @@
             </div>
           </section>
 
+          <section class="form-section" aria-labelledby="resultHeading">
+            <div class="section-heading">
+              <h2 id="resultHeading">仿真结果</h2>
+              <p>可选填写接收端结果保存根目录；每个任务会独立保存到该目录下的 Job 子目录。</p>
+            </div>
+            <label class="field">
+              <span>结果保存根目录（可选）</span>
+              <input id="resultPath" name="resultPath" placeholder="例如 D:/RadarSim/results 或 /home/user/RadarSim/results">
+              <small>任务结果落在该根目录下的 Job 子目录；留空时由接收端使用默认根目录。浏览器不能保证写入该目录，但仍可下载 ZIP。</small>
+            </label>
+          </section>
+
           <section id="createWindowsCallout" class="windows-connect-callout create-windows-connect-callout" role="status" hidden>
             <div>
               <span class="callout-eyebrow">首次使用准备</span>
@@ -248,6 +260,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" hidden></div>
-  <script src="/console/app.js?v=20260811-result-download" defer></script>
+  <script src="/console/app.js?v=20260811-result-path" defer></script>
 </body>
 </html>

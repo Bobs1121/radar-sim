@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from core.spec.yaml_codec import dump_yaml, load_yaml_mapping
 from core.path_normalization import normalize_path_text
@@ -82,6 +82,8 @@ class UserDataConfig(_Frozen):
     @field_validator("path", mode="before")
     @classmethod
     def _normalize_path(cls, value: Any) -> Any:
+        if value is None:
+            return ""
         return _path(value) if isinstance(value, str) else value
 
     @field_validator("path")
@@ -90,6 +92,26 @@ class UserDataConfig(_Frozen):
         if not value:
             raise ValueError("data.path must not be empty")
         return value
+
+
+class UserResultConfig(_Frozen):
+    """User-visible result delivery preference.
+
+    ``path`` is the receiver-side result root. Execution delivery places each
+    Job below ``<path>/<job_id>`` alongside its directly consumable files and
+    Manifest. An empty value deliberately means ``auto``; it must not be
+    replaced with a Linux service path while a configuration is canonicalized
+    or exported. ZIP retention is a parallel result-catalog concern.
+    """
+
+    path: str = ""
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _normalize_path(cls, value: Any) -> Any:
+        if value is None:
+            return ""
+        return _path(value) if isinstance(value, str) else value
 
 
 class UserSimulationConfig(_Frozen):
@@ -128,6 +150,7 @@ class UserRunConfig(_Frozen):
     selena: UserSelenaConfig
     data: UserDataConfig
     simulation: UserSimulationConfig
+    result: UserResultConfig = Field(default_factory=UserResultConfig)
 
     @staticmethod
     def _migrate_legacy(value: dict[str, Any]) -> dict[str, Any]:
@@ -138,8 +161,10 @@ class UserRunConfig(_Frozen):
         legacy keys are removed so the strict ``extra="forbid"`` model accepts
         the migrated payload and the new fields never leak back on export.
 
-        Legacy data.limit, simulation.timeout_minutes, and result block are
-        silently dropped.
+        Legacy data.limit and simulation.timeout_minutes are silently dropped.
+        Older result metadata (``name``/``retain_days``) is internal to the
+        legacy SimulationSpec contract; only the new receiver-side
+        ``result.path`` is retained.
         """
         if not isinstance(value, dict):
             return value
@@ -162,7 +187,11 @@ class UserRunConfig(_Frozen):
         simulation = migrated.get("simulation")
         if isinstance(simulation, dict):
             simulation.pop("timeout_minutes", None)
-        migrated.pop("result", None)
+        result = migrated.get("result")
+        if isinstance(result, dict):
+            migrated["result"] = {"path": result.get("path", "")}
+        else:
+            migrated.pop("result", None)
         return migrated
 
     @classmethod
@@ -214,6 +243,7 @@ class UserRunConfig(_Frozen):
                 "adapter_file": self.simulation.adapter_file,
                 "mat_filter": self.simulation.mat_filter,
             },
+            "result": {"path": self.result.path},
         }
 
     def to_yaml(self) -> str:
@@ -230,6 +260,7 @@ class UserRunConfig(_Frozen):
 
 __all__ = [
     "UserDataConfig",
+    "UserResultConfig",
     "UserRunConfig",
     "UserSelenaConfig",
     "UserSimulationConfig",

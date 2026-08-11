@@ -859,6 +859,7 @@ def maybe_bind_local_preflight(control: ControlService, job_id: str) -> dict | N
             "timeout_minutes": int(simulation.get("timeout_minutes") or 0),
             "owner": str(job.get("owner") or (job.get("metadata") or {}).get("owner") or ""),
             "retain_days": int((spec.get("result") or {}).get("retain_days") or 30),
+            "result_path": str((spec.get("result") or {}).get("path") or ""),
             "config_fingerprint": str((job.get("resolved_spec") or {}).get("source_config_hash") or ""),
         },
     )
@@ -997,6 +998,7 @@ def bind_local_stage_after_result(control: ControlService, completed_stage: dict
             .get("dataset", {}).get("id") or ""
         ),
         "retain_days": int((spec.get("result") or {}).get("retain_days") or 30),
+        "result_path": str((spec.get("result") or {}).get("path") or ""),
         "config_fingerprint": str((job.get("resolved_spec") or {}).get("source_config_hash") or ""),
     }
     if stage_type == "collect_results":
@@ -1004,6 +1006,24 @@ def bind_local_stage_after_result(control: ControlService, completed_stage: dict
         if not result_ref.startswith("result:sha256:"):
             raise StageBindingError("local result reference is unavailable")
         payload["result_ref"] = result_ref
+        # Local collection performs the one physical materialization pass.
+        # Carry only its path-free summary into finalize; never rescan/copy a
+        # potentially multi-gigabyte run directory a second time.
+        delivery = result.get("delivery")
+        if isinstance(delivery, dict):
+            try:
+                payload["delivery"] = {
+                    "status": str(delivery.get("status") or ""),
+                    "file_count": max(0, int(delivery.get("file_count") or 0)),
+                    "checksum": str(delivery.get("checksum") or ""),
+                    **(
+                        {"code": str(delivery.get("code") or "")}
+                        if delivery.get("code")
+                        else {}
+                    ),
+                }
+            except (TypeError, ValueError) as exc:
+                raise StageBindingError("local result delivery summary is invalid") from exc
     return control.bind_stage_to_agent(
         str(successor["stage_id"]),
         agent_id=agent_id,

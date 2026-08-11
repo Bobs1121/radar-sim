@@ -19,3 +19,6 @@ simulation:
   source: ""  # 可选：RadarFC/FL/FR/RL/RR；显式值优先
   adapter_file: "D:/path/to/OD25_adapter.txt"
   mat_filter: ""  # 可选；显式填写优先，留空时从代码仓推导唯一候选
+
+result:
+  path: ""  # 可选结果保存根目录；每个 Job 落到 <path>/<job_id>

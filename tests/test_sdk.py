@@ -1,4 +1,5 @@
 import pytest
+import hashlib
 import httpx
 import time
 from pathlib import Path
@@ -694,6 +695,88 @@ def test_sdk_lists_gets_and_downloads_owner_scoped_local_result(tmp_path):
     with pytest.raises(RadarSimApiError) as excinfo:
         bob.get_result(published.ref)
     assert excinfo.value.status_code == 404
+
+
+def test_sdk_download_job_result_follows_manifest_and_explicit_zip_destination(tmp_path):
+    archive = b"result-zip"
+    checksum = "sha256:" + hashlib.sha256(archive).hexdigest()
+    configured = tmp_path / "configured-results"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/jobs/job-result-1":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "job-result-1",
+                    "status": "succeeded",
+                    "spec": {"result": {"path": str(configured)}},
+                },
+            )
+        if request.url.path == "/api/v1/jobs/job-result-1/manifest":
+            return httpx.Response(
+                200,
+                json={
+                    "job_id": "job-result-1",
+                    "available": True,
+                    "manifest": {"result_ref": "result:sha256:abc"},
+                },
+            )
+        if request.url.path == "/api/v1/results/result:sha256:abc":
+            return httpx.Response(200, json={"archive_checksum": checksum})
+        if request.url.path == "/api/v1/results/result:sha256:abc/download":
+            return httpx.Response(200, content=archive)
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        transport=httpx.MockTransport(handler),
+        user="alice",
+    )
+
+    downloaded = sdk.download_job_result("job-result-1")
+
+    assert downloaded.parent == configured / "job-result-1"
+    assert downloaded.name == "radar-sim-result-" + checksum.removeprefix("sha256:")[:12] + ".zip"
+    assert downloaded.read_bytes() == archive
+
+    explicit_destination = tmp_path / "zip-downloads"
+    explicit = sdk.download_job_result("job-result-1", explicit_destination)
+    assert explicit.parent == explicit_destination
+    assert explicit.read_bytes() == archive
+
+
+def test_sdk_download_job_result_uses_receiver_default_when_result_path_is_empty(tmp_path, monkeypatch):
+    archive = b"default-result-zip"
+    checksum = "sha256:" + hashlib.sha256(archive).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/jobs/job-default-result":
+            return httpx.Response(
+                200,
+                json={"id": "job-default-result", "status": "succeeded", "spec": {"result": {"path": ""}}},
+            )
+        if request.url.path == "/api/v1/jobs/job-default-result/manifest":
+            return httpx.Response(
+                200,
+                json={
+                    "job_id": "job-default-result",
+                    "available": True,
+                    "manifest": {"result_ref": "result:sha256:def"},
+                },
+            )
+        if request.url.path == "/api/v1/results/result:sha256:def":
+            return httpx.Response(200, json={"archive_checksum": checksum})
+        if request.url.path == "/api/v1/results/result:sha256:def/download":
+            return httpx.Response(200, content=archive)
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    sdk = RadarSimClient("http://testserver", transport=httpx.MockTransport(handler), user="alice")
+
+    downloaded = sdk.download_job_result("job-default-result")
+
+    assert downloaded.parent == tmp_path / "RadarSim" / "results" / "job-default-result"
+    assert downloaded.read_bytes() == archive
 
 
 def test_sdk_minimal_spec_and_task_center_list(tmp_path):

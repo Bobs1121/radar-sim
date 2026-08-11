@@ -835,6 +835,69 @@ class RadarSimClient:
     def manifest(self, job_id: str) -> ManifestResponse:
         return ManifestResponse.from_dict(self._request("GET", f"/api/v1/jobs/{job_id}/manifest"))
 
+    @staticmethod
+    def default_result_directory(job_id: str) -> Path:
+        """Return the receiver-local default directory for one Job's ZIP.
+
+        The directory is intentionally resolved on the SDK caller, never by
+        the Linux control plane.  Keeping each Job in its own directory also
+        makes the default safe for repeated downloads and concurrent users.
+        """
+
+        component = _safe_job_path_component(job_id)
+        return Path.home() / "RadarSim" / "results" / component
+
+    def download_job_result(
+        self,
+        job: Job | str,
+        destination: str | Path | None = None,
+    ) -> Path:
+        """Fetch a Job Manifest and download its owner-scoped result ZIP.
+
+        ``destination`` is a receiver-local directory (or an explicit ``.zip``
+        file) for this manual ZIP download. If it is omitted, a non-empty
+        ``result.path`` from the Job spec is treated as a result root and the
+        archive is written below ``<result.path>/<job_id>``; an empty path uses
+        ``Path.home()/RadarSim/results/<job_id>``. The execution contract puts
+        decompressed files and the Manifest in that same Job directory, while
+        this ZIP remains a parallel retention artifact. The existing ZIP
+        archive and checksum verification remain unchanged; no physical path
+        is ever added to the public Manifest. If this SDK process is not the
+        receiving device named by the configuration, pass ``destination``
+        explicitly instead of relying on the configured root.
+        """
+
+        current = job if isinstance(job, Job) else self.get_job(str(job))
+        job_id = str(current.id or "").strip()
+        if not job_id:
+            raise ValueError("job id is required to download a result")
+        response = self.manifest(job_id)
+        manifest = response.manifest if response.available else None
+        result_ref = str((manifest or {}).get("result_ref") or "").strip()
+        if not result_ref:
+            raise ValueError("job manifest does not contain a downloadable result_ref")
+
+        raw_destination = str(destination or "").strip()
+        if raw_destination:
+            target = Path(raw_destination).expanduser()
+        else:
+            configured_root = str(
+                ((current.spec or {}).get("result") or {}).get("path") or ""
+            ).strip()
+            root = (
+                Path(configured_root).expanduser()
+                if configured_root
+                else Path.home() / "RadarSim" / "results"
+            )
+            target = root / _safe_job_path_component(job_id)
+        # Preserve the low-level ``download_result(ref, file_path)`` API for
+        # callers that need an exact file name, while this Job helper treats
+        # ordinary destinations as directories and keeps the checksum-derived
+        # ZIP name.
+        if target.suffix.casefold() != ".zip":
+            target.mkdir(parents=True, exist_ok=True)
+        return self.download_result(result_ref, target)
+
     def diagnosis(self, job_id: str) -> JobDiagnosis:
         """Return the shared path-free diagnosis used by Web and AI adapters."""
         return JobDiagnosis.from_dict(
@@ -1596,3 +1659,13 @@ def _sha256_path(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _safe_job_path_component(job_id: str) -> str:
+    """Keep a server-supplied Job ID inside the default result root."""
+
+    value = str(job_id or "").strip()
+    if value and value not in {".", ".."} and not any(char in value for char in ("/", "\\")):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return f"job-{digest}"

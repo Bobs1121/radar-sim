@@ -50,6 +50,9 @@ Accepted result contract:
   one-click endpoint. Online capability evidence is
   `update_required=false`, `outdated_count=0`, `required_contract_version=5`,
   Windows unified available count 1.
+- [ ] The local `result.path` execution change requires Connector contract v6.
+  The source constant is now v6, but the production Connector must not be
+  reported current until the final bundle is deployed and this PC is updated.
 - [x] The apparent two Python processes are one supervised process chain, not
   duplicate Agents: hidden PowerShell supervisor -> venv Python launcher ->
   base Python interpreter. The server registers one Windows device.

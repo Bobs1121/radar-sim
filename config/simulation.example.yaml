@@ -23,3 +23,6 @@ simulation:
   target: auto
   adapter_file: ''
   mat_filter: ""
+
+result:
+  path: ''  # 可选结果保存根目录；每个 Job 落到 <path>/<job_id>

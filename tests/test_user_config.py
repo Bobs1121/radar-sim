@@ -166,7 +166,7 @@ def test_yaml_roundtrip_is_stable():
     assert second.fingerprint() == first.fingerprint()
     assert "bundle:" not in exported
     assert "executable:" not in exported
-    assert "result:" not in exported
+    assert "result:\n  path: ''" in exported
     assert "timeout_minutes:" not in exported
     assert "limit:" not in exported
 
@@ -260,5 +260,17 @@ def test_legacy_result_block_is_silently_dropped():
     config = _build_config()
     config["result"] = {"name": "my-run", "retain_days": 7}
     parsed = UserRunConfig.from_dict(config)
-    assert "result" not in parsed.to_dict()
-    assert "result" not in parsed.to_yaml()
+    assert parsed.result.path == ""
+    assert parsed.to_dict()["result"] == {"path": ""}
+    assert "name:" not in parsed.to_yaml()
+    assert "retain_days:" not in parsed.to_yaml()
+
+
+def test_result_path_is_normalized_and_round_trips_as_receiver_hint():
+    config = _build_config()
+    config["result"] = {"path": r"D:\\RadarSim\\results\\job-1"}
+
+    parsed = UserRunConfig.from_dict(config)
+
+    assert parsed.result.path == "D:/RadarSim/results/job-1"
+    assert UserRunConfig.from_yaml(parsed.to_yaml()).result.path == parsed.result.path

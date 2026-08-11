@@ -92,10 +92,16 @@ def test_partial_local_result_collects_and_finalizes_input_results(tmp_path, mon
         "runtime_bundle_id": "selena-bundle:sha256:" + "2" * 64,
         "dataset_id": "dataset:sha256:" + "3" * 64,
         "retain_days": 1,
+        "result_path": str(tmp_path / "delivered"),
     }
 
     collected = _execute_v5_local_collect({"payload": payload})
+    delivery_root = tmp_path / "delivered" / "job-partial"
+    assert (delivery_root / "outputs" / "good.MF4").read_bytes() == b"successful output"
+    assert (delivery_root / "manifest.json").is_file()
+    assert set(collected["delivery"]) <= {"status", "file_count", "checksum", "code"}
     payload["result_ref"] = collected["result_ref"]
+    payload["delivery"] = collected["delivery"]
     finalized = _execute_v5_local_finalize({"payload": payload})
 
     manifest = finalized["manifest"]
@@ -103,6 +109,7 @@ def test_partial_local_result_collects_and_finalizes_input_results(tmp_path, mon
     assert manifest["summary"]["failed_input_count"] == 1
     assert [item["status"] for item in manifest["input_results"]] == ["failed", "succeeded"]
     assert manifest["diagnostics"]["engine_log_tail"] == ["one runnable failed"]
+    assert manifest["delivery"] == collected["delivery"]
     assert str(tmp_path) not in json.dumps(manifest)
 from core.agent_asset_bindings import AgentAssetBindingStore
 from core.agent_data_bindings import AgentDataBindingStore

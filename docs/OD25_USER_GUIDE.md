@@ -58,6 +58,8 @@ simulation:
   source: ""  # 可选；可填写 RadarFC/FL/FR/RL/RR
   adapter_file: "D:/path/to/OD25_adapter.txt"
   mat_filter: ""  # 可留空；无法唯一推导时 Web/SDK 会要求用户选择
+result:
+  path: ""  # 可选结果保存根目录；每个 Job 落到 <path>/<job_id>
 ```
 
 `branch` 可留空。系统始终编译用户当前工作区，包括未提交修改；不会自动切分支、清仓、reset 或 stash。填写了 `branch` 但与实际分支不一致时，任务会显示警告并继续。
@@ -79,6 +81,8 @@ simulation:
   source: ""  # 留空自动推导；多源时稳定选择第一个
   adapter_file: "D:/path/to/OD25_adapter.txt"
   mat_filter: ""  # 可留空；无法唯一推导时 Web/SDK 会要求用户选择
+result:
+  path: ""  # 可选结果保存根目录；每个 Job 落到 <path>/<job_id>
 ```
 
 `existing_path` 应指向能唯一找到 `Selena.exe` 的产物文件夹。系统会把 `Selena.exe`、同目录全部 DLL 和 Runtime XML 作为一个内部整体校验和传输，但 YAML 中不会出现 Bundle 概念。
@@ -156,12 +160,18 @@ with RadarSimClient("http://10.190.171.44:8877") as client:
     if terminal.status != "succeeded":
         raise RuntimeError(f"simulation failed: {terminal.id}")
 
-    manifest = client.manifest(job.id).manifest
-    archive = client.download_result(manifest["result_ref"], Path("downloads"))
+    archive = client.download_job_result(job)
     print("result:", archive)
 ```
 
 `submit_yaml()` 与 Web 调用同一个 `/api/v1/run-jobs` 调度核心。`idempotency_key` 用于避免集成产品因网络重试重复创建任务；同一次业务请求保持不变，新一次运行换一个值。
+
+`result.path` 可在 YAML 中填写接收端结果保存根目录；每个 Job 的解压结果和
+Manifest 落到 `<result.path>/<job_id>`，留空时根目录为接收端
+`Path.home()/RadarSim/results`。结果仍并行保留 ZIP 归档。`download_job_result()`
+是手动下载 ZIP 的便捷方法，未显式传入目录时落在同一 Job 目录；公共 Manifest
+只返回逻辑 `result_ref`，不会暴露物理目录。
+如果 SDK 运行在非结果接收设备上，请显式传入 `destination` 覆盖本机保存位置。
 
 未显式传入 `user` 时，SDK 使用调用端的 Windows/Linux 登录用户名生成稳定的 `user-<小写登录名>` owner；需要跨电脑或与 Web 统一时，可显式传入同一个规范化标识，例如 `RadarSimClient(url, user="user-alice")`。Web 首次访问未认证的可信内网服务时会要求输入同一个 NTID（内部规范化为 `user-alice`）并保存在浏览器本地；清理缓存或更换浏览器只需再次输入该标识，不必重装已配对 Connector。该标识只是 `X-Rsim-User` 的可信内网隔离标签，不是登录认证，不能用于不受信网络。
 
