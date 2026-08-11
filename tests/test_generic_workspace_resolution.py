@@ -8,7 +8,7 @@ from core.agent_bindings import AgentBindingStore
 from core.agent_build_stage import prepare_selena_build
 from core.repo import WorkspaceFingerprint
 from core.workspace_recognizer import WorkspaceRecognizer
-from core.config import load_config
+from core.config import load_config, load_local_execution_config
 
 
 def _make_unknown_workspace(tmp_path):
@@ -82,6 +82,37 @@ def test_unknown_workspace_identity_never_falls_back_to_legacy_project_config(tm
 
     with pytest.raises(FileNotFoundError, match="internal execution adapter"):
         load_config(outcome.internal_project)
+
+
+def test_unknown_workspace_can_use_project_independent_local_execution_config(
+    tmp_path, monkeypatch
+):
+    workspace, selena_script, package_script = _make_unknown_workspace(tmp_path)
+    projects = tmp_path / "no-projects"
+    projects.mkdir()
+    outcome = WorkspaceRecognizer(projects).recognize(
+        str(workspace),
+        selena_build_script=str(selena_script),
+        package_build_script=str(package_script),
+    )
+    shared = tmp_path / "config" / "shared" / "selena_paramconfig_v1.txt"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("input={{INPUT_MF4}}\noutput={{OUTPUT_MF4}}\n", encoding="utf-8")
+    platform = tmp_path / "config" / "platforms" / "gen5_selena.yaml"
+    platform.parent.mkdir(parents=True)
+    platform.write_text("machine:\n  platform: gen5_selena\n", encoding="utf-8")
+    monkeypatch.setattr("core.config.get_projects_dir", lambda: projects)
+    monkeypatch.setattr("core.config.get_config_dir", lambda: tmp_path / "config")
+
+    config = load_local_execution_config(
+        outcome.internal_project,
+        project_root=str(workspace),
+    )
+
+    assert config["_meta"]["project_independent_local_execution"] is True
+    assert config["project"]["name"] == outcome.internal_project
+    assert config["assets"]["config_template"] == str(shared)
+    assert config["paths"]["project_root"] == str(workspace)
 
 
 def test_agent_auto_configures_unknown_workspace_without_project_registration(

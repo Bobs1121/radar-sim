@@ -626,6 +626,62 @@ def load_cluster_execution_config(project: Optional[str] = None) -> dict[str, An
     return config
 
 
+def load_local_execution_config(
+    internal_project: str,
+    *,
+    project_root: str = "",
+) -> dict[str, Any]:
+    """Load a Windows-local execution config without requiring project registration.
+
+    Known internal adapters keep their existing environment hints.  An unknown
+    workspace identity (``workspace-<digest>``) receives only the common Gen5
+    Selena invocation contract; the user's Runtime, MatFilter, Adapter, data
+    and runtime bundle are injected by the local lease afterwards.  This keeps
+    project recognition useful for compilation while preventing it from being
+    a prerequisite for an already-built Selena simulation.
+    """
+
+    identity = str(internal_project or "").strip()
+    try:
+        return load_config(identity)
+    except FileNotFoundError:
+        if not re.fullmatch(r"workspace-[0-9a-f]{24}", identity):
+            raise
+
+    platform = _normalize_layer(_load_yaml_file(get_config_dir() / "platforms" / "gen5_selena.yaml"))
+    config: dict[str, Any] = {}
+    for layer in (_normalize_layer(load_global_defaults()), platform):
+        config = _deep_merge(config, layer)
+
+    root = os.path.normpath(str(project_root)) if str(project_root or "").strip() else ""
+    template = get_shared_selena_paramconfig_template()
+    if not template.is_file():
+        raise FileNotFoundError(
+            "The internal Selena paramconfig template is unavailable; "
+            "update or repair the radar-sim Connector installation."
+        )
+    config["_meta"] = {
+        "project": identity,
+        "project_independent_local_execution": True,
+    }
+    config["project"] = {"name": identity, "platform": "gen5_selena"}
+    config.setdefault("machine", {}).update(
+        {"name": identity, "platform": "gen5_selena"}
+    )
+    config["project_root"] = root
+    paths = config.setdefault("paths", {})
+    if root:
+        paths["project_root"] = root
+        paths["source_root"] = root
+    assets = config.setdefault("assets", {})
+    assets["root"] = str(template.parent)
+    assets["config_template"] = str(template)
+    # The lease runner replaces this with its controlled work directory.
+    assets["fixed_config_path"] = ""
+    config.setdefault("environment", {}).setdefault("path_prefix", [])
+    return config
+
+
 def load_simulation_spec_bundle(
     project: Optional[str] = None,
     *,

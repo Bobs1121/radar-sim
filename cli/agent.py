@@ -1782,7 +1782,7 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
     from core.agent_data_lease import AgentDataLeaseStore
     from core.agent_local_run import AgentLocalRunLeaseStore
     from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
-    from core.config import load_config
+    from core.config import load_local_execution_config
     from core.preflight import run_preflight
     from core.runtime_bundle_archive import extract_runtime_bundle_archive
 
@@ -1858,7 +1858,11 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         adapter_binding, _ = authorize_user_asset(adapter_path, role="adapter")
     mat_binding, _ = authorize_user_asset(mat_filter_path, role="mat_filter")
     timeout_minutes = int(payload.get("timeout_minutes") or 0)
-    base_config = load_config(project)
+    discovery = dict(payload.get("resource_discovery") or {})
+    base_config = load_local_execution_config(
+        project,
+        project_root=str(discovery.get("code_path") or payload.get("code_path") or ""),
+    )
     # Product/project defaults are not user intent.  An explicit public YAML
     # source wins; when it is empty the per-file metadata detector selects a
     # stable first acquisition source at execution time.

@@ -67,6 +67,7 @@ result:
 - `source=existing` 时，用户只填写 Selena 文件夹路径和 Runtime XML。系统必须使用该目录中的 `Selena.exe` 和所需 DLL，不能只复制一个 exe。
 - Runtime Bundle、artifact id、bundle ref 等可以作为内部传输/缓存实现，但绝不出现在用户配置和 Web 表单中。
 - 仿真执行必须项目无关：Runtime、Adapter、MatFilter 只取本次任务输入，显式空值不得回退到项目资产；Cluster 使用框架统一 ParamConfig，不套用项目模板。项目识别只可用于本地编译脚本、工具链依赖和产物路径推导。
+- “已有 Selena”以及编译完成后的本地仿真不得要求项目预登记。已知内部适配器可提供环境提示；未知项目必须使用通用 Gen5 Selena 参数适配器，内部匿名身份只用于授权、缓存和追踪，不能选择业务默认值或阻断执行。
 - `result.path` 是可选的接收端结果保存根目录。显式填写时，执行端/连接端在完成 Manifest 后把可直接消费的结果文件和 Manifest 写入 `<result.path>/<job_id>`；留空保持 `auto` 语义，由接收端选择默认根目录，不得被 Linux 服务解析成用户可见的绝对路径。ZIP 归档作为并行保留能力继续通过逻辑 `result_ref` 提供；公共 Job/Manifest 不回写物理保存路径。
 - Web 必须支持同一 YAML 的导入、修改和导出；SDK 直接使用同一 YAML/JSON。
 - 路径输入在 Web 中应提供文件/文件夹选择器；选择只改善体验，不改变配置字段。

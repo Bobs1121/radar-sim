@@ -11,6 +11,7 @@
 - 该行为属于 Connector 执行逻辑，合同版本由 v6 提升为 v7；生产发布后所有旧 Connector 会由 Web 全局横幅提示“一键更新”，未更新前不得领取新任务。
 - 用户随后显式填写 MatFilter 的 `job_a65a13dde6fc` 已通过 preflight，但在 `run_simulation` 暴露第二个外围缺陷：内部 Xpeng 适配目录没有项目私有 `assets/selena/selena_config_tmpl.txt`，旧 Runner 在生成参数时直接返回不透明的 `paramconfig_failed`。现在 Connector 使用 `config/shared/selena_paramconfig_v1.txt` 作为项目无关的公共参数模板；项目模板存在时仍可覆盖，缺失时自动回退，不再要求每个项目复制相同文件。异常诊断也会保留经 lease 层路径脱敏后的异常类型与原因。
 - 已用 `job_a65a13dde6fc` 持久化在本机 `local-runs.db` 的真实私有配置做无 Selena 进程的参数生成验收：成功生成 runtime、单条 MF4、输出、`RadarFL/CFL`、Xpeng MatFilter 全部正确的 `paramconfig-0001.txt`。定向本地执行门禁 `68 passed`；Web/SDK/Connector/传输/Stage 综合门禁 `405 passed, 4 skipped, 1 warning`，另有 1 个与本轮无关的既有断言仍期待旧的 `prepare_data -> environment_check` 顺序，而现合同为先检查 Cluster 环境再允许大文件直传，未作为本轮回归失败处理。
+- 多项目复审进一步发现：未知 workspace 虽已能从用户 Selena 编译脚本推导稳定匿名身份、编译命令和产物位置，但本地 preflight 仍直接 `load_config(internal_project)`，会要求未知项目预登记。现新增 `load_local_execution_config()`：已知适配器保留环境提示；`workspace-<digest>` 未登记项目使用公共 Gen5 Selena 执行配置，Runtime/MatFilter/Adapter/数据和 Runtime Bundle 均由当前任务覆盖。Cluster 已使用 `load_cluster_execution_config()` 的部署级公共配置，不按内部项目加载业务输入。未知项目专项与本地执行回归 `68 passed`。
 
 ## CLI 委派约定（2026-08-11）
 

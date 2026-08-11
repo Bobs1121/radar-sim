@@ -20,6 +20,7 @@
 
 - `RuntimeBundle` 是不可变、共享可见、内容寻址的 Selena 执行单元：`selena.exe`、同目录全部 DLL、绑定 Runtime XML、隐藏的分支/commit/dirty/toolchain/internal-adapter evidence。
 - MatFilter 是独立配置：用户显式选择时无条件优先；留空时由实际读取代码仓的 SDK/Connector 在通用 Selena 工具目录中对候选稳定排序并选择第一个高置信候选。路径证据优先级为 `code_path`、已有 Selena 文件夹、Selena 编译脚本、Runtime；因此已有 Selena 模式下遗留的其他仓库编译脚本不会抢占当前产物所属仓库。同分时按相对路径稳定选择，不因候选过多提前拦截成熟仿真，也不按项目名或历史任务猜测。候选完全缺失时才要求用户补充。Adapter 为可选任务输入，仅在当前 Selena/数据链确实需要时由用户提供。两者均不参与 Selena 编译、不进入 Runtime Bundle，也不参与 Bundle 身份计算；不得由项目 recipe 静默补值。
+- 本地执行适配器分两层：已知内部配置只提供可选环境提示；未知项目的 `workspace-<digest>` 身份直接使用公共 Gen5 Selena ParamConfig 和当前进程环境。身份仅用于 owner/device 授权、缓存和追踪，不能要求项目登记，也不能注入 Runtime、MatFilter、Adapter、雷达源或数据默认值。
 - Adapter/MatFilter 可由授权 Windows 路径、管理员共享命名空间或用户私有 `ConfigAssetStore` 解析；对外只暴露 `config-asset://sha256/...`。
 - Cluster 预检从 `DatasetRef + RuntimeBundleRef + optional AdapterRef + MatFilterRef` 生成私有执行上下文。物理路径、解压目录、Config.cfg、提交命令和凭据只进入 `ClusterRunStore` 私有 lease。
 - `UserRunConfig 2.0` 的仿真执行上下文不得继承项目 `simulation.source`、mounting、Runtime/Adapter/MatFilter 默认或项目 ParamConfig 模板。RL/RR/FL/FR 从当前 MF4 acquisition source 及对应数据组自动推导；项目识别只服务于编译外围适配。
