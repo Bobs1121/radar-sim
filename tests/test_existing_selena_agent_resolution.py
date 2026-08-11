@@ -100,6 +100,24 @@ def test_existing_cluster_resolve_can_bind_light_agent(tmp_path):
     assert all("code_path" not in item for item in bound["payload"]["source_paths"])
 
 
+def test_existing_cluster_omitted_mat_filter_remains_required_until_inferred(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config, _binary, _runtime, _data = _existing_config(tmp_path, target="cluster")
+    config["simulation"]["mat_filter"] = ""
+    _register(control, agent_id="light-1", mode="light")
+
+    api.submit_user_run("alice", config_payload=config)
+    bound = control.bind_pending_data_stage("light-1")
+
+    assert bound is not None
+    assert "mat_filter" in set(bound["payload"]["source_roles"])
+    assert not any(
+        item.get("source_role") == "mat_filter"
+        for item in bound["payload"]["source_paths"]
+    )
+
+
 def test_configured_one_click_agent_does_not_claim_unmatched_existing_folder(tmp_path):
     control = ControlService(tmp_path / "control.db")
     api = ApiV1Service(control_service_factory=lambda _owner: control)

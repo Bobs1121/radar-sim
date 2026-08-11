@@ -726,12 +726,35 @@ class ApiV1Service:
         add_local("adapter", config.simulation.adapter_file)
         add_local("mat_filter", config.simulation.mat_filter)
 
+        required_source_roles = {item["source_role"] for item in local_sources}
+        # An omitted MatFilter is still a required runtime resource when the
+        # source Connector/SDK has repository evidence from which it can infer
+        # one.  Declare the role before any plan is issued: otherwise the
+        # control plane can mark prepare_data complete after the explicit
+        # resources and reject the later inferred MatFilter as an unexpected
+        # role.  Keep source_paths path-free for this role until the source
+        # node has selected the unique candidate.
+        if (
+            not str(config.simulation.mat_filter or "").strip()
+            and local_sources
+            and any(
+                str(value or "").strip()
+                for value in (
+                    config.selena.code_path,
+                    config.selena.existing_path,
+                    config.selena.selena_build_script,
+                    config.selena.runtime_xml,
+                )
+            )
+        ):
+            required_source_roles.add("mat_filter")
+
         payload = dict(stage.get("payload") or {})
         payload.update(
             {
                 "contract": "user-run-config/2.0",
                 "transfer_mode": "shared_copy",
-                "source_roles": sorted({item["source_role"] for item in local_sources}),
+                "source_roles": sorted(required_source_roles),
                 "resource_discovery": {
                     "code_path": str(config.selena.code_path or ""),
                     "existing_path": str(config.selena.existing_path or ""),
