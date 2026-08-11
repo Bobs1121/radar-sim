@@ -118,6 +118,9 @@ Accepted result contract:
   253 passed, 1 skipped.
 - Real local result materialization from `job_d8b902defaad`: 239,051,624-byte
   MF4 plus path-free manifest, followed by an idempotent `already_present` retry.
+- The installed Connector v6 repeated its real `collect_results` kernel against
+  the same successful lease and delivered one file into the configured
+  `<root>/job_d8b902defaad` directory; this was not only a repository interpreter test.
 - Earlier RadarFC/result broad Windows gate: 192 passed, 1 skipped, 1 warning.
 - Earlier Linux server-relevant gate for `60299a8`: 151 passed, 1 skipped.
 - Do not use the old broad `tests/test_cluster.py` Linux run as a release gate:
