@@ -278,3 +278,60 @@ Focused verification after the correction:
 Next evidence required: commit/push, deploy a new immutable Linux release,
 one-click Connector update, then resubmit the identical real local configuration
 and verify Job manifest, ZIP download and `<result.path>/<job_id>` materialization.
+
+## 2026-08-11 real V2 local acceptance and Cluster gate
+
+The runtime-environment correction was committed as `27299e7`; Connector
+contract enforcement was committed as `f13ea2c`. Both commits were pushed to
+`origin/codex/new-branch`, and Linux is running immutable release
+`/home/hoz2wx/radar-sim-f13ea2c` with the required Connector contract version 8.
+The Windows one-click update reused its installed Python packages and persistent
+owner/device identity; the Connector reports current and survives through the
+existing scheduled-task/watchdog installation.
+
+Real local acceptance is complete:
+
+- Job: `job_1ebbef262a89`.
+- Input: `Gen5_2026-07-28_17-22_0118.MF4` with the user-selected existing
+  Selena folder and Runtime XML.
+- MatFilter: inferred deterministically from the repository-adjacent controlled
+  search root; no project name or registry adapter selected it.
+- All executable Stages succeeded; build/register Stages were truthfully skipped
+  because the run selected an existing Selena folder.
+- `run_simulation` returned 0 and published
+  `outputs/0001-Gen5_2026-07-28_17-22_0118--out.MF4`, 239,051,624 bytes,
+  SHA-256 `1a75992f5a87e543606b4d7831683f198d930d6e2e8cec412f242ebd42fbd440`.
+- Manifest status is `succeeded`, delivery status is `delivered`, and the SDK
+  downloaded the owner-scoped ZIP to
+  `D:/RadarSim/v2-results/job_1ebbef262a89/`. The same Job directory also
+  contains the directly consumable output MF4 and path-free Manifest.
+
+During this real run, one idempotent SDK `GET` observed
+`httpx.RemoteProtocolError: Server disconnected without sending a response`.
+The Linux service did not restart (same MainPID and `NRestarts=0`) and the Job
+continued to success. The SDK now retries only `GET`/`HEAD` transport failures
+up to three attempts with bounded backoff. State-changing requests remain
+single-attempt, preventing duplicate Job creation. Focused SDK/API/identity
+regression after this change: `84 passed, 1 warning`.
+
+The first real Cluster acceptance attempt is recorded, but is not reported as a
+simulation pass:
+
+- Job: `job_a6cd945004f9`.
+- V2 validation was valid/ready, selected Cluster explicitly, and inferred the
+  same MatFilter. The unified Windows Connector was online and current.
+- The Job failed before any transfer or Selena execution at
+  `environment_check` with `CLUSTER_ENVIRONMENT_UNAVAILABLE`:
+  `Manager XML-RPC port: unavailable; Submit path: unavailable`.
+- Independent probes from both the Linux control host and the Windows submitter
+  confirm `SZHRADAR01 (10.54.5.71):8123` is closed. The SMB software and data
+  mounts remain readable/writable, and the Linux service did not restart.
+- This is an external Cluster-manager outage after the Cluster reset, not a
+  data/Selena/Runtime/MatFilter/Connector failure. The Stage exposed a stable
+  retry action and cancelled downstream work instead of transferring hundreds
+  of megabytes into an unavailable execution plane.
+
+Final Cluster evidence is therefore gated only on restoring the standard
+Manager XML-RPC service on `SZHRADAR01:8123`, then retrying/resubmitting the same
+V2 configuration. Do not bypass this check or label the current Cluster Job as
+successful.

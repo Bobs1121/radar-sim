@@ -19,6 +19,7 @@ from core.api_v1 import ApiV1Service
 from core.config_assets import ConfigAssetStore
 from core.local_results import ResultCatalog
 from core.http_auth import HttpTokenAuthenticator
+from radar_sim_sdk.errors import RadarSimTransportError
 from core.simulation import (
     _MF4_CHANNEL_GROUP,
     _MF4_COMMON,
@@ -1288,3 +1289,54 @@ def test_sdk_prepare_direct_transfers_shared_inputs_are_a_noop():
         trust_env=False,
     )
     assert sdk.prepare_direct_transfers(job, config) == job
+
+
+def test_sdk_retries_transient_transport_errors_for_idempotent_reads(monkeypatch):
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.RemoteProtocolError("server disconnected", request=request)
+        return httpx.Response(
+            200,
+            json={"id": "job-read-retry", "status": "running", "stages": []},
+        )
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    assert sdk.get_job("job-read-retry").status == "running"
+    assert attempts == 3
+    assert sleeps == [0.2, 0.4]
+
+
+def test_sdk_does_not_retry_transport_errors_for_state_changing_requests(monkeypatch):
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.RemoteProtocolError("server disconnected", request=request)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    with pytest.raises(RadarSimTransportError, match="server disconnected"):
+        sdk.submit_run(run_config_dict())
+
+    assert attempts == 1
+    assert sleeps == []

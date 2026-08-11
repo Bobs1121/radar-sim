@@ -1206,20 +1206,33 @@ class RadarSimClient:
         self.close()
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        response: httpx.Response | None = None
-        try:
-            response = self._client.request(method, path, **kwargs)
-            self._raise_for_status(response)
-            return response.json() if response.content else {}
-        except httpx.TransportError as exc:
-            raise RadarSimTransportError(str(exc)) from exc
-        finally:
-            # ``Client.request`` buffers the response body, but does not close
-            # the response object for us.  Release every non-streaming
-            # response explicitly so a long-lived Agent cannot retain a stale
-            # connection between create and PATCH upload requests.
-            if response is not None:
-                response.close()
+        normalized_method = method.upper()
+        attempts = 3 if normalized_method in {"GET", "HEAD"} else 1
+        last_error: httpx.TransportError | None = None
+
+        for attempt in range(attempts):
+            response: httpx.Response | None = None
+            try:
+                response = self._client.request(method, path, **kwargs)
+                self._raise_for_status(response)
+                return response.json() if response.content else {}
+            except httpx.TransportError as exc:
+                last_error = exc
+                if attempt + 1 >= attempts:
+                    break
+                # Only idempotent reads reach this branch.  A short bounded
+                # backoff masks transient proxy/socket disconnects without
+                # retrying task creation or any other state-changing request.
+                time.sleep(0.2 * (2**attempt))
+            finally:
+                # ``Client.request`` buffers the response body, but does not
+                # close the response object for us. Release every attempt so a
+                # long-lived client cannot retain a stale connection.
+                if response is not None:
+                    response.close()
+
+        assert last_error is not None
+        raise RadarSimTransportError(str(last_error)) from last_error
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code < 400:
