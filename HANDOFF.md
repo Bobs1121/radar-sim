@@ -4,6 +4,35 @@
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
+## 0.0.8 统一 Connector、MatFilter 推导与真实验收（2026-08-11）
+
+### 已发布状态
+
+- 生产 Linux 服务已切换到不可变 release `/home/hoz2wx/radar-sim-62cc97d`，入口 `http://10.190.171.44:8877`；systemd `ActiveState=active/SubState=running/NRestarts=0`，上一版及每次 unit 备份保留回滚。
+- 当前发布提交为 `62cc97d Keep connector alive on native stderr`，已推送 `origin/codex/new-branch`。候选服务器门禁 `66 passed, 1 skipped`（skip 为 Linux 无法执行 Windows VBS）；主收口提交完整仓库回归 `1499 passed, 11 skipped, 1 warning`，后续最小补丁专项分别为 `140 passed` 和 `40 passed`。
+- 生产 Connector ZIP 为 `8,322,691` bytes、171 files、SHA-256 `c0245a9b07aeb9c28bb09eef979e3a8061f22026f84ab4bc37c5cdf709ab1925`。本机按 Web/SDK 同源新用户入口更新成功，保留 `agent-HOZ2WX-WX8-C-0001A`，owner 从旧随机 `web-*` 迁移为 `user-hoz2wx`；只有一组主任务和 Watchdog，均由 `wscript.exe` 隐藏启动，能力为 `available=true/count=1/reconnecting=false`。
+
+### 本轮通用修复
+
+1. `simulation.mat_filter` 允许留空。显式用户路径永远优先；留空时由实际可读取仓库的 SDK/Connector 进行有界、项目无关搜索，只接受唯一最高分候选，缺失或同分歧义再要求用户选择。实际 `C:/BYD_OVS_CB` 推导结果为 `reco_fw/tools/selena/matlab_transport_cfg/matlab_swx_plotreco.mdf.mat.filter`。
+2. MatFilter 虽未写入 YAML，仍在任务创建时作为 direct-transfer barrier 的必需 role；Linux 不能在 dataset/Selena/Runtime 完成后过早结束 Stage，也不能拒绝随后由 Connector 推导出的 MatFilter。
+3. 已有 Selena 直传只包含 `selena.exe` 和递归 DLL，排除 `.pdb/.ilk/.lib/.exp` 等构建调试文件。真实任务由历史 19 文件/`670,780,294` bytes 收敛为 8 个运行文件/`88,486,912` bytes；MF4 `443,266,984` bytes 仍由 Windows 直接写 Cluster data plane，Linux 不接收正文。
+4. Direct-transfer Cluster DAG 改为先检查 Manager、提交路径、凭证、共享工作区等部署依赖，再允许 Windows 传大文件；Cluster 不可用时保持 `TransferPlan=0`，失败 Stage 可在基础设施恢复后精准重试。
+5. Windows PowerShell Supervisor 不再把 native stderr 的普通库 INFO/warning 包装成致命 `NativeCommandError`。stderr 继续进入隐藏日志，只有真实进程退出码决定重启；修复了本地 Run Stage 每约 7 秒被错误重启、日志反复出现 `started`、Selena 无法稳定启动的问题。
+6. 本地参数适配不再先用 `asammdf.MDF(...)` 打开完整 MF4。现在优先只读取 MDF4 acquisition-source 元数据链，实际 239 MB 样本从约 `110 s` 降为 `0.079 s`，仍得到有序的 `RadarRL, RadarRR`；只有标准元数据不可读时才进入兼容回退。该优化按 MDF4 格式生效，不依赖项目名或固定路径。
+
+### 真实黑盒证据
+
+- `job_7ed1c30564fd`（已有 Selena + Cluster，MatFilter 留空）首先证明 Connector 自动登记本机数据根、唯一推导 MatFilter、单条 MF4 直传和 Selena 精简直传；同时暴露 MatFilter role 未预声明缺陷。缺陷已按上文第 2 条修复，不把该失败冒充成功。
+- 修复后 `job_fa8febd616b8` 在 `environment_check` 以 `CLUSTER_ENVIRONMENT_UNAVAILABLE` 快速结束，公开原因只有 `Manager XML-RPC port: unavailable; Submit path: unavailable`；`get_job_transfer_status()` 为 `no_transfers/plans=[]`，证明 Cluster 重置未恢复时不再先上传 531 MB。带生产 EnvironmentFile 实测：提交凭证 `true`，Manager/Submit path 仍为 `false`，属于外部 Cluster 基础设施，不是 Connector/Linux 框架或用户配置错误。
+- `job_eaee9280fbcb` 使用用户指定的已有 Selena `C:/BYD_OVS_CB/.../RelWithDebInfo`、Runtime `C:/tools/Runtime_For_byd_ovrs25_bl16rc71_al2.xml`、单条 `Gen5_2026-07-28_17-22_0118.MF4`、空 Adapter、空 MatFilter，`target=local`，真实端到端 `succeeded/progress=1.0`。全程 `TransferPlan=0`；Manifest 记录 1/1 succeeded，输出 `239,051,624` bytes；Diagnosis=`job_succeeded`、`artifacts_available=true`。结果 ZIP `12,163,603` bytes，SHA-256 `de7762f15d381f2e6419ce352eab6cf73df8879eca32792009504a38896bf208`，Range 下载为 `206 bytes 0-0/12163603`。
+- 该任务总耗时 `492.9 s`。时间戳审计证明预检结束至 `paramconfig` 生成有约 `109.6 s` 外围开销，根因是完整 MDF 解析；`Selena.exe`/输出文件实际从 `13:47:14` 运行到 `13:52:53`，约 `339 s`，结果收集约 `12 s`。上文第 6 条已消除外围慢路径；现有成功任务不篡改，新版本复测应只比较启动前开销，不承诺改变 Selena 内部运行时间。
+
+### 剩余验收边界
+
+- Cluster Manager/Submit path 恢复后，优先重试或重提同一份当前-PC配置，必须看到四个 role（dataset/runtime_bundle/runtime_xml/mat_filter）全部 completed，再进入真实 Cluster run、Manifest 与结果下载。当前不能宣称 Cluster 终态成功。
+- 历史 `job_81f44ccae6c4` 的文件在 `HNY3WX`，历史 `job_098f0c2caa50` 的本地文件在 `HJN3WX`；稳定 owner/设备隔离不允许本机 `user-hoz2wx` 越权读取这两台电脑。它们若作为最终双任务验收，必须由各自用户运行一次当前 Connector 并以自己的稳定 owner 重提；本轮用用户随后指定的本机真实路径完成了本地黑盒，不伪造另外两台设备的可达性。
+
 ## 0.0.7 多用户与资源路由收口（2026-08-11，未部署）
 
 - 用户侧只保留一个统一 Windows Connector；Web、SDK 和 Connector 的 no-auth owner 统一为稳定 `user-<lowercase NTID/OS login>`。不再为每个浏览器生成随机 `web-*` 身份；正式 Bearer 鉴权仍是最终 owner 权威。旧 `web-*`/`sdk-*` Connector 可由一次更新安装迁移，历史任务不篡改。

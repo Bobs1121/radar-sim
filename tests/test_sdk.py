@@ -28,6 +28,7 @@ from core.simulation import (
     build_effective_simulation,
     detect_radar_transfer_metadata,
     detect_radar_transfer_metadata_safe,
+    discover_radar_acquisition_sources,
 )
 from radar_sim_sdk import Job, RadarSimApiError, RadarSimClient, SimulationSpec, UserRunConfig
 from radar_sim_sdk.client import _dataset_transfer_fingerprints, _trust_environment_proxy
@@ -142,6 +143,31 @@ def test_safe_radar_transfer_metadata_uses_stdlib_without_optional_parser(monkey
         "radar_source": "RadarRR",
         "radar_mounting_position": "CRR",
     }
+
+
+def test_acquisition_source_discovery_uses_fast_metadata_before_asammdf(
+    monkeypatch, tmp_path: Path
+):
+    mf4 = tmp_path / "recording.MF4"
+    mf4.write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation._discover_mf4_acquisition_sources_stdlib",
+        lambda _path: ["RadarRL", "RadarRR"],
+    )
+
+    # Importing the optional parser would prove that the slow full-MDF path
+    # was entered even though authoritative acquisition metadata was present.
+    import builtins
+
+    original_import = builtins.__import__
+
+    def reject_asammdf(name, *args, **kwargs):
+        if name == "asammdf":
+            pytest.fail("metadata discovery must not import asammdf")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_asammdf)
+    assert discover_radar_acquisition_sources(str(mf4)) == ["RadarRL", "RadarRR"]
 
 
 def test_safe_radar_transfer_metadata_tolerates_native_parser_exit(monkeypatch, tmp_path: Path):

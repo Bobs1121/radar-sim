@@ -309,6 +309,15 @@ def discover_radar_acquisition_sources(mf4_path: str) -> list[str]:
     path = str(mf4_path or "").strip()
     if not path or not os.path.exists(path):
         return []
+
+    # The acquisition source lives in the MDF4 metadata linked list.  Reading
+    # those few blocks is sufficient and normally completes in milliseconds,
+    # even for multi-gigabyte recordings.  Do this before importing asammdf:
+    # constructing ``MDF`` may scan the complete channel database and added
+    # minutes of avoidable setup time to every first local simulation.
+    metadata_sources = _discover_mf4_acquisition_sources_stdlib(path)
+    if metadata_sources:
+        return metadata_sources
     try:
         from asammdf import MDF
     except (ImportError, OSError):
