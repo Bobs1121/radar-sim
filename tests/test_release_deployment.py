@@ -135,6 +135,8 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "Get-RemoteHealth" in bootstrap
     assert "unreachable after $Attempts attempts" in bootstrap
     assert "/api/v1/capabilities" in bootstrap
+    assert "$snapshot.capabilities.windows.available" in bootstrap
+    assert "$capabilityName" not in bootstrap
     launcher = (ROOT / "scripts" / "connect_windows.cmd.in").read_text(encoding="utf-8")
     assert "Python.Python.3.12" in connector
     assert "--silent" in connector

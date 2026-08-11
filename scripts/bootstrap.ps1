@@ -598,7 +598,7 @@ if (-not $SkipCheck) {
         Write-Warn "Initial verification failed. Check URL, tokens, and network before starting."
     } else {
         if ($UseLocalControl) { Write-Ok "Local serve-v1 command check passed." }
-        else { Write-Ok "$Mode Agent central registration check passed." }
+        else { Write-Ok "Unified Connector central registration check passed." }
     }
 } else {
     Write-Warn "Remote connectivity verification skipped."
@@ -662,7 +662,6 @@ if ($Start) {
         Write-Ok "The independent reconnect watchdog is registered."
     }
     if (-not $UseLocalControl) {
-        $capabilityName = if ($Mode -eq "full") { "windows_full" } else { "windows_light" }
         $capabilityHeaders = @{}
         if ($Owner) { $capabilityHeaders["X-Rsim-User"] = $Owner }
         $connected = $false
@@ -671,7 +670,7 @@ if ($Start) {
                 $snapshot = Invoke-RestMethod -Method Get `
                     -Uri "$ServerUrl/api/v1/capabilities" `
                     -Headers $capabilityHeaders -TimeoutSec 5
-                if ([bool]$snapshot.capabilities.$capabilityName.available) {
+                if ([bool]$snapshot.capabilities.windows.available) {
                     $connected = $true
                     break
                 }
