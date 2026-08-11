@@ -437,10 +437,18 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
         "async function", 1
     )[0]
     assert "const headers = requestHeaders()" in download_result_block
+    assert 'triggerBlobDownload(blob, "radar-sim-result.zip")' in download_result_block
+    assert 'showToast("结果 ZIP 已开始下载")' in download_result_block
     connector_download_block = app_js.text.split(
         "async function downloadWindowsConnector", 1
     )[1].split("async function", 1)[0]
     assert "const headers = requestHeaders()" in connector_download_block
+    assert 'triggerBlobDownload(blob, "RadarSim-连接本机.cmd")' in connector_download_block
+    blob_download_block = app_js.text.split("function triggerBlobDownload", 1)[1].split(
+        "async function", 1
+    )[0]
+    assert "document.body.append(link)" in blob_download_block
+    assert "window.setTimeout" in blob_download_block
     assert "Linux 服务已连接" in app_js.text
     assert "本机未连接" in app_js.text
     assert "createFormWindowsRequirement" in app_js.text

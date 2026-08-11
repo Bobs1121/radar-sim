@@ -49,6 +49,22 @@ function requestHeaders(initial = {}) {
   return headers;
 }
 
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  // Keep the object URL alive until Chromium has accepted the synthetic
+  // download. Revoking it in the same task can leave a complete payload as
+  // an "Unconfirmed *.crdownload" file on some managed browser builds.
+  document.body.append(link);
+  link.click();
+  window.setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 1000);
+}
+
 async function api(path, options = {}) {
   if (state.identityRequired && !state.authenticationRequired && path !== "/health") {
     throw new Error("请先输入用户标识；它仅用于可信内网的任务隔离，不是登录认证");
@@ -1068,14 +1084,7 @@ async function downloadWindowsConnector(jobId, mode, button, status) {
       throw new ApiError(response.status, payload);
     }
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "RadarSim-连接本机.cmd";
-    document.body.append(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(blob, "RadarSim-连接本机.cmd");
     state.connectorAwait = { jobId, mode };
     button.textContent = "重新下载";
     status.textContent = "请双击运行已下载的文件；本页会自动检测连接并继续任务";
@@ -1100,12 +1109,8 @@ async function downloadResult(resultRef) {
       throw new ApiError(response.status, payload);
     }
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "radar-sim-result.zip";
-    link.click();
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(blob, "radar-sim-result.zip");
+    showToast("结果 ZIP 已开始下载");
   } catch (error) {
     showToast(error.message || "结果下载失败");
   }
