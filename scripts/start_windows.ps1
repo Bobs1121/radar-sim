@@ -157,8 +157,22 @@ if ($Supervise) {
     try {
         while ($true) {
             try {
-                & $venvPy @agentArgs *>> $agentLog
-                $exitCode = $LASTEXITCODE
+                # Windows PowerShell converts a native process' stderr into a
+                # NativeCommandError record.  With the script-wide
+                # ErrorActionPreference=Stop, harmless library diagnostics
+                # (for example NumExpr INFO lines) used to abort the Agent
+                # invocation and make the supervisor restart the same Stage
+                # every few seconds.  Native stderr belongs in the durable
+                # connector log; only the actual process exit code decides
+                # whether the child stopped.
+                $savedErrorActionPreference = $ErrorActionPreference
+                try {
+                    $ErrorActionPreference = "Continue"
+                    & $venvPy @agentArgs *>> $agentLog
+                    $exitCode = $LASTEXITCODE
+                } finally {
+                    $ErrorActionPreference = $savedErrorActionPreference
+                }
                 Add-Content -LiteralPath $agentLog -Encoding UTF8 `
                     -Value ("{0:o} Connector child stopped with exit {1}; restarting." -f (Get-Date), $exitCode)
                 Write-Warning "The connector stopped (exit $exitCode); reconnecting in 5 seconds."

@@ -178,6 +178,16 @@ def test_hidden_launcher_runs_powershell_and_preserves_spaced_arguments(tmp_path
     assert marker.read_text(encoding="utf-8") == "value with spaces"
 
 
+def test_connector_supervisor_does_not_treat_native_stderr_as_child_crash():
+    source = (ROOT / "scripts" / "start_windows.ps1").read_text(encoding="utf-8")
+
+    assert '$savedErrorActionPreference = $ErrorActionPreference' in source
+    assert '$ErrorActionPreference = "Continue"' in source
+    assert '& $venvPy @agentArgs *>> $agentLog' in source
+    assert '$exitCode = $LASTEXITCODE' in source
+    assert '$ErrorActionPreference = $savedErrorActionPreference' in source
+
+
 def test_windows_connector_bundle_contains_hidden_launcher(tmp_path: Path):
     from scripts.build_windows_connector_bundle import build
 
