@@ -8,9 +8,9 @@
 
 ### 已发布状态
 
-- 生产 Linux 服务已切换到不可变 release `/home/hoz2wx/radar-sim-6169fe4`，入口 `http://10.190.171.44:8877`；systemd `ActiveState=active/SubState=running/NRestarts=0`，上一版及每次 unit 备份保留回滚。
-- 当前发布提交为 `6169fe4 Add explicit radar source selection`，已推送 `origin/codex/new-branch`；其前置性能修复为 `a396f93 Avoid full MF4 scan before local simulation`。本机 Web/SDK/本地/Cluster 组合门禁 `253 passed, 1 warning`，Linux 候选发布门禁 `103 passed, 1 skipped`；主收口提交完整仓库回归仍为 `1499 passed, 11 skipped, 1 warning`。
-- 生产 Connector ZIP 为 `8,323,562` bytes、171 files、SHA-256 `da1990186cc13b57047e5426ebc7e8aad17e57e8a80adf6111bd5a69d582bb49`。本机按 Web/SDK 同源新用户入口原地更新成功，复用已有 Python 包、Agent ID、owner、自启动任务和 Watchdog；Linux 已确认 Windows full 能力在线，本轮安装完成 PID 为 `17840`。
+- 生产 Linux 服务已切换到不可变 release `/home/hoz2wx/radar-sim-b75ed92`，入口 `http://10.190.171.44:8877`；systemd `ActiveState=active/SubState=running/NRestarts=0`，上一版及每次 unit 备份保留回滚。
+- 当前发布提交为 `b75ed92 Prompt all users to update stale connectors`，已推送 `origin/codex/new-branch`；其功能前置提交为 `6169fe4 Add explicit radar source selection`，性能修复为 `a396f93 Avoid full MF4 scan before local simulation`。本机 Connector/API/Web/发布回归 `175 passed, 1 warning`，Linux 候选发布门禁 `117 passed, 1 skipped`；此前 Web/SDK/本地/Cluster 组合门禁为 `253 passed, 1 warning`。
+- 生产 Connector ZIP 为 `8,324,245` bytes、171 files、SHA-256 `81381a23d6f7230e77f06350815373031cf58c3c702de2f05b8fe7bd4eb87d84`。发布 v4 后，本机旧 v3 先被线上能力接口正确识别为 `update_required=true/outdated_count=1/windows.available=false`；按 Web 同源入口原地更新后变为 `update_required=false/outdated_count=0/windows.available=true/count=1`，安装完成 PID 为 `19380`。更新复用 Python 包、Agent ID、owner、自启动任务和 Watchdog。
 
 ### 本轮通用修复
 
