@@ -2,8 +2,8 @@
 
 Linux never walks a user's repository.  The SDK or unified Windows Connector
 calls this resolver only when ``simulation.mat_filter`` is empty.  An explicit
-user path always wins; ambiguous discovery is reported instead of guessing a
-product/project default.
+user path always wins.  Otherwise candidates are ranked deterministically from
+the user-provided paths; equal candidates never block a mature simulation run.
 """
 
 from __future__ import annotations
@@ -56,7 +56,11 @@ def resolve_mat_filter(
         return MatFilterResolution(path, "user", _repository_root(path.parent) or path.parent)
 
     roots: list[Path] = []
-    for raw in (code_path, selena_build_script, existing_path, runtime_xml):
+    # Relevance order is deliberate.  The current code workspace is strongest;
+    # an existing Selena folder is next because it belongs to the selected
+    # artifact.  A build-script path is weaker evidence and may be a harmless
+    # stale YAML field when source=existing.  Runtime XML is last.
+    for raw in (code_path, existing_path, selena_build_script, runtime_xml):
         value = str(raw or "").strip()
         if not value:
             continue
@@ -99,19 +103,18 @@ def resolve_mat_filter(
             "No high-confidence MatFilter was found in the derived code repository",
         )
 
-    best_score = ranked[0][0]
-    best = [item for item in ranked if item[0] == best_score]
     visible = tuple(item[2].relative_to(item[3]).as_posix() for item in ranked[:10])
-    if len(best) != 1:
-        raise MatFilterResolutionError(
-            "mat_filter_ambiguous",
-            "Multiple equally likely MatFilter files were found; select one explicitly",
-            candidates=visible,
-        )
+    # Input roots retain the public-contract order: code_path first, followed
+    # by existing Selena, build script and runtime.  Python's stable sort keeps
+    # that root order when score and relative path are equal.  Selecting the
+    # first ranked candidate therefore gives every user the same explainable
+    # result without introducing a project table or rejecting the task before
+    # Selena can validate the effective configuration itself.
+    selected = ranked[0]
     return MatFilterResolution(
-        best[0][2].resolve(strict=True),
+        selected[2].resolve(strict=True),
         "repository_inference",
-        best[0][3].resolve(strict=True),
+        selected[3].resolve(strict=True),
         candidates=visible,
     )
 

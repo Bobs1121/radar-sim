@@ -42,15 +42,72 @@ def test_repository_discovery_selects_unique_high_confidence_candidate(tmp_path)
     assert result.path == expected.resolve()
 
 
-def test_repository_discovery_never_guesses_between_equal_candidates(tmp_path):
+def test_repository_discovery_uses_stable_first_candidate_when_scores_are_equal(tmp_path):
     root = _repo(tmp_path)
     for branch in ("a", "b"):
         path = root / branch / "tools" / "selena" / "matlab_transport_cfg" / "matlab_swx_plotreco.mdf.mat.filter"
         path.parent.mkdir(parents=True)
         path.write_text(branch, encoding="utf-8")
 
+    result = resolve_mat_filter(code_path=str(root))
+
+    assert result.path == (
+        root / "a" / "tools" / "selena" / "matlab_transport_cfg" / "matlab_swx_plotreco.mdf.mat.filter"
+    ).resolve()
+    assert len(result.candidates) == 2
+
+
+def test_repository_discovery_prefers_code_path_root_over_equal_stale_script_root(tmp_path):
+    current = tmp_path / "current"
+    stale = tmp_path / "stale"
+    for root, content in ((current, "current"), (stale, "stale")):
+        (root / ".git").mkdir(parents=True)
+        path = root / "reco_fw" / "tools" / "selena" / "matlab_transport_cfg" / "matlab_swx_plotreco.mdf.mat.filter"
+        path.parent.mkdir(parents=True)
+        path.write_text(content, encoding="utf-8")
+    stale_script = stale / "apl" / "product" / "selena" / "build.bat"
+    stale_script.parent.mkdir(parents=True)
+    stale_script.write_text("rem stale", encoding="utf-8")
+
+    result = resolve_mat_filter(
+        code_path=str(current),
+        selena_build_script=str(stale_script),
+    )
+
+    assert result.repository_root == current.resolve()
+    assert result.path.read_text(encoding="utf-8") == "current"
+
+
+def test_repository_discovery_prefers_existing_selena_root_over_stale_script_root(tmp_path):
+    selected = tmp_path / "selected"
+    stale = tmp_path / "stale"
+    for root, content in ((selected, "selected"), (stale, "stale")):
+        (root / ".git").mkdir(parents=True)
+        path = root / "reco_fw" / "tools" / "selena" / "matlab_transport_cfg" / "matlab_swx_plotreco.mdf.mat.filter"
+        path.parent.mkdir(parents=True)
+        path.write_text(content, encoding="utf-8")
+    existing = selected / "ip_dc" / "build" / "selena" / "RelWithDebInfo"
+    existing.mkdir(parents=True)
+    stale_script = stale / "apl" / "product" / "selena" / "build.bat"
+    stale_script.parent.mkdir(parents=True)
+    stale_script.write_text("rem stale", encoding="utf-8")
+
+    result = resolve_mat_filter(
+        existing_path=str(existing),
+        selena_build_script=str(stale_script),
+    )
+
+    assert result.repository_root == selected.resolve()
+    assert result.path.read_text(encoding="utf-8") == "selected"
+
+
+def test_repository_discovery_still_fails_when_no_high_confidence_candidate_exists(tmp_path):
+    root = _repo(tmp_path)
+    weak = root / "misc" / "generic.filter"
+    weak.parent.mkdir(parents=True)
+    weak.write_text("weak", encoding="utf-8")
+
     with pytest.raises(MatFilterResolutionError) as caught:
         resolve_mat_filter(code_path=str(root))
 
-    assert caught.value.code == "mat_filter_ambiguous"
-    assert len(caught.value.candidates) == 2
+    assert caught.value.code == "mat_filter_not_found"

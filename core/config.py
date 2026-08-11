@@ -103,6 +103,11 @@ def get_assets_dir() -> Path:
     return get_radar_sim_root() / "assets"
 
 
+def get_shared_selena_paramconfig_template() -> Path:
+    """Return the project-independent fallback used by thin execution adapters."""
+    return get_config_dir() / "shared" / "selena_paramconfig_v1.txt"
+
+
 def _load_yaml_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -1303,25 +1308,31 @@ def render_selena_config(config: dict) -> dict[str, Any]:
     source = assets.get("config_template", "")
     fixed = assets.get("fixed_config_path", "")
 
-    if not source:
-        raise ValueError("Missing assets.config_template. Set a project-maintained Selena paramconfig source in config.")
     if not fixed:
         raise ValueError("Missing assets.fixed_config_path. Configure where the fixed Selena paramconfig should be written.")
 
-    source_path = Path(source)
+    source_path = Path(source) if source else Path()
     fixed_path = Path(fixed)
-    if not source_path.is_absolute() and assets_root:
+    if source and not source_path.is_absolute() and assets_root:
         source_path = Path(assets_root) / source_path
     if not fixed_path.is_absolute() and assets_root:
         fixed_path = Path(assets_root) / fixed_path
 
-    source_path = Path(os.path.normpath(str(source_path)))
+    source_path = Path(os.path.normpath(str(source_path))) if source else Path()
     fixed_path = Path(os.path.normpath(str(fixed_path)))
-    if not source_path.exists():
-        raise FileNotFoundError(
-            f"Selena config source not found: {source_path}. "
-            f"Ensure assets.config_template points to an existing file under assets.root ({assets_root})."
+    if not source or not source_path.is_file():
+        fallback = get_shared_selena_paramconfig_template()
+        if not fallback.is_file():
+            raise FileNotFoundError(
+                "The internal Selena paramconfig template is unavailable; "
+                "update or repair the radar-sim Connector installation."
+            )
+        logger.warning(
+            "Selena config template %s is unavailable; using shared project-independent template %s",
+            source or "<not configured>",
+            fallback,
         )
+        source_path = fallback
 
     template_text = source_path.read_text(encoding="utf-8")
     sim = get_simulation_config(config)

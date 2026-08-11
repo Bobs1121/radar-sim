@@ -78,8 +78,13 @@ def run_local_selena(
             rendered_log_path = Path(rendered_log)
             if _contained(lease_root, rendered_log_path):
                 log_files.append(rendered_log_path)
-    except Exception:
-        return LocalRunOutcome(1, "paramconfig_failed")
+    except Exception as exc:
+        # The lease layer redacts physical paths before publishing diagnostics.
+        # Preserve the exception class/message here so a framework-owned
+        # template or parameter adaptation problem is actionable instead of
+        # collapsing into an opaque ``paramconfig_failed`` code.
+        diagnostic = f"Paramconfig preparation failed: {type(exc).__name__}: {exc}"
+        return LocalRunOutcome(1, "paramconfig_failed", (diagnostic,))
 
     timeout = max(1, int(request.timeout_seconds))
     started = time.monotonic()

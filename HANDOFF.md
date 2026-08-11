@@ -4,6 +4,22 @@
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
+## MatFilter 多候选现场修复（2026-08-11）
+
+- 现场任务 `job_e0e255b2a417` 的 Selena、Runtime 和单条 MF4 均已在 Windows Connector 正确解析，失败发生在外围 `preflight`：YAML 的 `simulation.mat_filter` 留空，同时 `code_path=D:/pl-xpeng` 与一个遗留的 `C:/BYD_OVS_CB/.../jenkins_selena_build.bat` 各自推导出同分 MatFilter，旧实现以 `mat_filter_ambiguous` 提前终止。
+- 产品合同已改为：显式 MatFilter 永远优先；留空时按用户路径证据和候选分数稳定选择，`code_path` 根优先，同分按相对路径选择第一个；只在没有任何高置信候选时要求用户补充。此规则不依赖项目名，不因旧脚本字段阻断已有 Selena 仿真。
+- 该行为属于 Connector 执行逻辑，合同版本由 v6 提升为 v7；生产发布后所有旧 Connector 会由 Web 全局横幅提示“一键更新”，未更新前不得领取新任务。
+- 用户随后显式填写 MatFilter 的 `job_a65a13dde6fc` 已通过 preflight，但在 `run_simulation` 暴露第二个外围缺陷：内部 Xpeng 适配目录没有项目私有 `assets/selena/selena_config_tmpl.txt`，旧 Runner 在生成参数时直接返回不透明的 `paramconfig_failed`。现在 Connector 使用 `config/shared/selena_paramconfig_v1.txt` 作为项目无关的公共参数模板；项目模板存在时仍可覆盖，缺失时自动回退，不再要求每个项目复制相同文件。异常诊断也会保留经 lease 层路径脱敏后的异常类型与原因。
+- 已用 `job_a65a13dde6fc` 持久化在本机 `local-runs.db` 的真实私有配置做无 Selena 进程的参数生成验收：成功生成 runtime、单条 MF4、输出、`RadarFL/CFL`、Xpeng MatFilter 全部正确的 `paramconfig-0001.txt`。定向本地执行门禁 `68 passed`；Web/SDK/Connector/传输/Stage 综合门禁 `405 passed, 4 skipped, 1 warning`，另有 1 个与本轮无关的既有断言仍期待旧的 `prepare_data -> environment_check` 顺序，而现合同为先检查 Cluster 环境再允许大文件直传，未作为本轮回归失败处理。
+
+## CLI 委派约定（2026-08-11）
+
+- 后续外部 CLI Agent 以 Pi 为主，默认使用本地/Bosch
+  `bosch-qwen3_5/Qwen3.5-27B-FP16`；复杂但边界明确的编码可升级到
+  `bosch-coder/Qwen3.6-35B-A3B` 或 `bosch-aigc/qwen3-coder-plus`。
+- 主 Agent 保留产品范围、架构、集成、部署和最终验收责任；CLI Agent 只接收有文件所有权、验收测试和 handoff 的有界任务。
+- 已验证的版本、模型路由与非交互命令见 `docs/CLI_DELEGATION_PLAYBOOK.md`。
+
 ## 0.0.9 结果目录、SDK 取件、RadarFC 与生产收口（2026-08-11）
 
 ### 当前已发布状态

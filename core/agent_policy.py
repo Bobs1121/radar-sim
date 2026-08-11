@@ -66,7 +66,7 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # radars) and the metadata-only local MF4 probe. Older connectors would either
 # ignore RadarFC or retain the minutes-long full-MDF setup path, so they must
 # update before claiming new UserRunConfig v2 stages.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 6
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 7
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

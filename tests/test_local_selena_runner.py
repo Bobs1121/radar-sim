@@ -88,6 +88,54 @@ def test_runner_renders_private_paramconfig_and_uses_controlled_output(tmp_path,
     assert observed["kwargs"]["cwd"] == str(request.working_directory)
 
 
+def test_runner_uses_shared_template_when_project_template_is_missing(tmp_path, monkeypatch):
+    request = _request(tmp_path)
+    request.config["assets"]["config_template"] = str(tmp_path / "missing-project-template.txt")
+    shared = tmp_path / "shared-paramconfig.txt"
+    shared.write_text(
+        "config={{RUNTIME_XML}}\ninput={{INPUT_MF4}}\noutput={{OUTPUT_MF4}}\n"
+        "source={{SOURCE}}\nmatfilefilter={{MATFILEFILTER}}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("core.config.get_shared_selena_paramconfig_template", lambda: shared)
+
+    class Process:
+        returncode = 0
+        _handle = 0
+
+        def __init__(self, command, **kwargs):
+            del command, kwargs
+            request.output_mf4.write_bytes(b"result")
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr("core.local_selena_runner.subprocess.Popen", Process)
+
+    outcome = run_local_selena(request, lambda: False)
+
+    assert outcome.exit_code == 0
+    rendered = request.output_mf4.parent.parent / "work" / "paramconfig-0001.txt"
+    text = rendered.read_text(encoding="utf-8")
+    assert f"input={request.input_mf4}" in text
+    assert "source=RadarFC" in text
+
+
+def test_runner_reports_actionable_paramconfig_failure_when_shared_template_is_missing(tmp_path, monkeypatch):
+    request = _request(tmp_path)
+    request.config["assets"]["config_template"] = str(tmp_path / "missing-project-template.txt")
+    monkeypatch.setattr(
+        "core.config.get_shared_selena_paramconfig_template",
+        lambda: tmp_path / "missing-shared-template.txt",
+    )
+
+    outcome = run_local_selena(request, lambda: False)
+
+    assert outcome.error_code == "paramconfig_failed"
+    assert "FileNotFoundError" in "\n".join(outcome.diagnostics)
+    assert "update or repair the radar-sim Connector" in "\n".join(outcome.diagnostics)
+
+
 def test_runner_rejects_output_outside_lease(tmp_path):
     request = _request(tmp_path)
     request = LocalRunRequest(**{**request.__dict__, "output_mf4": tmp_path / "escape.MF4"})
