@@ -104,6 +104,11 @@ def test_existing_cluster_omitted_mat_filter_remains_required_until_inferred(tmp
     control = ControlService(tmp_path / "control.db")
     api = ApiV1Service(control_service_factory=lambda _owner: control)
     config, _binary, _runtime, _data = _existing_config(tmp_path, target="cluster")
+    # Keep this contract test cross-platform: the central API must recognize
+    # caller-local Windows references even when the suite runs on Linux.
+    config["selena"]["existing_path"] = "D:/repo/build/RelWithDebInfo"
+    config["selena"]["runtime_xml"] = "D:/runtime/Runtime.xml"
+    config["data"]["path"] = "D:/data/one.MF4"
     config["simulation"]["mat_filter"] = ""
     _register(control, agent_id="light-1", mode="light")
 
