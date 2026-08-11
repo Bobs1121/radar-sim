@@ -1,293 +1,92 @@
-# radar-sim — Selena 编译与雷达数据仿真的统一调度平台
+# radar-sim V2
 
-radar-sim v5 的产品入口是 **Web** 和 **Python SDK / versioned REST API**。两者共用同一个后端调度器和同一份项目无关 `UserRunConfig 2.0` YAML；CLI 只用于安装、运维、调试和兼容。
+radar-sim 是 Selena 编译与雷达数据仿真的轻量自动化脚手架。它通过 Linux 控制面统一调度 Windows 本地编译、本地仿真和 Cluster 仿真；大文件由源设备直接进入执行目标，不经过 Linux Web/API 端口。
 
-## 文档权威顺序
+## 用户入口
 
-1. `PRD.md`：v5 产品口径、场景边界和发布范围的唯一来源。
-2. `docs/DETAILED_DESIGN.md`：v5 目标架构、现有代码迁移映射和技术边界。
-3. `DEVELOPMENT_PLAN.md`：当前可执行发布计划和下一阶段编码 backlog。
-4. `HANDOFF.md`：v5 唯一实时状态、WP 完成度和架构一致性检查记录。
-5. 旧 phase 章节：仅用于历史追溯，不再作为当前 backlog 或产品口径。
+- Web：打开 Linux 服务地址，导入/编辑同一份 YAML，提交和管理任务。
+- Python SDK：后端产品、Linux 用户和未来 AI Skill/MCP 使用的唯一编程入口。
+- Windows Connector：当配置包含 Windows 本地路径、需要编译或需要本地仿真时，一键安装一次；系统按任务自动准备所需能力。
 
-## 当前实现状态
+## 最小 YAML
 
-当前统一入口已经收敛为 `Web / Python SDK -> Linux serve-v1 -> Stage 调度 -> Windows 本机或 Cluster`。Windows 执行组件属于平台内部实现：用户只在任务提示时点击“一键连接本机”，不填写服务地址、节点 ID、部署模式或令牌。
-
-发布边界：Linux 永不编译 Selena 或执行本地仿真；Windows 用户只安装一个统一连接组件，系统按任务自动决定本机编译、本地仿真或源端直传，随后由 Linux 调度 Cluster；没有 Windows 时填写 Cluster 可访问的已有 Selena 文件夹，或在文件所在 Linux 设备运行 SDK 直传后由中央 Linux 调度 Cluster。用户不选择 Runtime Bundle；系统从目录校验 `Selena.exe + 同目录 DLL + Runtime XML` 并在内部登记。真实企业 Cluster 共享盘/manager 仍需在目标环境最终验收。
-
-OD25 发布用户请直接使用 [`docs/OD25_USER_GUIDE.md`](docs/OD25_USER_GUIDE.md)，其中包含可导入 Web 的两份 YAML、Windows 一键连接、Linux 后端 SDK 调用和当前验收边界。
-
-## V1 首版：一个 YAML、一个 SDK 方法
-
-用户 YAML 示例：
+已有 Selena：
 
 ```yaml
 schema_version: "2.0"
 selena:
   source: existing
-  existing_path: "D:/path/to/Selena-folder"
-  runtime_xml: "D:/path/to/Runtime.xml"
+  existing_path: "C:/path/to/RelWithDebInfo"
+  runtime_xml: "C:/path/to/Runtime.xml"
+  branch: ""
+  code_path: ""
+  selena_build_script: ""
+  package_build_script: ""
 data:
-  path: "D:/path/to/data"
+  path: "D:/data/one.MF4"
 simulation:
   target: cluster
-  adapter_file: ""       # ovrs25 可空
-  mat_filter: "D:/path/to/MatFilter.cfg"
+  source: ""
+  adapter_file: ""
+  mat_filter: ""
+result:
+  path: ""
 ```
 
-SDK 调用：
+本地编译只把 `selena.source` 改为 `build`，填写 `code_path` 和 `selena_build_script`，清空 `existing_path`。`package_build_script` 可选，只用于依赖诊断。
+
+用户只需填写 YAML 中的路径、脚本和仿真选项；身份、运行时对象和调度参数由系统推导。
+
+## SDK
 
 ```python
-from radar_sim_sdk import RadarSimClient
+from radar_sim_sdk import RadarSimClient, UserRunConfig
 
 with RadarSimClient("http://10.190.171.44:8877") as client:
-    job = client.submit_yaml("simulation.yaml")
-    print(job.id)
+    config = UserRunConfig.from_yaml("radar-sim.yaml")
+    validation = client.validate_run(config)
+    job = client.submit_run(config)
+    final_job = client.wait(job.id, timeout=3600)
+    result_zip = client.download_job_result(final_job.id)
 ```
 
-`submit_yaml()` 是 Web 共用的统一入口，可接受已有/编译 Selena 与 local/cluster 的组合。兼容方法 `submit_cluster_yaml()` 会额外强制检查“已有 Selena + Cluster”组合。SDK/Connector 会根据路径在哪一侧可达，把 Selena 目录、Runtime、数据和配置资产原地引用或从源端直传执行端；Linux API 只处理控制信息。用户不填写 project、Bundle、Cluster 参数或输出目录。
+当 SDK 调用机本地文件需要进入 Cluster 时，`submit_run(..., auto_transfer=True)` 使用同一 TransferPlan 直接传输。Linux 只保存任务、状态和逻辑引用。
 
-## 现有兼容 CLI 快速开始
+## Windows 首次使用
 
-### Windows 一键连接
+1. 在 Web 点击“一键连接本机”，或用 SDK `download_windows_connector()` 下载入口；
+2. 双击运行一次；
+3. Connector 保存 Linux 地址和用户身份，登录自启、断线重连；
+4. Web 显示“本机已连接”后提交任务；
+5. 服务端协议升级时按 Web 提示一键更新，身份和路径绑定保留。
 
-任务需要 Windows 本地路径、编译或本地仿真时，Web 会显示“等待连接本机”。点击按钮、双击下载的 `RadarSim-连接本机.cmd` 即可；入口自动绑定当前 Linux 服务、选择所需能力并注册登录自启。普通用户不需要仓库、命令行或平台参数。管理员实现和恢复边界见 [`docs/windows-one-click-connector.md`](docs/windows-one-click-connector.md)。
+已有 Selena 与全部输入都在 Cluster 可读共享路径时不需要安装 Connector。Linux 用户的私有本地文件通过 Linux 上的 Python SDK 直传，首版没有浏览器 Linux Connector。
 
-连接器的基础连接能力不依赖 Python 包源：安装器会先复用用户已安装且版本符合要求的 `PyYAML`、`httpx`、`pydantic`，不会在隔离环境中重复下载；缺少或版本不兼容时先使用发布包中的脚手架 wheel，再按用户现有 `pip.ini`/代理配置补齐。公司网络无法访问包源时仍会完成连接，已有 Selena + Cluster 任务可以继续；只有实际需要编译或本地仿真时才会给出缺少扩展的明确修复提示。Selena、Visual Studio、runtime、DLL 和实际仿真引擎仍由用户维护。
+## 设计边界
 
-### Linux 统一入口
+- 编译命令：`cmd /c <用户选择的 Selena 脚本>`，不加项目参数；
+- 本地/Cluster 仿真使用通用 Selena paramconfig；
+- 用户显式 MatFilter/source 优先，空值通用推导；
+- 单条 MF4 失败不取消批量其余数据；
+- 本地结果落 `~/RadarSim/results/<job_id>` 或 `result.path/<job_id>`，Web 继续提供 ZIP；
+- 框架不安装 VS，不修复 Selena 内部仿真问题。
 
-```bash
-bash scripts/linux_deploy.sh --yes
-bash scripts/linux_deploy.sh status
-bash scripts/linux_deploy.sh test
+## 开发与验收
+
+```powershell
+python -m pytest -q tests/test_api_v1_fastapi.py tests/test_sdk.py tests/test_user_config.py
+python -m py_compile core/api_v1.py core/api_v1_fastapi.py radar_sim_sdk/client.py
+node --check radar_sim_web/static/app.js
 ```
 
-Linux 发布启动统一 `serve-v1`（脚本默认 8878，部署方可配置；当前验收服务器为 `10.190.171.44:8877`），同时提供 Web、API/SDK、Windows 执行接口和 Cluster 调度。当前 Sprint 按产品决定在可信内网关闭登录；下一 Sprint 恢复认证时，一键连接必须先增加短期设备配对。无 Windows 用户直接填写 Cluster 可访问的已有 Selena 文件夹、Runtime、数据和配置文件。
+自动测试不能替代真实验收。发布前必须在目标 Linux 和新 Windows 用户上验证 existing/build + local/cluster 四组合、两用户隔离、直传和结果。
 
-### 开发安装
+## 文档
 
-```bash
-# 开发安装
-pip install -e .
-
-# 或直接运行
-python rsim.py --help
-```
-
-项目目录和 recipe 仅是兼容 CLI/内部适配机制，不属于 Web、YAML 或 SDK 用户操作。
-
-### 典型工作流
-
-```bash
-# 1. 编译 HEX（长时间，可按 Ctrl+C 中断）
-rsim --project ovrs25 build hex
-
-# 2. 编译 Selena
-rsim --project ovrs25 build selena
-
-# 3. 在 VS 中打开 Selena 工程
-rsim --project ovrs25 open-vs
-
-# 4. 在 VS 中启动仿真，输入测试数据
-#    仿真完成后得到 output.mf4
-
-# 5. 分析仿真结果
-rsim --project ovrs25 analyze D:/sim/output.mf4
-
-# 6. 查看历史分析
-rsim --project ovrs25 history
-
-# 7. 对比两次结果
-rsim diff results/ovrs25/20260614_1000/ results/ovrs25/20260613_1500/
-
-# 8. 向 AI 提问
-rsim --project ovrs25 ask "FCTA 为什么没有激活？"
-```
-
-## 命令一览
-
-| 命令 | 说明 |
-|------|------|
-| `rsim build [hex\|selena\|all]` | 编译 HEX（可中断）和 Selena |
-| `rsim analyze <mf4>` | 分析 MF4 仿真输出 |
-| `rsim ask "问题"` | 基于分析结果向 AI 提问 |
-| `rsim diff <base> <current>` | 对比两次分析结果 |
-| `rsim history` | 查看历史分析记录 |
-| `rsim init [project]` | 交互式项目配置向导 |
-| `rsim open-vs` | 打开 VS 工程 |
-| `rsim check` | 检查环境配置（平台、配置、构建脚本、环境变量、构建一致性） |
-| `rsim doctor` | 系统级诊断：VS/MATLAB/Qt/Boost/selena_env 实际安装、Python 包、集群 UNC 可达性 |
-| `rsim tcc` | TCC 工具链：bootstrap-itc2 / install / auto-repair / status |
-
-### 控制平面（legacy/历史兼容双模式）
-
-控制平面把"调度入口"和"执行"解耦。下面的 Mode A/Mode B 仅描述当前 legacy CLI/control-plane 兼容用法，不是 v5 当前产品模式；v5 产品部署以 Windows 统一连接组件和 Linux central 为准，旧 light/full 只保留为内部兼容节点类型。
-
-- **legacy Mode A（Linux cluster-only）**：server 用 `--allowed-task-types cluster.run` 启动，拒绝 local task；agent 默认只认领 cluster.run。Windows 端无需繁重依赖。
-- **legacy Mode B（Windows 本机仓）**：server 不带白名单（全允许），agent 显式 `--capability local.*` 启用本机编译/仿真。`rsim web` 内置 server+agent，单机一条命令即用。
-
-```bash
-# legacy Mode A：Linux 跑 server（cluster-only），Windows 跑 agent
-rsim server serve --host 0.0.0.0 --port 8877 --allowed-task-types cluster.run
-rsim agent --server-url http://<server>:8877   # 默认 capability: cluster.run
-
-# legacy Mode B：单机 rsim web 内置 control server + agent，前端 build/sim/cluster 都能用
-rsim --project ovrs25 web
-rsim --project ovrs25 web --no-control        # 退回本地 BuildTaskRegistry
-rsim --project ovrs25 web --control-port 8877 # 指定控制端口
-
-# legacy Mode B：跨机全功能（server 不限 task_type）
-rsim server serve --host 0.0.0.0 --port 8877
-rsim server create-job local.build_selena --project ovrs25 --mode RelWithDebInfo
-rsim server create-job cluster.run      --project ovrs25 --dataset smoke --max-minutes 5
-rsim agent --server-url http://<server>:8877 --capability local.check --capability local.build_selena --capability local.run_sim --capability cluster.run
-
-# TCC 工具链（agent 可调度的子命令）
-rsim tcc bootstrap-itc2                 # 装 itc2.exe（从 ITO 镜像）
-rsim tcc install IF:BTC-7.0.0           # 装工具集
-rsim tcc auto-repair                    # 一键：itc2 + 推导 + 安装
-rsim tcc status                         # 只读检测
-```
-
-详见 `SIMULATION_WORKFLOW.md` §10。
-
-
-## 项目结构
-
-```
-config/
-  default.yaml                    # 全局默认配置
-  projects/
-    ovrs25/                       # 每个项目一个目录
-      config.yaml                 # 项目配置
-      signals.yaml                # 信号配置
-      rules.yaml                  # 规则配置
-      assets/                     # 仿真资产（runtime XML 等）
-core/
-  config.py                       # 多项目配置加载
-  models.py                       # 数据模型
-  platform.py                     # 平台抽象接口
-  analysis_runner.py              # 分析插件运行器
-  tui.py                          # 终端 UI
-cli/
-  build.py / analyze.py / diff.py / ...
-plugins/analysis/
-  signal_summary.py               # 信号统计插件
-  rule_check.py                   # 规则检查插件
-  default_report.py               # HTML 报告插件
-  ai_qa.py                        # AI 问答插件
-platforms/
-  gen5_selena/                    # Gen5 雷达平台支持
-```
-
-## 插件开发
-
-```python
-from core.analysis_runner import AnalysisPlugin, AnalysisContext
-from core.models import PluginResult
-
-class MyPlugin(AnalysisPlugin):
-    @property
-    def name(self):
-        return "my_plugin"
-
-    def analyze(self, signals, context):
-        # signals: dict[str, SignalData]
-        # 分析逻辑...
-        return PluginResult(
-            plugin_name=self.name,
-            success=True,
-            data={"key": "value"},
-            summary="简要说明",
-        )
-```
-
-将插件放在 `plugins/analysis/` 目录下，自动发现加载。
-
-## 用户配置指南（多用户/多分支/多数据）
-
-不同用户的不同需求（Selena 分支、代码仓、数据、profile）通过 **`local.yaml`** 覆盖，不改动共享的 `config.yaml`。`local.yaml` 在 `.gitignore` 中，每个用户的本机私有配置。
-
-### 配置分层
-
-```
-default.yaml → platforms/gen5_selena.yaml → recipes/<recipe>.yaml → projects/<name>/config.yaml → projects/<name>/local.yaml
-                                                                                                   └─ 你在这里覆盖
-```
-
-### 三步上手
-
-```bash
-# 1. 从模板生成本机 local.yaml
-rsim --project ovrs25 config init
-
-# 2. 编辑 local.yaml，覆盖你需要的部分（分支/数据/profile）
-#    编辑后用 show 确认生效
-rsim --project ovrs25 config show
-rsim --project ovrs25 config diff   # 显示 local.yaml 覆盖了哪些键
-
-# 3. 跑前先校验环境
-rsim --project ovrs25 check --backend local --profile local-build
-```
-
-### 常见场景（local.yaml 片段）
-
-**用 feature 分支 + 本地数据**：
-```yaml
-repos:
-  inner_repo_root: "C:/BYD_OVS_CB/apl/byd"
-build:
-  selena_branch: "feature/my-change"   # rsim build 会切到此分支编译
-simulation:
-  datasets:
-    - name: "CBNA_local"
-      input_dir: "D:/data/byd/.../CBNA_23-4-26"
-profiles:
-  - name: "local-build"
-    selena:
-      selena_branch: "feature/my-change"  # check 会校验 exe 与分支匹配
-```
-
-**云端仿真（打包本地 Selena + 公盘数据）**：已在 `config.yaml` 的 `profiles` 里配好 `cloud-build`，直接 `rsim cluster run --profile cloud-build <MF4> --execute`。本机路径差异在 `local.yaml` 覆盖 `repos`/`build`/`environment` 即可。
-
-### 环境校验
-
-多分支/多仓/多数据场景，一条命令校验全部（repo 分支/submodule、Selena exe 与分支匹配、runtime/adapter、数据可达、worker 依赖）：
-
-```bash
-rsim --project ovrs25 check --backend local --profile <name>     # 本地
-rsim --project ovrs25 check --backend cluster --profile <name>  # 云端
-```
-
-输出按 severity 分级：`OK`（info 通过）、`W`（warning，建议修但不阻塞）、`!!`（error，必须修）。
-
-## 配置示例
-
-`config/projects/ovrs25/config.yaml`:
-```yaml
-project:
-  name: "BYD_OVS_CB"
-  platform: "gen5_selena"
-
-paths:
-  project_root: "C:/BYD_OVS_CB"
-  binding: "ovrs25"
-
-analysis:
-  default_signals:
-    - name: "FCTA_State"
-      group: "fcta"
-```
-
-## 依赖
-
-- Python 3.9+
-- asammdf（MF4 解析）
-- PyYAML（配置管理）
-- openai（AI 问答，可选）
-
-## License
-
-Internal use only.
+- [产品合同](docs/PRODUCT_CONTRACT.md)
+- [PRD](PRD.md)
+- [V2 架构](docs/V2_ARCHITECTURE.md)
+- [详细设计](docs/DETAILED_DESIGN.md)
+- [用户指南](docs/OD25_USER_GUIDE.md)
+- [统一 Connector](docs/windows-one-click-connector.md)
+- [当前 handoff](docs/handoffs/2026-08-11-business-convergence-master.md)

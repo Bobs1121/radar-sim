@@ -8,7 +8,6 @@ Selena folder; internal packaging and adapter recognition are Stage concerns.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 from pathlib import Path
@@ -152,51 +151,9 @@ class UserRunConfig(_Frozen):
     simulation: UserSimulationConfig
     result: UserResultConfig = Field(default_factory=UserResultConfig)
 
-    @staticmethod
-    def _migrate_legacy(value: dict[str, Any]) -> dict[str, Any]:
-        """Map legacy YAML selena build fields onto the current contract.
-
-        ``build_script`` (the single legacy Selena build entry point) maps to
-        ``selena_build_script``; ``build_mode`` is dropped entirely.  Both
-        legacy keys are removed so the strict ``extra="forbid"`` model accepts
-        the migrated payload and the new fields never leak back on export.
-
-        Legacy data.limit and simulation.timeout_minutes are silently dropped.
-        Older result metadata (``name``/``retain_days``) is internal to the
-        legacy SimulationSpec contract; only the new receiver-side
-        ``result.path`` is retained.
-        """
-        if not isinstance(value, dict):
-            return value
-        migrated = copy.deepcopy(value)
-        selena = migrated.get("selena")
-        if isinstance(selena, dict):
-            legacy_build_script = selena.pop("build_script", None)
-            if "selena_build_script" not in selena and legacy_build_script:
-                selena["selena_build_script"] = legacy_build_script
-            selena.pop("build_mode", None)
-            # Runtime Bundle identifiers were an internal implementation detail
-            # leaked by the old public contract.  Drop them on import; an old
-            # bundle-only existing config still fails the required folder and
-            # Runtime validators.
-            selena.pop("bundle", None)
-            selena.pop("executable", None)
-        data = migrated.get("data")
-        if isinstance(data, dict):
-            data.pop("limit", None)
-        simulation = migrated.get("simulation")
-        if isinstance(simulation, dict):
-            simulation.pop("timeout_minutes", None)
-        result = migrated.get("result")
-        if isinstance(result, dict):
-            migrated["result"] = {"path": result.get("path", "")}
-        else:
-            migrated.pop("result", None)
-        return migrated
-
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "UserRunConfig":
-        return cls.model_validate(cls._migrate_legacy(value))
+        return cls.model_validate(value)
 
     @classmethod
     def from_yaml(cls, source: str | Path) -> "UserRunConfig":

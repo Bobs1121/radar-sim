@@ -1,4 +1,4 @@
-"""FastAPI adapter for the v5 `/api/v1` application service.
+"""FastAPI adapter for the V2 `/api/v1` application service.
 
 Routes in this module are intentionally thin: they adapt HTTP, Pydantic request
 errors, request IDs, and SSE transport to the framework-agnostic
@@ -26,7 +26,6 @@ from starlette.staticfiles import StaticFiles
 from core.api_v1 import ApiV1Error, ApiV1Service, format_error_envelope, iter_sse, make_json_safe
 from core.control_service import ControlService
 from core.http_auth import AuthPrincipal, HttpAuthError, HttpTokenAuthenticator
-from core.spec import SimulationSpec
 from core.user_config import UserRunConfig
 from core.user import USER_HEADER, current_user, normalize_user, stable_user_identity
 from core.windows_connector import (
@@ -38,23 +37,10 @@ from core.windows_connector import (
 from core.transfer_service import TransferService
 
 
-class SubmitJobRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    spec: SimulationSpec
-    dry_run: bool = Field(default=False)
-
-
-class ImportSpecRequest(BaseModel):
+class ImportRunConfigRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     yaml_content: str = Field(min_length=1, max_length=1024 * 1024)
-
-
-class ExportSpecRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    spec: SimulationSpec
 
 
 class SubmitUserRunRequest(BaseModel):
@@ -124,12 +110,6 @@ class CreateDatasetUploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project: str = Field(min_length=1, max_length=64)
-    files: list[DatasetUploadFileRequest] = Field(min_length=1)
-
-
-class CreateRunDataUploadRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     files: list[DatasetUploadFileRequest] = Field(min_length=1)
 
 
@@ -260,7 +240,7 @@ def create_app(
     windows_connector_bundle: str | Path | None = None,
     transfer_service: TransferService | None = None,
 ) -> FastAPI:
-    """Create the FastAPI app for v5 `/api/v1` routes."""
+    """Create the FastAPI app for V2 `/api/v1` routes."""
     service = api_service or ApiV1Service(
         control_service_factory=control_service_factory,
         transfer_service=transfer_service,
@@ -352,20 +332,12 @@ def create_app(
     async def validation_error_handler(request: Request, exc: RequestValidationError):
         errors = make_json_safe(jsonable_encoder(exc.errors()))
         path = request.url.path
-        def is_spec_error(err: dict[str, Any]) -> bool:
-            loc = list(err.get("loc", []))
-            if path == "/api/v1/validate":
-                return True
-            return "spec" in loc and not (loc == ["body", "spec"] and err.get("type") == "missing")
-
-        code = "invalid_spec" if any(is_spec_error(err) for err in errors) else "invalid_request"
+        code = "invalid_request"
         if path.startswith("/api/v1/run-") or path.startswith("/api/v1/run-config"):
             code = "invalid_run_config"
         message = (
             "Simulation configuration validation failed"
             if code == "invalid_run_config"
-            else "SimulationSpec validation failed"
-            if code == "invalid_spec"
             else "Request validation failed"
         )
         return JSONResponse(
@@ -410,7 +382,7 @@ def create_app(
     @app.get("/api/v1/windows-connector/install.ps1", include_in_schema=False)
     def download_windows_connector_installer(
         request: Request,
-        mode: str = Query(default="unified", pattern=r"^(unified|light|full)$"),
+        mode: str = Query(default="unified", pattern=r"^unified$"),
     ):
         # Never embed long-lived credentials in a downloadable script.  The
         # current no-auth sprint is supported now; authenticated deployments
@@ -445,7 +417,7 @@ def create_app(
     @app.get("/api/v1/windows-connector/connect.cmd", include_in_schema=False)
     def download_windows_connector_launcher(
         request: Request,
-        mode: str = Query(default="unified", pattern=r"^(unified|light|full)$"),
+        mode: str = Query(default="unified", pattern=r"^unified$"),
     ):
         if authenticator is not None:
             raise ApiV1Error(
@@ -505,21 +477,21 @@ def create_app(
             headers={"X-Content-SHA256": checksum, "X-Rsim-Connector-Version": "1"},
         )
 
-    # Windows full/light Agent endpoints share this process and ControlService
-    # with /api/v1, so Stage handoffs cannot drift across two SQLite databases.
-    @app.post("/api/agents/register", status_code=201)
+    # Windows Connector endpoints share this process and ControlService with
+    # /api/v1, so Stage handoffs cannot drift across two SQLite databases.
+    @app.post("/api/agents/register", status_code=201, include_in_schema=False)
     def register_agent(request: Request, body: AgentRegisterRequest):
         identity, agent_id = agent_identity(request, body.agent_id)
         payload = body.model_dump()
         payload["agent_id"] = agent_id
         return service.register_agent(identity, **payload)
 
-    @app.post("/api/agents/poll")
+    @app.post("/api/agents/poll", include_in_schema=False)
     def poll_agent(request: Request, body: AgentPollRequest):
         identity, agent_id = agent_identity(request, body.agent_id)
         return service.poll_agent(identity, agent_id)
 
-    @app.post("/api/agents/heartbeat")
+    @app.post("/api/agents/heartbeat", include_in_schema=False)
     def heartbeat_agent(request: Request, body: AgentHeartbeatRequest):
         identity, agent_id = agent_identity(request, body.agent_id)
         return service.heartbeat_agent(
@@ -527,7 +499,7 @@ def create_app(
             current_task_id=body.current_task_id, metadata=body.metadata,
         )
 
-    @app.post("/api/tasks/logs")
+    @app.post("/api/tasks/logs", include_in_schema=False)
     def append_agent_logs(request: Request, body: AgentLogsRequest):
         principal = agent_principal(request)
         if principal is not None:
@@ -539,7 +511,7 @@ def create_app(
             agent_id=authenticated_agent_id,
         )
 
-    @app.post("/api/tasks/progress")
+    @app.post("/api/tasks/progress", include_in_schema=False)
     def report_agent_progress(request: Request, body: AgentProgressRequest):
         identity, agent_id = agent_identity(request, body.agent_id)
         return service.report_agent_progress(
@@ -550,7 +522,7 @@ def create_app(
             message=body.message,
         )
 
-    @app.post("/api/tasks/result")
+    @app.post("/api/tasks/result", include_in_schema=False)
     def submit_agent_result(request: Request, body: AgentResultRequest):
         identity, agent_id = agent_identity(request, body.agent_id)
         return service.submit_agent_result(
@@ -558,7 +530,7 @@ def create_app(
             status=body.status, returncode=body.returncode, result=body.result,
         )
 
-    @app.get("/api/agents/config-assets/{asset_id:path}/download")
+    @app.get("/api/agents/config-assets/{asset_id:path}/download", include_in_schema=False)
     def download_agent_config_asset(
         request: Request,
         asset_id: str,
@@ -574,32 +546,16 @@ def create_app(
             headers={"X-Content-SHA256": record.checksum},
         )
 
-    @app.get("/api/v1/schema/simulation-spec")
-    def simulation_spec_schema():
-        return service.simulation_spec_schema()
-
     @app.get("/api/v1/schema/run-config")
     def run_config_schema():
         return service.user_run_config_schema()
-
-    @app.get("/api/v1/projects")
-    def list_projects():
-        return service.list_projects()
 
     @app.get("/api/v1/capabilities")
     def execution_capabilities(request: Request):
         return service.execution_capabilities(owner(request))
 
-    @app.post("/api/v1/specs/import")
-    def import_spec(body: ImportSpecRequest):
-        return service.import_spec_yaml(body.yaml_content)
-
-    @app.post("/api/v1/specs/export")
-    def export_spec(body: ExportSpecRequest):
-        return service.export_spec_yaml(body.spec.to_dict())
-
     @app.post("/api/v1/run-configs/import")
-    def import_run_config(body: ImportSpecRequest):
+    def import_run_config(body: ImportRunConfigRequest):
         return service.import_user_run_config_yaml(body.yaml_content)
 
     @app.post("/api/v1/run-configs/export")
@@ -623,23 +579,6 @@ def create_app(
             idempotency_key=idempotency_key or "",
             prepared_runtime_bundle_id=body.prepared_runtime_bundle_id,
             client_transfer_roles=body.client_transfer_roles,
-        )
-
-    @app.post("/api/v1/validate")
-    def validate(spec: SimulationSpec):
-        return service.validate(spec.to_dict())
-
-    @app.post("/api/v1/jobs", status_code=201)
-    def submit_job(
-        request: Request,
-        body: SubmitJobRequest,
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    ):
-        return service.submit_job(
-            owner(request),
-            spec_payload=body.spec.to_dict(),
-            dry_run=body.dry_run,
-            idempotency_key=idempotency_key or "",
         )
 
     @app.get("/api/v1/jobs")
@@ -757,7 +696,7 @@ def create_app(
     def diagnosis(request: Request, job_id: str):
         return service.diagnosis(owner(request), job_id)
 
-    @app.post("/api/v1/artifact-uploads", status_code=201)
+    @app.post("/api/v1/artifact-uploads", status_code=201, include_in_schema=False)
     def create_artifact_upload(request: Request, body: CreateArtifactUploadRequest):
         return service.create_artifact_upload(
             owner(request),
@@ -765,11 +704,11 @@ def create_app(
             publish_path=body.publish_path,
         )
 
-    @app.get("/api/v1/artifact-uploads/{session_id}")
+    @app.get("/api/v1/artifact-uploads/{session_id}", include_in_schema=False)
     def get_artifact_upload(request: Request, session_id: str):
         return service.get_artifact_upload(owner(request), session_id)
 
-    @app.patch("/api/v1/artifact-uploads/{session_id}")
+    @app.patch("/api/v1/artifact-uploads/{session_id}", include_in_schema=False)
     async def append_artifact_upload(
         request: Request,
         session_id: str,
@@ -782,11 +721,11 @@ def create_app(
             data=await request.body(),
         )
 
-    @app.post("/api/v1/artifact-uploads/{session_id}/finalize")
+    @app.post("/api/v1/artifact-uploads/{session_id}/finalize", include_in_schema=False)
     def finalize_artifact_upload(request: Request, session_id: str):
         return service.finalize_artifact_upload(owner(request), session_id)
 
-    @app.post("/api/v1/runtime-bundle-uploads", status_code=201)
+    @app.post("/api/v1/runtime-bundle-uploads", status_code=201, include_in_schema=False)
     def create_runtime_bundle_upload(request: Request, body: CreateRuntimeBundleUploadRequest):
         return service.create_runtime_bundle_upload(
             owner(request),
@@ -794,7 +733,7 @@ def create_app(
             publish_path=body.publish_path,
         )
 
-    @app.post("/api/v1/existing-selena-imports", status_code=201)
+    @app.post("/api/v1/existing-selena-imports", status_code=201, include_in_schema=False)
     async def import_existing_selena(
         request: Request,
         encoded_metadata: str = Header(alias="X-Rsim-Existing-Metadata", min_length=1, max_length=32768),
@@ -821,7 +760,7 @@ def create_app(
             owner(request), metadata=dict(metadata or {}), archive_bytes=bytes(content)
         )
 
-    @app.post("/api/v1/config-assets", status_code=201)
+    @app.post("/api/v1/config-assets", status_code=201, include_in_schema=False)
     async def upload_config_asset(
         request: Request,
         asset_kind: str = Header(alias="X-Asset-Kind", pattern=r"^(adapter|mat_filter)$"),
@@ -836,11 +775,11 @@ def create_app(
             owner(request), kind=asset_kind, filename=asset_filename, content=bytes(data)
         )
 
-    @app.get("/api/v1/config-assets")
+    @app.get("/api/v1/config-assets", include_in_schema=False)
     def list_config_assets(request: Request, kind: str = Query(default="", pattern=r"^(?:|adapter|mat_filter)$")):
         return service.list_config_assets(owner(request), kind=kind)
 
-    @app.get("/api/v1/config-assets/{asset_id}")
+    @app.get("/api/v1/config-assets/{asset_id}", include_in_schema=False)
     def get_config_asset(
         request: Request,
         asset_id: str,
@@ -848,15 +787,15 @@ def create_app(
     ):
         return service.get_config_asset(owner(request), asset_id, kind=kind)
 
-    @app.get("/api/v1/runtime-bundles")
+    @app.get("/api/v1/runtime-bundles", include_in_schema=False)
     def list_runtime_bundles(request: Request):
         return service.list_runtime_bundles(owner(request))
 
-    @app.get("/api/v1/runtime-bundles/{bundle_id}")
+    @app.get("/api/v1/runtime-bundles/{bundle_id}", include_in_schema=False)
     def get_runtime_bundle(request: Request, bundle_id: str):
         return service.get_runtime_bundle(owner(request), bundle_id)
 
-    @app.get("/api/v1/runtime-bundles/{bundle_id}/download")
+    @app.get("/api/v1/runtime-bundles/{bundle_id}/download", include_in_schema=False)
     def download_runtime_bundle(request: Request, bundle_id: str):
         identity = user_or_agent_owner(request)
         bundle = service.get_runtime_bundle(identity, bundle_id)
@@ -872,11 +811,11 @@ def create_app(
             },
         )
 
-    @app.get("/api/v1/runtime-bundle-uploads/{session_id}")
+    @app.get("/api/v1/runtime-bundle-uploads/{session_id}", include_in_schema=False)
     def get_runtime_bundle_upload(request: Request, session_id: str):
         return service.get_runtime_bundle_upload(owner(request), session_id)
 
-    @app.patch("/api/v1/runtime-bundle-uploads/{session_id}")
+    @app.patch("/api/v1/runtime-bundle-uploads/{session_id}", include_in_schema=False)
     async def append_runtime_bundle_upload(
         request: Request,
         session_id: str,
@@ -886,11 +825,11 @@ def create_app(
             owner(request), session_id, offset=upload_offset, data=await request.body()
         )
 
-    @app.post("/api/v1/runtime-bundle-uploads/{session_id}/finalize")
+    @app.post("/api/v1/runtime-bundle-uploads/{session_id}/finalize", include_in_schema=False)
     def finalize_runtime_bundle_upload(request: Request, session_id: str):
         return service.finalize_runtime_bundle_upload(owner(request), session_id)
 
-    @app.post("/api/v1/result-uploads", status_code=201)
+    @app.post("/api/v1/result-uploads", status_code=201, include_in_schema=False)
     def create_result_upload(request: Request, body: CreateResultUploadRequest):
         return service.create_result_upload(
             user_or_agent_owner(request),
@@ -899,11 +838,11 @@ def create_app(
             archive_checksum=body.archive_checksum,
         )
 
-    @app.get("/api/v1/result-uploads/{session_id}")
+    @app.get("/api/v1/result-uploads/{session_id}", include_in_schema=False)
     def get_result_upload(request: Request, session_id: str):
         return service.get_result_upload(user_or_agent_owner(request), session_id)
 
-    @app.patch("/api/v1/result-uploads/{session_id}")
+    @app.patch("/api/v1/result-uploads/{session_id}", include_in_schema=False)
     async def append_result_upload(
         request: Request,
         session_id: str,
@@ -916,7 +855,7 @@ def create_app(
             data=await request.body(),
         )
 
-    @app.post("/api/v1/result-uploads/{session_id}/finalize")
+    @app.post("/api/v1/result-uploads/{session_id}/finalize", include_in_schema=False)
     def finalize_result_upload(
         request: Request,
         session_id: str,
@@ -929,24 +868,7 @@ def create_app(
             retain_until=body.retain_until,
         )
 
-    @app.post("/api/v1/dataset-uploads", status_code=201)
-    def create_dataset_upload(request: Request, body: CreateDatasetUploadRequest):
-        return service.create_dataset_upload(
-            owner(request),
-            project=body.project,
-            files=[item.model_dump() for item in body.files],
-        )
-
-    @app.post("/api/v1/run-data-uploads", status_code=201)
-    def create_run_data_upload(request: Request, body: CreateRunDataUploadRequest):
-        """Project-free browser/SDK upload namespace for the v2 user contract."""
-        return service.create_dataset_upload(
-            owner(request),
-            project="run-config-v2",
-            files=[item.model_dump() for item in body.files],
-        )
-
-    @app.post("/api/v1/agent-dataset-uploads", status_code=201)
+    @app.post("/api/v1/agent-dataset-uploads", status_code=201, include_in_schema=False)
     def create_agent_dataset_upload(
         request: Request,
         body: CreateAgentDatasetUploadRequest,
@@ -961,11 +883,11 @@ def create_app(
             agent_id=authenticated_agent_id,
         )
 
-    @app.get("/api/v1/dataset-uploads/{session_id}")
+    @app.get("/api/v1/dataset-uploads/{session_id}", include_in_schema=False)
     def get_dataset_upload(request: Request, session_id: str):
         return service.get_dataset_upload(owner(request), session_id)
 
-    @app.patch("/api/v1/dataset-uploads/{session_id}/files/{file_id}")
+    @app.patch("/api/v1/dataset-uploads/{session_id}/files/{file_id}", include_in_schema=False)
     async def append_dataset_upload(
         request: Request,
         session_id: str,
@@ -995,7 +917,7 @@ def create_app(
             data=bytes(data),
         )
 
-    @app.post("/api/v1/dataset-uploads/{session_id}/finalize")
+    @app.post("/api/v1/dataset-uploads/{session_id}/finalize", include_in_schema=False)
     def finalize_dataset_upload(request: Request, session_id: str):
         return service.finalize_dataset_upload(owner(request), session_id)
 

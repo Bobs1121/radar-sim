@@ -1,5 +1,7 @@
 # Web、SDK 与 AI 集成契约
 
+> **V2 单轨收敛声明（2026-08-11）**：本文件是 Web/SDK/AI 集成合同，继续有效。V2 单轨收敛索引见 `docs/V2_ARCHITECTURE.md`，该文件在其之上收敛 Web/SDK 同能力、唯一 `user-run-config/2.0` 与明确删除清单（用户可见 project/profile/recipe/light/full/legacy 概念全部移除）。本文件下文“未来 Skill/MCP”是明确缺口：仓库目前无可安装的 radar-sim MCP Server 或 Skill 包，本文件只定义未来薄封装合同，不得对外宣称“安装 MCP/Skill 即可使用”。Cluster 结果反向交付同样未实现。两者详见 `docs/V2_ARCHITECTURE.md` §10。
+
 ## 结论
 
 Web、Python SDK、未来 Skill/MCP 只使用同一套 `/api/v1`，不得复制任务编排、路径转换、Cluster 提交或结果判断逻辑。Skill/MCP 是 Python SDK 的薄封装，不是第二个仿真后端。
@@ -38,9 +40,9 @@ Connector 配对仍需部署方提供受控的短期配对流程。
 
 Web、SDK、Skill/MCP 通过 Linux `/api/v1` 传递的只能是 YAML/JSON、控制命令、状态、进度、Manifest 和逻辑引用。MF4、Selena.exe/DLL、Runtime、MatFilter、Adapter 与大型结果文件不得编码进 MCP 消息、模型上下文或 Linux API 请求体。
 
-当执行端不能读取用户路径时，Linux 返回内部 TransferPlan 或稳定等待/动作状态：Windows/Linux 本机 SDK、一次安装的 Connector 或 Cluster 上传网关负责把文件从源端直接送到本地 Windows full/Cluster 数据面。Skill/MCP 只解释 `waiting_for_local_connector`、`waiting_for_cluster_access`、`transferring_direct_to_cluster`、`cluster_direct_transfer_unavailable` 等状态并调用 SDK 的继续/重试动作，不读取文件正文，也不自行实现 SMB/UNC 复制。
+当执行端不能读取用户路径时，Linux 返回内部 TransferPlan 或稳定等待/动作状态：Windows/Linux 本机 SDK、一次安装的统一 Connector 或 Cluster 上传网关负责把文件从源端直接送到目标 Windows/Cluster 数据面。Skill/MCP 只解释 `waiting_for_local_connector`、`waiting_for_cluster_access`、`transferring_direct_to_cluster`、`cluster_direct_transfer_unavailable` 等状态并调用 SDK 的继续/重试动作，不读取文件正文，也不自行实现 SMB/UNC 复制。
 
-Web 与 SDK 的差别只在源端执行者：浏览器不能从路径文本读取任意本地文件，所以 Web 把本地路径交给同 owner 的持久 Connector；SDK 进程能够读取该路径时直接执行同一传输计划。Web 不再用 `/run-data-uploads` 或 `/config-assets` 把 MF4/Runtime/MatFilter/Adapter 正文上传到 Linux。SDK 的 `submit_run()` / `submit_yaml()` 同样禁止回退这些 legacy body-upload 接口；旧 upload 方法只保留兼容维护，不属于 UserRunConfig 主链路，也不得被 Skill/MCP 调用。
+Web 与 SDK 的差别只在源端执行者：浏览器不能从路径文本读取任意本地文件，所以 Web 把本地路径交给同 owner 的持久 Connector；SDK 进程能够读取该路径时直接执行同一传输计划。Web 和 SDK 都不提供 `/run-data-uploads` 或项目化 `/dataset-uploads` 创建入口，MF4/Runtime/MatFilter/Adapter 正文不得经过 Linux HTTP 服务；`submit_run()` / `submit_yaml()` 只使用源到目标传输计划。
 
 远程 Linux SDK 调用机通过请求内、非 YAML 的 `client_transfer_roles` 告知控制面哪些输入由该进程可读；该提示只决定签发哪些 owner/Job-bound TransferPlan，不携带路径正文、目标路径或凭据。独立挂载的共享/Cluster 文件系统仍按零复制处理。
 

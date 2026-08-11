@@ -11,6 +11,7 @@ import hashlib
 import ssl
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
@@ -24,9 +25,7 @@ from core.direct_transfer import (
     execute_transfer,
 )
 from core.transfer_service import TransferProgress
-from core.spec import SimulationSpec
 from core.user_config import UserRunConfig
-from core.data import iter_mf4_inputs
 from core.datasets import classify_data_path
 from core.user import USER_HEADER, normalize_user, stable_user_identity
 from radar_sim_sdk.errors import RadarSimApiError, RadarSimTransportError
@@ -35,15 +34,12 @@ from radar_sim_sdk.models import (
     ArtifactUpload,
     ArtifactUploadResult,
     RuntimeBundleUploadResult,
-    DatasetUpload,
-    DatasetUploadResult,
     Event,
     EventsPage,
     Job,
     JobDiagnosis,
     ManifestResponse,
     RunConfigValidationResult,
-    ValidationResult,
 )
 
 
@@ -132,13 +128,13 @@ class RadarSimClient:
         to the caller's control-plane scope.
         """
         normalized_mode = str(mode or "unified").strip().lower()
-        if normalized_mode not in {"unified", "light", "full"}:
+        if normalized_mode != "unified":
             raise ValueError("Windows connector mode must be 'unified'")
         target = Path(destination).expanduser()
         if target.exists() and target.is_dir():
             target = target / "RadarSim-Connect-Windows.cmd"
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(target.name + ".part")
+        temporary = target.with_name(target.name + f".part.{uuid.uuid4().hex}")
         try:
             with self._client.stream(
                 "GET",
@@ -161,11 +157,8 @@ class RadarSimClient:
     ) -> Path:
         """Download the correct connector mode for one run configuration.
 
-        The public connector is always unified: one installation can prepare
-        local inputs, compile Selena, execute Windows-local simulation, or
-        transfer inputs for Cluster execution.  The historical light/full
-        values remain an internal compatibility detail and are never selected
-        from a user run configuration.
+        One installation can prepare local inputs, compile Selena, execute
+        Windows-local simulation, or transfer inputs for Cluster execution.
         """
         parsed = UserRunConfig.from_dict(self._run_config_payload(config))
         selected_target = parsed.simulation.target
@@ -174,9 +167,6 @@ class RadarSimClient:
                 self.validate_run(parsed).execution.get("selected_target") or "cluster"
             ).strip().lower()
         return self.download_windows_connector(destination, mode="unified")
-
-    def validate(self, spec: SimulationSpec | dict[str, Any]) -> ValidationResult:
-        return ValidationResult.from_dict(self._request("POST", "/api/v1/validate", json=self._spec_payload(spec)))
 
     def validate_run(self, config: UserRunConfig | dict[str, Any]) -> RunConfigValidationResult:
         """Validate the project-free YAML contract used by the Web console."""
@@ -719,17 +709,6 @@ class RadarSimClient:
             )
         )
 
-    def submit(
-        self,
-        spec: SimulationSpec | dict[str, Any],
-        *,
-        dry_run: bool = False,
-        idempotency_key: str | None = None,
-    ) -> Job:
-        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
-        payload = {"spec": self._spec_payload(spec), "dry_run": bool(dry_run)}
-        return Job.from_dict(self._request("POST", "/api/v1/jobs", json=payload, headers=headers))
-
     def get_job(self, job_id: str) -> Job:
         return Job.from_dict(self._request("GET", f"/api/v1/jobs/{job_id}"))
 
@@ -919,7 +898,7 @@ class RadarSimClient:
             digest = str(metadata.get("archive_checksum") or "").removeprefix("sha256:")[:12]
             target = target / f"radar-sim-result-{digest}.zip"
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(target.name + ".part")
+        temporary = target.with_name(target.name + f".part.{uuid.uuid4().hex}")
         digest = hashlib.sha256()
         try:
             with self._client.stream("GET", f"/api/v1/results/{result_ref}/download") as response:
@@ -1216,124 +1195,6 @@ class RadarSimClient:
                 current = self.append_runtime_bundle_upload(current.session_id, current.received_bytes, data)
         return self.finalize_runtime_bundle_upload(session.session_id)
 
-    def create_dataset_upload(self, project: str, files: list[dict[str, Any]]) -> DatasetUpload:
-        return DatasetUpload.from_dict(
-            self._request("POST", "/api/v1/dataset-uploads", json={"project": project, "files": files})
-        )
-
-    def create_run_data_upload(self, files: list[dict[str, Any]]) -> DatasetUpload:
-        """Create a data upload without exposing an internal project namespace."""
-        return DatasetUpload.from_dict(
-            self._request("POST", "/api/v1/run-data-uploads", json={"files": files})
-        )
-
-    def upload_run_data(self, source: str | Path) -> DatasetUploadResult:
-        """Upload one local data.path without exposing an internal project."""
-        source_path = Path(source).expanduser()
-        paths = list(iter_mf4_inputs(source_path, limit=0))
-        if not paths:
-            raise ValueError("no input MF4 files were found under data.path")
-        root = source_path if source_path.is_dir() else source_path.parent
-        local: dict[str, Path] = {}
-        manifest: list[dict[str, Any]] = []
-        for path in paths:
-            relative = path.name if source_path.is_file() else path.relative_to(root).as_posix()
-            local[relative] = path
-            manifest.append(
-                {
-                    "relative_path": relative,
-                    "size": path.stat().st_size,
-                    "checksum": _sha256_path(path),
-                }
-            )
-        current = self.create_run_data_upload(manifest)
-        for upload_file in current.files:
-            path = local.get(upload_file.relative_path)
-            if path is None:
-                raise ValueError(f"server returned an unknown upload file: {upload_file.relative_path}")
-            with path.open("rb") as handle:
-                handle.seek(upload_file.received_bytes)
-                offset = upload_file.received_bytes
-                while offset < upload_file.expected_size:
-                    chunk = handle.read(min(current.chunk_size, upload_file.expected_size - offset))
-                    if not chunk:
-                        raise ValueError(f"local dataset file ended early: {upload_file.relative_path}")
-                    current = self.append_dataset_upload(
-                        current.session_id, upload_file.file_id, offset, chunk
-                    )
-                    state = next(item for item in current.files if item.file_id == upload_file.file_id)
-                    offset = state.received_bytes
-        return self.finalize_dataset_upload(current.session_id)
-
-    def create_agent_dataset_upload(
-        self,
-        project: str,
-        files: list[dict[str, Any]],
-        *,
-        evidence_ref: str,
-        agent_id: str,
-    ) -> DatasetUpload:
-        return DatasetUpload.from_dict(
-            self._request(
-                "POST",
-                "/api/v1/agent-dataset-uploads",
-                json={"project": project, "files": files, "evidence_ref": evidence_ref},
-                headers={"X-Rsim-Agent-ID": agent_id},
-            )
-        )
-
-    def get_dataset_upload(self, session_id: str) -> DatasetUpload:
-        return DatasetUpload.from_dict(self._request("GET", f"/api/v1/dataset-uploads/{session_id}"))
-
-    def append_dataset_upload(
-        self, session_id: str, file_id: str, offset: int, data: bytes
-    ) -> DatasetUpload:
-        return DatasetUpload.from_dict(
-            self._request(
-                "PATCH",
-                f"/api/v1/dataset-uploads/{session_id}/files/{file_id}",
-                content=bytes(data),
-                headers={"Upload-Offset": str(int(offset))},
-            )
-        )
-
-    def finalize_dataset_upload(self, session_id: str) -> DatasetUploadResult:
-        return DatasetUploadResult.from_dict(
-            self._request("POST", f"/api/v1/dataset-uploads/{session_id}/finalize")
-        )
-
-    def upload_dataset(self, project: str, source: str | Path) -> DatasetUploadResult:
-        """Discover every input MF4, upload with resume, and return reusable data.path."""
-        source_path = Path(source)
-        paths = list(iter_mf4_inputs(source_path, limit=0))
-        if not paths:
-            raise ValueError("no input MF4 files were found")
-        root = source_path if source_path.is_dir() else source_path.parent
-        local: dict[str, Path] = {}
-        manifest: list[dict[str, Any]] = []
-        for path in paths:
-            relative = path.name if source_path.is_file() else path.relative_to(root).as_posix()
-            checksum = _sha256_path(path)
-            local[relative] = path
-            manifest.append({"relative_path": relative, "size": path.stat().st_size, "checksum": checksum})
-        session = self.create_dataset_upload(project, manifest)
-        current = session
-        for upload_file in current.files:
-            path = local.get(upload_file.relative_path)
-            if path is None:
-                raise ValueError(f"server returned an unknown upload file: {upload_file.relative_path}")
-            with path.open("rb") as handle:
-                handle.seek(upload_file.received_bytes)
-                offset = upload_file.received_bytes
-                while offset < upload_file.expected_size:
-                    data = handle.read(min(current.chunk_size, upload_file.expected_size - offset))
-                    if not data:
-                        raise ValueError(f"local dataset file ended early: {upload_file.relative_path}")
-                    current = self.append_dataset_upload(current.session_id, upload_file.file_id, offset, data)
-                    state = next(item for item in current.files if item.file_id == upload_file.file_id)
-                    offset = state.received_bytes
-        return self.finalize_dataset_upload(session.session_id)
-
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
@@ -1381,16 +1242,6 @@ class RadarSimClient:
             status_code=response.status_code,
             request_id=response.headers.get("X-Request-ID", ""),
         )
-
-    @staticmethod
-    def _spec_payload(spec: SimulationSpec | dict[str, Any]) -> dict[str, Any]:
-        if isinstance(spec, SimulationSpec):
-            return spec.to_dict()
-        payload = dict(spec)
-        try:
-            return SimulationSpec.from_dict(payload).to_dict()
-        except Exception:
-            return payload
 
     @staticmethod
     def _run_config_payload(config: UserRunConfig | dict[str, Any]) -> dict[str, Any]:

@@ -84,7 +84,7 @@ def test_existing_with_old_bundle_is_rejected():
         "source": "existing",
         "bundle": "selena-bundle:sha256:" + "a" * 64,
     }
-    with pytest.raises(ValidationError, match="existing_path"):
+    with pytest.raises(ValidationError, match="bundle"):
         UserRunConfig.from_dict(config)
 
 
@@ -95,7 +95,7 @@ def test_existing_with_old_executable_is_rejected():
         "executable": r"D:\Selena\selena.exe",
         "runtime_xml": r"D:\Selena\Runtime.xml",
     }
-    with pytest.raises(ValidationError, match="existing_path"):
+    with pytest.raises(ValidationError, match="executable"):
         UserRunConfig.from_dict(config)
 
 
@@ -185,27 +185,13 @@ def test_existing_yaml_exports_only_existing_fields():
         assert field not in exported
 
 
-def test_legacy_build_script_maps_to_selena_build_script():
+def test_legacy_build_fields_are_rejected():
     config = _build_config()
     config["selena"].pop("selena_build_script")
     config["selena"]["build_script"] = r"D:\bydod25fr\build_selena.bat"
     config["selena"]["build_mode"] = "Debug"
-    parsed = UserRunConfig.from_dict(config)
-    assert parsed.selena.selena_build_script == "D:/bydod25fr/build_selena.bat"
-    assert parsed.selena.package_build_script == "D:/bydod25fr/package.bat"
-    assert not hasattr(parsed.selena, "build_script")
-    assert not hasattr(parsed.selena, "build_mode")
-
-
-def test_legacy_build_fields_never_exported():
-    config = _build_config()
-    config["selena"].pop("selena_build_script")
-    config["selena"]["build_script"] = r"D:\bydod25fr\build_selena.bat"
-    config["selena"]["build_mode"] = "Debug"
-    raw = UserRunConfig.from_dict(config).to_dict()
-    assert "build_script" not in raw["selena"]
-    assert "build_mode" not in raw["selena"]
-    assert raw["selena"]["selena_build_script"] == "D:/bydod25fr/build_selena.bat"
+    with pytest.raises(ValidationError, match="build_script|build_mode"):
+        UserRunConfig.from_dict(config)
 
 
 def test_existing_source_preserves_optional_workspace_evidence():
@@ -240,30 +226,25 @@ def test_existing_build_script_evidence_requires_code_path():
         UserRunConfig.from_dict(config)
 
 
-def test_legacy_data_limit_is_silently_dropped():
+def test_legacy_data_limit_is_rejected():
     config = _build_config()
     config["data"]["limit"] = 100
-    parsed = UserRunConfig.from_dict(config)
-    assert "limit" not in parsed.to_dict()["data"]
-    assert "limit" not in parsed.to_yaml()
+    with pytest.raises(ValidationError, match="limit"):
+        UserRunConfig.from_dict(config)
 
 
-def test_legacy_simulation_timeout_minutes_is_silently_dropped():
+def test_legacy_simulation_timeout_minutes_is_rejected():
     config = _build_config()
     config["simulation"]["timeout_minutes"] = 120
-    parsed = UserRunConfig.from_dict(config)
-    assert "timeout_minutes" not in parsed.to_dict()["simulation"]
-    assert "timeout_minutes" not in parsed.to_yaml()
+    with pytest.raises(ValidationError, match="timeout_minutes"):
+        UserRunConfig.from_dict(config)
 
 
-def test_legacy_result_block_is_silently_dropped():
+def test_legacy_result_block_is_rejected():
     config = _build_config()
     config["result"] = {"name": "my-run", "retain_days": 7}
-    parsed = UserRunConfig.from_dict(config)
-    assert parsed.result.path == ""
-    assert parsed.to_dict()["result"] == {"path": ""}
-    assert "name:" not in parsed.to_yaml()
-    assert "retain_days:" not in parsed.to_yaml()
+    with pytest.raises(ValidationError, match="name|retain_days"):
+        UserRunConfig.from_dict(config)
 
 
 def test_result_path_is_normalized_and_round_trips_as_receiver_hint():

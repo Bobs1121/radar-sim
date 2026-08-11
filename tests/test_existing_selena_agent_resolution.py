@@ -247,7 +247,8 @@ def test_agent_existing_resolver_creates_path_free_complete_bundle_lease(tmp_pat
 
     assert result["status"] == "resolved"
     assert result["source"] == "existing"
-    assert result["internal_project"] == "ovrs25"
+    assert result["internal_project"].startswith("workspace-")
+    assert result["adapter_key"] == "generic:existing-selena"
     assert result["runtime_bundle_lease_ref"].startswith("runtime-bundle-lease:sha256:")
     assert result["build_evidence_ref"] == "resolve-existing-1:1"
     roles = [item["role"] for item in result["runtime_bundle"]["files"]]

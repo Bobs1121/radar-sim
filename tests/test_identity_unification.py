@@ -12,6 +12,7 @@ from core.api_v1_fastapi import create_app
 from core.control_service import ControlService
 from core.user import current_user, stable_user_identity
 from radar_sim_sdk import RadarSimClient
+from cli.agent import _ControlClient
 
 
 def test_stable_user_identity_is_lowercase_and_namespaced(monkeypatch):
@@ -76,3 +77,27 @@ def test_connector_installer_migrates_only_generated_legacy_owner():
     assert "'^(web|sdk)-[0-9a-f]{24,64}$'" in source
     assert "Never silently" in source
     assert "replace an existing explicit owner" in source
+
+
+def test_bare_connector_control_requests_use_same_stable_owner_as_sdk(monkeypatch):
+    monkeypatch.setenv("RSIM_USER", "Alice")
+    captured: dict[str, str] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b"{}"
+
+    def open_request(request, timeout):
+        captured["owner"] = request.headers["X-rsim-user"]
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", open_request)
+    _ControlClient("http://control.invalid", timeout=1)._request("GET", "/api/agents")
+
+    assert captured["owner"] == "user-alice"

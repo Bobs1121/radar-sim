@@ -5,7 +5,7 @@ import pytest
 from cli import agent as agent_module
 from core.agent_asset_bindings import AgentAssetBindingStore
 from core.agent_bindings import AgentBindingStore
-from core.agent_build_stage import prepare_selena_build
+from core.agent_build_stage import finish_selena_build, prepare_selena_build
 from core.repo import WorkspaceFingerprint
 from core.workspace_recognizer import WorkspaceRecognizer
 from core.config import load_config, load_local_execution_config
@@ -54,11 +54,13 @@ def test_unknown_workspace_derives_stable_internal_identity_and_output(tmp_path)
         str(workspace),
         selena_build_script=str(selena_script),
         package_build_script=str(package_script),
+        generic_only=True,
     )
     second = recognizer.recognize(
         str(workspace),
         selena_build_script=str(selena_script),
         package_build_script=str(package_script),
+        generic_only=True,
     )
 
     assert first.status == "resolved"
@@ -163,6 +165,12 @@ def test_agent_auto_configures_unknown_workspace_without_project_registration(
     monkeypatch.setattr(
         "core.agent_build_stage.inspect_workspace_identity", lambda *_args: snapshot
     )
+    monkeypatch.setattr(
+        "core.agent_build_stage.adapt_legacy_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("v2 must not enter the legacy adapter")
+        ),
+    )
     prepared = prepare_selena_build(
         {
             "contract": "user-run-config/2.0",
@@ -193,6 +201,25 @@ def test_agent_auto_configures_unknown_workspace_without_project_registration(
         / "selena.exe"
     ).resolve()
 
+    # A wrapper may place the artifact below a dynamically named subfolder
+    # that static script inspection cannot know. Post-build discovery stays
+    # inside the authorized output root and selects the requested build mode.
+    actual = (
+        workspace
+        / "ip_dc"
+        / "build"
+        / "CUSTOM_OD25"
+        / "dynamic-output"
+        / "Release"
+        / "Selena.exe"
+    )
+    actual.parent.mkdir(parents=True)
+    actual.write_bytes(b"generic-v2-selena")
+    result = finish_selena_build(prepared)
+    assert result["artifact"]["logical_path"].endswith(
+        "dynamic-output/Release/Selena.exe"
+    )
+
 
 def test_generic_identity_is_stable_when_optional_package_hint_changes(tmp_path):
     workspace, selena_script, package_script = _make_unknown_workspace(tmp_path)
@@ -214,6 +241,24 @@ def test_generic_identity_is_stable_when_optional_package_hint_changes(tmp_path)
     )
 
     assert original.internal_project == changed.internal_project
+
+
+def test_v2_script_without_static_output_uses_project_free_build_root(tmp_path):
+    workspace = tmp_path / "new-customer-workspace"
+    (workspace / "ip_dc").mkdir(parents=True)
+    script = workspace / "tools" / "build_selena.bat"
+    script.parent.mkdir()
+    script.write_text("@echo off\ncall build-everything.bat\n", encoding="utf-8")
+
+    outcome = WorkspaceRecognizer(tmp_path / "no-project-registry").recognize(
+        str(workspace),
+        selena_build_script=str(script),
+        generic_only=True,
+    )
+
+    assert outcome.status == "resolved"
+    assert outcome.adapter_key == "generic:selena-script"
+    assert outcome.output_dir == str(workspace / "ip_dc" / "build").replace("\\", "/").casefold()
 
 
 def test_agent_reuses_binding_when_only_optional_package_hint_changes(

@@ -430,7 +430,6 @@ def _run_serve_v1(args) -> int:
         result_catalog=result_catalog,
         result_upload_service_factory=result_upload_service_factory,
         transfer_service=transfer_service,
-        project_names_provider=lambda: __import__("core.config", fromlist=["list_projects"]).list_projects(),
     )
     app_kwargs = {"api_service": api_service}
     if authenticator is not None:

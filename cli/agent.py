@@ -168,8 +168,8 @@ def register(subparsers):
 
 def run(args, config):
     import os
-    from core.user import current_user
-    user = current_user()
+    from core.user import current_user, stable_user_identity
+    user = stable_user_identity(current_user())
     mode, node_kind, capabilities = _capabilities_for_mode(
         getattr(args, "windows_mode", MODE_UNIFIED),
         getattr(args, "capability", None),
@@ -2372,6 +2372,7 @@ def _resolve_v2_run_config(
         str(payload.get("build_script") or ""),
         selena_build_script=str(payload.get("selena_build_script") or ""),
         package_build_script=str(payload.get("package_build_script") or ""),
+        generic_only=True,
     )
     if outcome.status != "resolved" or not outcome.adapter_key:
         raise ValueError("workspace adapter could not be recognized")
@@ -3041,12 +3042,12 @@ class _ControlClient:
     ) -> dict:
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for artifact upload")
-        from core.user import current_user
+        from core.user import current_user, stable_user_identity
         from radar_sim_sdk import RadarSimClient
 
         with RadarSimClient(
             self._api_url,
-            user=str(owner or current_user()),
+            user=str(owner or stable_user_identity(current_user())),
             token=self._api_token,
             trust_env=False,
         ) as sdk:
@@ -3071,12 +3072,12 @@ class _ControlClient:
     ) -> dict:
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for Runtime Bundle upload")
-        from core.user import current_user
+        from core.user import current_user, stable_user_identity
         from radar_sim_sdk import RadarSimClient
 
         with RadarSimClient(
             self._api_url,
-            user=str(owner or current_user()),
+            user=str(owner or stable_user_identity(current_user())),
             token=self._api_token,
             trust_env=False,
         ) as sdk:
@@ -3339,7 +3340,7 @@ class _ControlClient:
         # now executes a metadata-only TransferPlan; it never opens a Linux
         # dataset upload session or sends a file body over HTTP.
         from core.datasets import DatasetDiscoveryCancelled
-        from core.user import current_user
+        from core.user import current_user, stable_user_identity
 
         cancelled = cancel_requested or (lambda: False)
         if cancelled():
@@ -3356,7 +3357,7 @@ class _ControlClient:
         ]
         source = lease.source_path
         root = source if source.is_dir() else source.parent
-        transfer_owner = str(owner or current_user())
+        transfer_owner = str(owner or stable_user_identity(current_user()))
         plan = self.issue_transfer_plan(
             owner=transfer_owner,
             job_id=task_id.split(":", 1)[0] or task_id,
@@ -3454,11 +3455,11 @@ class _ControlClient:
         payload: dict | None = None,
     ) -> dict:
         """Call metadata-only transfer endpoints with the Agent identity."""
-        from core.user import current_user
+        from core.user import current_user, stable_user_identity
 
         headers = {
             "Accept": "application/json",
-            "X-Rsim-User": str(owner or current_user()),
+            "X-Rsim-User": str(owner or stable_user_identity(current_user())),
         }
         auth_token = self._api_token or self._token
         if auth_token:
@@ -3503,11 +3504,11 @@ class _ControlClient:
         headers: dict[str, str] | None = None,
     ) -> dict:
         """Call a v1 upload endpoint without importing the optional SDK stack."""
-        from core.user import current_user
+        from core.user import current_user, stable_user_identity
 
         request_headers = {
             "Accept": "application/json",
-            "X-Rsim-User": str(owner or current_user()),
+            "X-Rsim-User": str(owner or stable_user_identity(current_user())),
         }
         if self._api_token:
             request_headers["Authorization"] = f"Bearer {self._api_token}"
@@ -3545,11 +3546,11 @@ class _ControlClient:
         requests use the v1 API URL and the user's owner scope, while the
         control poll uses the Agent identity and legacy endpoints.
         """
-        from core.user import current_user
+        from core.user import current_user, stable_user_identity
 
         request_headers = {
             "Accept": "application/json",
-            "X-Rsim-User": str(owner or current_user()),
+            "X-Rsim-User": str(owner or stable_user_identity(current_user())),
         }
         if self._api_token:
             request_headers["Authorization"] = f"Bearer {self._api_token}"
@@ -3577,9 +3578,12 @@ class _ControlClient:
             raise _agent_transport_error(method, path, exc) from exc
 
     def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
-        from core.user import USER_HEADER, current_user
+        from core.user import USER_HEADER, current_user, stable_user_identity
         data = None
-        headers = {"Accept": "application/json", USER_HEADER: current_user()}
+        headers = {
+            "Accept": "application/json",
+            USER_HEADER: stable_user_identity(current_user()),
+        }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         if payload is not None:

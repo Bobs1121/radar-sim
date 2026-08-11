@@ -51,9 +51,9 @@ def test_bearer_auth_derives_owner_and_ignores_spoofed_user_header(tmp_path):
     ))
     assert client.get("/api/v1/jobs").status_code == 401
     created = client.post(
-        "/api/v1/jobs",
+        "/api/v1/run-jobs",
         headers={"Authorization": f"Bearer {ALICE_TOKEN}", "X-Rsim-User": "bob"},
-        json={"spec": spec_dict(), "dry_run": True},
+        json={"config": run_config_dict(), "dry_run": True},
     )
     assert created.status_code == 201
     assert len(services["alice"].list_jobs()) == 1
@@ -177,28 +177,29 @@ def test_authenticated_agent_can_download_shared_runtime_bundle(tmp_path):
     assert client.get(f"/api/v1/runtime-bundles/{bundle_id}/download").status_code == 401
 
 
-def test_health_schema_validate_submit_get_cancel_manifest(tmp_path):
+def test_health_v2_schema_validate_submit_get_cancel_manifest(tmp_path):
     client, _ = make_client(tmp_path)
 
     assert client.get("/api/v1/health").json()["api_version"] == "v1"
-    schema = client.get("/api/v1/schema/simulation-spec").json()
-    assert "project" in schema["properties"]
+    schema = client.get("/api/v1/schema/run-config").json()
+    assert "project" not in schema["properties"]
 
-    validation = client.post("/api/v1/validate", json=spec_dict()).json()
-    job = client.post("/api/v1/jobs", json={"spec": spec_dict(), "dry_run": True}).json()
+    validation = client.post("/api/v1/run-configs/validate", json=run_config_dict()).json()
+    job = client.post(
+        "/api/v1/run-jobs", json={"config": run_config_dict(), "dry_run": True}
+    ).json()
     assert job["spec_hash"] == validation["fingerprint"]
-    assert job["type"] == "simulation.v1.dry_run"
+    assert job["type"] == "simulation.run_config.v2.dry_run"
 
     fetched = client.get(f"/api/v1/jobs/{job['id']}").json()
     assert fetched["id"] == job["id"]
     assert client.get(f"/api/v1/jobs/{job['id']}/manifest").json()["available"] is False
     diagnosis = client.get(f"/api/v1/jobs/{job['id']}/diagnosis").json()
     assert diagnosis["job_id"] == job["id"]
-    assert diagnosis["outcome"] == "pending"
-    assert diagnosis["action"]["type"] == "wait_job"
+    assert diagnosis["outcome"] == "succeeded"
 
     cancelled = client.post(f"/api/v1/jobs/{job['id']}/cancel").json()
-    assert cancelled["status"] == "cancelled"
+    assert cancelled["status"] == "succeeded"
 
 
 def test_serve_v1_exposes_agent_control_endpoints_on_same_database(tmp_path):
@@ -253,18 +254,18 @@ def test_one_click_windows_connector_is_bound_to_current_linux_service(tmp_path)
     bundle.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
     client = TestClient(create_app(windows_connector_bundle=bundle))
 
-    installer = client.get("/api/v1/windows-connector/install.ps1?mode=full")
+    installer = client.get("/api/v1/windows-connector/install.ps1?mode=unified")
     assert installer.status_code == 200
     assert "attachment" in installer.headers["content-disposition"]
     assert "__RSIM_SERVER_URL_BASE64__" not in installer.text
     assert "__RSIM_WINDOWS_MODE__" not in installer.text
     assert "aHR0cDovL3Rlc3RzZXJ2ZXI=" in installer.text
-    assert '$Mode = "full"' in installer.text
+    assert '$Mode = "unified"' in installer.text
     assert "/api/v1/windows-connector/package.zip" in installer.text
     assert "AgentToken" not in installer.text
     assert "ApiToken" not in installer.text
 
-    launcher = client.get("/api/v1/windows-connector/connect.cmd?mode=light")
+    launcher = client.get("/api/v1/windows-connector/connect.cmd?mode=unified")
     assert launcher.status_code == 200
     assert "RadarSim-%E8%BF%9E%E6%8E%A5%E6%9C%AC%E6%9C%BA.cmd" in launcher.headers["content-disposition"]
     assert "__RSIM_SERVER_URL_BASE64__" not in launcher.text
@@ -273,6 +274,8 @@ def test_one_click_windows_connector_is_bound_to_current_linux_service(tmp_path)
     assert "install.ps1?mode=" in launcher.text
     assert "AgentToken" not in launcher.text
     assert "ApiToken" not in launcher.text
+    assert client.get("/api/v1/windows-connector/connect.cmd?mode=light").status_code == 422
+    assert client.get("/api/v1/windows-connector/install.ps1?mode=full").status_code == 422
 
     package = client.get("/api/v1/windows-connector/package.zip")
     assert package.status_code == 200
@@ -283,10 +286,10 @@ def test_one_click_windows_connector_is_bound_to_current_linux_service(tmp_path)
 
 def test_one_click_windows_connector_never_embeds_long_lived_auth_tokens(tmp_path):
     client = TestClient(create_app(authenticator=make_authenticator()))
-    installer = client.get("/api/v1/windows-connector/install.ps1?mode=light")
+    installer = client.get("/api/v1/windows-connector/install.ps1?mode=unified")
     assert installer.status_code == 409
     assert installer.json()["code"] == "connector_pairing_required"
-    assert client.get("/api/v1/windows-connector/connect.cmd?mode=light").status_code == 409
+    assert client.get("/api/v1/windows-connector/connect.cmd?mode=unified").status_code == 409
 
 
 def test_project_free_run_config_routes_share_one_contract(tmp_path):
@@ -308,7 +311,7 @@ def test_project_free_run_config_routes_share_one_contract(tmp_path):
     assert created.json()["spec_hash"] == validated.json()["fingerprint"]
     assert "project" not in created.json()["spec"]
     assert created.json()["waiting"]["reason"] == "windows_connection_required"
-    assert created.json()["waiting"]["mode"] == "light"
+    assert created.json()["waiting"]["mode"] == "unified"
     assert created.json()["waiting"]["action"]["type"] == "connect_windows"
     assert "D:/" not in str(created.json()["waiting"])
 
@@ -362,45 +365,47 @@ def test_capability_route_is_path_free_and_owner_scoped(tmp_path):
         },
     )
     body = client.get("/api/v1/capabilities", headers={"X-Rsim-User": "alice"}).json()
-    assert body["capabilities"]["windows_full"]["available"] is True
+    assert body["capabilities"]["windows"]["available"] is True
+    assert "windows_full" not in body["capabilities"]
+    assert "windows_light" not in body["capabilities"]
     assert "full-a" not in str(body)
     assert "private" not in str(body).lower()
 
 
-def test_project_catalog_and_yaml_import_export_for_web(tmp_path):
+def test_v2_removes_project_catalog_and_legacy_spec_routes(tmp_path):
     services: dict[str, ControlService] = {}
 
     def factory(owner: str) -> ControlService:
         services.setdefault(owner, ControlService(tmp_path / f"{owner}.db"))
         return services[owner]
 
-    api = ApiV1Service(
-        control_service_factory=factory,
-        project_names_provider=lambda: ["ovrs25", "bydod25", "ovrs25", ""],
-    )
+    api = ApiV1Service(control_service_factory=factory)
     client = TestClient(create_app(api_service=api))
-    assert client.get("/api/v1/projects").json() == {
-        "projects": ["bydod25", "ovrs25"],
-        "count": 2,
-    }
+    for method, path in (
+        ("get", "/api/v1/projects"),
+        ("get", "/api/v1/schema/simulation-spec"),
+        ("post", "/api/v1/specs/import"),
+        ("post", "/api/v1/specs/export"),
+        ("post", "/api/v1/validate"),
+    ):
+        assert getattr(client, method)(path).status_code == 404
 
-    imported = client.post(
-        "/api/v1/specs/import",
-        json={"yaml_content": "project: ovrs25\ndata:\n  path: //server/share/run\n"},
+    exported = client.post(
+        "/api/v1/run-configs/export", json={"config": run_config_dict()}
     )
-    assert imported.status_code == 200
-    spec = imported.json()["spec"]
-    assert spec["selena"]["mode"] == "auto"
-    exported = client.post("/api/v1/specs/export", json={"spec": spec})
     assert exported.status_code == 200
-    assert "project: ovrs25" in exported.json()["yaml_content"]
+    assert "schema_version: '2.0'" in exported.json()["yaml_content"]
 
-    invalid = client.post(
-        "/api/v1/specs/import",
-        json={"yaml_content": "project: ovrs25\ndata: []\n"},
-    )
-    assert invalid.status_code == 422
-    assert invalid.json()["code"] == "invalid_spec"
+
+def test_v2_openapi_hides_connector_and_compatibility_routes():
+    paths = set(create_app().openapi()["paths"])
+
+    assert "/api/v1/run-jobs" in paths
+    assert "/api/v1/schema/run-config" in paths
+    assert not any(path.startswith("/api/agents") for path in paths)
+    assert not any("upload" in path for path in paths)
+    assert not any("runtime-bundle" in path for path in paths)
+    assert not any("existing-selena" in path for path in paths)
 
 
 def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_path):
@@ -501,79 +506,85 @@ def test_result_download_requires_the_same_owner_as_web_job_requests(tmp_path):
     assert len(downloaded.content) == result.archive_size
 
 
-def test_task_center_list_route_supports_owner_status_and_minimal_spec(tmp_path):
+def test_task_center_list_route_supports_owner_status_and_v2_config(tmp_path):
     client, _ = make_client(tmp_path)
-    minimal = {"project": "bydod25", "data": {"path": "D:/measurement/run"}}
+    config = run_config_dict()
     created = client.post(
-        "/api/v1/jobs",
-        json={"spec": minimal},
+        "/api/v1/run-jobs",
+        json={"config": config},
         headers={"X-Rsim-User": "alice"},
     )
     assert created.status_code == 201
     job = created.json()
-    assert job["spec"]["selena"]["mode"] == "auto"
+    assert job["spec"]["selena"]["source"] == "build"
 
-    client.post("/api/v1/jobs", json={"spec": minimal}, headers={"X-Rsim-User": "bob"})
+    client.post("/api/v1/run-jobs", json={"config": config}, headers={"X-Rsim-User": "bob"})
     page = client.get("/api/v1/jobs?status=queued&limit=10", headers={"X-Rsim-User": "alice"}).json()
     assert page["count"] == 1
     assert page["jobs"][0]["id"] == job["id"]
     assert page["jobs"][0]["current_stage"] == "resolve_spec"
-    assert page["jobs"][0]["progress"] == 0.0
+    assert page["jobs"][0]["progress"] == 0.1
 
 
-def test_invalid_spec_and_request_errors_share_envelope(tmp_path):
+def test_invalid_v2_config_and_request_errors_share_envelope(tmp_path):
     client, _ = make_client(tmp_path)
-    invalid = spec_dict(project="")
-    response = client.post("/api/v1/validate", json=invalid, headers={"X-Request-ID": "req-test"})
+    invalid = run_config_dict()
+    invalid["selena"]["runtime_xml"] = ""
+    response = client.post(
+        "/api/v1/run-configs/validate", json=invalid, headers={"X-Request-ID": "req-test"}
+    )
     body = response.json()
     assert response.status_code == 422
     assert response.headers["X-Request-ID"] == "req-test"
     assert set(body) == {"code", "message", "detail", "actions", "request_id"}
-    assert body["code"] == "invalid_spec"
+    assert body["code"] == "invalid_run_config"
     assert body["request_id"] == "req-test"
-    assert body["detail"]["errors"][0]["loc"] == ["body", "project"]
+    assert body["detail"]["errors"][0]["loc"] == ["body", "selena"]
     assert "traceback" not in str(body).lower()
     assert "ValueError(" not in str(body)
 
-    missing_spec = client.post("/api/v1/jobs", json={})
+    missing_spec = client.post("/api/v1/run-jobs", json={})
     assert missing_spec.status_code == 422
-    assert missing_spec.json()["code"] == "invalid_request"
+    assert missing_spec.json()["code"] == "invalid_run_config"
 
     not_found = client.get("/api/v1/jobs/job_missing")
     assert not_found.status_code == 404
     assert not_found.json()["code"] == "not_found"
 
 
-def test_openapi_validate_and_submit_reference_same_simulation_spec_schema(tmp_path):
+def test_openapi_exposes_only_v2_submit_and_validation_contract(tmp_path):
     client, _ = make_client(tmp_path)
     openapi = client.get("/openapi.json").json()
 
-    validate_schema = openapi["paths"]["/api/v1/validate"]["post"]["requestBody"]["content"]["application/json"]["schema"]
-    submit_spec_schema = openapi["components"]["schemas"]["SubmitJobRequest"]["properties"]["spec"]
+    validate_schema = openapi["paths"]["/api/v1/run-configs/validate"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    submit_config_schema = openapi["components"]["schemas"]["SubmitUserRunRequest"]["properties"]["config"]
 
-    assert validate_schema == {"$ref": "#/components/schemas/SimulationSpec"}
-    assert submit_spec_schema == {"$ref": "#/components/schemas/SimulationSpec"}
+    assert validate_schema == {"$ref": "#/components/schemas/UserRunConfig"}
+    assert submit_config_schema == {"$ref": "#/components/schemas/UserRunConfig"}
+    assert "/api/v1/validate" not in openapi["paths"]
+    assert "/api/v1/schema/simulation-spec" not in openapi["paths"]
 
 
 def test_durable_idempotency_conflict_over_http(tmp_path):
     client, _ = make_client(tmp_path)
-    first = client.post("/api/v1/jobs", json={"spec": spec_dict()}, headers={"Idempotency-Key": "k"}).json()
-    second = client.post("/api/v1/jobs", json={"spec": spec_dict()}, headers={"Idempotency-Key": "k"}).json()
+    first = client.post("/api/v1/run-jobs", json={"config": run_config_dict()}, headers={"Idempotency-Key": "k"}).json()
+    second = client.post("/api/v1/run-jobs", json={"config": run_config_dict()}, headers={"Idempotency-Key": "k"}).json()
     assert second["id"] == first["id"]
 
-    changed = spec_dict(data={"path": "D:/different", "limit": 0, "required_signals": []})
-    conflict = client.post("/api/v1/jobs", json={"spec": changed}, headers={"Idempotency-Key": "k"})
+    changed = run_config_dict()
+    changed["data"]["path"] = "D:/different"
+    conflict = client.post("/api/v1/run-jobs", json={"config": changed}, headers={"Idempotency-Key": "k"})
     assert conflict.status_code == 409
     assert conflict.json()["code"] == "idempotency_conflict"
 
 
 def test_user_isolation_reuses_x_rsim_user(tmp_path):
     client, services = make_client(tmp_path)
-    alice = client.post("/api/v1/jobs", json={"spec": spec_dict()}, headers={"X-Rsim-User": "alice"}).json()
+    alice = client.post("/api/v1/run-jobs", json={"config": run_config_dict()}, headers={"X-Rsim-User": "alice"}).json()
     assert client.get(f"/api/v1/jobs/{alice['id']}", headers={"X-Rsim-User": "alice"}).status_code == 200
     assert client.get(f"/api/v1/jobs/{alice['id']}", headers={"X-Rsim-User": "bob"}).status_code == 404
 
-    unsafe = client.post("/api/v1/jobs", json={"spec": spec_dict()}, headers={"X-Rsim-User": "../../../escape"}).json()
+    unsafe = client.post("/api/v1/run-jobs", json={"config": run_config_dict()}, headers={"X-Rsim-User": "../../../escape"}).json()
     assert unsafe["metadata"]["owner"] != "../../../escape"
     assert unsafe["metadata"]["owner"] in services
     assert "../../../escape" not in services
@@ -581,7 +592,7 @@ def test_user_isolation_reuses_x_rsim_user(tmp_path):
 
 def test_events_json_and_sse_reconnect_cursor(tmp_path):
     client, services = make_client(tmp_path)
-    job = client.post("/api/v1/jobs", json={"spec": spec_dict()}, headers={"X-Rsim-User": "alice"}).json()
+    job = client.post("/api/v1/run-jobs", json={"config": run_config_dict()}, headers={"X-Rsim-User": "alice"}).json()
     task_id = job["tasks"][0]["task_id"]
     services["alice"].append_logs(task_id, ["hello", "world"])
 
@@ -603,7 +614,7 @@ def test_events_json_and_sse_reconnect_cursor(tmp_path):
 
 def test_retry_stage_route_error_and_owner_isolation(tmp_path):
     client, services = make_client(tmp_path)
-    job = client.post("/api/v1/jobs", json={"spec": spec_dict()}, headers={"X-Rsim-User": "alice"}).json()
+    job = client.post("/api/v1/run-jobs", json={"config": run_config_dict()}, headers={"X-Rsim-User": "alice"}).json()
     stage_id = job["stages"][0]["stage_id"]
 
     invalid = client.post(

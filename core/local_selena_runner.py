@@ -17,7 +17,6 @@ from typing import Callable
 
 from core.agent_local_run import LocalRunOutcome, LocalRunRequest
 from core.config import render_selena_config, render_selena_environment_path
-from core.recipes import get_for_config
 from core.simulation import apply_simulation_to_config, build_effective_simulation, get_simulation_config
 
 
@@ -51,15 +50,15 @@ def run_local_selena(
         config.setdefault("paths", {})["input_mf4"] = str(request.input_mf4)
         config["paths"]["output_mf4"] = str(request.output_mf4)
 
-        handler = get_for_config(config)
-        sim = handler.prepare_simulation(config, get_simulation_config(config), stage="base")
+        # V2 uses one Selena invocation contract. Product recipes must not
+        # mutate runtime arguments or make Adapter/MatFilter product-specific.
+        sim = get_simulation_config(config)
         config = apply_simulation_to_config(config, sim)
         sim = build_effective_simulation(
             config,
             str(request.input_mf4),
             output_mf4=str(request.output_mf4),
         )
-        sim = handler.prepare_simulation(config, sim, stage="run")
         config = apply_simulation_to_config(config, sim)
         config.setdefault("assets", {})["fixed_config_path"] = str(paramconfig)
         rendered = render_selena_config(config)

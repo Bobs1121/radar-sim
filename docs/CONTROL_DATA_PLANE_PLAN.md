@@ -3,6 +3,8 @@
 > 状态：P0 Cluster `shared_copy` 已实施；本地目标 `source_to_local` 与 `gateway_upload` 待实施
 > 日期：2026-08-05
 > 权威上位合同：`docs/PRODUCT_CONTRACT.md`
+>
+> **V2 单轨收敛声明（2026-08-11）**：本文件是控制/数据面实施合同，继续有效。V2 单轨收敛索引见 `docs/V2_ARCHITECTURE.md`，该文件在其之上收敛源到源传输、统一 Connector 与 Web/SDK 同能力，并给出明确删除清单（用户可见 project/profile/recipe/light/full/legacy 概念全部移除）与 V2 验收矩阵。本文件下文 `Windows light/full` 表述仅作内部能力兼容标签，V2 用户面不暴露该选择。`source_to_local`（输入反向传输）与 Cluster 结果反向交付均为明确缺口，未实现，详见 `docs/V2_ARCHITECTURE.md` §10；不得声称已完成。
 
 ## 1. 目标
 
@@ -22,18 +24,18 @@ Linux 服务是自动化脚手架，不是文件服务器。Web、SDK 和未来 
 
 | Selena | 目标 | 数据/文件位置 | 所需客户端能力 | 服务的预期响应 |
 |---|---|---|---|---|
-| build | local | Windows 本地或该电脑可读共享盘 | Windows full | 编译并本机仿真；本机可达输入的传输 Stage 为 `skipped` |
-| build | local | 数据只在远端 | Windows full + 远端读取/直传能力 | Windows 编译；数据原地读取或源端直传 Windows，Linux 不中转 |
-| existing | local | Selena、数据均为 Windows 本机可达 | Windows full | 原地校验目录后本机仿真；不搬运输入 |
-| existing | local | 本地数据 + 远端 Selena | Windows full + 远端读取/直传能力 | 数据不动；Selena 原地读取或源端直传 Windows 受控缓存 |
-| existing | local | 远端数据 + 本地 Selena | Windows full + 远端读取/直传能力 | Selena 不动；数据原地读取或源端直传 Windows 受控缓存 |
-| build | cluster | Windows 本地 | Windows light/full | 等待同 owner 的持久 Connector；编译成功后同时/随后直传 Selena、数据和配置；完成后 Agent 可离线，Linux 提交 Cluster |
-| existing | cluster | Windows 本地 | Windows light/full 或本机 SDK direct-transfer | 不检查 VS；直传成功后登记引用并提交 Cluster |
+| build | local | Windows 本地或该电脑可读共享盘 | 统一 Windows Connector | 编译并本机仿真；本机可达输入的传输 Stage 为 `skipped` |
+| build | local | 数据只在远端 | 统一 Windows Connector + 远端读取/直传能力 | Windows 编译；数据原地读取或源端直传 Windows，Linux 不中转 |
+| existing | local | Selena、数据均为 Windows 本机可达 | 统一 Windows Connector | 原地校验目录后本机仿真；不搬运输入 |
+| existing | local | 本地数据 + 远端 Selena | 统一 Windows Connector + 远端读取/直传能力 | 数据不动；Selena 原地读取或源端直传 Windows 受控缓存 |
+| existing | local | 远端数据 + 本地 Selena | 统一 Windows Connector + 远端读取/直传能力 | Selena 不动；数据原地读取或源端直传 Windows 受控缓存 |
+| build | cluster | Windows 本地 | 统一 Windows Connector | 等待同 owner 的持久 Connector；编译成功后同时/随后直传 Selena、数据和配置；完成后 Connector 可离线，Linux 提交 Cluster |
+| existing | cluster | Windows 本地 | 统一 Windows Connector 或本机 SDK direct-transfer | 不检查 VS；直传成功后登记引用并提交 Cluster |
 | existing | cluster | Cluster 可读共享路径 | 无用户 Agent | 零复制登记，Linux 直接提交 Cluster |
 | existing | cluster | Windows/Linux SDK 调用机本地 | SDK direct-transfer adapter | SDK 获取传输计划后直传；Linux 只收进度和完成 Manifest |
 | existing | cluster | 纯浏览器所在电脑本地 | 本机 Connector | 未连接时进入等待并显示一次连接入口；不能把浏览器文件上传回退到 Linux 中转 |
 
-`target=auto` 必须先选择执行目标，再决定是否需要传输。无论目标本地还是 Cluster，都遵循“执行端可读则原地使用、否则源端直传执行端”；Cluster 目标优先原地共享引用，其次复用已登记引用，最后才签发客户端直传计划。本地目标不得上传本机已有输入，但允许远端输入直接进入 Windows full。
+`target=auto` 必须先选择执行目标，再决定是否需要传输。无论目标本地还是 Cluster，都遵循“执行端可读则原地使用、否则源端直传执行端”；Cluster 目标优先原地共享引用，其次复用已登记引用，最后才签发客户端直传计划。本地目标不得上传本机已有输入，但允许远端输入直接进入目标 Windows Connector。
 
 结果交付保留两条能力：执行端/连接端按 `result.path` 将原始结果文件和 Manifest
 解压到 `<result.path>/<job_id>`；ZIP 归档和 `result_ref` 继续作为并行保留/手动下载
@@ -44,7 +46,7 @@ Linux 服务是自动化脚手架，不是文件服务器。Web、SDK 和未来 
 
 ### 3.1 通用资源图，而不是项目特例
 
-内部把一次任务表示为资源图：`source workspace`、`Selena runtime directory`、`runtime_xml`、`mat_filter`、`adapter`、一个或多个 `MF4` 是资源节点，Windows full 或 Cluster 是执行节点。Resolver 为每项资源选择一个能够读它的源节点，再计算到执行节点的零复制引用或直传边。项目识别只帮助推导编译命令、环境依赖和产物目录，不参与数据传输与仿真参数的固定分支。
+内部把一次任务表示为资源图：`source workspace`、`Selena runtime directory`、`runtime_xml`、`mat_filter`、`adapter`、一个或多个 `MF4` 是资源节点，统一 Windows Connector 或 Cluster 是执行节点。Resolver 为每项资源选择一个能够读它的源节点，再计算到执行节点的零复制引用或直传边。编译脚本检查只帮助推导环境依赖和产物目录，不识别业务项目，也不参与数据传输与仿真参数分支。
 
 这样可以自然覆盖：远端数据+本地仿真、本地数据+远端 Selena+本地仿真、不同电脑分别持有 Selena 与数据、共享数据+本地编译+Cluster 等组合，而无需增加用户配置字段。
 
@@ -119,9 +121,9 @@ Web 和 SDK 展示相同状态、进度、重试/取消动作。传输失败只�
 - Linux 在直传期间只处理小型控制请求；健康检查、Agent 轮询和 Web/SDK 查询不得被文件 I/O 阻塞。
 - 取消任务时停止客户端传输并清理 `.partial`；已完成共享对象按部署保留期回收。
 
-## 7.1 轻量 Agent 边界
+## 7.1 统一 Windows Connector 边界
 
-Windows light/full 的公共 Connector 必须保持轻薄：
+统一 Windows Connector 必须保持轻薄：
 
 - 不保存项目目录、Cluster manager 或业务 profile；任务所需的编译脚本、路径和内部 TransferPlan 均由控制面按次下发；
 - 不运行第二套 Scheduler、Catalog、Web 或数据库服务；只保留连接身份、受控路径绑定、极小的续传状态和最近诊断日志；
@@ -141,7 +143,7 @@ Windows light/full 的公共 Connector 必须保持轻薄：
 ### P0-B：Windows Connector 直传
 
 - Linux 签发 `shared_copy` TransferPlan。
-- light/full Connector 将 MF4、Selena 目录和必要配置直接复制到 Cluster UNC staging。
+- 统一 Connector 将 MF4、Selena 目录和必要配置直接复制到 Cluster UNC staging。
 - 完成后回传 Manifest；Linux 登记 Dataset/Bundle/Asset 引用。
 - 支持续传、取消、进度、同一任务幂等和 Agent 重连。
 

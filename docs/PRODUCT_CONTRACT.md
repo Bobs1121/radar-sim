@@ -4,6 +4,8 @@
 > 最近确认：2026-08-05
 > 适用范围：Web、Python SDK、REST API、Linux 控制面、统一 Windows Connector、Cluster 调度
 >
+> **V2 单轨收敛声明（2026-08-11）**：本文件是用户侧权威合同，继续有效。V2 单轨收敛索引见 `docs/V2_ARCHITECTURE.md`，该文件在其之上定义唯一 `user-run-config/2.0`、最少配置、源到源传输、统一 Connector、Web/SDK 同能力、内部 `execution_identity`（非业务项目）、明确删除清单（project/profile/recipe/light/full/legacy 用户可见概念全部移除）与 V2 验收矩阵。本文件下文出现的 `full/light` 仅作内部能力历史标签，不是用户选择；`project` 在用户面已移除，仅保留为内部授权/缓存/追踪身份。MCP/Skill 与 Cluster 结果反向交付为明确缺口，详见 `docs/V2_ARCHITECTURE.md` §10。
+>
 > 当前 P0 实施边界（2026-08-11）：用户只安装一个统一 Connector；`full/light` 仅为历史内部能力标签，不是用户选择。Cluster 方向的 `shared_copy` 已实现。远端资源无法被本地仿真 Windows 原地读取时，真正的 `source_to_local` 仍缺少目标 Windows 受控缓存与目标 Agent 授权，因此当前必须返回稳定 `source_to_local_unavailable`，不得把 Cluster staging 冒充本地缓存。该限制不影响资源均可由同一 Windows 读取的本地仿真。
 
 本文件记录产品经理（用户）最终确认的用户侧合同。若 `PRD.md`、`docs/DETAILED_DESIGN.md`、历史测试或旧实现与本文件冲突，以本文件为准；开发必须修正旧实现，不能要求用户迁就内部对象。
@@ -17,7 +19,7 @@
 5. Linux 不编译 Selena，也不执行本地仿真。Selena 编译和本地仿真只能发生在授权 Windows 电脑；Cluster 仿真由 Linux 调度 Cluster 执行面。
 6. Cluster 任务在数据、Selena 目录及配置就绪后，不再依赖用户 Windows 电脑在线。
 7. 数据面与控制面强制分离：用户本地 MF4、Selena.exe/DLL、Runtime、MatFilter、Adapter 等任务文件必须由文件所在电脑直接写入 Cluster 可访问存储，或由 Cluster 直接原地读取；传输字节不得经过 Linux Web/API 端口。Linux 只下发不含文件正文的传输计划并接收进度、校验摘要和逻辑引用。
-8. `target=local` 时，本机已有或本机可直接读取的输入禁止无意义搬运；编译与仿真发生在同一 Windows full 环境。若数据或已有 Selena 只存在于远端且本机不能原地读取，则由远端数据面直接传到该 Windows 的受控缓存，仍不得经过 Linux。Linux 只收发配置、控制命令、状态、日志和结果摘要。
+8. `target=local` 时，本机已有或本机可直接读取的输入禁止无意义搬运；编译与仿真发生在同一统一 Windows Connector 所在电脑。若数据或已有 Selena 只存在于远端且本机不能原地读取，则由远端数据面直接传到该 Windows 的受控缓存，仍不得经过 Linux。Linux 只收发配置、控制命令、状态、日志和结果摘要。
 
 ## 2. 用户唯一配置
 
@@ -61,12 +63,12 @@ result:
 
 - `data` 只有一个 `path`。用户不区分本地、公盘或上传数据；系统自动识别、检索 MF4。Cluster 目标不可直接访问时，由数据所在电脑直传 Cluster 可访问存储；本地仿真时不传输。
 - `simulation.source` 是可选的用户意图：显式填写 `RadarFC/RadarFL/RadarFR/RadarRL/RadarRR` 时必须严格采用，并跳过自动选择；`RadarFC` 的稳定 mounting 为 `front`。留空时从本次 MF4 的 acquisition source 推导。单一源直接采用；多源按 MF4 acquisition group 的稳定顺序选择第一个，不阻断任务，同时记录候选、选择结果和依据。项目名、项目 adapter 或历史 profile 不得覆盖用户选择或本次数据推导。
-- `source=build` 时，系统从用户给出的 Selena 编译脚本确认真实输出位置，并在编译后验证 `Selena.exe` 与同目录 DLL；软件包编译脚本为可选项，只用于补充内部项目识别、环境依赖发现/处理及其明确声明的代码生成步骤。未提供软件包脚本不得单独阻止编译。
+- `source=build` 时，系统从用户给出的 Selena 编译脚本确认真实输出位置，并在编译后验证 `Selena.exe` 与同目录 DLL；软件包编译脚本为可选项，只用于环境依赖发现/诊断及其明确声明的代码生成步骤，不参与项目识别或改变 Selena 编译命令。未提供软件包脚本不得单独阻止编译。
 - `source=build` 始终编译用户当前工作区及其未提交修改，默认认为用户已自行切好分支。系统不得自动执行 checkout、reset、clean 或 stash。`branch` 仅是可选的期望分支；与实际分支不一致时，Web、SDK Job 结果和任务日志必须明确警告，但允许用户继续执行。
 - 清仓只属于用户明确选择并二次确认的可选动作，默认流程不执行。`git clean -xfd`、`git reset --hard`、递归 submodule reset/clean 等破坏性命令绝不能静默作用于用户工作区。
 - `source=existing` 时，用户只填写 Selena 文件夹路径和 Runtime XML。系统必须使用该目录中的 `Selena.exe` 和所需 DLL，不能只复制一个 exe。
 - Runtime Bundle、artifact id、bundle ref 等可以作为内部传输/缓存实现，但绝不出现在用户配置和 Web 表单中。
-- 仿真执行必须项目无关：Runtime、Adapter、MatFilter 只取本次任务输入，显式空值不得回退到项目资产；Cluster 使用框架统一 ParamConfig，不套用项目模板。项目识别只可用于本地编译脚本、工具链依赖和产物路径推导。
+- 仿真执行必须项目无关：Runtime、Adapter、MatFilter 只取本次任务输入，显式空值不得回退到项目资产；本地与 Cluster 使用框架统一 ParamConfig，不套用项目模板。编译只检查用户脚本及其输出，不识别业务项目。
 - “已有 Selena”以及编译完成后的本地仿真不得要求项目预登记。已知内部适配器可提供环境提示；未知项目必须使用通用 Gen5 Selena 参数适配器，内部匿名身份只用于授权、缓存和追踪，不能选择业务默认值或阻断执行。
 - `result.path` 是可选的接收端结果保存根目录。显式填写时，执行端/连接端在完成 Manifest 后把可直接消费的结果文件和 Manifest 写入 `<result.path>/<job_id>`；留空保持 `auto` 语义，由接收端选择默认根目录，不得被 Linux 服务解析成用户可见的绝对路径。ZIP 归档作为并行保留能力继续通过逻辑 `result_ref` 提供；公共 Job/Manifest 不回写物理保存路径。
 - Web 必须支持同一 YAML 的导入、修改和导出；SDK 直接使用同一 YAML/JSON。
@@ -76,14 +78,14 @@ result:
 
 | Selena 来源 | 仿真目标 | 执行位置与系统行为 |
 |---|---|---|
-| 本地编译 | 本地仿真 | Windows full 编译，校验 exe + DLL + Runtime，并在同一 Windows full 执行仿真；输入文件不上传、不复制到 Linux/Cluster |
-| 已有 Selena 文件夹 | 本地仿真 | Windows full 直接使用用户目录中的 exe + DLL + Runtime；输入文件不上传、不复制到 Linux/Cluster |
-| 本地编译 | Cluster 仿真 | Windows full/light 编译并校验完整 Selena 目录；该 Windows 电脑将 Selena、数据和必要配置直接写入 Cluster 可访问存储；Linux 只登记引用并调度 Cluster |
+| 本地编译 | 本地仿真 | 统一 Windows Connector 编译，校验 exe + DLL + Runtime，并在同一电脑执行仿真；输入文件不上传、不复制到 Linux/Cluster |
+| 已有 Selena 文件夹 | 本地仿真 | 统一 Windows Connector 直接使用用户目录中的 exe + DLL + Runtime；输入文件不上传、不复制到 Linux/Cluster |
+| 本地编译 | Cluster 仿真 | 统一 Windows Connector 编译并校验完整 Selena 目录；该 Windows 电脑将 Selena、数据和必要配置直接写入 Cluster 可访问存储；Linux 只登记引用并调度 Cluster |
 | 已有 Selena 文件夹 | Cluster 仿真 | 文件所在 Windows/Linux SDK 调用机、连接组件或已有共享路径将完整 Selena、数据和必要配置直接提供给 Cluster；Linux 只登记引用并调度 Cluster |
 
 `target=auto` 不是第五种业务：调度器根据 Selena/data 路径可达性、在线能力和执行环境，在上述本地或 Cluster 路径中做选择，并把选择原因展示给用户。
 
-补充边界：`source=existing + target=cluster` 不进入编译环境依赖链，不要求用户安装 Visual Studio、CMake 或项目软件包依赖。若 Selena、Runtime、MatFilter 和数据已经位于 Cluster 可访问位置，完全不需要 Windows 组件；若其中任一路径只在用户 Windows 本地，则只需要轻量 Windows 连接组件完成读取并直传 Cluster，不执行编译，也不检查编译依赖。Linux 能挂载某个共享路径只是控制面校验能力，不代表允许先把用户文件传到 Linux。
+补充边界：`source=existing + target=cluster` 不进入编译环境依赖链，不要求用户安装 Visual Studio、CMake 或项目软件包依赖。若 Selena、Runtime、MatFilter 和数据已经位于 Cluster 可访问位置，完全不需要 Windows Connector；若其中任一路径只在用户 Windows 本地，则由统一 Windows Connector 完成读取并直传 Cluster，不执行编译，也不检查编译依赖。Linux 能挂载某个共享路径只是控制面校验能力，不代表允许先把用户文件传到 Linux。
 
 ### 3.1 文件传输产品合同
 
@@ -118,7 +120,7 @@ result:
 | 本地数据 + 本地编译 Selena + 本地仿真 | 同一 Windows 编译并原地仿真，零传输 |
 | 远端/共享数据 + 本地编译 Selena + 本地仿真 | Windows 编译；数据可读则原地使用，否则源端直传 Windows；Linux 只调度 |
 | 本地数据 + 远端已有 Selena + 本地仿真 | 数据不动；Selena 可读则原地使用，否则直传 Windows 受控缓存 |
-| 远端数据 + 远端已有 Selena + 本地仿真 | Windows full 直接读取可达共享输入；不可达项分别直传 Windows |
+| 远端数据 + 远端已有 Selena + 本地仿真 | 统一 Windows Connector 直接读取可达共享输入；不可达项分别直传目标 Windows |
 | 本地数据 + 本地编译 Selena + Cluster 仿真 | Windows 编译；数据与 Selena 分别直传 Cluster 数据面，Linux 随后提交 |
 | 远端/共享数据 + 本地编译 Selena + Cluster 仿真 | 数据若已被 Cluster 访问则零复制；只把编译产物直传 Cluster |
 | 本地数据 + 远端/共享 Selena + Cluster 仿真 | Selena 若已被 Cluster 访问则零复制；只把本地数据直传 Cluster |
@@ -169,7 +171,7 @@ Web 和 SDK 必须能读取同样的 Job/Stage/Event。Web 至少展示：当前
 - “已有 Selena”测试证明 DLL 随目录被校验、打包/传输和实际使用；
 - 本地路径、共享路径和上传路径对用户仍表现为唯一 `data.path` / `existing_path`；
 - Cluster 路径的 MF4、Selena Bundle 和配置资产传输抓包/指标证明文件正文不经过 Linux API 端口，Linux 服务在大文件传输期间仍能稳定响应 Web、SDK 和 Agent 心跳；
-- 两条输入均本机可达的本地仿真路径证明不会创建上传会话、Cluster staging 目录或数据传输 Stage；远端输入到本地仿真则只允许源端到 Windows full 的直接传输；
+- 两条输入均本机可达的本地仿真路径证明不会创建上传会话、Cluster staging 目录或数据传输 Stage；远端输入到本地仿真则只允许源端到目标 Windows Connector 的直接传输；
 - Windows Web、Windows SDK、Linux SDK 的本地文件直传，以及共享路径零复制均有合同测试；
 - Linux 节点无法领取 Selena 编译或本地仿真 Stage；统一 Connector 只领取其真实声明且服务端允许的本机能力；
 - 真实失败能停在正确 Stage，不能再出现由内部默认值造成的 `output_root must be narrower than workspace_root`；

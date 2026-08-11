@@ -25,9 +25,19 @@ from core.local_results import ResultCatalog
 from core.selena_resolver import SourceResolutionContext
 from core.spec import ProjectCatalog, ProjectProfile, UserBindings
 from core.spec import SimulationSpec
+from core.transfer_service import TransferService, TransferStore
 
 SHA_A = "sha256:" + "a" * 64
 SHA_B = "sha256:" + "b" * 64
+
+
+def test_real_direct_transfer_requires_linux_probe_namespace(tmp_path):
+    service = TransferService(
+        TransferStore(tmp_path / "transfers.db"),
+        client_target_root=r"\\cluster-host\rsim-share\staging",
+    )
+
+    assert ApiV1Service(transfer_service=service)._direct_transfer_available() is False
 
 
 def spec_dict(**patch):
@@ -131,18 +141,14 @@ def test_execution_capabilities_require_both_cluster_roles_and_hide_agent_detail
     )
 
     partial = api.execution_capabilities("alice")
-    assert partial["capabilities"]["windows_light"] == {
-        "available": True,
-        "count": 1,
-        "configured_count": 1,
-        "reconnecting": False,
-    }
     assert partial["capabilities"]["windows"] == {
         "available": True,
         "count": 1,
         "configured_count": 1,
         "reconnecting": False,
     }
+    assert "windows_light" not in partial["capabilities"]
+    assert "windows_full" not in partial["capabilities"]
     assert partial["capabilities"]["cluster"] == {
         "available": False,
         "count": 0,
@@ -177,13 +183,6 @@ def test_execution_capabilities_reports_configured_windows_reconnecting(tmp_path
         },
     )
 
-    full = api.execution_capabilities("alice")["capabilities"]["windows_full"]
-    assert full == {
-        "available": False,
-        "count": 0,
-        "configured_count": 1,
-        "reconnecting": True,
-    }
     assert api.execution_capabilities("alice")["capabilities"]["windows"] == {
         "available": False,
         "count": 0,
@@ -195,7 +194,7 @@ def test_execution_capabilities_reports_configured_windows_reconnecting(tmp_path
     assert waiting["action"] == {
         "type": "wait_windows_reconnect",
         "label": "Wait for automatic reconnection",
-        "mode": "light",
+        "mode": "unified",
     }
 
 
@@ -217,8 +216,10 @@ def test_execution_capabilities_do_not_expose_another_users_windows_agent(tmp_pa
 
     capabilities = api.execution_capabilities("new-user")["capabilities"]
 
-    assert capabilities["windows_light"]["available"] is False
-    assert capabilities["windows_light"]["configured_count"] == 0
+    assert capabilities["windows"]["available"] is False
+    assert capabilities["windows"]["configured_count"] == 0
+    assert "windows_light" not in capabilities
+    assert "windows_full" not in capabilities
     assert capabilities["cluster"]["linux_executor_count"] == 1
 
 
@@ -769,15 +770,15 @@ def test_run_config_job_reports_path_free_windows_connection_wait(tmp_path):
 
     assert job["waiting"] == {
         "reason": "windows_connection_required",
-        "mode": "light",
+        "mode": "unified",
         "stage": "resolve_spec",
-        "missing_capability": "windows_light",
+        "missing_capability": "windows_connector",
         "connection_state": "not_configured",
         "message": "This task is waiting for a connected Windows computer with build capability.",
         "action": {
             "type": "connect_windows",
             "label": "Connect this Windows computer",
-            "mode": "light",
+            "mode": "unified",
         },
     }
     assert "D:/" not in json.dumps(job["waiting"])
@@ -795,7 +796,7 @@ def test_run_config_job_reports_path_free_windows_connection_wait(tmp_path):
     assert api.get_job("alice", job["id"])["waiting"] is None
 
 
-def test_local_target_requires_full_connection_and_shared_cluster_does_not(tmp_path):
+def test_local_target_requires_unified_connector_and_shared_cluster_does_not(tmp_path):
     api, services = make_api(tmp_path)
     services.setdefault("alice", ControlService(tmp_path / "alice.db")).register_agent(
         "light",
@@ -809,8 +810,8 @@ def test_local_target_requires_full_connection_and_shared_cluster_does_not(tmp_p
     local_config = run_config_dict()
     local_config["simulation"] = {**local_config["simulation"], "target": "local"}
     local = api.submit_user_run("alice", config_payload=local_config)
-    assert local["waiting"]["mode"] == "full"
-    assert local["waiting"]["missing_capability"] == "windows_full"
+    assert local["waiting"]["mode"] == "unified"
+    assert local["waiting"]["missing_capability"] == "windows_connector"
 
     shared_config = run_config_dict()
     shared_config["selena"] = {

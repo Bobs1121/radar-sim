@@ -133,6 +133,7 @@ class ClusterWorkspaceWhitelist:
             self.allowed_roots = ()
             self.client_target_root = ""
             self.server_probe_root = ""
+            self.server_probe_configured = False
             self.allow_local_test_roots = bool(allow_local_test_roots)
             return
         try:
@@ -149,6 +150,10 @@ class ClusterWorkspaceWhitelist:
             raise TransferError("invalid_trusted_transfer_root", str(exc), status_code=500) from exc
         self.client_target_root = client_canonical
         self.server_probe_root = probe_canonical
+        # A production writer namespace (normally UNC) does not prove that
+        # Linux can inspect those bytes. Only an explicit deployment probe,
+        # or a deliberately enabled single-root local-test setup, is ready.
+        self.server_probe_configured = bool(probe_raw) or bool(allow_local_test_roots)
         self.allowed_roots = tuple(dict.fromkeys([client_canonical] + extra))
         self.allow_local_test_roots = bool(allow_local_test_roots)
 
@@ -315,6 +320,10 @@ class TransferService:
     @property
     def server_probe_root(self) -> str:
         return self._whitelist.server_probe_root
+
+    @property
+    def server_probe_configured(self) -> bool:
+        return bool(self._whitelist.server_probe_configured)
 
     def issue_plan(
         self,

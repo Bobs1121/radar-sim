@@ -109,11 +109,11 @@
               </select>
             </label>
             <div id="buildFields" class="field-grid two">
-              <small id="workspaceEvidenceHint" class="full">本地编译需要代码仓和两个脚本；系统据此识别产品并检查依赖。</small>
+              <small id="workspaceEvidenceHint" class="full">本地编译只要求代码仓和 Selena 编译脚本；系统执行该脚本并从脚本推导产物位置。</small>
               <label class="field full">
                 <span>代码路径</span>
                 <input id="codePath" name="codePath" placeholder="D:/workspace/selena">
-                <small>本地编译时必填；使用已有 Selena 时可选，用于自动识别并交叉校验产品。</small>
+                <small>仅本地编译时必填；使用已有 Selena 时不需要代码仓。</small>
               </label>
               <label class="field">
                 <span>期望 Selena 分支</span>
@@ -123,12 +123,12 @@
               <label class="field full">
                 <span>Selena 编译脚本</span>
                 <input id="selenaBuildScript" name="selenaBuildScript" placeholder="代码路径内的 jenkins_selena_build.bat">
-                <small>本地编译时必填；使用已有 Selena 时可作为产品识别证据。</small>
+                <small>仅本地编译时必填；系统按原样执行脚本，不添加产品参数。</small>
               </label>
               <label class="field full">
                 <span>软件包编译脚本</span>
                 <input id="packageBuildScript" name="packageBuildScript" placeholder="代码仓内的软件包编译脚本">
-                <small>可选；用于补充产品识别和环境依赖线索。</small>
+                <small>可选；只用于环境依赖诊断，不参与项目识别，也不改变 Selena 编译命令。</small>
               </label>
             </div>
             <div id="existingFields" class="field-grid one" hidden>
@@ -219,16 +219,15 @@
             <h2 id="planHeading">执行预览</h2>
             <p id="planStatus">填写基础配置后检查执行计划。</p>
             <ol id="planStages" class="stage-preview">
-              <li><span>1</span><div><strong>识别配置</strong><small>内部适配和数据定位</small></div></li>
+              <li><span>1</span><div><strong>解析配置</strong><small>按路径和脚本推导所需资源</small></div></li>
               <li><span>2</span><div><strong>检查环境</strong><small>按选定路径检查依赖</small></div></li>
               <li><span>3</span><div><strong>准备 Selena 和数据</strong><small>仅在需要时编译或源端直传</small></div></li>
               <li><span>4</span><div><strong>运行仿真</strong><small>本地或 Cluster</small></div></li>
             </ol>
             <div class="deployment-note">
-              <strong>部署能力边界</strong>
+              <strong>统一连接方式</strong>
               <dl>
-                <div><dt>完全部署</dt><dd>本地编译、本地仿真、Cluster 提交</dd></div>
-                <div><dt>轻量部署</dt><dd>本地编译并直传执行端，再由 Cluster 仿真</dd></div>
+                <div><dt>连接本机</dt><dd>同一个 Connector 支持本地编译、本地仿真和直传 Cluster</dd></div>
                 <div><dt>无需部署</dt><dd>已有 Selena 和 Cluster 可读共享数据，直接 Cluster 仿真</dd></div>
               </dl>
             </div>

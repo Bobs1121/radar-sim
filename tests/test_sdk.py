@@ -31,7 +31,7 @@ from core.simulation import (
     detect_radar_transfer_metadata_safe,
     discover_radar_acquisition_sources,
 )
-from radar_sim_sdk import Job, RadarSimApiError, RadarSimClient, SimulationSpec, UserRunConfig
+from radar_sim_sdk import Job, RadarSimApiError, RadarSimClient, UserRunConfig
 from radar_sim_sdk.client import _dataset_transfer_fingerprints, _trust_environment_proxy
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
 from tests.test_api_v1_service import run_config_dict, spec_dict
@@ -49,31 +49,34 @@ def make_sdk(tmp_path):
     return sdk, services
 
 
-def test_sdk_validate_and_submit_share_spec_hash_with_web_json(tmp_path):
+def test_sdk_validate_and_submit_run_share_v2_hash_with_web_json(tmp_path):
     sdk, _ = make_sdk(tmp_path)
-    spec = SimulationSpec.from_dict(spec_dict())
+    config = UserRunConfig.from_dict(run_config_dict())
 
-    validation = sdk.validate(spec)
-    job = sdk.submit(spec, dry_run=True, idempotency_key="sdk-key")
+    validation = sdk.validate_run(config)
+    job = sdk.submit_run(config, dry_run=True, idempotency_key="sdk-key")
 
-    assert validation.fingerprint == spec.fingerprint()
+    assert validation.fingerprint == config.fingerprint()
     assert job.spec_hash == validation.fingerprint
     assert len(job.stages) == 10
-    assert job.resolved_spec["status"] == "pending"
-    assert job.spec == spec.to_dict()
-    assert sdk.submit(spec, dry_run=True, idempotency_key="sdk-key").id == job.id
+    assert job.resolved_spec["status"] == "planned"
+    assert job.spec == config.to_dict()
+    assert sdk.submit_run(config, dry_run=True, idempotency_key="sdk-key").id == job.id
 
 
 def test_sdk_downloads_one_time_windows_connector_for_current_scope(tmp_path):
     sdk, _ = make_sdk(tmp_path)
-    target = sdk.download_windows_connector(tmp_path, mode="light")
+    target = sdk.download_windows_connector(tmp_path)
 
     assert target.name == "RadarSim-Connect-Windows.cmd"
     content = target.read_text(encoding="utf-8")
     assert "install.ps1?mode=" in content
-    assert "RSIM_CONNECTOR_MODE=light" in content
+    assert "RSIM_CONNECTOR_MODE=unified" in content
     assert "__RSIM_SERVER_URL_BASE64__" not in content
     assert "__RSIM_OWNER_BASE64__" not in content
+
+    with pytest.raises(ValueError, match="unified"):
+        sdk.download_windows_connector(tmp_path, mode="light")
 
 
 def test_sdk_without_explicit_user_gets_stable_os_login_identity(monkeypatch):
@@ -434,8 +437,6 @@ def test_sdk_submit_run_keeps_local_data_path_for_direct_transfer(tmp_path, monk
     config = run_config_dict()
     config["data"] = {"path": str(data)}
     config["simulation"]["target"] = "cluster"
-    monkeypatch.setattr(sdk, "upload_run_data", lambda *_: pytest.fail("legacy data upload"))
-
     job = sdk.submit_run(config)
 
     assert job.spec["data"] == {"path": data.as_posix()}
@@ -458,8 +459,6 @@ def test_sdk_keeps_readable_local_path_even_when_posix_syntax_is_central(tmp_pat
         "radar_sim_sdk.client._is_separate_mount",
         lambda _path: False,
     )
-    monkeypatch.setattr(sdk, "upload_run_data", lambda *_: pytest.fail("legacy data upload"))
-
     job = sdk.submit_run(config)
 
     assert job.spec["data"]["path"] == data.as_posix()
@@ -481,12 +480,6 @@ def test_sdk_keeps_readable_cluster_mount_without_upload(tmp_path, monkeypatch):
         "radar_sim_sdk.client._is_separate_mount",
         lambda _path: True,
     )
-    monkeypatch.setattr(
-        sdk,
-        "upload_run_data",
-        lambda _source: pytest.fail("Cluster mount must remain a direct path"),
-    )
-
     job = sdk.submit_run(config)
 
     assert job.spec["data"]["path"] == mounted_share.as_posix()
@@ -501,12 +494,6 @@ def test_sdk_submit_run_keeps_shared_data_even_when_caller_can_read_it(tmp_path,
     config["data"] = {"path": str(readable_share)}
     config["simulation"]["target"] = "cluster"
     monkeypatch.setattr("radar_sim_sdk.client.classify_data_path", lambda _path: "shared")
-    monkeypatch.setattr(
-        sdk,
-        "upload_run_data",
-        lambda _source: pytest.fail("shared data must remain a direct path"),
-    )
-
     job = sdk.submit_run(config)
 
     assert job.spec["data"]["path"] == readable_share.as_posix()
@@ -530,7 +517,6 @@ def test_sdk_submit_run_preserves_local_data_and_configuration_assets_for_direct
             "adapter_file": str(adapter),
         }
     )
-    monkeypatch.setattr(sdk, "upload_run_data", lambda *_: pytest.fail("legacy data upload"))
     monkeypatch.setattr(sdk, "upload_config_asset", lambda *_: pytest.fail("legacy asset upload"))
 
     job = sdk.submit_run(config)
@@ -551,9 +537,6 @@ def test_sdk_submit_run_dry_run_never_uploads_local_inputs(tmp_path, monkeypatch
     config["data"] = {"path": str(data)}
     config["simulation"]["target"] = "cluster"
     config["simulation"]["mat_filter"] = str(mat_filter)
-    monkeypatch.setattr(
-        sdk, "upload_run_data", lambda _source: pytest.fail("dry-run uploaded data")
-    )
     monkeypatch.setattr(
         sdk,
         "upload_config_asset",
@@ -582,9 +565,6 @@ def test_sdk_submit_run_keeps_unreachable_paths_for_server_or_agent(tmp_path, mo
             "mat_filter": "D:/remote-machine/signals.filter",
             "adapter_file": "D:/remote-machine/adapter.txt",
         }
-    )
-    monkeypatch.setattr(
-        sdk, "upload_run_data", lambda _source: pytest.fail("unreachable data uploaded")
     )
     monkeypatch.setattr(
         sdk,
@@ -779,14 +759,14 @@ def test_sdk_download_job_result_uses_receiver_default_when_result_path_is_empty
     assert downloaded.read_bytes() == archive
 
 
-def test_sdk_minimal_spec_and_task_center_list(tmp_path):
+def test_sdk_v2_run_and_task_center_list(tmp_path):
     sdk, _ = make_sdk(tmp_path)
-    job = sdk.submit({"project": "bydod25", "data": {"path": "D:/measurement/run"}})
+    job = sdk.submit_run(run_config_dict())
 
     jobs = sdk.list_jobs(status="queued", limit=10)
     assert [item.id for item in jobs] == [job.id]
     assert jobs[0].current_stage == "resolve_spec"
-    assert jobs[0].progress == 0.0
+    assert jobs[0].progress == 0.1
     assert jobs[0].available_actions[0]["type"] == "cancel_job"
     diagnosis = sdk.diagnosis(job.id)
     assert diagnosis.job_id == job.id
@@ -795,13 +775,10 @@ def test_sdk_minimal_spec_and_task_center_list(tmp_path):
     assert diagnosis.action["type"] == "wait_job"
 
 
-def test_sdk_error_mapping_uses_api_envelope(tmp_path):
+def test_sdk_has_no_legacy_simulation_spec_entrypoints(tmp_path):
     sdk, _ = make_sdk(tmp_path)
-    with pytest.raises(RadarSimApiError) as excinfo:
-        sdk.validate({"schema_version": "1.0"})
-    assert excinfo.value.code == "invalid_spec"
-    assert excinfo.value.status_code == 422
-    assert excinfo.value.actions[0]["type"] == "fix_spec"
+    assert not hasattr(sdk, "validate")
+    assert not hasattr(sdk, "submit")
 
 
 def test_sse_parser_comments_blank_multiline_id_event():
@@ -829,7 +806,7 @@ def test_sse_parser_comments_blank_multiline_id_event():
 
 def test_sdk_stream_events_watch_wait_cancel_and_manifest(tmp_path):
     sdk, services = make_sdk(tmp_path)
-    job = sdk.submit(spec_dict())
+    job = sdk.submit_run(run_config_dict())
     task_id = job.tasks[0]["task_id"]
     services["alice"].append_logs(task_id, ["line-1"])
 
@@ -852,7 +829,7 @@ def test_sdk_stream_events_watch_wait_cancel_and_manifest(tmp_path):
 
 def test_sdk_structured_event_fields_and_retry_stage(tmp_path):
     sdk, services = make_sdk(tmp_path)
-    job = sdk.submit(spec_dict())
+    job = sdk.submit_run(run_config_dict())
     stage_id = job.stages[0]["stage_id"]
     services["alice"].report_stage_progress(stage_id, progress=0.5, message="half", code="P50")
     page = sdk.events(job.id)
@@ -1074,7 +1051,6 @@ def test_sdk_direct_transfer_throttles_http_but_not_local_callback(tmp_path):
 def test_sdk_run_preparation_does_not_create_legacy_linux_uploads(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     config = UserRunConfig.from_dict(run_config_dict())
-    monkeypatch.setattr(sdk, "upload_run_data", lambda *_: pytest.fail("legacy data upload"))
     monkeypatch.setattr(sdk, "upload_config_asset", lambda *_: pytest.fail("legacy asset upload"))
     monkeypatch.setattr(sdk, "_upload_existing_selena", lambda *_args, **_kwargs: pytest.fail("legacy Selena upload"))
 

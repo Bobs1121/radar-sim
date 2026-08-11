@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-import core.existing_selena as existing_selena_module
 from core.existing_selena import (
     ExistingSelenaError,
     ExistingSelenaResult,
@@ -45,7 +44,8 @@ def test_direct_selena_with_dll_succeeds(tmp_path):
     ex, rx = _mk(tmp_path)
     r = import_existing_selena(ex, rx, created_at=_now())
     assert isinstance(r, ExistingSelenaResult)
-    assert r.internal_project == "ovrs25"
+    assert r.internal_project.startswith("workspace-")
+    assert r.adapter_key == "generic:existing-selena"
     s = r.public_summary()
     assert "runtime_bundle" in s
     assert "archive" in s
@@ -112,16 +112,18 @@ def test_whitespace_xml_raises(tmp_path):
         import_existing_selena(ex, rx, created_at=_now())
 
 
-def test_ovrs25_inference(tmp_path):
+def test_product_like_path_does_not_select_ovrs_project(tmp_path):
     ex, rx = _mk(tmp_path, name="ovrs25_project")
     r = import_existing_selena(ex, rx, created_at=_now())
-    assert r.internal_project == "ovrs25"
+    assert r.internal_project.startswith("workspace-")
+    assert r.adapter_key == "generic:existing-selena"
 
 
-def test_bydod25_inference(tmp_path):
+def test_product_like_path_does_not_select_byd_project(tmp_path):
     ex, rx = _mk(tmp_path, name="byd_od25_workspace", nested=True)
     r = import_existing_selena(ex, rx, created_at=_now())
-    assert r.internal_project == "bydod25"
+    assert r.internal_project.startswith("workspace-")
+    assert r.adapter_key == "generic:existing-selena"
 
 
 def test_ambiguous_product_evidence_does_not_block_existing_selena(tmp_path):
@@ -230,7 +232,7 @@ def test_product_marker_must_not_match_inside_another_word(tmp_path):
     assert r.adapter_key == "generic:existing-selena"
 
 
-def test_existing_selena_uses_workspace_scripts_as_product_evidence(tmp_path):
+def test_existing_selena_ignores_workspace_scripts_for_execution_identity(tmp_path):
     ex, rx = _mk(tmp_path, name="neutral_runtime", nested=True)
     r = import_existing_selena(
         ex,
@@ -240,8 +242,8 @@ def test_existing_selena_uses_workspace_scripts_as_product_evidence(tmp_path):
         package_build_script="D:/bydod25fr/byd/apl/byd/tools/builder/cmake_build.bat",
         created_at=_now(),
     )
-    assert r.internal_project == "bydod25"
-    assert r.adapter_key == "recipe:g3n_fvg3_od25"
+    assert r.internal_project.startswith("workspace-")
+    assert r.adapter_key == "generic:existing-selena"
 
 
 def test_existing_selena_ignores_conflicting_optional_product_evidence(tmp_path):
@@ -258,17 +260,8 @@ def test_existing_selena_ignores_conflicting_optional_product_evidence(tmp_path)
     assert result.adapter_key == "generic:existing-selena"
 
 
-def test_existing_selena_light_connector_does_not_require_optional_yaml(tmp_path, monkeypatch):
+def test_existing_selena_does_not_require_project_registry_or_yaml(tmp_path):
     ex, rx = _mk(tmp_path, name="neutral_runtime", nested=True)
-
-    def missing_optional_dependency(**_kwargs):
-        raise ModuleNotFoundError("No module named 'yaml'")
-
-    monkeypatch.setattr(
-        existing_selena_module,
-        "_recognize_workspace_product",
-        missing_optional_dependency,
-    )
     result = import_existing_selena(
         ex,
         rx,

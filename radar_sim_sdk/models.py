@@ -5,25 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.spec import SimulationSpec
 from core.user_config import UserRunConfig
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    valid: bool
-    spec: SimulationSpec
-    fingerprint: str
-    environment_plan: dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ValidationResult":
-        return cls(
-            valid=bool(data.get("valid")),
-            spec=SimulationSpec.from_dict(dict(data.get("spec") or {})),
-            fingerprint=str(data.get("fingerprint") or ""),
-            environment_plan=dict(data.get("environment_plan") or {}),
-        )
 
 
 @dataclass(frozen=True)

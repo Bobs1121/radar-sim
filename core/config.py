@@ -633,20 +633,15 @@ def load_local_execution_config(
 ) -> dict[str, Any]:
     """Load a Windows-local execution config without requiring project registration.
 
-    Known internal adapters keep their existing environment hints.  An unknown
-    workspace identity (``workspace-<digest>``) receives only the common Gen5
-    Selena invocation contract; the user's Runtime, MatFilter, Adapter, data
-    and runtime bundle are injected by the local lease afterwards.  This keeps
-    project recognition useful for compilation while preventing it from being
-    a prerequisite for an already-built Selena simulation.
+    Every v2 task receives only the common Gen5 Selena invocation contract;
+    the user's Runtime, MatFilter, Adapter, data and runtime bundle are injected
+    by the local lease afterwards.  ``internal_project`` is an opaque trace and
+    authorization identity, never a configuration selector.
     """
 
     identity = str(internal_project or "").strip()
-    try:
-        return load_config(identity)
-    except FileNotFoundError:
-        if not re.fullmatch(r"workspace-[0-9a-f]{24}", identity):
-            raise
+    if not identity:
+        raise ValueError("internal execution identity is required")
 
     platform = _normalize_layer(_load_yaml_file(get_config_dir() / "platforms" / "gen5_selena.yaml"))
     config: dict[str, Any] = {}

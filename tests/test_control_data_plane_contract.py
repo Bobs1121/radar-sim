@@ -154,7 +154,6 @@ def test_sdk_existing_cluster_local_paths_never_use_linux_body_uploads(
         "import_existing_runtime_bundle",
         "upload_runtime_bundle",
         "upload_artifact",
-        "upload_run_data",
         "upload_config_asset",
     ):
         monkeypatch.setattr(sdk, name, forbidden)
@@ -341,7 +340,7 @@ def test_web_and_sdk_share_local_zero_transfer_scheduling(
     def forbidden(*_args: Any, **_kwargs: Any) -> Any:
         pytest.fail("local execution attempted to upload an already reachable input")
 
-    for name in ("_upload_existing_selena", "upload_run_data", "upload_config_asset"):
+    for name in ("_upload_existing_selena", "upload_config_asset"):
         monkeypatch.setattr(sdk, name, forbidden)
 
     sdk_job = sdk.submit_run(config)
@@ -381,7 +380,7 @@ def test_shared_cluster_inputs_are_zero_copy_and_need_no_windows_connector(tmp_p
 def test_existing_cluster_direct_transfer_uses_prepare_data_barrier_without_agent_wait(
     tmp_path: Path,
 ) -> None:
-    """Local existing Selena is a source-side barrier, then Linux owns the DAG."""
+    """Linux checks Cluster readiness before requesting source-side transfer."""
     config, _ = _local_existing_inputs(tmp_path)
     # This case specifically exercises Web/Connector-owned Windows paths.
     # Use platform-independent Windows syntax instead of relying on tmp_path's
@@ -398,30 +397,40 @@ def test_existing_cluster_direct_transfer_uses_prepare_data_barrier_without_agen
     private = control.get_job(job["id"])
     stages = {item["stage_type"]: item for item in private["stages"]}
 
-    # Before the Connector sends manifests, only the source-side transfer
-    # barrier is waiting.  Resolver/registration are not Windows tasks.
-    assert job["current_stage"] == "prepare_data"
-    assert job["waiting"] == {
+    # Do the cheap Linux/Cluster readiness check before asking a user device
+    # to move large files. Resolver/registration are not Windows tasks.
+    assert job["current_stage"] == "environment_check"
+    assert job["waiting"] is None
+    assert stages["resolve_spec"]["status"] == "skipped"
+    assert stages["register_artifact"]["status"] == "skipped"
+    assert stages["environment_check"]["dependencies"] == [stages["resolve_spec"]["task_id"]]
+    assert stages["environment_check"]["required_agent_id"] == "linux-v2-stage-executor"
+    assert stages["prepare_data"]["dependencies"] == [stages["environment_check"]["task_id"]]
+
+    control.submit_task_result(
+        stages["environment_check"]["task_id"],
+        status="succeeded",
+        returncode=0,
+        result={"status": "ready"},
+    )
+    waiting = api.get_job("alice", job["id"])
+    assert waiting["current_stage"] == "prepare_data"
+    assert waiting["waiting"] == {
         "reason": "windows_connection_required",
-        "mode": "light",
+        "mode": "unified",
         "stage": "prepare_data",
-        "missing_capability": "windows_light",
+        "missing_capability": "windows_connector",
         "connection_state": "not_configured",
         "message": "This task is waiting for a connected Windows computer that can access local files.",
         "action": {
             "type": "connect_windows",
             "label": "Connect this Windows computer",
-            "mode": "light",
+            "mode": "unified",
         },
     }
-    assert stages["resolve_spec"]["status"] == "skipped"
-    assert stages["register_artifact"]["status"] == "skipped"
-    assert stages["prepare_data"]["dependencies"] == [stages["resolve_spec"]["task_id"]]
-    assert stages["environment_check"]["dependencies"] == [stages["prepare_data"]["task_id"]]
-    assert stages["environment_check"]["required_agent_id"] == "linux-v2-stage-executor"
 
-    # Completing every role on the same prepare_data Stage releases the Linux
-    # environment stage.  The API receives only path-free transfer metadata.
+    # Completing every role on the same prepare_data Stage releases Cluster
+    # preflight. The API receives only path-free transfer metadata.
     for index, role in enumerate(("dataset", "runtime_bundle", "runtime_xml", "mat_filter"), start=1):
         control.complete_transfer_stage(
             job["id"],
@@ -442,9 +451,12 @@ def test_existing_cluster_direct_transfer_uses_prepare_data_barrier_without_agen
         )
 
     after = api.get_job("alice", job["id"])
-    assert after["current_stage"] == "environment_check"
+    assert after["current_stage"] == "preflight"
     assert after["waiting"] is None
-    assert control.get_job(job["id"])["stages"][3]["status"] == "succeeded"
+    after_stages = {
+        item["stage_type"]: item for item in control.get_job(job["id"])["stages"]
+    }
+    assert after_stages["prepare_data"]["status"] == "succeeded"
 
 
 def test_transfer_progress_and_plan_access_are_owner_isolated(tmp_path: Path) -> None:

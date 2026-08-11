@@ -77,7 +77,7 @@ def test_server_import_verifies_and_catalogues_existing_selena_archive(tmp_path:
     )
     bundle = result["runtime_bundle"]
     assert bundle["id"] == imported.bundle.manifest.id
-    assert catalog.get(bundle["id"]).internal_project == "ovrs25"
+    assert catalog.get(bundle["id"]).internal_project.startswith("workspace-")
     assert {item["role"] for item in bundle["files"]} == {
         "entrypoint", "runtime_library", "runtime_config"
     }

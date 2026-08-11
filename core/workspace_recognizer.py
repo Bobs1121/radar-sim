@@ -1,9 +1,10 @@
 """Internal, project-free Selena workspace recognition.
 
 Users provide a code path and, optionally, a build script.  This compatibility
-layer reads the existing ``config/projects`` adapters and returns an internal
-adapter key without making project/profile part of the Web or SDK contract.
-It is pure discovery: it never changes Git state or runs a build.
+layer can read existing ``config/projects`` adapters for legacy callers.  The
+public v2 flow sets ``generic_only=True`` and derives everything from the user
+workspace and selected scripts, without consulting that adapter table.  It is
+pure discovery: it never changes Git state or runs a build.
 """
 
 from __future__ import annotations
@@ -90,6 +91,7 @@ class WorkspaceRecognizer:
         *,
         selena_build_script: str = "",
         package_build_script: str = "",
+        generic_only: bool = False,
     ) -> RecognitionResult:
         raw_root = str(code_path or "").strip()
         if not raw_root:
@@ -115,7 +117,7 @@ class WorkspaceRecognizer:
 
         discovered = ""
         selected_script = explicit_selena
-        candidates = [
+        candidates = [] if generic_only else [
             item
             for adapter in self._adapters
             if (item := _score_adapter(adapter, root, explicit_selena, explicit_package)) is not None
@@ -126,7 +128,7 @@ class WorkspaceRecognizer:
         if not candidates and not explicit_selena:
             discovered = self._discover_script(raw_root)
             selected_script = discovered
-            if discovered:
+            if discovered and not generic_only:
                 candidates = [
                     item
                     for adapter in self._adapters
@@ -149,7 +151,7 @@ class WorkspaceRecognizer:
             candidates.append(
                 _Candidate(
                     generic,
-                    0.65 if (explicit_selena or explicit_package) else 0.55,
+                    0.95 if generic_only and explicit_selena else 0.65 if (explicit_selena or explicit_package) else 0.55,
                     ("explicit_build_script_only",) if (explicit_selena or explicit_package) else ("build_script_discovered",),
                 )
             )
@@ -209,6 +211,12 @@ class WorkspaceRecognizer:
             winner.adapter.workspace_roots,
             root,
         )
+        if generic_only and not output_dir:
+            # The selected script is authoritative, but not every wrapper
+            # exposes its R2D2 ``-B`` argument statically. Authorize only a
+            # conventional build subtree (never the whole workspace); the
+            # build stage performs post-build Selena.exe discovery inside it.
+            output_dir = _generic_build_search_root(root)
         inferred_package = _rebase_to_workspace(
             winner.adapter.package_build_script,
             winner.adapter.workspace_roots,
@@ -231,7 +239,6 @@ class WorkspaceRecognizer:
                 + (("build_script_discovered",) if discovered else ())
             ),
         )
-
     def _discover_script(self, code_path: str) -> str:
         root = Path(code_path).expanduser()
         if not root.is_dir():
@@ -258,6 +265,15 @@ class WorkspaceRecognizer:
             return ""
         value = _normalize_path(str(candidates[0]))
         return value if _is_within(_normalize_path(str(root)), value) else ""
+
+
+def _generic_build_search_root(workspace_root: str) -> str:
+    """Return a project-free, workspace-contained fallback build root."""
+    root = Path(workspace_root)
+    ip_dc = root / "ip_dc"
+    if ip_dc.is_dir():
+        return _normalize_path(str(ip_dc / "build"))
+    return _normalize_path(str(root / "build"))
 
 
 def recognize_workspace(

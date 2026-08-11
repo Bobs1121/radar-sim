@@ -582,6 +582,16 @@ def test_workspace_whitelist_reads_nested_direct_transfer_deployment() -> None:
 
     assert whitelist.client_target_root == r"\\cluster-host\rsim-share\staging"
     assert whitelist.server_probe_root == "/mnt/cluster/rsim-share/staging"
+    assert whitelist.server_probe_configured is True
+
+
+def test_production_writer_root_without_linux_probe_is_not_deployment_ready() -> None:
+    whitelist = ClusterWorkspaceWhitelist(
+        client_target_root=r"\\cluster-host\rsim-share\staging",
+    )
+
+    assert whitelist.client_target_root == r"\\cluster-host\rsim-share\staging"
+    assert whitelist.server_probe_configured is False
 
 
 def test_source_change_is_returned_as_stable_service_error(tmp_path: Path) -> None:

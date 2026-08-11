@@ -3,8 +3,8 @@
 const API = "/api/v1";
 // The task center is a live overview, not the job-detail archive.  Fetch a
 // bounded recent page here; selecting a row still loads the complete job from
-// GET /jobs/{job_id}.  This prevents old Runtime Bundle/resolved-spec payloads
-// from blocking the first paint when a shared service has many historical jobs.
+// GET /jobs/{job_id}. This prevents legacy payload fields from blocking the
+// first paint when a shared service has many historical jobs.
 const TASK_CENTER_PAGE_SIZE = 20;
 const state = {
   view: sessionStorage.getItem("rsimView") || "create",
@@ -204,19 +204,14 @@ async function saveAccessToken() {
   }
 }
 
-function hasWindowsCapability(mode, capabilities = state.capabilities) {
+function hasWindowsCapability(_mode, capabilities = state.capabilities) {
   const snapshot = capabilities?.capabilities || capabilities || {};
-  if (snapshot.windows) return Boolean(snapshot.windows.available);
-  if (mode === "full") return Boolean(snapshot.windows_full?.available);
-  return Boolean(snapshot.windows_light?.available || snapshot.windows_full?.available);
+  return Boolean(snapshot.windows?.available);
 }
 
-function hasConfiguredWindows(mode, capabilities = state.capabilities) {
+function hasConfiguredWindows(_mode, capabilities = state.capabilities) {
   const snapshot = capabilities?.capabilities || capabilities || {};
-  if (snapshot.windows) return Number(snapshot.windows.configured_count || 0) > 0;
-  if (mode === "full") return Number(snapshot.windows_full?.configured_count || 0) > 0;
-  return Number(snapshot.windows_light?.configured_count || 0) > 0
-    || Number(snapshot.windows_full?.configured_count || 0) > 0;
+  return Number(snapshot.windows?.configured_count || 0) > 0;
 }
 
 function windowsConnectorNeedsUpdate(capabilities = state.capabilities) {
@@ -241,13 +236,8 @@ function updateConnectionStates(capabilities = state.capabilities) {
   const local = byId("windowsState");
   if (!local) return;
   const snapshot = capabilities?.capabilities || capabilities || {};
-  const connected = snapshot.windows
-    ? Boolean(snapshot.windows.available)
-    : Boolean(snapshot.windows_light?.available || snapshot.windows_full?.available);
-  const configured = snapshot.windows
-    ? Number(snapshot.windows.configured_count || 0) > 0
-    : Number(snapshot.windows_light?.configured_count || 0) > 0
-      || Number(snapshot.windows_full?.configured_count || 0) > 0;
+  const connected = Boolean(snapshot.windows?.available);
+  const configured = Number(snapshot.windows?.configured_count || 0) > 0;
   const updateRequired = windowsConnectorNeedsUpdate(capabilities);
   updateConnectorUpdateBanner(capabilities);
   local.textContent = connected
@@ -470,7 +460,7 @@ function updateRouteSummary() {
   const target = selectedValue("target") || "auto";
   const source = byId("selenaSource").value;
   const finalTarget = state.validatedTarget || (target === "auto" ? "" : target);
-  const targetText = { auto: "自动选择本地或 Cluster", local: "在完整 Windows 节点本地仿真", cluster: "由 Cluster 执行仿真" }[target];
+  const targetText = { auto: "自动选择本地或 Cluster", local: "在本机执行本地仿真", cluster: "由 Cluster 执行仿真" }[target];
   const selenaText = source === "build"
     ? (byId("selenaBranch").value.trim() ? "校验期望分支并编译当前工作区" : "编译当前工作区修改")
     : "使用已有 Selena 文件夹";
@@ -650,7 +640,7 @@ async function exportYaml() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${config.result?.name || "radar-sim"}.simulation.yaml`;
+    link.download = "radar-sim.simulation.yaml";
     link.click();
     URL.revokeObjectURL(url);
   } catch (error) {
@@ -708,7 +698,7 @@ function renderJobs() {
     const header = document.createElement("div");
     header.className = "job-row-header";
     const title = document.createElement("strong");
-    title.textContent = job.spec?.result?.name || "仿真任务";
+    title.textContent = "仿真任务";
     header.append(title, statusBadge(job.status));
     const code = document.createElement("code");
     code.textContent = job.id;
@@ -769,8 +759,8 @@ function windowsWaitState(job, candidateStage = null) {
   const pathMismatch = serverWaiting?.reason === "windows_path_access_required";
   const updateRequired = serverWaiting?.reason === "windows_connector_update_required";
   if (serverWaiting && (updateRequired || pathMismatch || !hasWindowsCapability(serverWaiting.mode))) {
-    const full = serverWaiting.mode === "full";
-    const build = !full && source === "build";
+    const localTarget = target === "local";
+    const build = source === "build";
     const reconnecting = !updateRequired && !pathMismatch && (serverWaiting.connection_state === "reconnecting"
       || hasConfiguredWindows(serverWaiting.mode));
     if (updateRequired) {
@@ -781,7 +771,7 @@ function windowsWaitState(job, candidateStage = null) {
         title: "本机连接组件需要更新",
         capability: "更新后任务会自动继续",
         shortCapability: "本机组件更新",
-        reason: "服务端已升级任务协议，旧组件不会再领取不兼容任务。更新会保留原 Agent ID、路径绑定和 YAML。",
+        reason: "服务端已升级任务协议，旧连接组件不会再领取不兼容任务。更新会保留用户身份、路径绑定和 YAML。",
       };
     }
     if (pathMismatch) {
@@ -801,7 +791,7 @@ function windowsWaitState(job, candidateStage = null) {
       title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
       capability: "需要连接本机",
       shortCapability: "本机连接",
-      reason: full
+      reason: localTarget
         ? "本地仿真需要这台 Windows 电脑执行 Selena 并收集结果。"
         : build
           ? "任务会在这台 Windows 电脑执行编译和文件准备，之后由 Linux/Cluster 继续调度。"
@@ -894,7 +884,7 @@ function renderJobDetail(job, events, manifest) {
   const heading = document.createElement("div");
   const badge = statusBadge(job.status);
   const h2 = document.createElement("h2");
-  h2.textContent = job.spec?.result?.name || "仿真任务";
+  h2.textContent = "仿真任务";
   const id = document.createElement("p");
   id.textContent = job.id;
   heading.append(badge, h2, id);
@@ -1051,7 +1041,7 @@ function renderWindowsConnectionCallout(job, waiting) {
   controls.className = "windows-connect-actions";
   const status = document.createElement("small");
   if (waiting.updateRequired) {
-    status.textContent = "原 Agent ID、路径绑定和任务配置会保留";
+    status.textContent = "用户身份、路径绑定和任务配置会保留";
     const button = actionButton("一键更新本机组件", "primary", () =>
       downloadWindowsConnector(job.id, waiting.mode, button, status)
     );
@@ -1220,7 +1210,7 @@ function friendlyStageDetail(stage) {
   const byCode = {
     shared_dataset_unavailable: "共享路径未授权，请改用受控直传或联系管理员配置共享空间",
     agent_data_upload_required: "等待已授权的 Windows Connector 将数据直传执行端",
-    workspace_snapshot_pending: "等待 Windows Agent 检查当前工作区",
+    workspace_snapshot_pending: "等待本机 Connector 检查当前工作区",
   };
   if (byCode[stage.error?.code]) return byCode[stage.error.code];
   const byReason = {

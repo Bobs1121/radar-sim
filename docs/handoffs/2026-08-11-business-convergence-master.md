@@ -19,8 +19,9 @@ tools, and reports their truthful per-input outcome.
 - Cluster input bytes move from their source directly to Cluster-accessible data
   storage. Local simulation inputs remain local when readable by the Windows
   execution node.
-- Project recognition is allowed only for build-script/toolchain/output discovery.
-  It must not select Runtime, data, MatFilter, Adapter or simulation parameters.
+- V2 does not recognize a business project. The selected build script may be
+  inspected for toolchain/output discovery, but no project/profile/recipe table
+  selects Runtime, data, MatFilter, Adapter, build arguments or simulation parameters.
 - Web, SDK and future Skill/MCP are adapters over the same API and SDK contract;
   they do not contain a second scheduler or transfer implementation.
 
@@ -68,9 +69,10 @@ required resource has a proven original-read or direct-transfer path.
 
 MatFilter has one bounded repository-inference exception: an explicit user path
 always wins; when omitted, the SDK or Connector that can read the repository
-searches generic Selena tooling locations and accepts only one highest-confidence
-candidate. Missing or tied candidates require user input. Linux never walks a
-Windows repository, and no product table or historical-job default participates.
+searches generic Selena tooling locations and chooses deterministically from the
+highest-priority candidates while recording the selected path and alternatives.
+Linux never walks a Windows repository, and no product table or historical-job
+default participates.
 
 ## Multi-user release gates
 
@@ -123,3 +125,98 @@ Known release boundaries:
 - A Linux caller's private files require the Python SDK process to execute `shared_copy`; pure browser Linux local-file access has no cross-platform Connector in P0.
 - Large result archives still use the existing compatibility collection path. Direct Cluster-to-user result delivery remains future data-plane work.
 - This round did not deploy to `10.190.171.44` and did not run a real Cluster/local simulation; automated evidence must not be reported as black-box success.
+
+## 2026-08-11 V2-only simplification continuation
+
+The user explicitly chose a clean V2 cut-over because the product has not been
+released. `docs/V2_ARCHITECTURE.md` is now the implementation index and defines
+the single `user-run-config/2.0` path plus the removal list.
+
+Implemented in the current uncommitted continuation:
+
+- Public V2 workspace recognition runs with `generic_only=True`; registered
+  `config/projects/*` adapters cannot win or inject build arguments/output paths.
+- V2 build preparation creates its bindings directly from the authorized
+  workspace and selected scripts. It does not enter `adapt_legacy_config`.
+- The actual command remains `cmd /c <user-selected Selena build script>` with
+  an empty injected argument list. `package_build_script` is diagnostic-only.
+- Script output inference remains preferred. If a wrapper does not expose its
+  output statically, V2 authorizes a narrower generic build subtree and performs
+  bounded post-build `Selena.exe` discovery inside that subtree, preferring the
+  requested build mode and newest artifact.
+- Existing Selena no longer derives `ovrs25`, `bydod25` or any other product from
+  folder/runtime/script names. Its anonymous execution identity is content-based.
+- Windows-local Selena execution no longer calls recipe handlers; it renders the
+  shared V2 paramconfig and invokes the common Selena command.
+- V2 Stage payloads no longer carry `profile`. The SDK and one-click HTTP
+  endpoints accept only the unified Connector mode; public capabilities expose
+  one `windows` object, and Web copy no longer claims scripts recognize products.
+- Legacy task creation was removed from the public surface: no
+  `/api/v1/projects`, SimulationSpec schema, `/api/v1/specs/*`,
+  `POST /api/v1/validate` or `POST /api/v1/jobs`; SDK no longer exports
+  `SimulationSpec`, `validate()` or `submit()`. Task query/action routes remain
+  shared by V2 Jobs.
+- `PRD.md`, `README.md`, `docs/DETAILED_DESIGN.md` and
+  `docs/OD25_USER_GUIDE.md` were replaced with V2-only content rather than
+  retaining contradictory legacy sections below an override notice.
+
+Focused automated verification after these edits:
+
+- V2 API/SDK/build/existing/local/Cluster/concurrency/result group:
+  `271 passed, 1 skipped, 1 warning`.
+- resource routing/Web/user config/transfer/branch/local-run group:
+  `233 passed, 5 skipped, 1 warning`.
+- `py_compile`, `node --check radar_sim_web/static/app.js` and
+  `git diff --check` passed.
+
+No deployment or real Selena process has occurred in this continuation yet;
+these results are not reported as black-box simulation success.
+
+Open release work after this commit:
+
+- remove or quarantine unreachable legacy command/API modules after a complete
+  public-route inventory; do not let that cleanup delay V2 main-chain validation;
+- deploy the new Connector contract and Linux release;
+- run one real `existing + local` and the four-combination acceptance matrix;
+- Cluster-to-user reverse result delivery and remote-to-local input delivery stay
+  truthful declared gaps, never Linux file-proxy fallbacks.
+
+## 2026-08-11 V2 release gate before deployment
+
+The V2 cut-over is now enforced by code, not only by documentation:
+
+- `UserRunConfig.from_dict()` is strict V2. Legacy `build_script/build_mode`,
+  Runtime Bundle/executable references, data limits, timeout fields and old
+  result metadata are rejected instead of silently migrated.
+- Public FastAPI/OpenAPI exposes only health/capabilities, run-config,
+  run-jobs/job actions, metadata-only transfer and result catalog routes.
+  Connector/artifact/Runtime Bundle/upload maintenance routes still execute for
+  internal components but are hidden from the user/AI contract.
+- Public SDK removed SimulationSpec and project-scoped/Linux-body dataset upload
+  shortcuts. `submit_run()`/`submit_yaml()` keep source paths and execute the
+  signed source-to-target transfer plan; Linux HTTP never receives MF4 bodies.
+- Web and SDK expose one `windows` capability and one Connector. User-visible
+  full/light, Agent ID and project recognition wording is removed.
+- Bare Connector startup now canonicalizes the same `user-<login>` identity as
+  the SDK; the one-click persisted owner remains unchanged.
+- A production direct-transfer deployment is ready only when both the
+  writer-visible `client_target_root` and explicit Linux `server_probe_root`
+  exist in deployment configuration. This prevents a large copy from starting
+  only to fail later because Linux cannot inspect the Cluster namespace.
+- Result ZIP downloads use unique same-directory temporary files before atomic
+  publication, so concurrent callers cannot corrupt each other's `.part` file.
+
+Release-gate evidence on the Windows development host:
+
+- API/SDK/generic build/existing Selena/Cluster concurrency/result/data-plane
+  group: `308 passed, 1 skipped, 1 warning`.
+- Connector/local runner/resource routing/Web/transfer/config group:
+  `224 passed, 5 skipped, 1 warning`.
+- Additional OpenAPI-only assertion: `1 passed, 1 warning`.
+- Changed Python modules compile, Web JavaScript syntax checks, deterministic
+  Connector bundle build and `git diff --check` all pass.
+- The only warning is the existing Starlette TestClient/httpx deprecation.
+
+This is still pre-deployment evidence. Do not mark real simulation acceptance
+complete until the immutable Linux release is active, the Connector contract is
+updated and real local/Cluster Jobs are inspected through their manifests.

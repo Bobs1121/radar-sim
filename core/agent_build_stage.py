@@ -43,6 +43,20 @@ class AgentBuildStageError(ValueError):
     """Stable build-stage error with path-free public messages."""
 
 
+@dataclass(frozen=True)
+class _V2BuildBindings:
+    """Agent-local paths derived only from the authorized v2 task.
+
+    This deliberately does not reuse ``legacy_adapter.UserBindings``.  The
+    public v2 pipeline must not pass through project/profile migration code.
+    """
+
+    project: str
+    workspace_path: str
+    selena_build_script: str
+    environment_build_script: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Immutable prepared build state
 # ---------------------------------------------------------------------------
@@ -229,6 +243,52 @@ def _resolve_artifact_path(exe_path: str, authorized: AuthorizedRoots) -> Path:
     return resolved
 
 
+def _locate_built_artifact(prepared: "PreparedSelenaBuild") -> Path:
+    """Locate the actual post-build Selena.exe inside authorized output roots.
+
+    Static script inference remains the first choice. Wrapper scripts that do
+    not expose their output directory are supported by a bounded post-build
+    search. The selected build mode wins, then the newest executable (the one
+    the just-finished build normally touched), with a stable path tie-breaker.
+    """
+    expected = prepared.artifact_path
+    if _is_regular_non_symlink(expected) and prepared.authorized.contains_output(expected):
+        return expected
+
+    candidates: list[tuple[int, int, int, str, Path]] = []
+    for output_root in prepared.authorized.output_roots:
+        try:
+            iterator = output_root.rglob("*")
+            for item in iterator:
+                if item.name.casefold() != "selena.exe" or not _is_regular_non_symlink(item):
+                    continue
+                try:
+                    resolved = item.resolve(strict=True)
+                    relative = resolved.relative_to(output_root).parts
+                    metadata = resolved.stat()
+                except (OSError, ValueError):
+                    continue
+                if len(relative) > 10 or not prepared.authorized.contains_output(resolved):
+                    continue
+                candidates.append(
+                    (
+                        1 if resolved.parent.name.casefold() == prepared.build_mode.casefold() else 0,
+                        int(metadata.st_mtime_ns),
+                        int(metadata.st_size),
+                        resolved.as_posix().casefold(),
+                        resolved,
+                    )
+                )
+                if len(candidates) > 512:
+                    raise AgentBuildStageError("too many Selena artifacts under authorized build roots")
+        except OSError:
+            continue
+    if not candidates:
+        raise AgentBuildStageError("Selena.exe was not produced under the authorized build roots")
+    candidates.sort(key=lambda item: item[:4], reverse=True)
+    return candidates[0][4]
+
+
 def _resolve_cwd(cwd: str | None, authorized: AuthorizedRoots) -> Path:
     """Resolve cwd from command builder; default to workspace_root if None."""
     if cwd is None or str(cwd).strip() == "":
@@ -379,6 +439,25 @@ def _generic_build_config(project: str, binding: Any) -> dict[str, Any]:
         "cluster": {},
     }
 
+
+def _v2_build_bindings(config: Mapping[str, Any], project: str) -> _V2BuildBindings:
+    """Read the four local build paths from the v2-generated config only."""
+    build = dict(config.get("build") or {})
+    machine = dict(config.get("machine") or {})
+    paths = dict(config.get("paths") or {})
+    workspace = str(
+        machine.get("project_root")
+        or config.get("project_root")
+        or paths.get("project_root")
+        or ""
+    ).strip()
+    return _V2BuildBindings(
+        project=project,
+        workspace_path=workspace,
+        selena_build_script=str(build.get("selena_build_script") or "").strip(),
+        environment_build_script=str(build.get("env_build_script") or "").strip(),
+    )
+
 def prepare_selena_build(
     payload: Mapping[str, Any],
     binding_store: AgentBindingStore,
@@ -394,8 +473,8 @@ def prepare_selena_build(
     Steps:
     1. Validate payload (project, workspace_binding_id, build_mode; optional clean/profile).
     2. Resolve binding by id+project and load local config.
-    3. Adapt legacy config locally with a harmless logical *data_path* to obtain
-       :class:`UserBindings`.
+    3. For v2, derive local bindings directly from the authorized workspace
+       and selected scripts. Legacy adaptation is never entered by v2.
     4. Compute binding id from configured workspace and require exact match.
     5. Validate configured workspace resolves equal to binding workspace.
     6. If a configured Selena build script is used, ensure it exists as a
@@ -451,8 +530,6 @@ def prepare_selena_build(
             )
         except (AgentAssetBindingError, OSError) as exc:
             raise AgentBuildStageError("Runtime XML authorization failed") from exc
-        if not adapter_key:
-            raise AgentBuildStageError("internal workspace adapter identity is required")
 
     # Resolve binding.
     try:
@@ -460,11 +537,10 @@ def prepare_selena_build(
     except AgentBindingError as exc:
         raise AgentBuildStageError(str(exc)) from exc
 
-    # Registered adapters retain their layered project config.  A generic
-    # workspace deliberately has no config/projects/<name> entry: its local
-    # authorization binding and the script references supplied by resolve_spec
-    # are the complete build contract.
-    if contract == "user-run-config/2.0" and adapter_key == "generic:selena-script":
+    # The v2 build contract is the authorized workspace plus the exact scripts
+    # selected by the user.  Registered project adapters are legacy-only and
+    # must not inject arguments, output paths or environment defaults.
+    if contract == "user-run-config/2.0":
         config = _generic_build_config(project, binding)
     else:
         try:
@@ -513,18 +589,19 @@ def prepare_selena_build(
                 raise AgentBuildStageError(f"{label} is missing or not a regular file")
             build[config_key] = str(target)
 
-    # Adapt legacy config with a harmless logical data_path to obtain UserBindings.
-    try:
-        bundle = adapt_legacy_config(
-            config,
-            project=project,
-            profile=profile or None,
-            data_path="binding://agent-build",
-        )
-    except (LegacyConfigAdapterError, ValueError, TypeError) as exc:
-        raise AgentBuildStageError("legacy config adaptation failed") from exc
-
-    user_bindings = bundle.user_bindings
+    if contract == "user-run-config/2.0":
+        user_bindings = _v2_build_bindings(config, project)
+    else:
+        try:
+            bundle = adapt_legacy_config(
+                config,
+                project=project,
+                profile=profile or None,
+                data_path="binding://agent-build",
+            )
+        except (LegacyConfigAdapterError, ValueError, TypeError) as exc:
+            raise AgentBuildStageError("legacy config adaptation failed") from exc
+        user_bindings = bundle.user_bindings
 
     # Compute binding id from configured workspace and require exact match.
     computed_id = make_workspace_binding_id(project, user_bindings.workspace_path)
@@ -559,13 +636,16 @@ def prepare_selena_build(
             worktree=Path(source_lease.worktree_path),
             base_output_roots=binding.output_roots,
         )
-        try:
-            bundle = adapt_legacy_config(
-                config, project=project, profile=profile or None, data_path="binding://agent-build"
-            )
-        except (LegacyConfigAdapterError, ValueError, TypeError) as exc:
-            raise AgentBuildStageError("isolated config adaptation failed") from exc
-        user_bindings = bundle.user_bindings
+        if contract == "user-run-config/2.0":
+            user_bindings = _v2_build_bindings(config, project)
+        else:
+            try:
+                bundle = adapt_legacy_config(
+                    config, project=project, profile=profile or None, data_path="binding://agent-build"
+                )
+            except (LegacyConfigAdapterError, ValueError, TypeError) as exc:
+                raise AgentBuildStageError("isolated config adaptation failed") from exc
+            user_bindings = bundle.user_bindings
 
     # Validate configured workspace resolves equal to binding workspace.
     if str(getattr(user_bindings, "project", "") or "").strip() != project:
@@ -742,7 +822,8 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
 
     # Validate and hash the actual artifact.
     try:
-        evidence = validate_and_hash_artifact(prepared.artifact_path, prepared.authorized)
+        artifact_path = _locate_built_artifact(prepared)
+        evidence = validate_and_hash_artifact(artifact_path, prepared.authorized)
     except AgentArtifactStagingError as exc:
         raise AgentBuildStageError(str(exc)) from exc
 
@@ -860,8 +941,9 @@ def stage_runtime_bundle_from_build(
         adapter_key=prepared.adapter_key,
     )
     try:
+        artifact_path = _locate_built_artifact(prepared)
         bundle = discover_runtime_bundle(
-            prepared.artifact_path,
+            artifact_path,
             prepared.runtime_xml_path,
             source=source,
             created_at=float(created_at),

@@ -13,7 +13,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from pydantic import ValidationError
 
@@ -97,7 +97,6 @@ class SourceResolutionInputs:
 
 SourceResolutionProvider = Callable[[str, SimulationSpec], SourceResolutionInputs]
 DataResolutionProvider = Callable[[str, SimulationSpec], DataResolution]
-ProjectNamesProvider = Callable[[], Iterable[str]]
 
 
 class SourceResolutionProviderError(RuntimeError):
@@ -139,7 +138,6 @@ class ApiV1Service:
     # ``cluster_direct_transfer_unavailable`` blocker instead of falling back
     # to an HTTP/body upload path.
     transfer_service: TransferService | None = None
-    project_names_provider: ProjectNamesProvider | None = None
     now_fn: Callable[[], float] = time.time
 
     def health(self) -> dict[str, Any]:
@@ -149,7 +147,7 @@ class ApiV1Service:
         return SimulationSpec.json_schema()
 
     def user_run_config_schema(self) -> dict[str, Any]:
-        """The only new-user YAML contract; legacy SimulationSpec stays compatible."""
+        """Return the single V2 user-facing YAML contract."""
         return UserRunConfig.json_schema()
 
     def import_user_run_config_yaml(self, yaml_content: str) -> dict[str, Any]:
@@ -222,7 +220,7 @@ class ApiV1Service:
         connected Windows computer. It never serializes agent IDs, local paths
         or the internally recognized product adapter.
         """
-        capabilities = self.execution_capabilities(self._owner(owner))["capabilities"]
+        capabilities = self._execution_capabilities_internal(self._owner(owner))["capabilities"]
         blockers: list[dict[str, str]] = []
         notices: list[dict[str, str]] = []
 
@@ -828,7 +826,10 @@ class ApiV1Service:
         if service is None:
             return False
         root = getattr(service, "client_target_root", None)
-        return root is None or bool(str(root).strip())
+        probe_configured = getattr(service, "server_probe_configured", None)
+        if root is None and probe_configured is None:
+            return True
+        return bool(str(root or "").strip()) and probe_configured is True
 
     @staticmethod
     def _block_direct_transfer_tasks(task_specs: list[dict[str, Any]], *, message: str) -> None:
@@ -866,7 +867,7 @@ class ApiV1Service:
         if requested != "auto":
             return requested, "explicit_user_selection"
         owner = self._owner(owner)
-        capabilities = self.execution_capabilities(owner)["capabilities"]
+        capabilities = self._execution_capabilities_internal(owner)["capabilities"]
         cluster_available = bool(capabilities.get("cluster", {}).get("available"))
         resources = self._user_run_resource_paths(config)
         kinds = {
@@ -1158,8 +1159,8 @@ class ApiV1Service:
             pass
         return candidate
 
-    def execution_capabilities(self, owner: str) -> dict[str, Any]:
-        """Return a path-free availability snapshot for Web guidance.
+    def _execution_capabilities_internal(self, owner: str) -> dict[str, Any]:
+        """Return scheduler capability detail, including legacy node kinds.
 
         This is advisory only. The scheduler revalidates capabilities at claim
         time, so a stale browser snapshot can never authorize execution.
@@ -1259,27 +1260,23 @@ class ApiV1Service:
         summary["cluster"]["available"] = summary["cluster"]["count"] > 0
         return {"capabilities": summary, "observed_at": now}
 
-    def list_projects(self) -> dict[str, Any]:
-        """Return public project identifiers only, never project adapter paths."""
-        if self.project_names_provider is None:
-            return {"projects": [], "count": 0}
-        try:
-            projects = sorted(
-                {
-                    str(item or "").strip()
-                    for item in self.project_names_provider()
-                    if str(item or "").strip()
-                },
-                key=str.casefold,
-            )
-        except Exception as exc:
-            raise ApiV1Error(
-                "project_catalog_unavailable",
-                "Project catalog is unavailable",
-                status_code=503,
-                actions=[{"type": "retry", "label": "Retry loading projects"}],
-            ) from exc
-        return {"projects": projects, "count": len(projects)}
+    def execution_capabilities(self, owner: str) -> dict[str, Any]:
+        """Return the V2 public capability snapshot.
+
+        Users install one Connector. ``windows_light/windows_full`` remain
+        scheduler implementation details and are intentionally omitted from
+        Web/SDK responses.
+        """
+        raw = self._execution_capabilities_internal(owner)
+        internal = dict(raw["capabilities"])
+        return {
+            "capabilities": {
+                "windows": dict(internal["windows"]),
+                "cluster": dict(internal["cluster"]),
+                "windows_connector": dict(internal["windows_connector"]),
+            },
+            "observed_at": raw["observed_at"],
+        }
 
     def import_spec_yaml(self, yaml_content: str) -> dict[str, Any]:
         try:
@@ -1490,7 +1487,7 @@ class ApiV1Service:
             status="",
             job_type_prefix="simulation.",
         )
-        capabilities = self.execution_capabilities(owner)["capabilities"]
+        capabilities = self._execution_capabilities_internal(owner)["capabilities"]
         jobs = [
             self._job_response(
                 control.get_job(item["job_id"]),
@@ -2657,7 +2654,7 @@ class ApiV1Service:
         if status in TERMINAL_STATUSES or status == "cancelling":
             return None
         owner = str(job.get("owner") or (job.get("metadata") or {}).get("owner") or "")
-        capabilities = execution_capabilities or self.execution_capabilities(owner)["capabilities"]
+        capabilities = execution_capabilities or self._execution_capabilities_internal(owner)["capabilities"]
         current = next(
             (
                 stage for stage in stages
@@ -2690,6 +2687,7 @@ class ApiV1Service:
             return None
 
         stage_type = str(current.get("stage_type") or current.get("task_type") or "")
+        dispatch_scope = str((current.get("payload") or {}).get("dispatch_scope") or "")
         spec = dict(job.get("spec") or (job.get("payload") or {}).get("spec") or {})
         selena = dict(spec.get("selena") or {})
         simulation = dict(spec.get("simulation") or {})
@@ -2815,7 +2813,13 @@ class ApiV1Service:
             message = "This task is waiting for a connected Windows computer with build capability."
         elif (
             target != "local"
-            and stage_type in {"resolve_spec", "environment_check", "prepare_data", "register_artifact"}
+            and (
+                stage_type in {"resolve_spec", "prepare_data", "register_artifact"}
+                or (
+                    stage_type == "environment_check"
+                    and dispatch_scope != "direct_transfer_environment"
+                )
+            )
             and any(classify_data_path(str(value or "")) == "agent" for value in local_path_values)
             and not (
                 capabilities["windows_light"]["available"]
@@ -2835,9 +2839,11 @@ class ApiV1Service:
             )
         return {
             "reason": "windows_connection_required",
-            "mode": mode,
+            # V2 exposes one Connector. Scheduler capability distinctions are
+            # internal and must not become an installation choice.
+            "mode": "unified",
             "stage": stage_type,
-            "missing_capability": "windows_full" if mode == "full" else "windows_light",
+            "missing_capability": "windows_connector",
             "connection_state": "reconnecting" if reconnecting else "not_configured",
             "message": (
                 "This configured Windows computer is temporarily offline and should reconnect automatically."
@@ -2847,7 +2853,7 @@ class ApiV1Service:
             "action": {
                 "type": "wait_windows_reconnect" if reconnecting else "connect_windows",
                 "label": "Wait for automatic reconnection" if reconnecting else "Connect this Windows computer",
-                "mode": mode,
+                "mode": "unified",
             },
         }
 
@@ -2960,9 +2966,9 @@ class ApiV1Service:
         )
         return {
             "reason": "windows_path_access_required",
-            "mode": mode,
+            "mode": "unified",
             "stage": "resolve_spec",
-            "missing_capability": "windows_full" if mode == "full" else "windows_light",
+            "missing_capability": "windows_connector",
             "connection_state": "connected_but_path_unavailable" if configured else "not_configured",
             "message": (
                 "在线 Windows 连接已存在，但无法确认它能访问本任务的本地路径。"
@@ -2971,7 +2977,7 @@ class ApiV1Service:
             "action": {
                 "type": "connect_windows",
                 "label": "连接存放文件的 Windows 电脑",
-                "mode": mode,
+                "mode": "unified",
             },
         }
 
