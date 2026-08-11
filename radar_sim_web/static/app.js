@@ -42,13 +42,18 @@ class ApiError extends Error {
   }
 }
 
+function requestHeaders(initial = {}) {
+  const headers = new Headers(initial || {});
+  if (state.userId) headers.set("X-Rsim-User", state.userId);
+  if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
+  return headers;
+}
+
 async function api(path, options = {}) {
   if (state.identityRequired && !state.authenticationRequired && path !== "/health") {
     throw new Error("请先输入用户标识；它仅用于可信内网的任务隔离，不是登录认证");
   }
-  const headers = new Headers(options.headers || {});
-  if (state.userId) headers.set("X-Rsim-User", state.userId);
-  if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
+  const headers = requestHeaders(options.headers);
   if (options.json !== undefined) headers.set("Content-Type", "application/json");
   // A browser fetch has no default deadline.  Without one, a restarted or
   // unreachable Linux service leaves the Task Center stuck on “正在加载任务”
@@ -1055,9 +1060,7 @@ async function downloadWindowsConnector(jobId, mode, button, status) {
   button.textContent = "正在准备";
   status.textContent = "正在生成与当前服务匹配的安装程序…";
   try {
-    const headers = new Headers();
-    if (state.userId) headers.set("X-Rsim-User", state.userId);
-    if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
+    const headers = requestHeaders();
     const response = await fetch(`${API}/windows-connector/connect.cmd?mode=unified`, { headers });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
@@ -1087,8 +1090,10 @@ async function downloadWindowsConnector(jobId, mode, button, status) {
 
 async function downloadResult(resultRef) {
   try {
-    const headers = new Headers();
-    if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
+    // ResultCatalog is owner-scoped. Binary fetches share the same identity
+    // builder as JSON API and Connector downloads so a valid result can never
+    // be looked up under the Linux service account by accident.
+    const headers = requestHeaders();
     const response = await fetch(`${API}/results/${encodeURIComponent(resultRef)}/download`, { headers });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));

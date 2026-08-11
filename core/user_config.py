@@ -110,6 +110,7 @@ class UserSimulationConfig(_Frozen):
         if not text or text.casefold() == "auto":
             return ""
         aliases = {
+            "fc": "RadarFC", "radarfc": "RadarFC",
             "fl": "RadarFL", "radarfl": "RadarFL",
             "fr": "RadarFR", "radarfr": "RadarFR",
             "rl": "RadarRL", "radarrl": "RadarRL",
@@ -117,7 +118,7 @@ class UserSimulationConfig(_Frozen):
         }
         normalized = aliases.get(text.casefold())
         if not normalized:
-            raise ValueError("simulation.source must be empty or one of RadarFL/RadarFR/RadarRL/RadarRR")
+            raise ValueError("simulation.source must be empty or one of RadarFC/RadarFL/RadarFR/RadarRL/RadarRR")
         return normalized
 
 

@@ -134,7 +134,7 @@ def test_adapter_file_is_optional():
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [("", ""), (None, ""), ("auto", ""), ("RL", "RadarRL"), ("radarrR", "RadarRR")],
+    [("", ""), (None, ""), ("auto", ""), ("FC", "RadarFC"), ("radarfc", "RadarFC"), ("RL", "RadarRL"), ("radarrR", "RadarRR")],
 )
 def test_radar_source_is_optional_and_canonical(value, expected):
     config = _build_config()
@@ -146,7 +146,7 @@ def test_radar_source_is_optional_and_canonical(value, expected):
 
 def test_unknown_radar_source_is_rejected():
     config = _build_config()
-    config["simulation"]["source"] = "RadarFC"
+    config["simulation"]["source"] = "RadarUnknown"
     with pytest.raises(ValidationError, match="simulation.source"):
         UserRunConfig.from_dict(config)
 

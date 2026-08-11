@@ -11,6 +11,7 @@ from core.control_service import ControlService
 from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION
 from core.config_assets import ConfigAssetStore
 from core.http_auth import HttpTokenAuthenticator
+from core.local_results import ResultCatalog
 from tests.test_api_v1_service import run_config_dict, spec_dict
 
 
@@ -428,6 +429,18 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert "RadarSim-连接本机.cmd" in app_js.text
     assert "请双击运行已下载的文件" in app_js.text
     assert "本机已连接，等待中的任务将自动继续" in app_js.text
+    request_headers_block = app_js.text.split("function requestHeaders", 1)[1].split(
+        "async function", 1
+    )[0]
+    assert 'headers.set("X-Rsim-User", state.userId)' in request_headers_block
+    download_result_block = app_js.text.split("async function downloadResult", 1)[1].split(
+        "async function", 1
+    )[0]
+    assert "const headers = requestHeaders()" in download_result_block
+    connector_download_block = app_js.text.split(
+        "async function downloadWindowsConnector", 1
+    )[1].split("async function", 1)[0]
+    assert "const headers = requestHeaders()" in connector_download_block
     assert "Linux 服务已连接" in app_js.text
     assert "本机未连接" in app_js.text
     assert "createFormWindowsRequirement" in app_js.text
@@ -445,6 +458,36 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert ".connector-update-banner" in styles.text
     assert client.get("/api/v1/health").status_code == 200
     assert client.get("/api/config").status_code == 404
+
+
+def test_result_download_requires_the_same_owner_as_web_job_requests(tmp_path):
+    source_root = tmp_path / "controlled-results"
+    source = source_root / "run"
+    source.mkdir(parents=True)
+    (source / "output.MF4").write_bytes(b"simulated-result")
+    catalog = ResultCatalog(
+        tmp_path / "result-store",
+        tmp_path / "results.db",
+        allowed_source_root=source_root,
+    )
+    result = catalog.publish(
+        owner="user-alice",
+        run_ref="local-run:web-download-owner",
+        source_root=source,
+        files=["output.MF4"],
+    )
+    service = ApiV1Service(
+        control_service_factory=lambda _owner: ControlService(tmp_path / "control.db"),
+        result_catalog=catalog,
+    )
+    client = TestClient(create_app(api_service=service))
+    path = f"/api/v1/results/{result.ref}/download"
+
+    assert client.get(path, headers={"X-Rsim-User": "user-bob"}).status_code == 404
+    downloaded = client.get(path, headers={"X-Rsim-User": "user-alice"})
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"] == "application/zip"
+    assert len(downloaded.content) == result.archive_size
 
 
 def test_task_center_list_route_supports_owner_status_and_minimal_spec(tmp_path):

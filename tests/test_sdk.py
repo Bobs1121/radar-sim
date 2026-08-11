@@ -237,6 +237,28 @@ def test_explicit_source_wins_over_multi_source_metadata(monkeypatch, tmp_path: 
     assert result["mounting_position"] == "CRR"
 
 
+def test_front_radar_acquisition_source_maps_to_mature_front_mounting(
+    monkeypatch, tmp_path: Path
+):
+    mf4 = tmp_path / "front-recording.MF4"
+    mf4.write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation.discover_radar_acquisition_sources",
+        lambda _path: ["RadarFC"],
+    )
+    result = build_effective_simulation(
+        {"_meta": {"project": "anonymous", "_run_id": "run-front"}, "simulation": {}},
+        str(mf4),
+    )
+    assert result["source"] == "RadarFC"
+    assert result["mounting_position"] == "front"
+    assert result["radar_detection"]["method"] == "acquisition_source"
+    assert detect_radar_transfer_metadata(str(mf4)) == {
+        "radar_source": "RadarFC",
+        "radar_mounting_position": "front",
+    }
+
+
 def test_light_agent_mf4_reader_preserves_acquisition_group_order(tmp_path: Path):
     """The light Agent can infer RadarRL without installing asammdf."""
 

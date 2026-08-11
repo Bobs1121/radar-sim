@@ -55,7 +55,7 @@ data:
   path: "D:/path/to/OD25_measurements"
 simulation:
   target: cluster
-  source: ""  # 可选；多源数据需要固定源时填写 RadarFL/FR/RL/RR
+  source: ""  # 可选；可填写 RadarFC/FL/FR/RL/RR
   adapter_file: "D:/path/to/OD25_adapter.txt"
   mat_filter: ""  # 可留空；无法唯一推导时 Web/SDK 会要求用户选择
 ```

@@ -46,7 +46,7 @@ data:
 
 simulation:
   target: auto                  # auto | local | cluster
-  source: ""                    # 可选：RadarFL | RadarFR | RadarRL | RadarRR
+  source: ""                    # 可选：RadarFC | RadarFL | RadarFR | RadarRL | RadarRR
   adapter_file: ""             # 可选；仅在当前 Selena/数据链确实需要时填写
   # 可选；显式填写时严格使用用户值。留空时由 SDK/Connector 从代码仓
   # 推导唯一高置信候选，无法唯一确定时再提示用户选择。
@@ -56,7 +56,7 @@ simulation:
 强制约束：
 
 - `data` 只有一个 `path`。用户不区分本地、公盘或上传数据；系统自动识别、检索 MF4。Cluster 目标不可直接访问时，由数据所在电脑直传 Cluster 可访问存储；本地仿真时不传输。
-- `simulation.source` 是可选的用户意图：显式填写 `RadarFL/RadarFR/RadarRL/RadarRR` 时必须严格采用，并跳过自动选择；留空时从本次 MF4 的 acquisition source 推导。单一源直接采用；多源按 MF4 acquisition group 的稳定顺序选择第一个，不阻断任务，同时记录候选、选择结果和依据。项目名、项目 adapter、历史 profile 或默认 `RadarFC` 不得覆盖用户选择或本次数据推导。
+- `simulation.source` 是可选的用户意图：显式填写 `RadarFC/RadarFL/RadarFR/RadarRL/RadarRR` 时必须严格采用，并跳过自动选择；`RadarFC` 的稳定 mounting 为 `front`。留空时从本次 MF4 的 acquisition source 推导。单一源直接采用；多源按 MF4 acquisition group 的稳定顺序选择第一个，不阻断任务，同时记录候选、选择结果和依据。项目名、项目 adapter 或历史 profile 不得覆盖用户选择或本次数据推导。
 - `source=build` 时，系统从用户给出的 Selena 编译脚本确认真实输出位置，并在编译后验证 `Selena.exe` 与同目录 DLL；软件包编译脚本为可选项，只用于补充内部项目识别、环境依赖发现/处理及其明确声明的代码生成步骤。未提供软件包脚本不得单独阻止编译。
 - `source=build` 始终编译用户当前工作区及其未提交修改，默认认为用户已自行切好分支。系统不得自动执行 checkout、reset、clean 或 stash。`branch` 仅是可选的期望分支；与实际分支不一致时，Web、SDK Job 结果和任务日志必须明确警告，但允许用户继续执行。
 - 清仓只属于用户明确选择并二次确认的可选动作，默认流程不执行。`git clean -xfd`、`git reset --hard`、递归 submodule reset/clean 等破坏性命令绝不能静默作用于用户工作区。

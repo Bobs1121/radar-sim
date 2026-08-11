@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 
 RADAR_POSITION_MAP: dict[str, dict[str, str]] = {
+    "FC": {"source": "RadarFC", "mounting_position": "front"},
     "FL": {"source": "RadarFL", "mounting_position": "CFL"},
     "FR": {"source": "RadarFR", "mounting_position": "CFR"},
     "RL": {"source": "RadarRL", "mounting_position": "CRL"},

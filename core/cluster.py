@@ -61,8 +61,9 @@ RUNTIME_COPY_NAMES = {
 }
 
 CLUSTER_KILL_PASSWORD_ENV = "RSIM_CLUSTER_KILL_PASSWORD"
-RADAR_SOURCE_ORDER = ("RadarFL", "RadarFR", "RadarRL", "RadarRR")
+RADAR_SOURCE_ORDER = ("RadarFC", "RadarFL", "RadarFR", "RadarRL", "RadarRR")
 RADAR_SOURCE_MOUNTING = {
+    "RadarFC": "front",
     "RadarFL": "CFL",
     "RadarFR": "CFR",
     "RadarRL": "CRL",
