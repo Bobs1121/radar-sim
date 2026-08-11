@@ -53,6 +53,11 @@ nav { display: flex; align-self: stretch; gap: 4px; }
 .auth-entry .button { min-height: 34px; padding: 6px 10px; }
 
 main { max-width: 1500px; margin: 0 auto; padding: 32px 40px 56px; }
+.connector-update-banner { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 22px; padding: 15px 18px; color: #61420d; background: #fff8e8; border: 1px solid #e4bf71; border-left: 4px solid #c58414; border-radius: var(--radius); box-shadow: var(--shadow); }
+.connector-update-banner strong { display: block; color: #4f350b; font-size: 16px; }
+.connector-update-banner p { margin: 3px 0 0; color: #765b2a; }
+.connector-update-actions { display: grid; justify-items: end; gap: 5px; flex: 0 0 auto; }
+.connector-update-actions small { color: #765b2a; text-align: right; }
 .view { display: none; }
 .view.is-active { display: block; }
 .page-heading { display: flex; justify-content: space-between; align-items: end; gap: 28px; margin-bottom: 24px; }
@@ -240,6 +245,9 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
   .stage-actions { grid-column: 2; grid-row: 1 / span 2; }
   .detail-header { flex-direction: column; }
   .windows-connect-callout { grid-template-columns: 1fr; }
+  .connector-update-banner { align-items: stretch; flex-direction: column; }
+  .connector-update-actions { justify-items: stretch; }
+  .connector-update-actions small { text-align: left; }
   .windows-connect-actions { justify-items: stretch; }
   .windows-connect-actions small { max-width: none; text-align: left; }
 }
@@ -280,6 +288,9 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
   .status.succeeded { color: #a8ddbd; background: #244633; }
   .status.partial { color: #f2ca82; background: #49391f; }
   .windows-connect-callout { color: #f0d59d; background: #3a301d; border-color: #7d6432; border-left-color: #d29a35; }
+  .connector-update-banner { color: #f0d59d; background: #3a301d; border-color: #7d6432; border-left-color: #d29a35; }
+  .connector-update-banner strong { color: #f6deb0; }
+  .connector-update-banner p, .connector-update-actions small { color: #d8bc85; }
   .windows-connect-callout h3 { color: #f6deb0; }
   .windows-connect-callout .callout-eyebrow, .windows-connect-callout .callout-reassurance, .windows-connect-actions small { color: #d8bc85; }
 }

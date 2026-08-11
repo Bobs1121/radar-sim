@@ -62,7 +62,11 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # the package version: only an incompatible task/result contract increments
 # it. Missing metadata identifies a pre-handshake Connector and must fail
 # closed for ``simulation.run_config.v2`` jobs.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 3
+# V4 adds the public radar-source selection contract and the metadata-only
+# local MF4 probe. Older connectors would silently ignore an explicit source
+# and retain the minutes-long full-MDF setup path, so they must update before
+# claiming new UserRunConfig v2 stages.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 4
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

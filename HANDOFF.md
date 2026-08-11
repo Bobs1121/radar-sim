@@ -21,6 +21,7 @@
 5. Windows PowerShell Supervisor 不再把 native stderr 的普通库 INFO/warning 包装成致命 `NativeCommandError`。stderr 继续进入隐藏日志，只有真实进程退出码决定重启；修复了本地 Run Stage 每约 7 秒被错误重启、日志反复出现 `started`、Selena 无法稳定启动的问题。
 6. 本地参数适配不再先用 `asammdf.MDF(...)` 打开完整 MF4。现在优先只读取 MDF4 acquisition-source 元数据链，实际 239 MB 样本从约 `110 s` 降为 `0.079 s`，仍得到有序的 `RadarRL, RadarRR`；只有标准元数据不可读时才进入兼容回退。该优化按 MDF4 格式生效，不依赖项目名或固定路径。
 7. Web/YAML/SDK 统一增加可选 `simulation.source`，规范值为 `RadarFL/RadarFR/RadarRL/RadarRR`，兼容 `FL/FR/RL/RR` 输入并在导出时规范化。显式值同时覆盖本地和 Cluster 的自动推导；留空时单源直接采用，多源按 MDF4 acquisition group 的稳定顺序选择第一个。本次样本留空得到候选 `RadarRL, RadarRR` 并选择 `RadarRL`。
+8. Windows Connector 执行合同提升为 v4，覆盖显式雷达源和本地 MF4 快速元数据探测。服务端会把 v3 及更旧组件标记为 `windows_connector_update_required` 并阻止其领取新任务。Web 任意页面顶部增加全局更新横幅和“一键更新本机组件”；下载后双击同源入口即可原地更新，保留 owner、Agent ID、路径绑定、自启动和历史任务，能力轮询确认上线后自动隐藏横幅。
 
 ### 真实黑盒证据
 

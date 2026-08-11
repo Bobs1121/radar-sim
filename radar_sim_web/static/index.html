@@ -40,6 +40,16 @@
   </header>
 
   <main id="main">
+    <section id="connectorUpdateBanner" class="connector-update-banner" role="status" hidden>
+      <div>
+        <strong>本机连接组件需要更新</strong>
+        <p id="connectorUpdateMessage">检测到旧版本。更新会保留用户身份、路径绑定、自启动配置和历史任务。</p>
+      </div>
+      <div class="connector-update-actions">
+        <button type="button" class="button primary" id="updateWindowsConnectorGlobal">一键更新本机组件</button>
+        <small id="connectorUpdateStatus">下载后双击运行，页面会自动确认新版本上线</small>
+      </div>
+    </section>
     <section id="createView" class="view is-active" aria-labelledby="createTitle">
       <div class="page-heading">
         <div>

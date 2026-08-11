@@ -433,6 +433,8 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert "createFormWindowsRequirement" in app_js.text
     assert "createWindowsCallout" in index.text
     assert "首次使用准备" in index.text
+    assert "connectorUpdateBanner" in index.text
+    assert "一键更新本机组件" in index.text
     assert "本机连接暂时中断，正在自动重连" in app_js.text
     assert "无需重新安装或重新提交" in app_js.text
     assert "通常会自动恢复；长时间未连接时可重新连接本机" in app_js.text
@@ -440,6 +442,7 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     styles = client.get("/console/styles.css")
     assert styles.status_code == 200
     assert ".windows-connect-callout" in styles.text
+    assert ".connector-update-banner" in styles.text
     assert client.get("/api/v1/health").status_code == 200
     assert client.get("/api/config").status_code == 404
 

@@ -200,8 +200,20 @@ function hasConfiguredWindows(mode, capabilities = state.capabilities) {
 
 function windowsConnectorNeedsUpdate(capabilities = state.capabilities) {
   const snapshot = capabilities?.capabilities || capabilities || {};
-  return snapshot.windows_connector?.update_required === true
-    && !Boolean(snapshot.windows?.available);
+  return snapshot.windows_connector?.update_required === true;
+}
+
+function updateConnectorUpdateBanner(capabilities = state.capabilities) {
+  const banner = byId("connectorUpdateBanner");
+  if (!banner) return;
+  const snapshot = capabilities?.capabilities || capabilities || {};
+  const connector = snapshot.windows_connector || {};
+  const updateRequired = connector.update_required === true;
+  banner.hidden = !updateRequired;
+  if (!updateRequired) return;
+  const count = Math.max(1, Number(connector.outdated_count || 0));
+  byId("connectorUpdateMessage").textContent =
+    `检测到 ${count} 个旧连接组件，需要更新后才能领取新任务。更新会保留用户身份、路径绑定、自启动配置和历史任务。`;
 }
 
 function updateConnectionStates(capabilities = state.capabilities) {
@@ -216,6 +228,7 @@ function updateConnectionStates(capabilities = state.capabilities) {
     : Number(snapshot.windows_light?.configured_count || 0) > 0
       || Number(snapshot.windows_full?.configured_count || 0) > 0;
   const updateRequired = windowsConnectorNeedsUpdate(capabilities);
+  updateConnectorUpdateBanner(capabilities);
   local.textContent = connected
     ? "本机已连接"
     : updateRequired ? "本机组件需更新"
@@ -238,6 +251,10 @@ async function refreshCapabilities() {
     if (waiting && !hasWindowsCapability(waiting.mode, previous) && hasWindowsCapability(waiting.mode, current)) {
       state.connectorAwait = null;
       showToast("本机已连接，等待中的任务将自动继续", 5000);
+    }
+    if (windowsConnectorNeedsUpdate(previous) && !windowsConnectorNeedsUpdate(current)) {
+      byId("connectorUpdateStatus").textContent = "更新完成，本机已经重新连接";
+      showToast("本机连接组件已更新并重新上线", 5000);
     }
     return current;
   } finally {
@@ -1278,6 +1295,11 @@ async function initialize() {
   byId("connectWindowsFromCreate").addEventListener("click", () => {
     const button = byId("connectWindowsFromCreate");
     const status = byId("createWindowsStatus");
+    downloadWindowsConnector("", "unified", button, status);
+  });
+  byId("updateWindowsConnectorGlobal").addEventListener("click", () => {
+    const button = byId("updateWindowsConnectorGlobal");
+    const status = byId("connectorUpdateStatus");
     downloadWindowsConnector("", "unified", button, status);
   });
   byId("accessToken").addEventListener("keydown", (event) => {
