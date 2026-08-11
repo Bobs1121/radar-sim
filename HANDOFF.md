@@ -8,9 +8,9 @@
 
 ### 已发布状态
 
-- 生产 Linux 服务已切换到不可变 release `/home/hoz2wx/radar-sim-62cc97d`，入口 `http://10.190.171.44:8877`；systemd `ActiveState=active/SubState=running/NRestarts=0`，上一版及每次 unit 备份保留回滚。
-- 当前发布提交为 `62cc97d Keep connector alive on native stderr`，已推送 `origin/codex/new-branch`。候选服务器门禁 `66 passed, 1 skipped`（skip 为 Linux 无法执行 Windows VBS）；主收口提交完整仓库回归 `1499 passed, 11 skipped, 1 warning`，后续最小补丁专项分别为 `140 passed` 和 `40 passed`。
-- 生产 Connector ZIP 为 `8,322,691` bytes、171 files、SHA-256 `c0245a9b07aeb9c28bb09eef979e3a8061f22026f84ab4bc37c5cdf709ab1925`。本机按 Web/SDK 同源新用户入口更新成功，保留 `agent-HOZ2WX-WX8-C-0001A`，owner 从旧随机 `web-*` 迁移为 `user-hoz2wx`；只有一组主任务和 Watchdog，均由 `wscript.exe` 隐藏启动，能力为 `available=true/count=1/reconnecting=false`。
+- 生产 Linux 服务已切换到不可变 release `/home/hoz2wx/radar-sim-6169fe4`，入口 `http://10.190.171.44:8877`；systemd `ActiveState=active/SubState=running/NRestarts=0`，上一版及每次 unit 备份保留回滚。
+- 当前发布提交为 `6169fe4 Add explicit radar source selection`，已推送 `origin/codex/new-branch`；其前置性能修复为 `a396f93 Avoid full MF4 scan before local simulation`。本机 Web/SDK/本地/Cluster 组合门禁 `253 passed, 1 warning`，Linux 候选发布门禁 `103 passed, 1 skipped`；主收口提交完整仓库回归仍为 `1499 passed, 11 skipped, 1 warning`。
+- 生产 Connector ZIP 为 `8,323,562` bytes、171 files、SHA-256 `da1990186cc13b57047e5426ebc7e8aad17e57e8a80adf6111bd5a69d582bb49`。本机按 Web/SDK 同源新用户入口原地更新成功，复用已有 Python 包、Agent ID、owner、自启动任务和 Watchdog；Linux 已确认 Windows full 能力在线，本轮安装完成 PID 为 `17840`。
 
 ### 本轮通用修复
 
@@ -28,6 +28,7 @@
 - 修复后 `job_fa8febd616b8` 在 `environment_check` 以 `CLUSTER_ENVIRONMENT_UNAVAILABLE` 快速结束，公开原因只有 `Manager XML-RPC port: unavailable; Submit path: unavailable`；`get_job_transfer_status()` 为 `no_transfers/plans=[]`，证明 Cluster 重置未恢复时不再先上传 531 MB。带生产 EnvironmentFile 实测：提交凭证 `true`，Manager/Submit path 仍为 `false`，属于外部 Cluster 基础设施，不是 Connector/Linux 框架或用户配置错误。
 - `job_eaee9280fbcb` 使用用户指定的已有 Selena `C:/BYD_OVS_CB/.../RelWithDebInfo`、Runtime `C:/tools/Runtime_For_byd_ovrs25_bl16rc71_al2.xml`、单条 `Gen5_2026-07-28_17-22_0118.MF4`、空 Adapter、空 MatFilter，`target=local`，真实端到端 `succeeded/progress=1.0`。全程 `TransferPlan=0`；Manifest 记录 1/1 succeeded，输出 `239,051,624` bytes；Diagnosis=`job_succeeded`、`artifacts_available=true`。结果 ZIP `12,163,603` bytes，SHA-256 `de7762f15d381f2e6419ce352eab6cf73df8879eca32792009504a38896bf208`，Range 下载为 `206 bytes 0-0/12163603`。
 - 该任务总耗时 `492.9 s`。时间戳审计证明预检结束至 `paramconfig` 生成有约 `109.6 s` 外围开销，根因是完整 MDF 解析；`Selena.exe`/输出文件实际从 `13:47:14` 运行到 `13:52:53`，约 `339 s`，结果收集约 `12 s`。上文第 6 条已消除外围慢路径；现有成功任务不篡改，新版本复测应只比较启动前开销，不承诺改变 Selena 内部运行时间。
+- `job_d8b902defaad` 在生产 `6169fe4` 用同一 Selena/Runtime/单条 MF4、空 Adapter/MatFilter、`simulation.source=""` 复测本地仿真。预检 `14:20:06.909` 完成，`paramconfig` 于 `14:20:07.624` 生成、Selena 日志于 `14:20:07.635` 创建，外围启动间隔从约 `109.6 s` 降为 `0.73 s`；任务最终 `succeeded`，Manifest `succeeded/error_count=0/file_count=1`，输出 MF4 `239,051,624` bytes，结果归档 `12,163,891` bytes。Selena 本轮自身运行约 `381.7 s`，总任务约 `430.8 s`；真实引擎耗时会随运行波动，框架只承诺不再完整预扫 MF4。
 
 ### 剩余验收边界
 
