@@ -156,6 +156,7 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
 .status.running { color: #0d607b; background: #dff1f6; }
 .status.needs_input { color: var(--warning); background: #fff3d9; }
 .status.succeeded { color: var(--success); background: #e5f5eb; }
+.status.partial { color: #8a5a00; background: #fff3d9; }
 .status.failed, .status.cancelled { color: var(--danger); background: var(--danger-soft); }
 .mini-progress { height: 4px; border-radius: 2px; background: #dbe3e9; overflow: hidden; }
 .mini-progress span { display: block; height: 100%; background: var(--accent); }
@@ -188,9 +189,14 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
 .spec-summary dd { margin: 0; overflow-wrap: anywhere; font-weight: 600; }
 .event-log { max-height: 310px; overflow: auto; margin-top: 22px; padding: 12px 14px; background: #162129; color: #d9e3e7; border-radius: 6px; font: 12px/1.55 "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .manifest-failure { margin-top: 22px; padding: 14px 16px; color: #7b241c; background: var(--danger-soft); border: 1px solid #efb6b1; border-radius: 6px; }
+.manifest-failure.is-partial { color: #6f4b08; background: #fff8e8; border-color: #e4bf71; }
 .manifest-failure h3, .manifest-failure p { margin: 0 0 8px; }
 .manifest-failure ul { margin: 0; padding-left: 20px; }
 .manifest-failure li + li { margin-top: 5px; }
+.input-results { margin-top: 22px; }
+.input-result-list { display: grid; gap: 8px; }
+.input-result-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 11px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 5px; }
+.input-result-row code { min-width: 0; overflow-wrap: anywhere; color: var(--text); }
 .event-line { padding: 2px 0; }
 .event-line time { color: #90a5af; margin-right: 8px; }
 .empty-state { min-height: 220px; display: grid; place-content: center; justify-items: center; gap: 7px; padding: 32px; color: var(--muted); text-align: center; }
@@ -272,6 +278,7 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
   .status.running { color: #a9dce9; background: #254651; }
   .status.needs_input { color: #f2ca82; background: #49391f; }
   .status.succeeded { color: #a8ddbd; background: #244633; }
+  .status.partial { color: #f2ca82; background: #49391f; }
   .windows-connect-callout { color: #f0d59d; background: #3a301d; border-color: #7d6432; border-left-color: #d29a35; }
   .windows-connect-callout h3 { color: #f6deb0; }
   .windows-connect-callout .callout-eyebrow, .windows-connect-callout .callout-reassurance, .windows-connect-actions small { color: #d8bc85; }

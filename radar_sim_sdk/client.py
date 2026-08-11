@@ -1459,9 +1459,9 @@ def _dataset_transfer_fingerprints(
     if first_mf4 is None:
         return {}
     try:
-        from core.simulation import detect_radar_transfer_metadata
+        from core.simulation import detect_radar_transfer_metadata_safe
 
-        return dict(detect_radar_transfer_metadata(str(first_mf4)))
+        return dict(detect_radar_transfer_metadata_safe(str(first_mf4)))
     except Exception:
         return {}
 

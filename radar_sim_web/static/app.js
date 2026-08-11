@@ -614,7 +614,7 @@ function renderJobs() {
     stage.textContent = waiting
       ? `${waiting.reconnecting ? "本机正在自动重连" : "等待连接本机"} · ${waiting.shortCapability}`
       : currentStage || (
-      ["failed", "cancelled", "succeeded"].includes(job.status)
+      ["failed", "cancelled", "partial", "succeeded"].includes(job.status)
         ? statusName(job.status)
         : "等待调度"
     );
@@ -639,7 +639,7 @@ function selectedExecutionTarget(job) {
 }
 
 function windowsWaitState(job, candidateStage = null) {
-  if (!job || job.cancel_requested || ["failed", "cancelled", "cancelling", "succeeded"].includes(job.status)) return null;
+  if (!job || job.cancel_requested || ["failed", "cancelled", "cancelling", "partial", "succeeded"].includes(job.status)) return null;
   if (candidateStage && (candidateStage.stage_type || candidateStage.task_type) !== job.current_stage) return null;
   const stage = candidateStage || (job.stages || []).find((item) =>
     (item.stage_type || item.task_type) === job.current_stage
@@ -840,12 +840,16 @@ function renderJobDetail(job, events, manifest) {
   const failure = document.createElement("section");
   failure.className = "manifest-failure";
   if (["failed", "failure", "partial"].includes(manifestStatus)) {
+    if (manifestStatus === "partial") failure.classList.add("is-partial");
     const failureTitle = document.createElement("h3");
-    failureTitle.textContent = "仿真失败原因";
+    failureTitle.textContent = manifestStatus === "partial" ? "部分数据仿真完成" : "仿真失败原因";
     const failureSummary = document.createElement("p");
-    const failed = Number(manifest?.summary?.failed_count ?? manifest?.summary?.fail_count ?? 0);
-    const total = Number(manifest?.summary?.task_count ?? 0);
-    failureSummary.textContent = total ? `${failed}/${total} 个数据任务失败` : "仿真结果报告失败";
+    const failed = Number(manifest?.summary?.failed_input_count ?? manifest?.summary?.failed_count ?? manifest?.summary?.fail_count ?? 0);
+    const succeeded = Number(manifest?.summary?.succeeded_input_count ?? manifest?.summary?.success_count ?? 0);
+    const total = Number(manifest?.summary?.total_input_count ?? manifest?.summary?.task_count ?? (failed + succeeded));
+    failureSummary.textContent = total
+      ? (manifestStatus === "partial" ? `${succeeded}/${total} 条成功，${failed} 条失败；成功结果仍可下载` : `${failed}/${total} 个数据任务失败`)
+      : "仿真结果报告失败";
     const errors = document.createElement("ul");
     (manifest?.summary?.errors || []).slice(0, 5).forEach((message) => {
       const item = document.createElement("li");
@@ -853,6 +857,26 @@ function renderJobDetail(job, events, manifest) {
       errors.append(item);
     });
     failure.append(failureTitle, failureSummary, errors);
+  }
+
+  const inputResults = document.createElement("section");
+  inputResults.className = "detail-section input-results";
+  const manifestInputs = Array.isArray(manifest?.input_results) ? manifest.input_results : [];
+  if (manifestInputs.length) {
+    const inputTitle = document.createElement("h3");
+    inputTitle.textContent = "逐条数据结果";
+    const inputList = document.createElement("div");
+    inputList.className = "input-result-list";
+    manifestInputs.forEach((result, index) => {
+      const row = document.createElement("div");
+      row.className = "input-result-row";
+      const name = document.createElement("code");
+      name.textContent = result.input_relative_path || result.relative_path || `数据 ${index + 1}`;
+      const outcome = statusBadge(String(result.status || "unknown").toLowerCase());
+      row.append(name, outcome);
+      inputList.append(row);
+    });
+    inputResults.append(inputTitle, inputList);
   }
 
   const log = document.createElement("section");
@@ -878,6 +902,7 @@ function renderJobDetail(job, events, manifest) {
   if (connectorPanel) root.append(connectorPanel);
   root.append(grid);
   if (failure.childElementCount) root.append(failure);
+  if (inputResults.childElementCount) root.append(inputResults);
   root.append(log);
   root.scrollTop = previousRootTop;
   log.scrollTop = followedLogTail ? log.scrollHeight : Math.min(previousLogTop, log.scrollHeight);
@@ -1061,7 +1086,7 @@ function statusBadge(status) {
 function statusName(value) {
   return {
     queued: "排队中", running: "运行中", needs_input: "需要处理",
-    succeeded: "已完成", failed: "失败", cancelled: "已取消",
+    succeeded: "已完成", partial: "部分成功", failed: "失败", cancelled: "已取消",
     blocked: "已阻塞", skipped: "已跳过", cancel_requested: "取消中", cancelling: "取消中",
   }[value] || value || "未知";
 }

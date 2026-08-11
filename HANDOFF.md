@@ -2410,3 +2410,33 @@ Linux 控制面只保存数据集逻辑引用，不会从历史 Job 反查或复
 - `result_ref=result:sha256:6ad9e78f392710f43d56c2bc1bd5e3a5db6b29839459bf61383bb7fb5c068af5`；Web API 与 Python SDK 分别读取 Diagnosis/Manifest 均返回 `job_succeeded`、`artifacts_available=true`。
 
 这次验证同时证明：数据路径、已有 Selena、Runtime、MatFilter、Adapter 由 Agent 侧接入，Linux 只编排 Stage；用户确认可成功的单条输入可以独立跑通。由于原历史事件不公开原始文件列表，提交前的文件名是由输出 stem 推导的；后续不要把这种推导替代 Web 文件选择器或用户提供的完整路径。
+
+## 0.0.11 新用户批次状态与 Connector 重启恢复（2026-08-11）
+
+### 两个真实任务的结论
+
+- `job_098f0c2caa50` 不是外围接入失败。配置解析、环境检查、数据准备、预检、运行、结果收集均完成；3 条 MF4 中 `Vehicle_FR5CP_20260805_100617_0007.MF4` 与 `Vehicle_FR5CP_20260805_102529_0014.MF4` 成功，`Vehicle_FR5CP_20260805_102529_0014sim.MF4` 被 Selena 报告为无法打开。Manifest 已正确保存 `status=partial`、2 个成功输出和 3 条逐输入结果，但公共 API 把 `partial` 归一为 `failed`，进度停在 90%，Web 因而错误显示“整体失败”。
+- `job_81f44ccae6c4` 暴露独立的控制面一致性缺陷。Windows Connector 在 MF4 元数据探测后、请求直传计划前退出；同一 `agent_id` 重启注册时，旧代码把 Agent 行重置为 `idle/current_task_id=''`，而 task 仍为 `running/assigned_agent_id=该 Agent`。活着的 Connector 持续心跳使 stale reclaim 永远不触发，任务成为永久孤儿。
+
+### 通用修复（无项目、路径或用户特判）
+
+1. 公共 Web/SDK 状态新增终态 `partial`。内部控制服务仍保留失败 Stage 和审计语义，但 `GET /api/v1/jobs/{id}`、事件终态与 Diagnosis 根据最终 Manifest 如实返回 `partial`、`progress=1.0`、`code=simulation_partial`；成功结果仍可下载。
+2. Web 将 `partial` 显示为“部分成功”而不是红色失败，任务筛选增加“部分成功”，详情按 `input_results[]` 列出每条数据成功/失败，并明确成功结果可以下载。
+3. 同 ID Connector 重注册不再覆盖正在执行的 `status/current_task_id`。`claim_next_task()` 在领取新任务前，会优先查找 `running + assigned_agent_id=自己` 的历史孤儿并恢复 Agent 绑定；不新建 attempt、不跨 owner、不越过能力或 Connector 协议门禁。
+4. 任务恢复采用 at-least-once 语义：进程重启后从该 Stage 的幂等入口继续；协议不伪装成 exactly-once。旧 Connector 不允许恢复新协议任务，更新后沿用稳定 Agent ID 自动续接。
+5. 数据传输前的雷达方位推导优先使用项目无关的标准库 MDF4 acquisition-source 读取器。需要兼容解析器时放入短生命周期子进程；即使 asammdf/native DLL 退出、超时或输出异常，只降级为空的可选 metadata，不能杀死长驻 Connector，也不能阻断数据直传。
+6. Windows Connector 执行协议从 `2` 提升为 `3`。Linux 会要求旧安装执行一次“一键更新”；Agent ID、owner 配对、路径绑定和原任务保持不变，无需卸载或重新提交。
+
+### 回归证据
+
+- 核心定向集合：`153 passed, 1 warning`，覆盖控制服务、公共 API/Diagnosis、Web/SDK 直传、Agent policy 和安全 MF4 探测。
+- 第二组 Web/FastAPI/HTTP/Stage/reclaim/local-E2E：修复测试断言后聚焦回归 `6 passed, 1 warning`；此前同组其余用例 `105 passed`，唯一失败是旧 Web 字符串断言，不是业务回归。
+- `python -m py_compile core/simulation.py core/control_service.py core/api_v1.py cli/agent.py radar_sim_sdk/client.py` 与 `git diff --check` 通过。
+- 发布门禁 `tests/test_release_deployment.py` 为 `9 passed`；本地确定性 Connector 包为 `8,303,704` bytes、SHA-256 `sha256:c5967a1fe15d8227afdd60ead74baf1fc31e6dba601fa1ff8f257845920b7ce3`（生产部署后必须再次从 HTTP 下载接口校验，不能只引用本地构建值）。
+- 第二组完整重跑在外层 120 秒命令窗口超时且 pytest stdout flush 报 Windows `OSError 22`，没有形成新的完整终态；不把它记成失败或全绿。该组上一轮已执行到 `105 passed + 1 个旧字符串断言失败`，该断言与新增聚焦测试共 `6 passed`。
+
+### 发布与真实回归待办
+
+- 提交并推送 `codex/new-branch`，构建包含 contract 3 的 Windows Connector ZIP，部署新的不可变 Linux release，保留上一版本回滚目录。
+- 发布后直接重读 `job_098f0c2caa50`：公共状态应为 `partial`、进度 100%、Diagnosis 为 `simulation_partial`，结果下载 Range 请求应返回 206；不修改历史数据库审计记录。
+- `job_81f44ccae6c4` 的 Windows 用户需运行一次 Web 提供的“一键更新本机组件”。更新后的第一次 poll 应恢复原 `prepare_data` task；若原 MF4 兼容解析器再次异常，父 Connector 仍应继续并请求直传计划。

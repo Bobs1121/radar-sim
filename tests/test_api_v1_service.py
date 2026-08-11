@@ -361,6 +361,77 @@ def test_diagnosis_keeps_failed_simulation_artifacts_downloadable(tmp_path):
     assert str(tmp_path) not in json.dumps(diagnosis)
 
 
+def test_partial_manifest_is_terminal_downloadable_and_not_reported_as_total_failure(tmp_path):
+    controlled = tmp_path / "runs"
+    source = controlled / "partial-run"
+    source.mkdir(parents=True)
+    (source / "good.MF4").write_bytes(b"successful output")
+    catalog = ResultCatalog(
+        tmp_path / "result-store",
+        tmp_path / "results.db",
+        allowed_source_root=controlled,
+    )
+    published = catalog.publish(
+        owner="alice",
+        run_ref="cluster-run:partial",
+        source_root=source,
+        files=["good.MF4"],
+        retain_until=10_000_000_000,
+    )
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control, result_catalog=catalog)
+    job = control.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        metadata={"contract": "user-run-config/2.0"},
+        tasks=[{"task_type": "finalize_manifest", "stage_type": "finalize_manifest"}],
+    )
+    control.register_agent("finalizer", agent_id="finalizer", capabilities=["*"])
+    stage = control.claim_next_task("finalizer")
+    control.submit_task_result(
+        stage["stage_id"],
+        agent_id="finalizer",
+        status="succeeded",
+        returncode=0,
+        result={
+            "manifest": {
+                "schema_version": "radar-sim.run-manifest/2.0",
+                "status": "partial",
+                "result_ref": published.ref,
+                "summary": {
+                    "succeeded_input_count": 2,
+                    "failed_input_count": 1,
+                    "total_input_count": 3,
+                },
+                "input_results": [
+                    {"index": 1, "status": "succeeded", "input_relative_path": "one.MF4"},
+                    {"index": 2, "status": "succeeded", "input_relative_path": "two.MF4"},
+                    {"index": 3, "status": "failed", "input_relative_path": "three.MF4"},
+                ],
+            }
+        },
+    )
+
+    public_job = api.get_job("alice", job["job_id"])
+    diagnosis = api.diagnosis("alice", job["job_id"])
+
+    assert control.get_job(job["job_id"])["status"] == "failed"
+    assert public_job["status"] == "partial"
+    assert public_job["progress"] == 1.0
+    assert diagnosis["status"] == "partial"
+    assert diagnosis["terminal"] is True
+    assert diagnosis["outcome"] == "partial"
+    assert diagnosis["code"] == "simulation_partial"
+    assert diagnosis["artifacts_available"] is True
+    assert diagnosis["action"] == {
+        "type": "download_result",
+        "label": "Download result artifacts",
+        "result_ref": published.ref,
+    }
+    assert diagnosis["consistency"] == {"state": "consistent", "warnings": []}
+    assert "2/3 inputs succeeded" in diagnosis["summary"]
+
+
 def test_diagnosis_normalizes_historical_manifest_mismatch_and_infrastructure_failure(tmp_path):
     control = ControlService(tmp_path / "control.db")
     api = ApiV1Service(control_service_factory=lambda _owner: control)

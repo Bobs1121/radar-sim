@@ -62,7 +62,7 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # the package version: only an incompatible task/result contract increments
 # it. Missing metadata identifies a pre-handshake Connector and must fail
 # closed for ``simulation.run_config.v2`` jobs.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 2
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 3
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

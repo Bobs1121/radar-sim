@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import cli.agent as agent_module
-from core.agent_policy import AgentPolicyError
+from core.agent_policy import AgentPolicyError, WINDOWS_CONNECTOR_CONTRACT_VERSION
 
 
 def _parse(*argv: str):
@@ -162,7 +162,7 @@ def test_run_registers_node_kind_and_mode_metadata(monkeypatch):
     registration = calls[0]
     assert registration["metadata"]["node_kind"] == "windows_agent"
     assert registration["metadata"]["windows_mode"] == "light"
-    assert registration["metadata"]["connector_contract_version"] == 2
+    assert registration["metadata"]["connector_contract_version"] == WINDOWS_CONNECTOR_CONTRACT_VERSION
     assert "cwd" not in registration["metadata"]
     assert registration["metadata"]["workspace_bindings"][0]["project"] == "ovrs25"
     assert "local.run_sim" not in registration["capabilities"]

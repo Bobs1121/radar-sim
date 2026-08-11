@@ -53,7 +53,7 @@ from core.transfer_service import (
 )
 
 API_VERSION = "v1"
-TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+TERMINAL_STATUSES = {"succeeded", "partial", "failed", "cancelled"}
 V1_SCHEDULER_AGENT_ID = INTERNAL_V1_SCHEDULER_AGENT_ID
 
 
@@ -1563,6 +1563,7 @@ class ApiV1Service:
 
         warnings: list[str] = []
         manifest_failed = manifest_status == "failed"
+        manifest_partial = manifest_status == "partial"
         manifest_succeeded = manifest_status == "succeeded"
         if (
             (status == "succeeded" and manifest_failed)
@@ -1572,7 +1573,38 @@ class ApiV1Service:
         if result_ref and not artifacts_available:
             warnings.append("result_reference_unavailable")
 
-        if manifest_failed:
+        if manifest_partial:
+            summary_counts = dict(manifest.get("summary") or {})
+            def count(value: Any) -> int:
+                try:
+                    return max(int(value or 0), 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            succeeded_count = count(
+                summary_counts.get("succeeded_input_count")
+                or summary_counts.get("success_count")
+                or 0
+            )
+            failed_count = count(
+                summary_counts.get("failed_input_count")
+                or summary_counts.get("failed_count")
+                or summary_counts.get("fail_count")
+                or 0
+            )
+            total_count = count(
+                summary_counts.get("total_input_count")
+                or summary_counts.get("task_count")
+                or succeeded_count + failed_count
+            )
+            outcome = "partial"
+            code = "simulation_partial"
+            category = "simulation"
+            summary = (
+                f"Simulation partially completed: {succeeded_count}/{total_count} inputs succeeded "
+                f"and {failed_count} failed."
+            )
+        elif manifest_failed:
             outcome = "failed"
             code = "simulation_failed"
             category = "simulation"
@@ -2259,7 +2291,7 @@ class ApiV1Service:
             "cancel_requested": bool(job.get("cancel_requested", False)),
             "spec": dict(job.get("spec") or (job.get("payload") or {}).get("spec") or {}),
             "resolved_spec": dict(job.get("resolved_spec") or {}),
-            "progress": self._job_progress(stages, str(job.get("status") or "")),
+            "progress": self._job_progress(stages, status),
             "current_stage": self._current_stage(stages),
             "available_actions": self._available_actions(str(job["job_id"]), status, stages),
             "stages": stages,
@@ -2612,6 +2644,8 @@ class ApiV1Service:
 
     @staticmethod
     def _job_progress(stages: list[dict[str, Any]], status: str) -> float:
+        if status in TERMINAL_STATUSES:
+            return 1.0
         if not stages:
             return 1.0 if status in TERMINAL_STATUSES else 0.0
         values: list[float] = []
@@ -2683,6 +2717,17 @@ class ApiV1Service:
         status = str(job.get("status") or "")
         if status == "cancel_requested":
             return "cancelling"
+        manifest = None
+        if isinstance(job.get("result"), dict):
+            manifest = job["result"].get("manifest")
+        if manifest is None and isinstance(job.get("metadata"), dict):
+            manifest = job["metadata"].get("manifest")
+        if (
+            status in {"succeeded", "failed"}
+            and isinstance(manifest, dict)
+            and _normalize_manifest_status(manifest.get("status")) == "partial"
+        ):
+            return "partial"
         stages = list(job.get("stages") or job.get("tasks") or [])
         if status not in TERMINAL_STATUSES and any(
             str(stage.get("status") or "") == "blocked" for stage in stages
@@ -3085,7 +3130,9 @@ def _normalize_manifest_status(value: Any) -> str:
     status = str(value or "").strip().lower()
     if status in {"succeeded", "success", "successful", "completed"}:
         return "succeeded"
-    if status in {"failed", "failure", "cancelled", "canceled", "partial"}:
+    if status == "partial":
+        return "partial"
+    if status in {"failed", "failure", "cancelled", "canceled"}:
         return "failed"
     return "unknown" if status else ""
 
@@ -3212,7 +3259,7 @@ def _diagnostic_action(
     result_ref: str,
     available_actions: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    if result_ref and outcome in {"succeeded", "failed"}:
+    if result_ref and outcome in {"succeeded", "partial", "failed"}:
         return {
             "type": "download_result",
             "label": "Download result artifacts",

@@ -528,9 +528,15 @@ class ControlService:
                         hostname=excluded.hostname,
                         capabilities_json=excluded.capabilities_json,
                         metadata_json=excluded.metadata_json,
-                        status=excluded.status,
+                        status=CASE
+                            WHEN agents.current_task_id <> '' THEN agents.status
+                            ELSE excluded.status
+                        END,
                         last_heartbeat=excluded.last_heartbeat,
-                        current_task_id=excluded.current_task_id
+                        current_task_id=CASE
+                            WHEN agents.current_task_id <> '' THEN agents.current_task_id
+                            ELSE excluded.current_task_id
+                        END
                     """,
                     (
                         agent_id,
@@ -1536,16 +1542,96 @@ class ControlService:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 agent = self._get_agent_locked(conn, agent_id)
-                current_task_id = str(agent.get("current_task_id") or "")
-                if current_task_id:
-                    current_task = self._get_task_locked(conn, current_task_id)
-                    if current_task["status"] not in TERMINAL_TASK_STATUSES:
-                        conn.commit()
-                        return current_task
-
                 capabilities = list(agent.get("capabilities") or [])
                 agent_metadata = dict(agent.get("metadata") or {})
                 agent_node_kind = str(agent_metadata.get("node_kind") or agent_metadata.get("node.kind") or "")
+                registered_owner = str(agent_metadata.get("user") or "").strip().casefold()
+
+                def can_resume(row: sqlite3.Row) -> bool:
+                    if (
+                        str(row["job_type"] or "").startswith("simulation.run_config.v2")
+                        and not windows_connector_contract_is_current(agent_metadata)
+                    ):
+                        return False
+                    if agent_node_kind in {"windows_agent", "windows_full"}:
+                        job_owner = str(row["owner"] or "").strip().casefold()
+                        if job_owner and registered_owner and registered_owner != job_owner:
+                            return False
+                    return self._agent_can_claim_task(
+                        agent_node_kind,
+                        str(row["task_type"] or ""),
+                        str(row["stage_type"] or ""),
+                        capabilities,
+                    )
+
+                current_task_id = str(agent.get("current_task_id") or "")
+                if current_task_id:
+                    current_row = conn.execute(
+                        """
+                        SELECT t.task_id, t.task_type, t.stage_type, j.owner, j.job_type
+                        FROM tasks t
+                        JOIN jobs j ON j.job_id=t.job_id
+                        WHERE t.task_id=?
+                        """,
+                        (current_task_id,),
+                    ).fetchone()
+                    current_task = (
+                        self._get_task_locked(conn, current_task_id)
+                        if current_row is not None
+                        else None
+                    )
+                    if (
+                        current_task is not None
+                        and current_task["status"] == "running"
+                        and current_row is not None
+                        and can_resume(current_row)
+                    ):
+                        conn.commit()
+                        return current_task
+                    conn.execute(
+                        "UPDATE agents SET status='idle', current_task_id='' WHERE agent_id=?",
+                        (agent_id,),
+                    )
+
+                # Compatibility repair for Connector restarts produced by
+                # older servers: the task row remains running/assigned while
+                # re-registration cleared the Agent's current_task_id.  Task
+                # assignment is authoritative, so restore it before claiming
+                # any queued work.  This is at-least-once recovery and does not
+                # create a second attempt.
+                orphaned_rows = conn.execute(
+                    """
+                    SELECT t.task_id, t.job_id, t.task_type, t.stage_type,
+                           t.order_index, j.owner, j.job_type
+                    FROM tasks t
+                    JOIN jobs j ON j.job_id=t.job_id
+                    WHERE t.status='running' AND t.assigned_agent_id=?
+                    ORDER BY t.claimed_at ASC, t.created_at ASC, t.order_index ASC, t.task_id ASC
+                    """,
+                    (agent_id,),
+                ).fetchall()
+                for row in orphaned_rows:
+                    if not can_resume(row):
+                        continue
+                    conn.execute(
+                        """
+                        UPDATE agents
+                        SET status='busy', current_task_id=?, last_heartbeat=?
+                        WHERE agent_id=?
+                        """,
+                        (row["task_id"], now, agent_id),
+                    )
+                    self._append_event_locked(
+                        conn,
+                        row["job_id"],
+                        stage_id=row["task_id"],
+                        event_type="stage.resumed",
+                        status="running",
+                        message="Connector resumed its assigned stage after restart",
+                    )
+                    conn.commit()
+                    return self._get_task_locked(conn, row["task_id"])
+
                 # Filter by assigned_agent_id: a task pre-bound to a specific
                 # agent is only claimable by that agent. Empty binding means any
                 # agent (backward compatible). Prevents same-user multi-agent
@@ -1563,7 +1649,6 @@ class ControlService:
                     """,
                     (agent_id, agent_id),
                 ).fetchall()
-                registered_owner = str(agent_metadata.get("user") or "").strip().casefold()
                 for row in rows:
                     if (
                         str(row["job_type"] or "").startswith("simulation.run_config.v2")

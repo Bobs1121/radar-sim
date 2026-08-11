@@ -170,6 +170,78 @@ def test_heartbeat_without_current_task_keeps_assignment(tmp_path):
     assert heartbeat["agent"]["current_task_id"] == task["task_id"]
 
 
+def test_same_connector_reregistration_preserves_running_assignment(tmp_path):
+    service = make_service(tmp_path)
+    job = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "run_simulation", "stage_type": "run_simulation"}],
+    )
+    metadata = {
+        "node_kind": "windows_full",
+        "user": "alice",
+        "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+    }
+    service.register_agent(
+        "windows", agent_id="windows-a", capabilities=["simulation.local"], metadata=metadata
+    )
+    claimed = service.claim_next_task("windows-a")
+    attempt = claimed["attempt_count"]
+
+    registered = service.register_agent(
+        "windows-restarted",
+        agent_id="windows-a",
+        hostname="new-hostname",
+        capabilities=["simulation.local"],
+        metadata=metadata,
+    )
+
+    assert registered["status"] == "busy"
+    assert registered["current_task_id"] == claimed["task_id"]
+    resumed = service.claim_next_task("windows-a")
+    assert resumed["task_id"] == claimed["task_id"]
+    assert resumed["attempt_count"] == attempt
+    assert service.get_job(job["job_id"])["status"] == "running"
+
+
+def test_claim_repairs_legacy_orphan_before_claiming_new_work(tmp_path):
+    service = make_service(tmp_path)
+    metadata = {
+        "node_kind": "windows_full",
+        "user": "alice",
+        "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+    }
+    first = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "run_simulation", "stage_type": "run_simulation"}],
+    )
+    service.register_agent(
+        "windows", agent_id="windows-a", capabilities=["simulation.local"], metadata=metadata
+    )
+    claimed = service.claim_next_task("windows-a")
+    second = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "run_simulation", "stage_type": "run_simulation"}],
+    )
+    with sqlite3.connect(tmp_path / "control.db") as conn:
+        conn.execute(
+            "UPDATE agents SET status='idle', current_task_id='' WHERE agent_id='windows-a'"
+        )
+        conn.commit()
+
+    resumed = service.claim_next_task("windows-a")
+
+    assert resumed["task_id"] == claimed["task_id"]
+    assert resumed["attempt_count"] == claimed["attempt_count"]
+    assert service.get_job(first["job_id"])["status"] == "running"
+    assert service.get_job(second["job_id"])["status"] == "queued"
+    agent = next(item for item in service.list_agents() if item["agent_id"] == "windows-a")
+    assert agent["status"] == "busy"
+    assert agent["current_task_id"] == claimed["task_id"]
+
+
 def test_cancel_queued_job_immediately_cancels_task(tmp_path):
     service = make_service(tmp_path)
     job = service.create_job("cluster.run", payload={"project": "ovrs25", "dataset": "smoke"})

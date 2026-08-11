@@ -27,6 +27,7 @@ from core.simulation import (
     _discover_mf4_acquisition_sources_stdlib,
     build_effective_simulation,
     detect_radar_transfer_metadata,
+    detect_radar_transfer_metadata_safe,
 )
 from radar_sim_sdk import Job, RadarSimApiError, RadarSimClient, SimulationSpec, UserRunConfig
 from radar_sim_sdk.client import _dataset_transfer_fingerprints, _trust_environment_proxy
@@ -97,7 +98,7 @@ def test_sdk_dataset_transfer_fingerprints_project_rl_to_radar_rl(monkeypatch, t
     source.mkdir()
     (source / "recording.MF4").write_bytes(b"mf4")
     monkeypatch.setattr(
-        "core.simulation.detect_radar_transfer_metadata",
+        "core.simulation.detect_radar_transfer_metadata_safe",
         lambda _path: {"radar_source": "RadarRL", "radar_mounting_position": "CRL"},
     )
 
@@ -125,6 +126,39 @@ def test_radar_transfer_metadata_prefers_first_acquisition_source(monkeypatch, t
         "radar_source": "RadarRL",
         "radar_mounting_position": "CRL",
     }
+
+
+def test_safe_radar_transfer_metadata_uses_stdlib_without_optional_parser(monkeypatch, tmp_path: Path):
+    mf4 = tmp_path / "recording.MF4"
+    mf4.write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation._discover_mf4_acquisition_sources_stdlib",
+        lambda _path: ["RadarRR"],
+    )
+    monkeypatch.setattr(
+        "core.simulation.subprocess.run",
+        lambda *_args, **_kwargs: pytest.fail("stdlib metadata must avoid the optional parser subprocess"),
+    )
+
+    assert detect_radar_transfer_metadata_safe(str(mf4)) == {
+        "radar_source": "RadarRR",
+        "radar_mounting_position": "CRR",
+    }
+
+
+def test_safe_radar_transfer_metadata_tolerates_native_parser_exit(monkeypatch, tmp_path: Path):
+    mf4 = tmp_path / "recording.MF4"
+    mf4.write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation._discover_mf4_acquisition_sources_stdlib",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(
+        "core.simulation.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=-1073741819, stdout="", stderr="native crash"),
+    )
+
+    assert detect_radar_transfer_metadata_safe(str(mf4)) == {}
 
 
 def test_local_effective_simulation_uses_acquisition_source_before_orientation(
@@ -919,7 +953,7 @@ def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_pa
     target = tmp_path / "cluster-target"
     target.mkdir()
     monkeypatch.setattr(
-        "core.simulation.detect_radar_transfer_metadata",
+        "core.simulation.detect_radar_transfer_metadata_safe",
         lambda _path: {"radar_source": "RadarRL", "radar_mounting_position": "CRL"},
     )
 

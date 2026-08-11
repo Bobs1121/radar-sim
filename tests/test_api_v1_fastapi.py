@@ -412,7 +412,9 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     app_js = client.get("/console/app.js")
     assert app_js.status_code == 200
     assert 'stage.status === "running"' in app_js.text
-    assert '["failed", "cancelled", "succeeded"].includes(job.status)' in app_js.text
+    assert '["failed", "cancelled", "partial", "succeeded"].includes(job.status)' in app_js.text
+    assert 'partial: "部分成功"' in app_js.text
+    assert 'input_relative_path' in app_js.text
     assert "jobsRequestInFlight" in app_js.text
     assert "followedLogTail" in app_js.text
     assert "仿真失败原因" in app_js.text

@@ -99,7 +99,7 @@ def test_agent_dataset_transfer_fingerprints_project_rl_to_radar_rl(monkeypatch,
     source.mkdir()
     (source / "recording.MF4").write_bytes(b"mf4")
     monkeypatch.setattr(
-        "core.simulation.detect_radar_transfer_metadata",
+        "core.simulation.detect_radar_transfer_metadata_safe",
         lambda _path: {"radar_source": "RadarRL", "radar_mounting_position": "CRL"},
     )
 
@@ -278,7 +278,7 @@ def test_agent_dataset_transfer_plan_carries_radar_fingerprints(monkeypatch, tmp
     target.mkdir()
     client = _RoleTransferClient(target)
     monkeypatch.setattr(
-        "core.simulation.detect_radar_transfer_metadata",
+        "core.simulation.detect_radar_transfer_metadata_safe",
         lambda _path: {"radar_source": "RadarRL", "radar_mounting_position": "CRL"},
     )
 

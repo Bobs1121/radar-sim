@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import copy
+import json
 import mmap
 import os
 import re
 import struct
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -408,6 +411,56 @@ def detect_radar_transfer_metadata(path: str) -> dict[str, str]:
     return {
         "radar_source": metadata["source"],
         "radar_mounting_position": metadata["mounting_position"],
+    }
+
+
+def detect_radar_transfer_metadata_safe(path: str, *, timeout_seconds: float = 30.0) -> dict[str, str]:
+    """Infer transfer metadata without letting an optional MDF parser kill its caller.
+
+    Direct transfer runs inside the long-lived Connector.  Some third-party
+    MDF parser/native-library failures terminate the Python process instead of
+    raising a catchable exception.  Prefer the stdlib MDF4 metadata reader and
+    isolate the heavier compatibility fallback in a short-lived subprocess.
+    Missing metadata is optional and must never block or crash file transfer.
+    """
+
+    mf4_path = _first_dataset_mf4(path)
+    if not mf4_path:
+        return {}
+    sources = _discover_mf4_acquisition_sources_stdlib(mf4_path)
+    if sources:
+        metadata = normalize_radar_metadata({"radar_source": sources[0]})
+        return {
+            "radar_source": metadata["source"],
+            "radar_mounting_position": metadata["mounting_position"],
+        } if metadata else {}
+
+    script = (
+        "import json,sys; "
+        "from core.simulation import detect_radar_transfer_metadata; "
+        "print(json.dumps(detect_radar_transfer_metadata(sys.argv[1])))"
+    )
+    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", script, mf4_path],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(float(timeout_seconds), 0.1),
+            creationflags=creationflags,
+        )
+        if completed.returncode != 0:
+            return {}
+        payload = json.loads((completed.stdout or "").strip())
+        normalized = normalize_radar_metadata(payload)
+    except (OSError, subprocess.SubprocessError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not normalized:
+        return {}
+    return {
+        "radar_source": normalized["source"],
+        "radar_mounting_position": normalized["mounting_position"],
     }
 
 
