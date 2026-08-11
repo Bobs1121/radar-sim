@@ -335,3 +335,12 @@ Final Cluster evidence is therefore gated only on restoring the standard
 Manager XML-RPC service on `SZHRADAR01:8123`, then retrying/resubmitting the same
 V2 configuration. Do not bypass this check or label the current Cluster Job as
 successful.
+
+Post-fix deployment is also complete: commit `f7e0bc5` was pushed and deployed
+as immutable Linux release `/home/hoz2wx/radar-sim-f7e0bc5`. The server-side
+focused suite reports `84 passed`; systemd reports `active/running`,
+`NRestarts=0`. The already-installed Windows Connector automatically
+re-registered after the controlled service restart with contract version 8;
+no reinstall or update was required. The Manager port remained closed after
+this deployment, confirming that the Cluster acceptance gate is external to
+the radar-sim process and release contents.
