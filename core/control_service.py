@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core.simulation import normalize_radar_metadata
+from core.agent_policy import windows_connector_contract_is_current
 
 TERMINAL_TASK_STATUSES = {"succeeded", "failed", "cancelled", "skipped"}
 TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -755,6 +756,8 @@ class ControlService:
                 metadata = dict(agent.get("metadata") or {})
                 if str(metadata.get("node_kind") or "") != "windows_full":
                     return None
+                if not windows_connector_contract_is_current(metadata):
+                    return None
                 advertised: dict[str, set[str]] = {}
                 for item in metadata.get("data_bindings") or []:
                     if not isinstance(item, dict) or item.get("healthy") is not True:
@@ -834,6 +837,8 @@ class ControlService:
                 metadata = dict(agent.get("metadata") or {})
                 node_kind = str(metadata.get("node_kind") or "")
                 if node_kind not in {"windows_agent", "windows_full"}:
+                    return None
+                if not windows_connector_contract_is_current(metadata):
                     return None
                 auto_configure = metadata.get("auto_configure") is True
                 path_ids = {
@@ -1019,7 +1024,7 @@ class ControlService:
                         advertised.setdefault(project, set()).add(binding_id)
                 rows = conn.execute(
                     """
-                    SELECT t.task_id,t.payload_json,j.owner
+                    SELECT t.task_id,t.payload_json,j.owner,j.job_type
                     FROM tasks t
                     JOIN jobs j ON j.job_id=t.job_id
                     WHERE t.stage_type='prepare_data'
@@ -1038,6 +1043,11 @@ class ControlService:
                 auto_candidate = ""
                 registered_owner = str(metadata.get("user") or "").strip().casefold()
                 for row in rows:
+                    if (
+                        str(row["job_type"] or "").startswith("simulation.run_config.v2")
+                        and not windows_connector_contract_is_current(metadata)
+                    ):
+                        continue
                     job_owner = str(row["owner"] or "").strip().casefold()
                     if job_owner and registered_owner and registered_owner != job_owner:
                         continue
@@ -1543,7 +1553,7 @@ class ControlService:
                 rows = conn.execute(
                     """
                     SELECT t.task_id, t.job_id, t.task_type, t.stage_type,
-                           t.order_index, t.dependencies_json, j.owner
+                           t.order_index, t.dependencies_json, j.owner, j.job_type
                     FROM tasks t
                     JOIN jobs j ON j.job_id=t.job_id
                     WHERE t.status='queued'
@@ -1555,6 +1565,11 @@ class ControlService:
                 ).fetchall()
                 registered_owner = str(agent_metadata.get("user") or "").strip().casefold()
                 for row in rows:
+                    if (
+                        str(row["job_type"] or "").startswith("simulation.run_config.v2")
+                        and not windows_connector_contract_is_current(agent_metadata)
+                    ):
+                        continue
                     if agent_node_kind in {"windows_agent", "windows_full"}:
                         job_owner = str(row["owner"] or "").strip().casefold()
                         if job_owner and registered_owner and registered_owner != job_owner:

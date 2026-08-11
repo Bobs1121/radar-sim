@@ -162,6 +162,7 @@ def test_run_registers_node_kind_and_mode_metadata(monkeypatch):
     registration = calls[0]
     assert registration["metadata"]["node_kind"] == "windows_agent"
     assert registration["metadata"]["windows_mode"] == "light"
+    assert registration["metadata"]["connector_contract_version"] == 2
     assert "cwd" not in registration["metadata"]
     assert registration["metadata"]["workspace_bindings"][0]["project"] == "ovrs25"
     assert "local.run_sim" not in registration["capabilities"]

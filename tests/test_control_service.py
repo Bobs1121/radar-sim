@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from core.control_service import ControlService, INTERNAL_V1_SCHEDULER_AGENT_ID
+from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION
 
 
 def make_service(tmp_path):
@@ -23,11 +24,39 @@ def test_create_job_register_agent_and_claim_task(tmp_path):
     assert task is not None
     assert task["job_id"] == job["job_id"]
     assert task["status"] == "running"
-
     claimed_job = service.get_job(job["job_id"])
     assert claimed_job["status"] == "running"
     assert claimed_job["tasks"][0]["assigned_agent_id"] == agent["agent_id"]
 
+
+def test_run_config_v2_requires_current_windows_connector_contract(tmp_path):
+    service = make_service(tmp_path)
+    service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        tasks=[{"task_type": "run_simulation", "stage_type": "run_simulation"}],
+    )
+    service.register_agent(
+        "old-windows",
+        agent_id="old-windows",
+        capabilities=["simulation.local"],
+        metadata={"node_kind": "windows_full", "user": "alice"},
+    )
+    assert service.claim_next_task("old-windows") is None
+
+    service.register_agent(
+        "current-windows",
+        agent_id="current-windows",
+        capabilities=["simulation.local"],
+        metadata={
+            "node_kind": "windows_full",
+            "user": "alice",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
+    )
+    claimed = service.claim_next_task("current-windows")
+    assert claimed is not None
+    assert claimed["stage_type"] == "run_simulation"
 
 def test_windows_agent_never_claims_another_owners_task_in_shared_db(tmp_path):
     service = make_service(tmp_path)

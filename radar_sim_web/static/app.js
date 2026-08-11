@@ -130,6 +130,12 @@ function hasConfiguredWindows(mode, capabilities = state.capabilities) {
     || Number(snapshot.windows_full?.configured_count || 0) > 0;
 }
 
+function windowsConnectorNeedsUpdate(capabilities = state.capabilities) {
+  const snapshot = capabilities?.capabilities || capabilities || {};
+  return snapshot.windows_connector?.update_required === true
+    && !Boolean(snapshot.windows?.available);
+}
+
 function updateConnectionStates(capabilities = state.capabilities) {
   const local = byId("windowsState");
   if (!local) return;
@@ -141,12 +147,14 @@ function updateConnectionStates(capabilities = state.capabilities) {
     ? Number(snapshot.windows.configured_count || 0) > 0
     : Number(snapshot.windows_light?.configured_count || 0) > 0
       || Number(snapshot.windows_full?.configured_count || 0) > 0;
+  const updateRequired = windowsConnectorNeedsUpdate(capabilities);
   local.textContent = connected
     ? "本机已连接"
-    : configured ? "本机正在自动重连" : "本机未连接";
+    : updateRequired ? "本机组件需更新"
+      : configured ? "本机正在自动重连" : "本机未连接";
   local.className = connected
     ? "api-state ok"
-    : configured ? "api-state local-reconnecting" : "api-state local-offline";
+    : configured || updateRequired ? "api-state local-reconnecting" : "api-state local-offline";
 }
 
 async function refreshCapabilities() {
@@ -214,10 +222,13 @@ function updateCreateWindowsCallout() {
   byId("createWindowsTitle").textContent = requirement.title;
   byId("createWindowsCapability").textContent = requirement.capability;
   byId("createWindowsReason").textContent = requirement.reason;
+  const updateRequired = windowsConnectorNeedsUpdate();
   const configured = hasConfiguredWindows(requirement.mode);
   const button = byId("connectWindowsFromCreate");
-  button.textContent = configured ? "重新连接本机" : "一键连接本机";
-  byId("createWindowsStatus").textContent = configured
+  button.textContent = updateRequired ? "一键更新本机组件" : configured ? "重新连接本机" : "一键连接本机";
+  byId("createWindowsStatus").textContent = updateRequired
+    ? "现有连接组件版本过旧；更新会保留原有绑定和任务配置"
+    : configured
     ? "本机已经配置过，通常会自动恢复；长时间未连接时可重新下载连接程序"
     : "安装一次，后续开机自动连接";
 }
@@ -640,14 +651,26 @@ function windowsWaitState(job, candidateStage = null) {
   const spec = job.spec || {};
   const source = spec.selena?.source || spec.selena?.mode || "auto";
   const target = selectedExecutionTarget(job);
-  const serverWaiting = ["windows_connection_required", "windows_path_access_required"].includes(job.waiting?.reason)
+  const serverWaiting = ["windows_connection_required", "windows_path_access_required", "windows_connector_update_required"].includes(job.waiting?.reason)
     ? job.waiting : null;
   const pathMismatch = serverWaiting?.reason === "windows_path_access_required";
-  if (serverWaiting && (pathMismatch || !hasWindowsCapability(serverWaiting.mode))) {
+  const updateRequired = serverWaiting?.reason === "windows_connector_update_required";
+  if (serverWaiting && (updateRequired || pathMismatch || !hasWindowsCapability(serverWaiting.mode))) {
     const full = serverWaiting.mode === "full";
     const build = !full && source === "build";
-    const reconnecting = !pathMismatch && (serverWaiting.connection_state === "reconnecting"
+    const reconnecting = !updateRequired && !pathMismatch && (serverWaiting.connection_state === "reconnecting"
       || hasConfiguredWindows(serverWaiting.mode));
+    if (updateRequired) {
+      return {
+        mode: "unified",
+        updateRequired: true,
+        reconnecting: false,
+        title: "本机连接组件需要更新",
+        capability: "更新后任务会自动继续",
+        shortCapability: "本机组件更新",
+        reason: "服务端已升级任务协议，旧组件不会再领取不兼容任务。更新会保留原 Agent ID、路径绑定和 YAML。",
+      };
+    }
     if (pathMismatch) {
       return {
         mode: "unified",
@@ -877,7 +900,9 @@ function renderWindowsConnectionCallout(job, waiting) {
   reason.textContent = waiting.reason;
   const reassurance = document.createElement("p");
   reassurance.className = "callout-reassurance";
-  reassurance.textContent = waiting.reconnecting
+  reassurance.textContent = waiting.updateRequired
+    ? "无需卸载，也无需重新提交任务；运行一次更新程序即可。"
+    : waiting.reconnecting
     ? "本机已经配置完成，无需重新安装或重新提交。连接恢复后，调度会自动继续。"
     : "任务没有失败，也不需要重新提交。连接成功后，调度会自动继续。";
   copy.append(eyebrow, title, capability, reason, reassurance);
@@ -885,7 +910,13 @@ function renderWindowsConnectionCallout(job, waiting) {
   const controls = document.createElement("div");
   controls.className = "windows-connect-actions";
   const status = document.createElement("small");
-  if (waiting.reconnecting) {
+  if (waiting.updateRequired) {
+    status.textContent = "原 Agent ID、路径绑定和任务配置会保留";
+    const button = actionButton("一键更新本机组件", "primary", () =>
+      downloadWindowsConnector(job.id, waiting.mode, button, status)
+    );
+    controls.append(button, status);
+  } else if (waiting.reconnecting) {
     status.textContent = "通常会自动恢复；长时间未连接时可重新连接本机";
     const button = actionButton("重新连接本机", "secondary", () =>
       downloadWindowsConnector(job.id, waiting.mode, button, status)

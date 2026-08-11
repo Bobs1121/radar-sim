@@ -8,6 +8,7 @@ from core.spec import SimulationSpec
 from core.api_v1 import ApiV1Service
 from core.api_v1_fastapi import create_app
 from core.control_service import ControlService
+from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION
 from core.config_assets import ConfigAssetStore
 from core.http_auth import HttpTokenAuthenticator
 from tests.test_api_v1_service import run_config_dict, spec_dict
@@ -352,7 +353,11 @@ def test_capability_route_is_path_free_and_owner_scoped(tmp_path):
         "full-a",
         agent_id="full-a",
         capabilities=["simulation.local"],
-        metadata={"node_kind": "windows_full", "workspace": "D:/private/workspace"},
+        metadata={
+            "node_kind": "windows_full",
+            "workspace": "D:/private/workspace",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
     )
     body = client.get("/api/v1/capabilities", headers={"X-Rsim-User": "alice"}).json()
     assert body["capabilities"]["windows_full"]["available"] is True

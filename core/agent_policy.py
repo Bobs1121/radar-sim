@@ -58,6 +58,12 @@ MODE_LIGHT = "light"
 MODE_FULL = "full"
 WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 
+# Server/Connector execution contract. This is intentionally independent of
+# the package version: only an incompatible task/result contract increments
+# it. Missing metadata identifies a pre-handshake Connector and must fail
+# closed for ``simulation.run_config.v2`` jobs.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 2
+
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,
     MODE_LIGHT: NODE_KIND_WINDOWS_AGENT,
@@ -299,6 +305,19 @@ def is_windows_node_kind(node_kind: object) -> bool:
     """Return True if the node_kind is a Windows Agent (light or full)."""
     normalized = normalize_node_kind(node_kind)
     return normalized in (NODE_KIND_WINDOWS_AGENT, NODE_KIND_WINDOWS_FULL)
+
+
+def windows_connector_contract_is_current(metadata: object) -> bool:
+    """Return whether a Windows Connector speaks the current task contract."""
+    if not isinstance(metadata, dict):
+        return False
+    node_kind = metadata.get("node_kind") or metadata.get("node.kind")
+    if not is_windows_node_kind(node_kind):
+        return True
+    try:
+        return int(metadata.get("connector_contract_version")) >= WINDOWS_CONNECTOR_CONTRACT_VERSION
+    except (TypeError, ValueError):
+        return False
 
 
 def normalize_capabilities(capabilities: Optional[Iterable[str]]) -> list[str]:

@@ -1,8 +1,29 @@
 # radar-sim v5 Active Handoff
 
-> 最近更新：2026-08-09
+> 最近更新：2026-08-11
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
+
+## 0.0.6 Windows Connector 契约门禁（2026-08-11）
+
+### 现场事实与根因
+
+- `job_f4c4eca63c52` 读取 3 条 MF4，实际生成 2 个非空输出：`0007--out.MF4`（1,030,653,176 bytes）与 `0014--out.MF4`（696,314,968 bytes），另 1 条失败。其 `run_simulation` 只返回旧字段 `error_code=selena_failed/error_count=1/file_count=2`，没有新版 `succeeded_input_count/failed_input_count/total_input_count/diagnostics`；随后 `collect_results`、`finalize_manifest` 被旧逻辑按上游失败取消。因此这是外围版本漂移，不是“最新版部分成功逻辑仍然无效”。
+- Linux 源码和下载 ZIP 已更新，但执行任务的 `WX-C-0066M` 仍运行旧 Connector。此前没有服务端/Connector 执行契约握手，旧进程仍可注册在线并领取新 `simulation.run_config.v2`，导致“服务端已更新”被误当成“所有用户执行端已更新”。
+- `job_21f8bc592294` 只验证过单条 `0014.mf4` 成功，没有覆盖同一批次中成功与失败混合时的收集/Manifest 行为，不能作为本问题的完整验收证据。
+
+### 本轮最小修复
+
+- 新统一 Connector 注册 `connector_contract_version=2`。该版本只在任务/结果合同不兼容时递增，不跟随每次代码提交变化。
+- ControlService 在绑定与领取 `simulation.run_config.v2` 时 fail closed：缺少或低于当前契约版本的 Windows Connector 不得领取 resolver、Runtime Bundle cache、直接传输或任意 v2 Stage；legacy `simulation.v1` 和 Linux/Cluster 角色不受此门禁影响。
+- 能力接口按 owner 返回 `windows_connector.update_required/outdated_count/required_contract_version`。过期 Connector 不计入 `windows.available`，也不再伪装成网络抖动的 `reconnecting`；另一个 owner 的过期 Connector 不进入当前用户统计。
+- Web 与 SDK 共享同一能力/等待合同：稳定码 `windows_connector_update_required`，动作 `update_windows_connector`。Web 显示“本机组件需更新/一键更新本机组件”，重新运行同源一键安装入口；安装器复用既有安装根、Agent ID、owner 配对和持久路径绑定，用户不重新填写 YAML，也不先卸载。
+- 调度端门禁只能阻止后续任务由旧组件静默执行，不能远程替换一台离线或不属于当前操作者的 Windows 电脑。`WX-C-0066M` 必须由该用户从当前 Web/SDK 运行一次更新；更新后新任务再做混合批次真实验收。旧的 `job_f4c4eca63c52` 保留为失败审计记录，不原地篡改或冒充新版本执行结果。
+
+### 回归门禁
+
+- 精准合同回归覆盖：Agent 注册版本、旧版拒领、新版领取、owner 隔离、过期与离线状态区分、Web JavaScript 语法。
+- 混合批次最终语义保持：只要部分输入成功，后续收集与 Manifest 必须继续；Manifest 标记 `partial` 并列出逐条成功/失败。顶层 Job 不伪装成全成功，但成功结果必须可下载。
 
 ## 0.0.5 仓库与 Linux 存储收敛（2026-08-09）
 

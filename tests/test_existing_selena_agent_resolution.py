@@ -1,7 +1,11 @@
 import json
 
 from cli.agent import _resolve_existing_v2_run_config, _run_task, _upload_resolution_config_assets
-from core.agent_policy import DEFAULT_FULL_CAPABILITIES, DEFAULT_LIGHT_CAPABILITIES
+from core.agent_policy import (
+    DEFAULT_FULL_CAPABILITIES,
+    DEFAULT_LIGHT_CAPABILITIES,
+    WINDOWS_CONNECTOR_CONTRACT_VERSION,
+)
 from core.agent_bindings import make_workspace_path_id
 from core.api_v1 import ApiV1Service
 from core.control_service import ControlService
@@ -40,6 +44,7 @@ def _register(control, *, agent_id, mode):
         metadata={
             "node_kind": "windows_full" if full else "windows_agent",
             "windows_mode": mode,
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "auto_configure": True,
             "workspace_bindings": [],
             "asset_bindings": [],
@@ -108,6 +113,7 @@ def test_configured_one_click_agent_does_not_claim_unmatched_existing_folder(tmp
         metadata={
             "node_kind": "windows_agent",
             "windows_mode": "light",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "auto_configure": True,
             "workspace_bindings": [
                 {
@@ -140,6 +146,7 @@ def test_owner_scoped_one_click_agent_reconfigures_new_existing_folder(tmp_path)
             "user": "alice",
             "node_kind": "windows_agent",
             "windows_mode": "light",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "auto_configure": True,
             "workspace_bindings": [],
             "asset_bindings": [],

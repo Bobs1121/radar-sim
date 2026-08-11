@@ -7,7 +7,11 @@ from types import SimpleNamespace
 from cli.agent import _ControlClient, _execute_v5_runtime_bundle_cache
 from core.agent_data_bindings import AgentDataBindingStore
 from core.agent_data_lease import AgentDataLeaseStore
-from core.agent_policy import DEFAULT_FULL_CAPABILITIES, DEFAULT_LIGHT_CAPABILITIES
+from core.agent_policy import (
+    DEFAULT_FULL_CAPABILITIES,
+    DEFAULT_LIGHT_CAPABILITIES,
+    WINDOWS_CONNECTOR_CONTRACT_VERSION,
+)
 from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
 from core.api_v1 import ApiV1Service
 from core.artifact_store import ArtifactStore
@@ -113,6 +117,7 @@ def test_existing_bundle_local_cache_and_data_are_bound_to_same_full_agent(tmp_p
         metadata={
             "node_kind": "windows_agent",
             "windows_mode": "light",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "data_bindings": [data_binding.public_dict],
         },
     )
@@ -123,6 +128,7 @@ def test_existing_bundle_local_cache_and_data_are_bound_to_same_full_agent(tmp_p
         metadata={
             "node_kind": "windows_full",
             "windows_mode": "full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "data_bindings": [data_binding.public_dict],
         },
     )

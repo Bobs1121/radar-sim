@@ -1,6 +1,6 @@
 from core.agent_bindings import make_workspace_binding_id, make_workspace_path_id
 from core.agent_asset_bindings import make_asset_binding_id
-from core.agent_policy import DEFAULT_LIGHT_CAPABILITIES
+from core.agent_policy import DEFAULT_LIGHT_CAPABILITIES, WINDOWS_CONNECTOR_CONTRACT_VERSION
 from core.api_v1 import ApiV1Service
 from core.control_service import ControlService
 from core.environment_snapshot import EnvironmentCheckResult, EnvironmentSnapshot
@@ -19,6 +19,7 @@ def test_project_free_job_binds_only_matching_workspace_agent_and_hides_internal
         capabilities=list(DEFAULT_LIGHT_CAPABILITIES),
         metadata={
             "node_kind": "windows_agent",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "workspace_bindings": [
                 {
                     "id": binding_id,
@@ -108,6 +109,7 @@ def test_nonmatching_agent_cannot_receive_run_config_path(tmp_path):
         capabilities=list(DEFAULT_LIGHT_CAPABILITIES),
         metadata={
             "node_kind": "windows_agent",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "workspace_bindings": [
                 {
                     "id": make_workspace_binding_id("other", "D:/other"),
@@ -133,6 +135,7 @@ def test_one_click_agent_can_receive_first_run_for_local_auto_configuration(tmp_
         capabilities=list(DEFAULT_LIGHT_CAPABILITIES),
         metadata={
             "node_kind": "windows_agent",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "windows_mode": "light",
             "auto_configure": True,
             "workspace_bindings": [],

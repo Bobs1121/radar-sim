@@ -37,6 +37,10 @@ from core.user import control_db_path_for_user, current_user, normalize_user
 from core.datasets import classify_data_path
 from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID, CLUSTER_GATEWAY_AGENT_ID
 from core.simulation import normalize_radar_metadata
+from core.agent_policy import (
+    WINDOWS_CONNECTOR_CONTRACT_VERSION,
+    windows_connector_contract_is_current,
+)
 from core.local_results import ResultCatalog, ResultCatalogError
 from core.result_upload_service import ResultUploadService, ResultUploadServiceError
 from core.transfer_service import (
@@ -228,25 +232,6 @@ class ApiV1Service:
             capabilities["windows_light"]["available"]
             or capabilities["windows_full"]["available"]
         )
-        if selected_target == "cluster" and not capabilities["cluster"]["available"]:
-            block(
-                "cluster_service_unavailable",
-                "Linux 服务当前未连接到 Cluster 调度组件，暂不能提交云端仿真。",
-                "请等待服务恢复，或联系部署方检查 Linux 调度与 Cluster 网关。",
-            )
-        if selected_target == "local" and not capabilities["windows_full"]["available"]:
-            block(
-                "windows_local_simulation_unavailable",
-                "本地仿真需要已连接的完整 Windows 运行环境。",
-                "在这台电脑完成一键连接，或将执行位置改为 Cluster。",
-            )
-        if config.selena.source == "build" and not has_windows_build:
-            block(
-                "windows_build_unavailable",
-                "本地编译需要已连接的 Windows 电脑来访问代码和编译脚本。",
-                "在代码所在电脑完成一键连接后重新检查配置。",
-            )
-
         local_data = classify_data_path(config.data.path) == "agent"
         local_paths = any(
             classify_data_path(str(value or "")) == "agent"
@@ -261,6 +246,49 @@ class ApiV1Service:
                 config.simulation.mat_filter,
             )
         )
+        windows_needed = bool(
+            selected_target == "local"
+            or config.selena.source == "build"
+            or local_paths
+        )
+        connector_update_required = bool(
+            windows_needed
+            and capabilities["windows_connector"]["update_required"]
+            and not capabilities["windows"]["available"]
+        )
+        if connector_update_required:
+            block(
+                "windows_connector_update_required",
+                "已安装的 Windows 连接组件版本过旧，不能执行当前任务。",
+                "请从当前 Web 或 SDK 重新执行“一键连接/更新”；原 Agent ID、路径绑定和 YAML 配置会保留。",
+            )
+        if selected_target == "cluster" and not capabilities["cluster"]["available"]:
+            block(
+                "cluster_service_unavailable",
+                "Linux 服务当前未连接到 Cluster 调度组件，暂不能提交云端仿真。",
+                "请等待服务恢复，或联系部署方检查 Linux 调度与 Cluster 网关。",
+            )
+        if (
+            selected_target == "local"
+            and not capabilities["windows_full"]["available"]
+            and not connector_update_required
+        ):
+            block(
+                "windows_local_simulation_unavailable",
+                "本地仿真需要已连接的完整 Windows 运行环境。",
+                "在这台电脑完成一键连接，或将执行位置改为 Cluster。",
+            )
+        if (
+            config.selena.source == "build"
+            and not has_windows_build
+            and not connector_update_required
+        ):
+            block(
+                "windows_build_unavailable",
+                "本地编译需要已连接的 Windows 电脑来访问代码和编译脚本。",
+                "在代码所在电脑完成一键连接后重新检查配置。",
+            )
+
         compatible_local_agent = False
         if local_paths:
             probe_job = {"owner": owner, "spec": config.to_dict()}
@@ -274,13 +302,19 @@ class ApiV1Service:
             and config.selena.source == "existing"
             and selected_target == "cluster"
             and not compatible_local_agent
+            and not connector_update_required
         ):
             block(
                 "windows_path_access_required",
                 "当前没有已连接且能访问本次配置本地路径的 Windows 电脑；已有 Selena + Cluster 不需要安装 Visual Studio 或编译依赖，只需要文件读取/上传连接。",
                 "请在 Selena、Runtime、MatFilter 或数据所在电脑一键连接文件访问组件，或将这些路径放到 Cluster 可直接访问的共享位置。",
             )
-        elif local_paths and has_windows_build and not compatible_local_agent:
+        elif (
+            local_paths
+            and has_windows_build
+            and not compatible_local_agent
+            and not connector_update_required
+        ):
             block(
                 "windows_path_access_required",
                 "当前已连接的 Windows 电脑无法确认能访问本次配置中的本地路径；请连接实际存放文件的电脑。",
@@ -847,18 +881,25 @@ class ApiV1Service:
                 "count": 0,
                 "configured_count": 0,
                 "reconnecting": False,
+                "_compatible_configured_count": 0,
             },
             "windows_light": {
                 "available": False,
                 "count": 0,
                 "configured_count": 0,
                 "reconnecting": False,
+                "_compatible_configured_count": 0,
             },
             "cluster": {
                 "available": False,
                 "count": 0,
                 "linux_executor_count": 0,
                 "platform_gateway_count": 0,
+            },
+            "windows_connector": {
+                "update_required": False,
+                "outdated_count": 0,
+                "required_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             },
         }
         owner_token = str(owner or "").strip().casefold()
@@ -880,6 +921,11 @@ class ApiV1Service:
                     continue
             if key:
                 summary[key]["configured_count"] += 1
+                if not windows_connector_contract_is_current(metadata):
+                    summary["windows_connector"]["outdated_count"] += 1
+                    summary["windows_connector"]["update_required"] = True
+                    continue
+                summary[key]["_compatible_configured_count"] += 1
             last = float(agent.get("last_heartbeat") or 0.0)
             if last <= 0 or now - last > 120 or str(agent.get("status") or "") == "offline":
                 continue
@@ -892,8 +938,10 @@ class ApiV1Service:
                 summary[key]["available"] = True
         for key in ("windows_full", "windows_light"):
             summary[key]["reconnecting"] = (
-                summary[key]["configured_count"] > 0 and not summary[key]["available"]
+                summary[key]["_compatible_configured_count"] > 0
+                and not summary[key]["available"]
             )
+            summary[key].pop("_compatible_configured_count", None)
         summary["windows"] = {
             "available": any(summary[key]["available"] for key in ("windows_full", "windows_light")),
             "count": sum(summary[key]["count"] for key in ("windows_full", "windows_light")),
@@ -2312,6 +2360,26 @@ class ApiV1Service:
             and not transfer_role_resolved(role)
         ]
 
+        connector_state = dict(capabilities.get("windows_connector") or {})
+        if (
+            connector_state.get("update_required") is True
+            and not bool(capabilities["windows"]["available"])
+            and (target == "local" or source == "build" or bool(local_path_values))
+        ):
+            return {
+                "reason": "windows_connector_update_required",
+                "mode": "unified",
+                "stage": stage_type,
+                "missing_capability": "windows_connector_contract",
+                "connection_state": "update_required",
+                "message": "The installed Windows Connector is too old for this task contract.",
+                "action": {
+                    "type": "update_windows_connector",
+                    "label": "Update this Windows computer",
+                    "mode": "unified",
+                },
+            }
+
         # A Windows capability is not enough for a local-path task.  The
         # connected machine must either advertise the exact opaque binding or
         # be a genuinely fresh one-click Agent with no prior bindings.  This
@@ -2433,6 +2501,8 @@ class ApiV1Service:
             metadata = dict(agent.get("metadata") or {})
             node_kind = str(metadata.get("node_kind") or metadata.get("node.kind") or "")
             if node_kind not in {"windows_agent", "windows_full"}:
+                continue
+            if not windows_connector_contract_is_current(metadata):
                 continue
             if selected_target == "local" and node_kind != "windows_full":
                 continue

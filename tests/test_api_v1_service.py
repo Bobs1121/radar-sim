@@ -19,6 +19,7 @@ from core.api_v1 import (
     iter_sse,
 )
 from core.artifacts import SelenaArtifact
+from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION
 from core.control_service import ControlService
 from core.local_results import ResultCatalog
 from core.selena_resolver import SourceResolutionContext
@@ -117,7 +118,10 @@ def test_execution_capabilities_require_both_cluster_roles_and_hide_agent_detail
         "light-a",
         agent_id="light-a",
         capabilities=["build.selena"],
-        metadata={"node_kind": "windows_agent"},
+        metadata={
+            "node_kind": "windows_agent",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
     )
     control.register_agent(
         "linux-a",
@@ -165,7 +169,10 @@ def test_execution_capabilities_reports_configured_windows_reconnecting(tmp_path
         "full-a",
         agent_id="full-a",
         capabilities=["simulation.local"],
-        metadata={"node_kind": "windows_full"},
+        metadata={
+            "node_kind": "windows_full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
     )
 
     full = api.execution_capabilities("alice")["capabilities"]["windows_full"]
@@ -211,6 +218,46 @@ def test_execution_capabilities_do_not_expose_another_users_windows_agent(tmp_pa
     assert capabilities["windows_light"]["available"] is False
     assert capabilities["windows_light"]["configured_count"] == 0
     assert capabilities["cluster"]["linux_executor_count"] == 1
+
+
+def test_outdated_windows_connector_is_owner_scoped_and_requires_update(tmp_path):
+    control = ControlService(tmp_path / "capabilities.db", now_fn=lambda: 100)
+    api = ApiV1Service(control_service_factory=lambda _owner: control, now_fn=lambda: 100)
+    control.register_agent(
+        "alice-old",
+        agent_id="alice-old",
+        capabilities=["simulation.local", "build.selena"],
+        metadata={"node_kind": "windows_full", "user": "alice"},
+    )
+    control.register_agent(
+        "bob-old",
+        agent_id="bob-old",
+        capabilities=["simulation.local"],
+        metadata={"node_kind": "windows_full", "user": "bob"},
+    )
+
+    alice = api.execution_capabilities("alice")["capabilities"]
+    assert alice["windows"]["available"] is False
+    assert alice["windows"]["configured_count"] == 1
+    assert alice["windows"]["reconnecting"] is False
+    assert alice["windows_connector"] == {
+        "update_required": True,
+        "outdated_count": 1,
+        "required_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+    }
+    readiness = api.validate_user_run_config(run_config_dict(), owner="alice")["readiness"]
+    assert "windows_connector_update_required" in {
+        item["code"] for item in readiness["blockers"]
+    }
+    waiting = api.submit_user_run("alice", config_payload=run_config_dict())["waiting"]
+    assert waiting["reason"] == "windows_connector_update_required"
+    assert waiting["connection_state"] == "update_required"
+    assert waiting["action"]["type"] == "update_windows_connector"
+
+    charlie = api.execution_capabilities("charlie")["capabilities"]
+    assert charlie["windows"]["configured_count"] == 0
+    assert charlie["windows_connector"]["outdated_count"] == 0
+    assert charlie["windows_connector"]["update_required"] is False
 
 
 def test_v1_task_center_lists_only_owner_v1_jobs_with_progress_and_filter(tmp_path):
@@ -572,7 +619,10 @@ def test_run_config_readiness_blocks_known_infrastructure_gaps_without_paths(tmp
 
     control.register_agent(
         "Windows build", agent_id="win-build-1", capabilities=["build.selena"],
-        metadata={"node_kind": "windows_agent"},
+        metadata={
+            "node_kind": "windows_agent",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
     )
     control.register_agent(
         "Linux executor", agent_id="linux-1", capabilities=["cluster.prepare"],
@@ -616,7 +666,10 @@ def test_run_config_job_reports_path_free_windows_connection_wait(tmp_path):
         "light",
         agent_id="light-1",
         capabilities=["build.selena"],
-        metadata={"node_kind": "windows_agent"},
+        metadata={
+            "node_kind": "windows_agent",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
     )
     assert api.get_job("alice", job["id"])["waiting"] is None
 
@@ -627,7 +680,10 @@ def test_local_target_requires_full_connection_and_shared_cluster_does_not(tmp_p
         "light",
         agent_id="light-1",
         capabilities=["build.selena"],
-        metadata={"node_kind": "windows_agent"},
+        metadata={
+            "node_kind": "windows_agent",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
     )
     local_config = run_config_dict()
     local_config["simulation"] = {**local_config["simulation"], "target": "local"}
@@ -666,7 +722,10 @@ def test_auto_prefers_full_windows_for_local_simulation(tmp_path):
     control = ControlService(tmp_path / "control.db")
     control.register_agent(
         "full", agent_id="full-1", capabilities=["simulation.local"],
-        metadata={"node_kind": "windows_full"},
+        metadata={
+            "node_kind": "windows_full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
     )
     api = ApiV1Service(control_service_factory=lambda _owner: control)
     config = run_config_dict()
