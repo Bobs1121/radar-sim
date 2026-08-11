@@ -403,7 +403,7 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
     """Check only central/Gateway prerequisites; Linux never checks build tools."""
     transfer_resources = _transfer_resources(job)
     bundle = None
-    if transfer_resources:
+    if transfer_resources or _direct_transfer_environment_expected(job):
         # A completed direct transfer is already the Selena/data identity for
         # this Stage.  Do not require a RuntimeBundle catalog row (or inspect
         # an archive) just to check the deployment's Cluster manager.
@@ -457,6 +457,20 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
             "runtime_bundle_id": bundle_id,
         }
     }
+
+
+def _direct_transfer_environment_expected(job: dict[str, Any]) -> bool:
+    """Recognize a project-free direct route before its first byte is copied."""
+
+    for stage in list(job.get("stages") or job.get("tasks") or []):
+        if not isinstance(stage, dict):
+            continue
+        if str(stage.get("stage_type") or stage.get("task_type") or "") != "environment_check":
+            continue
+        payload = dict(stage.get("payload") or {})
+        if str(payload.get("dispatch_scope") or "") == "direct_transfer_environment":
+            return True
+    return False
 
 
 def _public_environment_error_detail(item: Any) -> str:

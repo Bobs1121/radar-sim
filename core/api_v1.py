@@ -600,20 +600,23 @@ class ApiV1Service:
                     task["required_agent_id"] = CLUSTER_GATEWAY_AGENT_ID
 
         if direct_transfer_existing_cluster:
-            # ``dependencies=[]`` means "all earlier tasks" in ControlService,
-            # so prepare_data explicitly depends on the already-skipped
-            # resolver.  Environment must wait for the source-side transfer
-            # barrier; after it succeeds, the normal Linux -> Cluster chain
-            # remains unchanged.
+            # Check shared Cluster infrastructure before copying hundreds of
+            # megabytes from a user's computer.  The environment check needs
+            # only deployment configuration for this project-free direct
+            # route; prepare_data starts after it succeeds.  This also makes a
+            # transient Cluster outage retryable without wasting a transfer.
             for task in task_specs:
                 stage_type = str(task.get("stage_type") or "")
                 if stage_type == "prepare_data":
-                    task["dependencies"] = ["resolve_spec"]
+                    task["dependencies"] = ["environment_check"]
                     payload = dict(task.get("payload") or {})
                     payload.setdefault("project", "run-config-v2")
                     task["payload"] = payload
                 elif stage_type == "environment_check":
-                    task["dependencies"] = ["prepare_data"]
+                    task["dependencies"] = ["resolve_spec"]
+                    payload = dict(task.get("payload") or {})
+                    payload["dispatch_scope"] = "direct_transfer_environment"
+                    task["payload"] = payload
         # A cluster job with any Windows-local input is represented by the
         # existing ``prepare_data`` Stage, but its data-plane dispatch scope is
         # explicit and never the legacy Linux ``data_upload`` path.  The

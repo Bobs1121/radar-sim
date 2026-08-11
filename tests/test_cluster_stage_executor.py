@@ -678,6 +678,33 @@ def test_cluster_environment_never_requires_project_adapter(identity, monkeypatc
     assert loaded == [identity]
 
 
+def test_direct_transfer_environment_checks_deployment_before_bundle_transfer(monkeypatch):
+    loaded = []
+    context = SimpleNamespace(
+        config_loader=lambda identity: loaded.append(identity) or {"cluster": {}},
+    )
+    monkeypatch.setattr(
+        "core.cluster_stage_executor._bundle",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("bundle transfer has not started")),
+    )
+    monkeypatch.setattr(
+        "core.cluster.check_cluster_environment",
+        lambda _config: [SimpleNamespace(name="manager", ok=True, severity="error")],
+    )
+    job = _job()
+    job["stages"] = [
+        {
+            "stage_type": "environment_check",
+            "payload": {"dispatch_scope": "direct_transfer_environment"},
+        }
+    ]
+
+    result = execute_cluster_environment(context, job)
+
+    assert result["environment_snapshot"]["status"] == "ready"
+    assert loaded == ["run-config-v2"]
+
+
 def test_cluster_environment_failure_keeps_dependency_detail_and_retry_action(monkeypatch):
     context = SimpleNamespace(config_loader=lambda _identity: {"cluster": {}})
     monkeypatch.setattr(

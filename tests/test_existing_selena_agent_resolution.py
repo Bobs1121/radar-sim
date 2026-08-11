@@ -112,15 +112,18 @@ def test_existing_cluster_omitted_mat_filter_remains_required_until_inferred(tmp
     config["simulation"]["mat_filter"] = ""
     _register(control, agent_id="light-1", mode="light")
 
-    api.submit_user_run("alice", config_payload=config)
-    bound = control.bind_pending_data_stage("light-1")
+    submitted = api.submit_user_run("alice", config_payload=config)
+    job = control.get_job(submitted["id"])
+    stages = {item["stage_type"]: item for item in job["stages"]}
+    data_stage = stages["prepare_data"]
 
-    assert bound is not None
-    assert "mat_filter" in set(bound["payload"]["source_roles"])
+    assert "mat_filter" in set(data_stage["payload"]["source_roles"])
     assert not any(
         item.get("source_role") == "mat_filter"
-        for item in bound["payload"]["source_paths"]
+        for item in data_stage["payload"]["source_paths"]
     )
+    assert stages["environment_check"]["dependencies"] == [stages["resolve_spec"]["stage_id"]]
+    assert stages["prepare_data"]["dependencies"] == [stages["environment_check"]["stage_id"]]
 
 
 def test_configured_one_click_agent_does_not_claim_unmatched_existing_folder(tmp_path):
@@ -382,7 +385,10 @@ def test_existing_folder_cluster_handoff_registers_bundle_and_uploads_local_data
     assert stages["prepare_data"]["assigned_agent_id"] == "light-1"
     assert stages["prepare_data"]["payload"]["dispatch_scope"] == "direct_transfer"
     assert stages["environment_check"]["dependencies"] == [
-        stages["prepare_data"]["stage_id"]
+        stages["resolve_spec"]["stage_id"]
+    ]
+    assert stages["prepare_data"]["dependencies"] == [
+        stages["environment_check"]["stage_id"]
     ]
 
 
