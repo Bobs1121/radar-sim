@@ -24,6 +24,10 @@
 
 - 精准合同回归覆盖：Agent 注册版本、旧版拒领、新版领取、owner 隔离、过期与离线状态区分、Web JavaScript 语法。
 - 混合批次最终语义保持：只要部分输入成功，后续收集与 Manifest 必须继续；Manifest 标记 `partial` 并列出逐条成功/失败。顶层 Job 不伪装成全成功，但成功结果必须可下载。
+- 提交 `11be014 Gate incompatible Windows connectors` 已推送 `origin/codex/new-branch`。本机精准契约组 `32 passed`；API/调度/Agent/FastAPI/Web/发布定向组 `147 passed, 1 warning`；Linux 候选目录 `/home/hoz2wx/radar-sim-11be014` 同组 `146 passed, 1 skipped`。全量 `pytest -q` 在 300 秒门限无终态并超时，未冒充全量通过。
+- 生产 `radar-sim-v1.service` 已原子切换到 `/home/hoz2wx/radar-sim-11be014`，`RSIM_HOME` 继续为 `/home/hoz2wx/.rsim-v1-git-smoke`；service active、health `ok=true`、Cluster `linux_executor_count=1/platform_gateway_count=1`。旧 release `/home/hoz2wx/radar-sim-7a68a20` 和 unit 备份 `.pre-11be014` 保留回滚。
+- 现场旧 owner `web-19fea3ee69ee9c044e2f4b3e8` 在线能力实测：`configured_count=1/available=false/reconnecting=false`，`windows_connector.update_required=true/outdated_count=1/required_contract_version=2`；全新审计 owner 为 `configured_count=0/outdated_count=0`，证明过期状态按 owner 隔离。线上 Web 已包含更新状态和按钮。
+- 生产同源 Connector ZIP 为 8,303,836 bytes、169 files，SHA-256 `2a5f537468e83aef8340f4e38d29e6a392302e36c6de4ec212c288b203d0c146`，Range 下载实测 `206 bytes 0-0/8303836`。下一次真实验收必须先在 `WX-C-0066M` 运行当前一键更新，再新建混合批次；不能重用 `job_f4c4eca63c52` 宣称新代码已执行。
 
 ## 0.0.5 仓库与 Linux 存储收敛（2026-08-09）
 
