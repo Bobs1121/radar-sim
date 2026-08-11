@@ -112,9 +112,10 @@ def run_local_selena(
                     break
                 time.sleep(0.25)
             else:
+                returncode = int(process.returncode or 0)
                 outcome = LocalRunOutcome(
-                    int(process.returncode or 0),
-                    "" if process.returncode == 0 else "selena_failed",
+                    returncode,
+                    _selena_error_code(returncode),
                 )
     except (OSError, subprocess.SubprocessError):
         if job is not None:
@@ -126,6 +127,19 @@ def run_local_selena(
         if job is not None:
             job.close()
     return _with_private_logs(outcome, log_files)
+
+
+def _selena_error_code(returncode: int) -> str:
+    """Classify Windows loader failures without interpreting engine errors."""
+
+    if returncode == 0:
+        return ""
+    windows_code = int(returncode) & 0xFFFFFFFF
+    return {
+        0xC0000135: "selena_dependency_missing",
+        0xC000007B: "selena_dependency_invalid_architecture",
+        0xC0000142: "selena_dependency_initialization_failed",
+    }.get(windows_code, "selena_failed")
 
 
 def _runtime_environment(config: dict) -> dict[str, str]:

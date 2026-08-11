@@ -138,6 +138,12 @@ SDK 只提供 `validate_run()`、`submit_run()`、`submit_yaml()` 及任务/传�
 
 - 目录内必须唯一定位 Selena.exe；
 - 至少有同目录 DLL；
+- local 执行时，从 Selena 输出目录向上定位最近的 `CMakeCache.txt`，只读取
+  该次构建实际使用且当前存在的 Qt、MATLAB、Boost、Selena environment
+  运行目录并加入私有进程 PATH；不读取产品配置或项目白名单；
+- 找不到构建缓存时保留用户进程环境。`0xC0000135`、`0xC000007B`、
+  `0xC0000142` 分别报告为缺少依赖、依赖架构错误和依赖初始化失败，
+  其他非零退出仍作为 Selena 内部仿真结果处理；
 - Runtime XML 必须存在且为有效 XML；
 - code path、脚本路径和文件夹名不参与产品推导；
 - 目录重定位但内容相同应得到同一 execution identity；

@@ -177,3 +177,24 @@ def test_runner_attaches_bounded_engine_log_tail_on_failure(tmp_path, monkeypatc
     assert "fatal runnable failure" in outcome.diagnostics
     assert "CRlog: runnable=RadarRL failed" in outcome.diagnostics
     assert str(request.input_mf4) in "\n".join(outcome.diagnostics)
+
+
+def test_runner_classifies_windows_missing_dll_before_engine_start(tmp_path, monkeypatch):
+    request = _request(tmp_path)
+
+    class Process:
+        returncode = 0xC0000135
+        _handle = 0
+
+        def __init__(self, command, **kwargs):
+            del command, kwargs
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr("core.local_selena_runner.subprocess.Popen", Process)
+
+    outcome = run_local_selena(request, lambda: False)
+
+    assert outcome.exit_code == 0xC0000135
+    assert outcome.error_code == "selena_dependency_missing"

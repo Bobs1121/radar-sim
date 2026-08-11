@@ -18,3 +18,9 @@ vs_debug:
 
 environment:
   path_prefix: []
+
+simulation:
+  # One stable Selena invocation contract for every product/workspace.  The
+  # mature local and Cluster runners both tolerate unavailable input signals;
+  # individual file outcomes remain authoritative.
+  tolerant: true

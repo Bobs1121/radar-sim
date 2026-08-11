@@ -1,6 +1,6 @@
 # radar-sim V2 用户指南
 
-> 文件名为历史兼容名称；本指南适用于所有使用 Selena 的项目，不按 OD25/OVRS/Xpeng/BYD 区分流程。
+> 文件名为历史兼容名称；本指南适用于所有使用 Selena 的任务，不按 OD25/OVRS/Xpeng/BYD 产品代号区分流程。
 
 ## 1. 使用前准备
 
@@ -11,7 +11,9 @@
 - 一个 MF4 文件或包含 MF4 的目录；
 - 可选 MatFilter、Adapter、Radar source 和结果保存根目录。
 
-如果选择编译，Visual Studio 和项目自身编译依赖由用户环境提供。radar-sim 检查脚手架需要的路径和脚本，并从可选软件包脚本提取依赖提示，不自动安装 VS。
+如果选择编译，Visual Studio 和代码仓自身的编译依赖由用户环境提供。radar-sim 检查脚手架需要的路径和脚本，并从可选软件包脚本提取依赖提示，不自动安装 VS。
+
+导入和提交只接受 `UserRunConfig` 2.0。顶层及嵌套字段均为 strict `extra-forbid`；旧 YAML 不会静默迁移或忽略未知字段，需按 2.0 示例重新填写。
 
 ## 2. Web 使用
 
@@ -21,7 +23,7 @@
 4. 若任务需要读取 Windows 路径，页面显示“一键连接本机”；下载并双击一次；
 5. 看到“本机已连接”后提交任务；
 6. 在任务中心查看四个业务步骤、Stage 日志、诊断和每条数据结果；
-7. 浏览器下载 ZIP。若同一任务由 Connector/SDK 接收结果，则接收设备还会使用 `result.path/<job_id>`；纯浏览器不能直接写任意本地目录。
+7. 浏览器下载 ZIP。若本地仿真由 Connector/SDK 接收结果，接收设备可将结果物化到 `result.path/<job_id>`；纯 Web/Cluster 任务若没有反向 Connector，不承诺写入该路径，只提供 owner 隔离的 ZIP。纯浏览器不能直接写任意本地目录。
 
 页面刷新后任务仍在 Linux 控制数据库中。Connector 暂时离线时任务等待自动重连，不需要重新提交或重装。
 
@@ -46,6 +48,8 @@ result_zip = client.download_job_result(job.id)
 ```
 
 `submit_yaml(path)` 与 Web 导入同一 YAML。Windows 文件需要 Connector；Linux SDK 调用机本地文件由 SDK 执行签名直传。已有 Selena 和数据均为 Cluster 可读共享路径时不需要 Connector。
+
+`result.path` 是 Connector/SDK 接收端的结果保存根，不是 Linux 控制面的落盘路径。本地仿真在接收端可物化到 `<result.path>/<job_id>`（留空时使用接收端默认目录）；纯 Web/Cluster 且无反向 Connector 时，合同只承诺可下载的 ZIP。
 
 ## 4. 配置示例
 
@@ -112,12 +116,12 @@ result:
 
 ## 6. 自动推导
 
-- 已有 Selena：从选择文件夹定位唯一 Selena.exe 和同目录 DLL；不猜项目。
+- 已有 Selena：从选择文件夹定位唯一 Selena.exe 和同目录 DLL；不猜业务。
 - 编译产物：脚本推导优先；编译后在授权 build 根确认实际 Selena.exe。
 - MatFilter：显式值优先；空值在代码仓/已有产物邻近受控位置确定性选择。
 - Radar source：显式值优先；支持 RadarFL/FR/RL/RR/FC；空值读取 Runtime/MF4 元数据。
 
-系统在日志中展示最终选择及推导证据，但不会要求用户登记项目。
+系统在日志中展示最终选择及推导证据，但不会要求用户登记产品或运行模板。
 
 ## 7. 状态和错误
 

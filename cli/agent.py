@@ -1863,6 +1863,7 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         project,
         project_root=str(discovery.get("code_path") or payload.get("code_path") or ""),
     )
+    _apply_project_independent_runtime_environment(base_config, discovery, payload)
     # Product/project defaults are not user intent.  An explicit public YAML
     # source wins; when it is empty the per-file metadata detector selects a
     # stable first acquisition source at execution time.
@@ -1929,6 +1930,44 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
             ],
         },
     }
+
+
+def _apply_project_independent_runtime_environment(
+    config: dict,
+    discovery: dict,
+    payload: dict,
+) -> None:
+    """Inject only build-recorded DLL paths into one private local config."""
+
+    from core.selena_runtime_environment import infer_selena_runtime_environment
+
+    existing_path = str(
+        discovery.get("existing_path") or payload.get("existing_path") or ""
+    )
+    code_path = str(discovery.get("code_path") or payload.get("code_path") or "")
+    build_script = str(
+        discovery.get("selena_build_script")
+        or payload.get("selena_build_script")
+        or ""
+    )
+    hints: list[str] = [existing_path]
+    if build_script:
+        try:
+            from core.config import derive_project_context_from_selena_script
+
+            derived = derive_project_context_from_selena_script(
+                build_script,
+                project_root_hint=code_path,
+            )
+            hints.append(str(derived.get("build_output") or ""))
+        except (OSError, TypeError, ValueError):
+            pass
+    hints.append(code_path)
+    resolved = infer_selena_runtime_environment(hints)
+    environment = config.setdefault("environment", {})
+    current = list(environment.get("path_prefix") or [])
+    inferred = [str(path) for path in resolved.path_prefix]
+    environment["path_prefix"] = inferred + [item for item in current if item not in inferred]
 
 
 def _execute_v5_runtime_bundle_cache(task: dict, *, client: "_ControlClient") -> dict:

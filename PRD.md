@@ -58,6 +58,9 @@ Web 与 SDK 必须使用同一 `UserRunConfig 2.0`、同一 `/api/v1` 调度核�
 ### 5.2 仿真
 
 - 本地仿真假设用户已有成熟环境，系统准备外围输入后下发通用 Selena 命令；
+- Selena 依赖的外部 Qt/MATLAB/Boost 等运行目录优先从该产物邻近的
+  `CMakeCache.txt` 自动恢复，不要求用户选择产品或重复填写环境路径；
+  无构建元数据时沿用用户现有环境，Windows 装载失败需给出明确依赖诊断；
 - Cluster 仿真复用现有 Cluster 提交模块；
 - 不按产品名选择流程或模板；
 - Runtime 与 Selena 由用户保证业务匹配，系统依赖仿真输出判断，不做过重前置拦截。

@@ -220,3 +220,57 @@ Release-gate evidence on the Windows development host:
 This is still pre-deployment evidence. Do not mark real simulation acceptance
 complete until the immutable Linux release is active, the Connector contract is
 updated and real local/Cluster Jobs are inspected through their manifests.
+
+## 2026-08-11 immutable deployment and first real V2 local run
+
+- Commits `c92cd2e` and `8db3762` were pushed on `codex/new-branch`.
+- Linux systemd now runs immutable release `/home/hoz2wx/radar-sim-8db3762`
+  on `10.190.171.44:8877`; the unified Connector bundle was rebuilt there.
+- The Windows one-click update completed with owner `user-hoz2wx`, persistent
+  scheduled tasks, contract version 7 and no capability update required.
+- Real Job `job_40da35128b6e` used the requested MF4, existing Selena folder,
+  Runtime XML, inferred MatFilter and `result.path`. Resolution, environment,
+  data preparation and preflight all succeeded. `Selena.exe` then exited before
+  producing an engine log with Windows code `3221225781` (`0xC0000135`).
+
+The failure was a V2 scaffolding regression, not an MF4/runtime compatibility
+failure. An earlier real Job `job_d8b902defaad` had completed the identical
+Selena/data/runtime/MatFilter combination. The only relevant private-config
+difference was that the old project adapter injected Qt/MATLAB/Boost paths,
+while the project-independent V2 config had an empty `environment.path_prefix`.
+Both Runtime Bundle caches contained byte-identical Selena/DLL/runtime files.
+A manual probe of the V2 command with paths read from the nearest
+`CMakeCache.txt` remained alive after 20 seconds instead of exiting in one
+second, proving the dependency-path root cause.
+
+Current uncommitted correction:
+
+- `core.selena_runtime_environment` finds the nearest authoritative
+  `CMakeCache.txt` from the selected existing Selena/build hints and reconstructs
+  only existing Qt, MATLAB, Boost and Selena-environment runtime directories;
+  it contains no product names, fixed versions or project registry lookup.
+- Windows local preflight injects those private paths before rendering and
+  starting Selena. A bounded latest-build fallback covers build-script runs when
+  only the workspace remains available.
+- The common V2 Selena invocation defaults to tolerant input handling, matching
+  the mature local and Cluster behavior.
+- Windows loader exits now have stable dependency codes (`missing`, invalid
+  architecture, initialization failed) while all other Selena exits remain
+  engine-owned `selena_failed` outcomes.
+- Public V2 docs/tests now enforce strict `UserRunConfig` 2.0, correct
+  `simulation.mat_filter/adapter_file` placement, hidden internal OpenAPI routes
+  and truthful `result.path`/ZIP boundaries.
+
+Focused verification after the correction:
+
+- V2 config/API/SDK/local/runtime-environment group: `127 passed, 1 warning`.
+- Connector/release/identity/build/data-plane/local-E2E group:
+  `98 passed, 3 skipped, 1 warning`.
+- Changed Python modules compile, Web JavaScript parses and `git diff --check`
+  passes. A monolithic all-tests invocation was deliberately stopped after it
+  remained active for several minutes without failure output; the two bounded
+  release groups above are the acceptance gate for this correction.
+
+Next evidence required: commit/push, deploy a new immutable Linux release,
+one-click Connector update, then resubmit the identical real local configuration
+and verify Job manifest, ZIP download and `<result.path>/<job_id>` materialization.
