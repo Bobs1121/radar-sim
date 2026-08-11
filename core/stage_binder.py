@@ -848,6 +848,7 @@ def maybe_bind_local_preflight(control: ControlService, job_id: str) -> dict | N
             "dataset_id": str(dataset.get("id") or ""),
             "adapter_file": adapter_file,
             "mat_filter": mat_filter,
+            "radar_source": str(simulation.get("source") or ""),
             "resource_discovery": {
                 "code_path": str((spec.get("selena") or {}).get("code_path") or ""),
                 "existing_path": str((spec.get("selena") or {}).get("existing_path") or ""),

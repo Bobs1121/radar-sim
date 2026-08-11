@@ -55,6 +55,7 @@ data:
   path: "D:/path/to/OD25_measurements"
 simulation:
   target: cluster
+  source: ""  # 可选；多源数据需要固定源时填写 RadarFL/FR/RL/RR
   adapter_file: "D:/path/to/OD25_adapter.txt"
   mat_filter: ""  # 可留空；无法唯一推导时 Web/SDK 会要求用户选择
 ```
@@ -75,6 +76,7 @@ data:
   path: "//server/share/path/to/OD25_measurements"
 simulation:
   target: cluster
+  source: ""  # 留空自动推导；多源时稳定选择第一个
   adapter_file: "D:/path/to/OD25_adapter.txt"
   mat_filter: ""  # 可留空；无法唯一推导时 Web/SDK 会要求用户选择
 ```

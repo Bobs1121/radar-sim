@@ -20,6 +20,7 @@
 4. Direct-transfer Cluster DAG 改为先检查 Manager、提交路径、凭证、共享工作区等部署依赖，再允许 Windows 传大文件；Cluster 不可用时保持 `TransferPlan=0`，失败 Stage 可在基础设施恢复后精准重试。
 5. Windows PowerShell Supervisor 不再把 native stderr 的普通库 INFO/warning 包装成致命 `NativeCommandError`。stderr 继续进入隐藏日志，只有真实进程退出码决定重启；修复了本地 Run Stage 每约 7 秒被错误重启、日志反复出现 `started`、Selena 无法稳定启动的问题。
 6. 本地参数适配不再先用 `asammdf.MDF(...)` 打开完整 MF4。现在优先只读取 MDF4 acquisition-source 元数据链，实际 239 MB 样本从约 `110 s` 降为 `0.079 s`，仍得到有序的 `RadarRL, RadarRR`；只有标准元数据不可读时才进入兼容回退。该优化按 MDF4 格式生效，不依赖项目名或固定路径。
+7. Web/YAML/SDK 统一增加可选 `simulation.source`，规范值为 `RadarFL/RadarFR/RadarRL/RadarRR`，兼容 `FL/FR/RL/RR` 输入并在导出时规范化。显式值同时覆盖本地和 Cluster 的自动推导；留空时单源直接采用，多源按 MDF4 acquisition group 的稳定顺序选择第一个。本次样本留空得到候选 `RadarRL, RadarRR` 并选择 `RadarRL`。
 
 ### 真实黑盒证据
 

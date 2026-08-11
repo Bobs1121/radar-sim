@@ -94,6 +94,7 @@ class UserDataConfig(_Frozen):
 
 class UserSimulationConfig(_Frozen):
     target: Literal["auto", "local", "cluster"] = "auto"
+    source: str = ""
     adapter_file: str = ""
     mat_filter: str = ""
 
@@ -101,6 +102,23 @@ class UserSimulationConfig(_Frozen):
     @classmethod
     def _normalize_paths(cls, value: Any) -> Any:
         return _path(value) if isinstance(value, str) else value
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_radar_source(cls, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text or text.casefold() == "auto":
+            return ""
+        aliases = {
+            "fl": "RadarFL", "radarfl": "RadarFL",
+            "fr": "RadarFR", "radarfr": "RadarFR",
+            "rl": "RadarRL", "radarrl": "RadarRL",
+            "rr": "RadarRR", "radarrr": "RadarRR",
+        }
+        normalized = aliases.get(text.casefold())
+        if not normalized:
+            raise ValueError("simulation.source must be empty or one of RadarFL/RadarFR/RadarRL/RadarRR")
+        return normalized
 
 
 
@@ -191,6 +209,7 @@ class UserRunConfig(_Frozen):
             "data": {"path": self.data.path},
             "simulation": {
                 "target": self.simulation.target,
+                "source": self.simulation.source,
                 "adapter_file": self.simulation.adapter_file,
                 "mat_filter": self.simulation.mat_filter,
             },

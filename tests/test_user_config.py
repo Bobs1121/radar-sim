@@ -18,6 +18,7 @@ def _build_config(**patch):
         "data": {"path": r"D:\measurements\run"},
         "simulation": {
             "target": "cluster",
+            "source": "",
             "adapter_file": r"D:\data\adapter.txt",
             "mat_filter": r"D:\data\signals.filter",
         },
@@ -129,6 +130,25 @@ def test_adapter_file_is_optional():
     config["simulation"]["adapter_file"] = ""
     parsed = UserRunConfig.from_dict(config)
     assert parsed.simulation.adapter_file == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("", ""), (None, ""), ("auto", ""), ("RL", "RadarRL"), ("radarrR", "RadarRR")],
+)
+def test_radar_source_is_optional_and_canonical(value, expected):
+    config = _build_config()
+    config["simulation"]["source"] = value
+    parsed = UserRunConfig.from_dict(config)
+    assert parsed.simulation.source == expected
+    assert parsed.to_dict()["simulation"]["source"] == expected
+
+
+def test_unknown_radar_source_is_rejected():
+    config = _build_config()
+    config["simulation"]["source"] = "RadarFC"
+    with pytest.raises(ValidationError, match="simulation.source"):
+        UserRunConfig.from_dict(config)
 
 
 def test_project_field_is_rejected_not_exported():

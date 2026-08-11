@@ -553,8 +553,8 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         bundle_storage_ref = str(bundle_decision.get("storage_ref") or "").strip()
     config = copy.deepcopy(context.config_loader(project))
     # Project adapters and legacy profiles may carry a historical source such
-    # as RadarFC.  The public v1 YAML has no source field, so that value is not
-    # user intent and must not outrank MF4 acquisition metadata.
+    # as RadarFC.  Only the public run YAML is user intent; an empty public
+    # source delegates to MF4 acquisition metadata.
     config["_cluster_source_explicit"] = False
     # V2 run parameters belong to the submitted task, never to product
     # recognition.  Keep the task's explicit runtime XML/Selena path before
@@ -744,8 +744,12 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         config.setdefault("cluster", {})["selena_exe"] = str(exe)
     config.setdefault("build", {})["selena_branch"] = bundle_branch
     sim = config.setdefault("simulation", {})
+    configured_radar = normalize_radar_metadata({"source": simulation.get("source")})
     dataset_radar = _dataset_radar_metadata(transfer_resources.get("dataset", []))
-    if dataset_radar:
+    if configured_radar:
+        sim.update(configured_radar)
+        config["_cluster_source_explicit"] = True
+    elif dataset_radar:
         # Direct-transfer metadata was derived on the data-owning SDK/Agent.
         # Linux only projects the validated values into Config.cfg; it never
         # opens the worker-visible MF4 to rediscover them.
@@ -761,7 +765,7 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         # source by opening MF4, or inspect a project branch on Linux.
         config["_cluster_zero_copy"] = True
         config["_cluster_skip_mf4_probe"] = True
-        config["_cluster_source_explicit"] = True
+        config["_cluster_source_explicit"] = bool(configured_radar or dataset_radar)
 
     if direct_refs:
         # Direct-transfer references are already validated by the manifest and

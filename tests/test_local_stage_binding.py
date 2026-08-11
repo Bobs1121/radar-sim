@@ -22,6 +22,7 @@ def test_local_four_stage_chain_stays_on_same_windows_full_agent(tmp_path):
         "simulation": {
             "target": "local", "adapter_file": "D:/assets/a.txt",
             "mat_filter": "D:/assets/m.filter", "timeout_minutes": 1,
+            "source": "RadarRR",
         },
         "result": {"retain_days": 7},
     }
@@ -90,6 +91,7 @@ def test_local_four_stage_chain_stays_on_same_windows_full_agent(tmp_path):
     assert preflight["payload"]["runtime_bundle_lease_ref"].startswith("runtime-bundle-lease:")
     assert preflight["payload"]["data_lease_ref"].startswith("data-lease:")
     assert preflight["payload"]["owner"] == "alice"
+    assert preflight["payload"]["radar_source"] == "RadarRR"
 
     for current, successor in (
         ("preflight", "run_simulation"),

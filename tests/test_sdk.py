@@ -215,6 +215,28 @@ def test_local_effective_simulation_uses_acquisition_source_before_orientation(
     ]
 
 
+def test_explicit_source_wins_over_multi_source_metadata(monkeypatch, tmp_path: Path):
+    mf4 = tmp_path / "recording.MF4"
+    mf4.write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation.discover_radar_acquisition_sources",
+        lambda _path: pytest.fail("explicit source must skip automatic metadata selection"),
+    )
+    result = build_effective_simulation(
+        {
+            "_meta": {"project": "anonymous", "_run_id": "run-explicit"},
+            "simulation": {
+                "source": "RadarRR",
+                "mounting_position": "CRR",
+                "auto_detect_radar": False,
+            },
+        },
+        str(mf4),
+    )
+    assert result["source"] == "RadarRR"
+    assert result["mounting_position"] == "CRR"
+
+
 def test_light_agent_mf4_reader_preserves_acquisition_group_order(tmp_path: Path):
     """The light Agent can infer RadarRL without installing asammdf."""
 

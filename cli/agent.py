@@ -1858,10 +1858,26 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         adapter_binding, _ = authorize_user_asset(adapter_path, role="adapter")
     mat_binding, _ = authorize_user_asset(mat_filter_path, role="mat_filter")
     timeout_minutes = int(payload.get("timeout_minutes") or 0)
+    base_config = load_config(project)
+    # Product/project defaults are not user intent.  An explicit public YAML
+    # source wins; when it is empty the per-file metadata detector selects a
+    # stable first acquisition source at execution time.
+    from core.simulation import normalize_radar_metadata
+
+    base_simulation = base_config.setdefault("simulation", {})
+    base_simulation.pop("source", None)
+    base_simulation.pop("mounting_position", None)
+    selected_radar = normalize_radar_metadata({"source": payload.get("radar_source")})
+    if selected_radar:
+        base_simulation.update(selected_radar)
+        base_simulation["auto_detect_radar"] = False
+    else:
+        base_simulation["auto_detect_radar"] = True
+
     lease = store.create_from_authorized_inputs(
         job_id=str(task.get("job_id") or ""),
         project=project,
-        base_config=load_config(project),
+        base_config=base_config,
         runtime_manifest=bundle_lease.manifest,
         runtime_locations=locations,
         data_lease=data_lease,

@@ -840,13 +840,16 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
         )
 
     monkeypatch.setattr("core.preflight.run_preflight", diagnostic_preflight)
-    monkeypatch.setattr(
-        "core.cluster.prepare_cluster_job",
-        lambda *_args, **_kwargs: SimpleNamespace(
+    prepared_configs = []
+
+    def prepare_cluster_job(run_config, *_args, **_kwargs):
+        prepared_configs.append(run_config)
+        return SimpleNamespace(
             manifest_path=str(private_job / "manifest.json"), config_path="//cluster/job/Config.cfg",
             profile="default",
-        ),
-    )
+        )
+
+    monkeypatch.setattr("core.cluster.prepare_cluster_job", prepare_cluster_job)
     monkeypatch.setattr(
         "core.cluster.submit_cluster_job",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="value=10321", mode="xmlrpc"),
@@ -892,7 +895,7 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
             "data": {"path": "dataset://sha256/" + dataset.id.rsplit(":", 1)[-1]},
             "simulation": {
                 "target": "cluster", "adapter_file": "",
-                "mat_filter": mat_filter.uri,
+                "mat_filter": mat_filter.uri, "source": "RadarRR",
             },
         }
         submitted = api.submit_user_run(
@@ -922,5 +925,7 @@ def test_existing_bundle_cluster_pipeline_finishes_without_windows_or_adapter(tm
             stage["status"] in {"succeeded", "skipped"}
             for stage in current["stages"]
         )
+        assert prepared_configs[-1]["simulation"]["source"] == "RadarRR"
+        assert prepared_configs[-1]["simulation"]["mounting_position"] == "CRR"
     finally:
         executor.stop()

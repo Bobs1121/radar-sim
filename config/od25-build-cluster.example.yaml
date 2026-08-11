@@ -16,5 +16,6 @@ data:
 
 simulation:
   target: cluster
+  source: ""  # 可选：RadarFL/RadarFR/RadarRL/RadarRR；留空从 MF4 推导
   adapter_file: "D:/path/to/OD25_adapter.txt"
   mat_filter: ""  # 可选；显式填写优先，留空时从代码仓推导唯一候选

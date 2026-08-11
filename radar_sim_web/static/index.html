@@ -141,6 +141,17 @@
               <p>Adapter 可选；MatFilter 可显式选择，留空时从代码仓自动推导唯一候选。</p>
             </div>
             <div class="field-grid two">
+              <label class="field">
+                <span>雷达源（可选）</span>
+                <select id="radarSource">
+                  <option value="">自动选择</option>
+                  <option value="RadarFL">RadarFL</option>
+                  <option value="RadarFR">RadarFR</option>
+                  <option value="RadarRL">RadarRL</option>
+                  <option value="RadarRR">RadarRR</option>
+                </select>
+                <small>显式选择时严格使用该源；留空时从 MF4 元数据推导，多源数据按稳定顺序选择第一个。</small>
+              </label>
               <div class="field">
                 <span>Adapter（可选）</span>
                 <input id="adapterFile" placeholder="本地或共享路径；仅在当前仿真确实需要时填写">

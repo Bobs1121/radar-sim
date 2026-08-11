@@ -354,6 +354,7 @@ function runConfigFromForm() {
   const runtimeXml = byId("runtimeXml").value.trim();
   const adapterFile = byId("adapterFile").value.trim();
   const matFilter = byId("matFilter").value.trim();
+  const radarSource = byId("radarSource").value.trim();
   if (source === "build" && !codePath) throw new Error("本地编译需要填写代码路径");
   if (source === "build" && !selenaBuildScript) throw new Error("本地编译需要填写 Selena 编译脚本");
   if (source === "existing" && !existingPath) {
@@ -378,6 +379,7 @@ function runConfigFromForm() {
     data: { path: dataPath },
     simulation: {
       target: selectedValue("target") || "auto",
+      source: radarSource,
       adapter_file: adapterFile,
       mat_filter: matFilter,
     },
@@ -398,6 +400,7 @@ function applyRunConfig(config) {
   byId("existingPath").value = selena.existing_path || "";
   byId("runtimeXml").value = selena.runtime_xml || "";
   setSelectedValue("target", config.simulation?.target || "auto");
+  byId("radarSource").value = config.simulation?.source || "";
   byId("adapterFile").value = config.simulation?.adapter_file || "";
   byId("matFilter").value = config.simulation?.mat_filter || "";
   updateConditionalFields();
@@ -894,6 +897,7 @@ function renderJobDetail(job, events, manifest) {
     ["Runtime XML", job.spec?.selena?.runtime_xml],
     ["Adapter", job.spec?.simulation?.adapter_file],
     ["MatFilter", job.spec?.simulation?.mat_filter],
+    ["雷达源", job.spec?.simulation?.source || "自动选择"],
     ["执行目标", targetName(job.spec?.simulation?.target)],
     ["进度", `${Math.round((job.progress || 0) * 100)}%`],
   ];
