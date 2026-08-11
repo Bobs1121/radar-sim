@@ -2442,3 +2442,11 @@ Linux 控制面只保存数据集逻辑引用，不会从历史 Job 反查或复
 - 发布后直接重读 `job_098f0c2caa50`：公共状态应为 `partial`、进度 100%、Diagnosis 为 `simulation_partial`，结果下载 Range 请求应返回 206；不修改历史数据库审计记录。
 - `job_81f44ccae6c4` 的 Windows 用户需运行一次 Web 提供的“一键更新本机组件”。更新后的第一次 poll 应恢复原 `prepare_data` task；若原 MF4 兼容解析器再次异常，父 Connector 仍应继续并请求直传计划。
 - 第一轮生产 release `/home/hoz2wx/radar-sim-340226f` 已切换且 service active/NRestarts=0；线上重读 `job_098f0c2caa50` 已得到 `status=partial`、`progress=1.0`、`diagnosis.code=simulation_partial`、`2/3` 成功且 `artifacts_available=true`。随后为上述 running-stale 状态投影追加小补丁，最终 release/hash 以紧随其后的提交和部署记录为准。
+
+### 最终生产部署与当前验收边界
+
+- 追加状态投影提交 `4a11927 Surface stale connector recovery as user action` 已推送 `origin/codex/new-branch`。Linux 候选门禁 `12 passed, 1 skipped`，生产 user service 已原子切换到 `/home/hoz2wx/radar-sim-4a11927`；`ActiveState=active`、`SubState=running`、`NRestarts=0`，上一 release `/home/hoz2wx/radar-sim-340226f` 和 unit 备份均保留回滚。
+- 生产 Connector 3 下载包从 HTTP 全量下载验证为 `8,305,997` bytes、SHA-256 `sha256:5c65e28ee3bcb0a3314250871cd8c49d15828f08c24b0e1638e5df5ff2b04ab2`；Range 请求为 `206 bytes 0-0/8305997`。这才是生产权威 hash，本地 dirty checkout 构建值不得用于发布声明。
+- `job_098f0c2caa50` 线上公共 Job 为 `partial`、`progress=1.0`，Diagnosis 为 `simulation_partial`、`artifacts_available=true`，Manifest 为 `2 succeeded / 1 failed / 3 total`；结果 ZIP Range 下载返回 `206 bytes 0-0/116530947`。
+- `job_81f44ccae6c4` 的内部 task 仍保留原 `running` attempt 以待恢复，但 Web/SDK 公共 Job 已为 `needs_input`，`waiting.reason=windows_connector_update_required`，动作是 `update_windows_connector`，Diagnosis 为 `job_needs_input`。它不再假装持续执行，也不会被旧 Connector领取。
+- 尚未完成的唯一真实验收是：目标新用户在其 Windows 电脑运行当前 Web 的“一键更新/连接”后，Connector 3 首次 poll 恢复 `job_81f44ccae6c4` 并越过 `prepare_data`。该动作必须发生在数据所在电脑，Linux 不能代替执行；完成前不得宣称“另一台全新 Windows 已端到端通过”。
