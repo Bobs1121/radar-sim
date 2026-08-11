@@ -66,7 +66,11 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # radars) and the metadata-only local MF4 probe. Older connectors would either
 # ignore RadarFC or retain the minutes-long full-MDF setup path, so they must
 # update before claiming new UserRunConfig v2 stages.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 7
+# v8 adds project-independent CMake runtime-environment reconstruction.  Older
+# Connectors can accept the Stage shape but fail to load Selena's external DLLs,
+# so the control plane must require a one-click update instead of silently
+# scheduling work to stale code.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 8
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

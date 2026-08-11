@@ -260,6 +260,10 @@ Current uncommitted correction:
 - Public V2 docs/tests now enforce strict `UserRunConfig` 2.0, correct
   `simulation.mat_filter/adapter_file` placement, hidden internal OpenAPI routes
   and truthful `result.path`/ZIP boundaries.
+- The required Windows Connector contract is raised from 7 to 8. This is
+  intentional: a v7 Connector can receive the same Stage schema but cannot
+  reconstruct the external runtime PATH, so Web/SDK must show the existing user
+  a one-click update instead of reporting the stale process as current.
 
 Focused verification after the correction:
 
