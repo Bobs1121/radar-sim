@@ -217,6 +217,22 @@ def test_gateway_upload_is_explicitly_unavailable_before_persistence(tmp_path: P
     assert service.get_job_transfer_status("alice", "job_001")["plans"] == []
 
 
+def test_source_to_local_is_rejected_without_target_specific_windows_cache(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    with pytest.raises(TransferError) as caught:
+        service.issue_plan(
+            owner="alice",
+            job_id="job_local",
+            stage_id="stage_local",
+            mode="source_to_local",
+            source_role="dataset",
+            items=[_item()],
+        )
+    assert caught.value.code == "source_to_local_unavailable"
+    assert caught.value.status_code == 503
+    assert service.get_job_transfer_status("alice", "job_local")["plans"] == []
+
+
 def test_owner_job_transfer_isolation_is_opaque_and_unique(tmp_path: Path) -> None:
     service = _service(tmp_path)
     plans = (

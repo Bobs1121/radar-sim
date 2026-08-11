@@ -27,6 +27,11 @@
         <input id="accessToken" type="password" autocomplete="off" placeholder="粘贴个人令牌">
         <button type="button" class="button secondary" id="saveToken">连接</button>
       </div>
+      <div class="auth-entry" id="identityEntry" hidden>
+        <label for="userIdentity">用户标识</label>
+        <input id="userIdentity" type="text" autocomplete="username" maxlength="128" placeholder="公司 NTID">
+        <button type="button" class="button secondary" id="saveIdentity">保存</button>
+      </div>
       <div class="connection-state-group" aria-label="服务连接状态">
         <div class="api-state" id="apiState" role="status">正在连接 Linux 服务</div>
         <div class="api-state local-state" id="windowsState" role="status">正在检查本机连接</div>
@@ -133,7 +138,7 @@
           <section class="form-section" aria-labelledby="assetsHeading">
             <div class="section-heading">
               <h2 id="assetsHeading">仿真配置文件</h2>
-              <p>Adapter 可选，系统识别项目后决定是否需要；MatFilter 必填。</p>
+              <p>Adapter 可选；MatFilter 可显式选择，留空时从代码仓自动推导唯一候选。</p>
             </div>
             <div class="field-grid two">
               <div class="field">
@@ -142,8 +147,8 @@
                 <small>本地文件由 Connector/SDK 与其他输入一起直传，不经过 Linux Web 服务。</small>
               </div>
               <div class="field">
-                <span>MatFilter</span>
-                <input id="matFilter" required placeholder="本地或共享路径">
+                <span>MatFilter（可选）</span>
+                <input id="matFilter" placeholder="可选；留空时从代码仓自动推导">
                 <small>与 SDK 使用相同路径和直传语义，不生成 Web 专用上传引用。</small>
               </div>
             </div>

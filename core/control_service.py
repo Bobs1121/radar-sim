@@ -20,12 +20,85 @@ SUCCESS_TASK_STATUSES = {"succeeded", "skipped"}
 INITIAL_TASK_STATUSES = {"queued", "skipped", "blocked"}
 INTERNAL_V1_SCHEDULER_AGENT_ID = "__v1_scheduler__"
 RESERVED_INTERNAL_AGENT_IDS = {INTERNAL_V1_SCHEDULER_AGENT_ID}
+# A Cluster role may use several fixed worker identities.  The role root is
+# still the durable task affinity written by the API; only a worker whose ID
+# follows the role's ``-worker-N`` convention and whose registration metadata
+# names the same role can claim that root-bound task.
+_CLUSTER_WORKER_SUFFIX = "-worker-"
+_CLUSTER_ROLE_NODE_KINDS = {
+    "linux-v2-stage-executor": "linux_executor",
+    "cluster-v2-platform-gateway": "platform_gateway",
+}
+_CLUSTER_WORKER_MARKER = "control_service_v1"
+_CLUSTER_WORKER_PROTECTED_KEYS = (
+    "cluster_worker_identity",
+    "claim_group",
+    "cluster_role",
+    "cluster_worker_index",
+    "cluster_worker_count",
+)
 _FAILED_MANIFEST_STATUSES = {"failed", "failure", "partial"}
 _NON_SUCCESS_MANIFEST_STATUSES = {
     *_FAILED_MANIFEST_STATUSES,
     "cancelled",
     "canceled",
 }
+
+
+def _validated_cluster_claim_group(agent_id: str, metadata: dict[str, Any]) -> str:
+    """Return a trusted Cluster role root or an empty string.
+
+    The allowlist and node-kind check are deliberately server-owned.  A
+    generic Agent cannot opt into a role by inventing an arbitrary
+    ``claim_group``/prefix in its registration metadata.
+    """
+    agent_id = str(agent_id or "").strip()
+    group = str(metadata.get("claim_group") or "").strip()
+    role = str(metadata.get("cluster_role") or "").strip()
+    node_kind = str(
+        metadata.get("node_kind") or metadata.get("node.kind") or ""
+    ).strip()
+    expected_kind = _CLUSTER_ROLE_NODE_KINDS.get(group)
+    if (
+        not agent_id
+        or not group
+        or group != role
+        or expected_kind is None
+        or node_kind != expected_kind
+        or metadata.get("cluster_worker_identity") != _CLUSTER_WORKER_MARKER
+    ):
+        return ""
+    if agent_id == group:
+        if metadata.get("cluster_worker_index") not in {0, "0"}:
+            return ""
+        return group
+    prefix = group + _CLUSTER_WORKER_SUFFIX
+    if not agent_id.startswith(prefix):
+        return ""
+    suffix = agent_id[len(prefix):]
+    try:
+        worker_index = int(suffix)
+    except (TypeError, ValueError):
+        return ""
+    if worker_index < 1 or metadata.get("cluster_worker_index") not in {
+        worker_index, str(worker_index)
+    }:
+        return ""
+    return group
+
+
+def _claim_agent_ids(agent_id: str, metadata: dict[str, Any]) -> tuple[str, ...]:
+    """Return IDs this worker may match for a queued task claim.
+
+    ``agents.current_task_id`` is intentionally single-valued, so each pool
+    worker has its own identity.  The role root is added only for a correctly
+    registered Cluster worker; unrelated Agents retain exact-ID semantics.
+    """
+    agent_id = str(agent_id or "").strip()
+    group = _validated_cluster_claim_group(agent_id, metadata)
+    if not group or group == agent_id:
+        return (agent_id,)
+    return (agent_id, group)
 
 
 def _normalize_manifest_outcome(manifest: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -441,6 +514,68 @@ class ControlService:
                 (error_json, row["job_id"]),
             )
 
+    def register_cluster_worker(
+        self,
+        name: str,
+        *,
+        role_id: str,
+        worker_id: str,
+        worker_index: int,
+        worker_count: int,
+        platform: str = "",
+        hostname: str = "",
+        capabilities: Optional[list[str]] = None,
+        node_kind: str = "",
+    ) -> dict[str, Any]:
+        """Register an in-process Cluster worker with a server-owned marker.
+
+        The marker is intentionally unavailable through the generic Agent
+        registration contract.  Claim-time role affinity therefore cannot be
+        enabled by a normal Agent merely self-reporting ``claim_group``.
+        """
+        role = str(role_id or "").strip()
+        worker = str(worker_id or "").strip()
+        expected_kind = _CLUSTER_ROLE_NODE_KINDS.get(role)
+        try:
+            index = int(worker_index)
+            count = int(worker_count)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid Cluster worker index/count") from exc
+        expected_worker = role if index == 0 else f"{role}{_CLUSTER_WORKER_SUFFIX}{index}"
+        if (
+            expected_kind is None
+            or worker != expected_worker
+            or index < 0
+            or count < 1
+            or index >= count
+            or str(node_kind or "").strip() != expected_kind
+        ):
+            raise ValueError("invalid Cluster worker identity")
+        resolved_kind, effective_caps, rejected_caps = _apply_node_policy(
+            expected_kind, {}, capabilities
+        )
+        if resolved_kind != expected_kind:
+            raise ValueError("invalid Cluster worker capabilities")
+        metadata: dict[str, Any] = {
+            "node_kind": expected_kind,
+            "cluster_role": role,
+            "claim_group": role,
+            "cluster_worker_index": index,
+            "cluster_worker_count": count,
+            "cluster_worker_identity": _CLUSTER_WORKER_MARKER,
+        }
+        if rejected_caps:
+            metadata["capability_policy"] = "filtered"
+            metadata["rejected_capability_count"] = len(rejected_caps)
+        return self._register_agent_record(
+            name,
+            agent_id=worker,
+            platform=platform,
+            hostname=hostname,
+            capabilities=effective_caps,
+            metadata=metadata,
+        )
+
     def register_agent(
         self,
         name: str,
@@ -459,6 +594,11 @@ class ControlService:
             node_kind, metadata, capabilities
         )
         merged_metadata = dict(metadata or {})
+        # These fields are assigned only by register_cluster_worker().  Never
+        # persist caller-provided values from the generic Agent surface: a
+        # normal Agent must not self-authorize as a Cluster pool worker.
+        for protected_key in _CLUSTER_WORKER_PROTECTED_KEYS:
+            merged_metadata.pop(protected_key, None)
         # Persist the resolved node kind so claim-time gating can trust it even
         # if a later heartbeat omits it. This is metadata, not an auth identity.
         if resolved_kind:
@@ -573,7 +713,14 @@ class ControlService:
                 next_task_id = current_task_id if current_task_id is not None else agent["current_task_id"]
                 next_metadata = dict(agent["metadata"])
                 if metadata:
-                    next_metadata.update(metadata)
+                    # Keep server-owned Cluster worker identity immutable and
+                    # ignore attempts by generic Agents to add the marker via
+                    # a later heartbeat.
+                    next_metadata.update({
+                        key: value
+                        for key, value in metadata.items()
+                        if key not in _CLUSTER_WORKER_PROTECTED_KEYS
+                    })
                 conn.execute(
                     """
                     UPDATE agents
@@ -764,15 +911,29 @@ class ControlService:
                     return None
                 if not windows_connector_contract_is_current(metadata):
                     return None
+                # New data bindings are keyed by owner/device/root.  Keep a
+                # project-indexed view only for legacy connector adverts.
                 advertised: dict[str, set[str]] = {}
+                advertised_modern: set[str] = set()
+                registered_owner = str(metadata.get("user") or "").strip().casefold()
                 for item in metadata.get("data_bindings") or []:
                     if not isinstance(item, dict) or item.get("healthy") is not True:
                         continue
                     project = str(item.get("project") or "").strip()
                     binding_id = str(item.get("id") or "").strip()
-                    if project and binding_id.startswith("data-root:sha256:"):
+                    binding_owner = str(item.get("owner") or "").strip().casefold()
+                    binding_device = str(item.get("device_id") or item.get("device") or "").strip()
+                    if not binding_id.startswith("data-root:sha256:"):
+                        continue
+                    if binding_owner or binding_device:
+                        if registered_owner and binding_owner and registered_owner != binding_owner:
+                            continue
+                        if binding_device and binding_device != agent_id:
+                            continue
+                        advertised_modern.add(binding_id)
+                    elif project:
                         advertised.setdefault(project, set()).add(binding_id)
-                if not advertised:
+                if not advertised and not advertised_modern:
                     return None
                 rows = conn.execute(
                     """
@@ -800,10 +961,19 @@ class ControlService:
                     project = str(payload.get("project") or "").strip()
                     spec = self._loads(row["spec_json"])
                     data_path = str((spec.get("data") or {}).get("path") or "")
+                    owner_raw = str(row["owner"] or "").strip()
                     binding_id = next(
                         (
-                            value for value in candidate_data_binding_ids(project, data_path)
-                            if value in advertised.get(project, set())
+                            value
+                            for value in (
+                                candidate_data_binding_ids(
+                                    owner=owner_raw,
+                                    device_id=agent_id,
+                                    data_path=data_path,
+                                )
+                                + candidate_data_binding_ids(project, data_path)
+                            )
+                            if value in advertised_modern or value in advertised.get(project, set())
                         ),
                         "",
                     )
@@ -1021,12 +1191,24 @@ class ControlService:
                 if node_kind not in {"windows_agent", "windows_full"}:
                     return None
                 advertised: dict[str, set[str]] = {}
+                advertised_modern: set[str] = set()
+                registered_owner = str(metadata.get("user") or "").strip().casefold()
                 for item in metadata.get("data_bindings") or []:
                     if not isinstance(item, dict) or item.get("healthy") is not True:
                         continue
                     project = str(item.get("project") or "").strip()
                     binding_id = str(item.get("id") or "").strip()
-                    if project and binding_id.startswith("data-root:sha256:"):
+                    binding_owner = str(item.get("owner") or "").strip().casefold()
+                    binding_device = str(item.get("device_id") or item.get("device") or "").strip()
+                    if not binding_id.startswith("data-root:sha256:"):
+                        continue
+                    if binding_owner or binding_device:
+                        if registered_owner and binding_owner and registered_owner != binding_owner:
+                            continue
+                        if binding_device and binding_device != agent_id:
+                            continue
+                        advertised_modern.add(binding_id)
+                    elif project:
                         advertised.setdefault(project, set()).add(binding_id)
                 rows = conn.execute(
                     """
@@ -1063,12 +1245,20 @@ class ControlService:
                     # but never fall back to a Linux body upload.  Keep the
                     # legacy token readable for old jobs while all new v2
                     # submissions use ``direct_transfer``.
-                    if payload.get("dispatch_scope") not in {"data_upload", "direct_transfer"}:
+                    if payload.get("dispatch_scope") not in {"data_upload", "direct_transfer", "source_to_local"}:
                         continue
                     project = str(payload.get("project") or "").strip()
                     data_path = str(payload.get("data_path") or "")
-                    for binding_id in candidate_data_binding_ids(project, data_path):
-                        if binding_id in advertised.get(project, set()):
+                    owner_raw = str(row["owner"] or "").strip()
+                    for binding_id in (
+                        candidate_data_binding_ids(
+                            owner=owner_raw,
+                            device_id=agent_id,
+                            data_path=data_path,
+                        )
+                        + candidate_data_binding_ids(project, data_path)
+                    ):
+                        if binding_id in advertised_modern or binding_id in advertised.get(project, set()):
                             candidate = (str(row["task_id"]), binding_id)
                             break
                     if candidate is not None:
@@ -1546,6 +1736,8 @@ class ControlService:
                 agent_metadata = dict(agent.get("metadata") or {})
                 agent_node_kind = str(agent_metadata.get("node_kind") or agent_metadata.get("node.kind") or "")
                 registered_owner = str(agent_metadata.get("user") or "").strip().casefold()
+                claim_agent_ids = _claim_agent_ids(agent_id, agent_metadata)
+                claim_group = _validated_cluster_claim_group(agent_id, agent_metadata)
 
                 def can_resume(row: sqlite3.Row) -> bool:
                     if (
@@ -1633,21 +1825,41 @@ class ControlService:
                     return self._get_task_locked(conn, row["task_id"])
 
                 # Filter by assigned_agent_id: a task pre-bound to a specific
-                # agent is only claimable by that agent. Empty binding means any
-                # agent (backward compatible). Prevents same-user multi-agent
-                # task stealing.
-                rows = conn.execute(
+                # agent is only claimable by that agent, except for an
+                # explicitly registered Cluster pool worker matching its role
+                # root. Empty binding means any agent (backward compatible).
+                # The compare-and-swap below still makes the claim atomic.
+                claim_slots = ",".join("?" for _ in claim_agent_ids)
+                if claim_group:
+                    # Prefer an owner with fewer currently running Stages in
+                    # this role.  FIFO remains the tie-breaker, and when no
+                    # other owner exists the same owner may use every worker.
+                    order_clause = """
+                    ORDER BY (
+                        SELECT COUNT(*)
+                        FROM tasks AS running_task
+                        JOIN jobs AS running_job ON running_job.job_id=running_task.job_id
+                        WHERE running_task.status='running'
+                          AND running_task.required_agent_id=?
+                          AND LOWER(running_job.owner)=LOWER(j.owner)
+                    ), t.created_at ASC, t.order_index ASC, t.task_id ASC
                     """
+                    query_params = (*claim_agent_ids, *claim_agent_ids, claim_group)
+                else:
+                    order_clause = "ORDER BY t.created_at ASC, t.order_index ASC, t.task_id ASC"
+                    query_params = (*claim_agent_ids, *claim_agent_ids)
+                rows = conn.execute(
+                    f"""
                     SELECT t.task_id, t.job_id, t.task_type, t.stage_type,
                            t.order_index, t.dependencies_json, j.owner, j.job_type
                     FROM tasks t
                     JOIN jobs j ON j.job_id=t.job_id
                     WHERE t.status='queued'
-                      AND (t.assigned_agent_id = '' OR t.assigned_agent_id = ?)
-                      AND (t.required_agent_id = '' OR t.required_agent_id = ?)
-                    ORDER BY t.created_at ASC, t.order_index ASC, t.task_id ASC
+                      AND (t.assigned_agent_id = '' OR t.assigned_agent_id IN ({claim_slots}))
+                      AND (t.required_agent_id = '' OR t.required_agent_id IN ({claim_slots}))
+                    {order_clause}
                     """,
-                    (agent_id, agent_id),
+                    query_params,
                 ).fetchall()
                 for row in rows:
                     if (

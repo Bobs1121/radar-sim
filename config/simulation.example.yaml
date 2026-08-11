@@ -17,9 +17,9 @@ selena:
 data:
   path: D:/path/to/measurements
 
-# MatFilter 必填。Adapter 仅在所识别的仿真配方需要时检查（例如 ovrs25 可留空）。
+# MatFilter 可选（显式填写优先，否则从代码仓推导唯一候选）；Adapter 可选。
 # Web 中选择并上传后会写入可跨电脑复用的 config-asset:// 引用。
 simulation:
   target: auto
   adapter_file: ''
-  mat_filter: D:/path/to/signals.filter
+  mat_filter: ""

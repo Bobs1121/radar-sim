@@ -324,11 +324,34 @@ def _run_task(
                     else "[agent] recognizing the user-selected workspace"
                 ],
             )
-            recognition = (
-                _resolve_existing_v2_run_config(task)
-                if resolution_source == "existing"
-                else _resolve_v2_run_config(dict(task.get("payload") or {}))
-            )
+            task_payload = dict(task.get("payload") or {})
+            task_owner = str(task_payload.get("owner") or task.get("owner") or "").strip()
+            try:
+                recognition = (
+                    _resolve_existing_v2_run_config(
+                        task,
+                        owner=task_owner,
+                        device_id=agent_id,
+                    )
+                    if resolution_source == "existing"
+                    else _resolve_v2_run_config(
+                        task_payload,
+                        owner=task_owner,
+                        device_id=agent_id,
+                    )
+                )
+            except TypeError as exc:
+                # Embedded callers may still monkeypatch/import the old
+                # one-argument resolver.  Retry only for that signature
+                # mismatch; TypeError raised by the resolver itself remains a
+                # real task failure.
+                if "unexpected keyword argument" not in str(exc):
+                    raise
+                recognition = (
+                    _resolve_existing_v2_run_config(task)
+                    if resolution_source == "existing"
+                    else _resolve_v2_run_config(task_payload)
+                )
             client.append_logs(task_id, ["[agent] local Selena/runtime evidence prepared"])
             # Resource bodies are not accepted by the Linux control plane.
             # Later role-specific stages request signed TransferPlans after
@@ -1098,6 +1121,16 @@ def _scan_direct_transfer_items(source_root: Path, *, source_role: str) -> list[
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().casefold()):
         if not path.is_file() or path.is_symlink():
             continue
+        # Existing Selena outputs commonly contain very large linker/debug
+        # products (.pdb/.ilk/.lib/.exp).  They are not runtime inputs and the
+        # mature local/Cluster adapter has always staged only Selena.exe plus
+        # DLL dependencies.  Apply the same project-independent rule to the
+        # direct-transfer path so source-to-source transfer does not turn the
+        # thin control plane into a build-output mirror.
+        if source_role == "runtime_bundle":
+            name = path.name.casefold()
+            if name != "selena.exe" and path.suffix.casefold() != ".dll":
+                continue
         relative = path.relative_to(root).as_posix()
         stat = path.stat()
         items.append(
@@ -1110,7 +1143,14 @@ def _scan_direct_transfer_items(source_root: Path, *, source_role: str) -> list[
             }
         )
     if not items:
+        if source_role == "runtime_bundle":
+            raise ValueError("Selena runtime folder contains no selena.exe or DLL files")
         raise ValueError("direct transfer source directory is empty")
+    if source_role == "runtime_bundle" and not any(
+        Path(str(item.get("relative_path") or "")).name.casefold() == "selena.exe"
+        for item in items
+    ):
+        raise ValueError("Selena runtime folder does not contain selena.exe")
     return items
 
 
@@ -1200,6 +1240,23 @@ def _direct_transfer_asset(
     }
 
 
+def _infer_task_mat_filter(payload: dict) -> Path:
+    """Discover an omitted MatFilter on the source/execution computer."""
+
+    from core.mat_filter_resolver import resolve_mat_filter
+
+    hints = dict(payload.get("resource_discovery") or {})
+    return resolve_mat_filter(
+        str(payload.get("mat_filter") or ""),
+        code_path=str(hints.get("code_path") or payload.get("code_path") or ""),
+        existing_path=str(hints.get("existing_path") or payload.get("existing_path") or ""),
+        selena_build_script=str(
+            hints.get("selena_build_script") or payload.get("selena_build_script") or ""
+        ),
+        runtime_xml=str(hints.get("runtime_xml") or payload.get("runtime_xml") or ""),
+    ).path
+
+
 def _run_v5_prepare_data(
     client: "_ControlClient",
     agent_id: str,
@@ -1232,10 +1289,23 @@ def _run_v5_prepare_data(
     thread.start()
     status = "failed"
     returncode = -1
-    local_route = str((task.get("payload") or {}).get("dispatch_scope") or "") == "local_data"
+    stage_payload = dict(task.get("payload") or {})
+    local_route = str(stage_payload.get("dispatch_scope") or "") == "local_data"
+    # ``source_to_local`` remains a future transfer-kernel mode.  This Agent
+    # has no target-specific Windows cache/target-agent authorization yet, so
+    # never execute it against the Cluster root by accident.
+    transfer_mode = str(stage_payload.get("transfer_mode") or "shared_copy").strip().lower()
     result: dict = {"error": "local dataset preparation failed"}
     direct_transfers: list[dict] = []
     try:
+        if transfer_mode == "source_to_local":
+            error = RuntimeError(
+                "source_to_local requires a target-specific Windows cache and target-agent authorization"
+            )
+            error.code = "source_to_local_unavailable"  # type: ignore[attr-defined]
+            raise error
+        if transfer_mode != "shared_copy":
+            raise ValueError("unsupported direct-transfer mode")
         response = client.heartbeat(agent_id, status="busy", current_task_id=task_id)
         if response.get("cancel_requested"):
             cancel_event.set()
@@ -1249,6 +1319,23 @@ def _run_v5_prepare_data(
             and str(item.get("source_role") or "").strip()
             and str(item.get("path") or "").strip()
         ]
+        discovery_hints = dict(payload.get("resource_discovery") or {})
+        can_discover_mat_filter = any(
+            str(discovery_hints.get(key) or payload.get(key) or "").strip()
+            for key in ("code_path", "existing_path", "selena_build_script", "runtime_xml")
+        )
+        if can_discover_mat_filter and not any(
+            str(item.get("source_role") or "").strip() == "mat_filter"
+            for item in source_entries
+        ):
+            inferred = _infer_task_mat_filter(payload)
+            source_entries.append(
+                {"source_role": "mat_filter", "path": str(inferred)}
+            )
+            client.append_logs(
+                task_id,
+                ["[agent] MatFilter omitted; selected one high-confidence repository candidate"],
+            )
         dataset_sources = [
             item for item in source_entries
             if str(item.get("source_role") or "").strip() == "dataset"
@@ -1278,7 +1365,18 @@ def _run_v5_prepare_data(
             if not project or not data_path or not candidate.exists():
                 raise ValueError("submitted local data path is unavailable for one-click authorization")
             root = candidate if candidate.is_dir() else candidate.parent
-            binding = bindings.register(project=project, root_path=root)
+            owner_scope = str(payload.get("owner") or task.get("owner") or "").strip()
+            if owner_scope:
+                binding = bindings.register(
+                    owner=owner_scope,
+                    device_id=agent_id,
+                    root_path=root,
+                )
+            else:
+                # Older control planes did not include owner/device in the
+                # private payload. Keep their project-scoped binding readable
+                # while the modern path is owner/device scoped.
+                binding = bindings.register(project=project, root_path=root)
             payload["data_binding_id"] = binding.binding_id
             client.heartbeat(
                 agent_id,
@@ -1428,7 +1526,12 @@ def _run_v5_prepare_data(
             }
             status = "succeeded"
             returncode = 0
-            client.append_logs(task_id, ["[agent] local dataset copied directly to Cluster data plane; Agent may now disconnect"])
+            client.append_logs(
+                task_id,
+                [
+                    "[agent] local dataset copied directly to Cluster data plane; Agent may now disconnect"
+                ],
+            )
             # Runtime XML, MatFilter and Adapter are independent resources.
             # They share the Stage only for scheduling; each gets its own
             # owner/job/stage-bound plan and manifest.
@@ -1709,8 +1812,16 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         if adapter_value
         else ""
     )
+    mat_filter_value = str(payload.get("mat_filter") or "").strip()
+    if not mat_filter_value:
+        mat_filter_value = str(_infer_task_mat_filter(payload))
+        _safe_append_logs(
+            client,
+            str(task.get("task_id") or task.get("stage_id") or ""),
+            ["[agent] MatFilter omitted; selected one high-confidence repository candidate"],
+        )
     mat_filter_path = _materialize_local_config_asset(
-        str(payload.get("mat_filter") or ""), kind="mat_filter", assets=assets, client=client
+        mat_filter_value, kind="mat_filter", assets=assets, client=client
     )
     def authorize_user_asset(path_text: str, *, role: str):
         """Authorize a YAML-provided local asset on first use.
@@ -2118,7 +2229,12 @@ def _execute_v5_local_finalize(task: dict) -> dict:
     return {"manifest": manifest}
 
 
-def _resolve_v2_run_config(payload: dict) -> dict:
+def _resolve_v2_run_config(
+    payload: dict,
+    *,
+    owner: str = "",
+    device_id: str = "",
+) -> dict:
     """Resolve a project-free workspace only after local binding authorization."""
     from core.agent_bindings import AgentBindingStore, make_workspace_path_id
     from core.workspace_recognizer import WorkspaceRecognizer
@@ -2211,9 +2327,16 @@ def _resolve_v2_run_config(payload: dict) -> dict:
         local_data = Path(data_path).expanduser()
         if classify_data_path(data_path) not in {"shared", "central"} and local_data.exists():
             root = local_data if local_data.is_dir() else local_data.parent
-            data_binding_id = AgentDataBindingStore().register(
-                project=binding.project, root_path=root
-            ).binding_id
+            if owner:
+                data_binding_id = AgentDataBindingStore().register(
+                    owner=owner,
+                    device_id=device_id or "agent",
+                    root_path=root,
+                ).binding_id
+            else:
+                data_binding_id = AgentDataBindingStore().register(
+                    project=binding.project, root_path=root
+                ).binding_id
 
     def relative_ref(value: str) -> str:
         if not value:
@@ -2304,7 +2427,12 @@ def _resolve_branch_repo_ref(workspace_root: Path, selena_build_script: str) -> 
     return reference or "."
 
 
-def _resolve_existing_v2_run_config(task: dict) -> dict:
+def _resolve_existing_v2_run_config(
+    task: dict,
+    *,
+    owner: str = "",
+    device_id: str = "",
+) -> dict:
     """Import a node-local existing folder into a path-free Agent lease."""
     import hashlib
 
@@ -2344,10 +2472,17 @@ def _resolve_existing_v2_run_config(task: dict) -> dict:
         candidate = Path(data_path).expanduser()
         if candidate.exists():
             data_root = candidate if candidate.is_dir() else candidate.parent
-            data_binding_id = AgentDataBindingStore().register(
-                project=imported.internal_project,
-                root_path=data_root,
-            ).binding_id
+            if owner:
+                data_binding_id = AgentDataBindingStore().register(
+                    owner=owner,
+                    device_id=device_id or "agent",
+                    root_path=data_root,
+                ).binding_id
+            else:
+                data_binding_id = AgentDataBindingStore().register(
+                    project=imported.internal_project,
+                    root_path=data_root,
+                ).binding_id
     evidence_ref = f"{stage_id}:{attempt}"
     try:
         runtime_data_player_signals = runtime_data_player_ports(

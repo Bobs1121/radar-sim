@@ -4,20 +4,22 @@
 > 更新日期：2026-07-15
 > 上游需求：`PRD.md` v5.0
 
-> **2026-08-10 当前实施覆盖：** 用户只安装一个 `unified` Windows 连接组件。它按任务领取本地路径访问、编译、数据/产物准备和本地仿真阶段；Cluster 的运行、采集和最终归档仍由 Linux/平台 Gateway 承担。本文后续出现的 `full/light`、`windows_full/windows_agent` 仅是内部兼容节点和历史迁移矩阵，不得重新暴露到 Web、SDK、YAML 或安装向导。
+> **2026-08-11 当前实施覆盖：** 用户只安装一个 `unified` Windows 连接组件。它按任务领取本地路径访问、编译、数据/产物准备和本地仿真阶段；Cluster 的运行与控制由 Linux/平台 Gateway 承担。本文后续出现的 `full/light`、`windows_full/windows_agent` 仅是内部能力标签和历史迁移矩阵，不得重新暴露到 Web、SDK、YAML 或安装向导。当前业务收口与实施进度见 `docs/handoffs/2026-08-11-business-convergence-master.md`。
 
 ## 1. 设计目标与现状判断
 
-本设计把现有多套 CLI、Web handler、Profile、Mode A/B、T1/T2/T3 和控制面原型收敛为一个产品架构：同一份 `SimulationSpec` 经同一 API 和调度器生成执行计划，再由具备能力的 Windows full 本地节点、首版只做编译/上传准备的用户轻量 Agent，或平台 Cluster Worker 执行。
+本设计把现有多套 CLI、Web handler、Profile、Mode A/B、T1/T2/T3 和控制面原型收敛为一个产品架构：同一份 `UserRunConfig 2.0` 经同一 API 和调度器生成执行计划，再由统一 Windows Connector 或平台 Cluster Worker 执行。Connector 内部按任务声明能力；用户不选择部署模式。
 
 > **设计防漂移基线：** `docs/PRODUCT_CONTRACT.md` 是用户最终确认的权威产品合同。本文历史章节若仍把 Runtime Bundle/project/output_root 等作为用户输入，仅代表旧设计，不再有效。Runtime Bundle 保留为内部打包、传输和缓存实现，公开合同只有 `existing_path + runtime_xml`。
+>
+> **P0 实施真值（2026-08-11）：** Cluster 方向只开放 `shared_copy`；本文后续出现的 `source_to_local` 是目标架构，不代表当前可用。当前本地执行节点无法原地读取某项远端输入时，服务返回 `source_to_local_unavailable`，不会把 Cluster 根伪装成 Windows 缓存。
 
 > 2026-07-14 设计收敛：新用户入口合同已经升级为项目无关 `UserRunConfig 2.0`。本文后续仍出现的 `SimulationSpec` 表示兼容/内部适配层，不再表示 Web 用户需要理解项目。权威转换为：`UserRunConfig -> workspace/runtime bundle recognition -> internal project adapter -> ResolvedSpec -> Stage DAG`。
 
 ### 0.1 Runtime 与仿真配置边界
 
 - `RuntimeBundle` 是不可变、共享可见、内容寻址的 Selena 执行单元：`selena.exe`、同目录全部 DLL、绑定 Runtime XML、隐藏的分支/commit/dirty/toolchain/internal-adapter evidence。
-- MatFilter 是当前版本每个任务必选的独立配置；Adapter 为可选任务输入，仅在当前 Selena/数据链确实需要时由用户提供。两者均不参与 Selena 编译、不进入 Runtime Bundle，也不参与 Bundle 身份计算；不得由项目 recipe 静默补值。
+- MatFilter 是独立配置：用户显式选择时无条件优先；留空时由实际读取代码仓的 SDK/Connector 在通用 Selena 工具目录中选择唯一高置信候选，候选缺失或同分歧义时要求用户选择，不按项目名或历史任务猜测。Adapter 为可选任务输入，仅在当前 Selena/数据链确实需要时由用户提供。两者均不参与 Selena 编译、不进入 Runtime Bundle，也不参与 Bundle 身份计算；不得由项目 recipe 静默补值。
 - Adapter/MatFilter 可由授权 Windows 路径、管理员共享命名空间或用户私有 `ConfigAssetStore` 解析；对外只暴露 `config-asset://sha256/...`。
 - Cluster 预检从 `DatasetRef + RuntimeBundleRef + optional AdapterRef + MatFilterRef` 生成私有执行上下文。物理路径、解压目录、Config.cfg、提交命令和凭据只进入 `ClusterRunStore` 私有 lease。
 - `UserRunConfig 2.0` 的仿真执行上下文不得继承项目 `simulation.source`、mounting、Runtime/Adapter/MatFilter 默认或项目 ParamConfig 模板。RL/RR/FL/FR 从当前 MF4 acquisition source 及对应数据组自动推导；项目识别只服务于编译外围适配。
@@ -26,9 +28,9 @@
 
 - `selena_build_script` 是必需的实际 Selena 编译入口；Windows Agent 根据本机已安装的 VS C++ toolset 对其中 R2D2 `-vs`/`VS_POSTFIX` 做最小、可见、幂等适配。可选 `package_build_script` 用于补充内部项目适配证据、静态提取 TCC/toolcollection 等依赖，并执行其明确声明且可安全识别的非交互代码生成步骤；VS 始终由用户自行安装。
 - Selena 脚本以及用户填写时的软件包脚本必须位于 `code_path` 内。中央只保存用户合同，Agent 回传并继续使用工作区内相对逻辑引用。
-- 一键安装的 full/light Agent 声明 `auto_configure`。首次匹配任务可在本机验证路径后登记 workspace/output、Runtime 父目录和数据根；后续心跳只发布哈希化 binding ID，实现“一次配置、永久复用”。
+- 一键安装的统一 Connector 声明 `auto_configure`。首次匹配任务可在本机验证路径后登记 workspace/output、Runtime 父目录和数据根；后续心跳只发布哈希化 binding ID，实现“一次配置、永久复用”。内部节点类型只能用于能力门禁，不能形成第二套安装产品。
 - 工作区识别以用户给出的代码仓和 Selena 脚本为首要事实来源，可选软件包脚本只补充证据。已知 adapter 命中时复用其默认值；未命中时生成不含路径的匿名内部身份，并从 Selena 脚本推导输出目录、从所有已提供脚本的有界调用邻域推导环境依赖。不存在 `config/projects/<name>` 不能单独导致任务失败。
-- `target=auto` 在提交时基于在线 capability 选择：有 `windows_full` 时优先本地；否则选择 Cluster。`windows_light` 只承担编译/上传，永不成为本地仿真节点。
+- `target=auto` 必须先解析 Selena、Runtime、数据、MatFilter、可选 Adapter 和编译脚本各自的执行端可达性，再在本地与 Cluster 中选择所有资源均可满足且总搬运量更小的路线。仅凭某个节点在线或 `data.path` 的盘符不能决定目标。
 
 ### 0.2 Cluster Stage 实施拓扑
 

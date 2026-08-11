@@ -1,5 +1,6 @@
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
+import threading
 import time
 import zipfile
 
@@ -14,7 +15,11 @@ from core.cluster_stage_executor import (
     execute_cluster_submit,
     resolve_cluster_data,
 )
-from core.cluster_stage_executor import ClusterStageContext, ClusterStageExecutor
+from core.cluster_stage_executor import (
+    ClusterStageContext,
+    ClusterStageExecutor,
+    LINUX_STAGE_AGENT_ID,
+)
 from core.control_service import ControlService
 from core.api_v1 import ApiV1Service
 from core.artifact_store import ArtifactStore
@@ -51,6 +56,69 @@ def test_busy_cluster_stage_keeps_heartbeating_for_other_users(monkeypatch):
 
     assert len(heartbeats) >= 3
     assert all(item[:3] == ("linux-v2-stage-executor", "busy", "task-busy") for item in heartbeats)
+
+
+def test_role_worker_pool_claims_two_linux_stages_without_shared_identity(tmp_path, monkeypatch):
+    """Long-running Linux stages use distinct current_task_id slots.
+
+    The role root remains the durable binding written by the API, while the
+    executor's fixed worker IDs let two users progress concurrently without
+    overwriting each other's heartbeat/assignment.
+    """
+    control = ControlService(tmp_path / "control.db")
+    for owner in ("alice", "bob"):
+        control.create_job(
+            "cluster.run",
+            owner=owner,
+            tasks=[{
+                "task_type": "collect_results",
+                "stage_type": "collect_results",
+                "assigned_agent_id": LINUX_STAGE_AGENT_ID,
+                "required_agent_id": LINUX_STAGE_AGENT_ID,
+            }],
+        )
+    started: list[tuple[str, str]] = []
+    both_started = threading.Event()
+    release = threading.Event()
+
+    def fake_execute(agent_id, task):
+        started.append((agent_id, str(task["task_id"])))
+        if len(started) >= 2:
+            both_started.set()
+        assert release.wait(2.0)
+
+    executor = ClusterStageExecutor(
+        control,
+        SimpleNamespace(),
+        poll_interval=0.01,
+        heartbeat_interval=0.02,
+        linux_worker_count=2,
+        gateway_worker_count=1,
+    )
+    monkeypatch.setattr(executor, "_execute_one", fake_execute)
+    executor.start()
+    try:
+        assert both_started.wait(2.0), started
+        worker_ids = {agent_id for agent_id, _task_id in started}
+        assert len(worker_ids) == 2
+        assert LINUX_STAGE_AGENT_ID in worker_ids
+        assert any(
+            agent_id.startswith(LINUX_STAGE_AGENT_ID + "-worker-")
+            for agent_id in worker_ids
+        )
+        agents = {
+            item["agent_id"]: item
+            for item in control.list_agents()
+            if item["agent_id"].startswith(LINUX_STAGE_AGENT_ID)
+        }
+        assert set(agents) == {
+            LINUX_STAGE_AGENT_ID,
+            LINUX_STAGE_AGENT_ID + "-worker-1",
+        }
+        assert all(item["metadata"]["claim_group"] == LINUX_STAGE_AGENT_ID for item in agents.values())
+    finally:
+        release.set()
+        executor.stop()
 
 
 def _job():

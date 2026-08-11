@@ -18,8 +18,8 @@ OD25 用户不需要选择 project、recipe、profile、输出目录、Runtime B
 | 已有 Selena 文件夹 | 不需要 | 必需 |
 | 与 Selena 强绑定的 Runtime XML | 必需 | 必需 |
 | 数据路径 | 必需 | 必需 |
-| OD25 Adapter | 必需 | 必需 |
-| MatFilter | 必需 | 必需 |
+| OD25 Adapter | 可选 | 可选 |
+| MatFilter | 可选；显式填写优先，否则从代码仓推导唯一候选 | 可选；显式填写优先，否则从代码仓推导唯一候选 |
 
 系统只接收一个 `data.path`。它会递归查找 MF4；本地数据在需要时上传，共享数据由 Linux 部署映射到 Cluster 可访问位置。
 
@@ -56,7 +56,7 @@ data:
 simulation:
   target: cluster
   adapter_file: "D:/path/to/OD25_adapter.txt"
-  mat_filter: "D:/path/to/OD25_mat.filter"
+  mat_filter: ""  # 可留空；无法唯一推导时 Web/SDK 会要求用户选择
 ```
 
 `branch` 可留空。系统始终编译用户当前工作区，包括未提交修改；不会自动切分支、清仓、reset 或 stash。填写了 `branch` 但与实际分支不一致时，任务会显示警告并继续。
@@ -76,7 +76,7 @@ data:
 simulation:
   target: cluster
   adapter_file: "D:/path/to/OD25_adapter.txt"
-  mat_filter: "D:/path/to/OD25_mat.filter"
+  mat_filter: ""  # 可留空；无法唯一推导时 Web/SDK 会要求用户选择
 ```
 
 `existing_path` 应指向能唯一找到 `Selena.exe` 的产物文件夹。系统会把 `Selena.exe`、同目录全部 DLL 和 Runtime XML 作为一个内部整体校验和传输，但 YAML 中不会出现 Bundle 概念。
@@ -161,7 +161,7 @@ with RadarSimClient("http://10.190.171.44:8877") as client:
 
 `submit_yaml()` 与 Web 调用同一个 `/api/v1/run-jobs` 调度核心。`idempotency_key` 用于避免集成产品因网络重试重复创建任务；同一次业务请求保持不变，新一次运行换一个值。
 
-未显式传入 `user` 时，SDK 会根据调用端的 Windows/Linux 登录用户与机器生成稳定、不可读的 `sdk-...` 身份。它在进程或电脑重启后保持不变，并避免多个未配置 SDK 用户落到 Linux 服务账号的同一个任务空间。接入企业登录后可显式传入统一用户 ID。
+未显式传入 `user` 时，SDK 使用调用端的 Windows/Linux 登录用户名生成稳定的 `user-<小写登录名>` owner；需要跨电脑或与 Web 统一时，可显式传入同一个规范化标识，例如 `RadarSimClient(url, user="user-alice")`。Web 首次访问未认证的可信内网服务时会要求输入同一个 NTID（内部规范化为 `user-alice`）并保存在浏览器本地；清理缓存或更换浏览器只需再次输入该标识，不必重装已配对 Connector。该标识只是 `X-Rsim-User` 的可信内网隔离标签，不是登录认证，不能用于不受信网络。
 
 ### 6.3 SDK 进程所在位置决定谁读取本地文件
 

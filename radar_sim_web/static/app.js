@@ -18,10 +18,13 @@ const state = {
   capabilities: null,
   connectorAwait: null,
   accessToken: sessionStorage.getItem("rsimAccessToken") || "",
-  // In the no-auth test deployment, keep each browser's control-plane scope
-  // separate.  The value is opaque and is never shown as a business field;
-  // authenticated deployments ignore it in favor of the Bearer identity.
-  userId: browserUserId(),
+  // In the trusted no-auth deployment this is an explicit, durable grouping
+  // label (for example the company's NTID), not a generated browser identity.
+  // Both clients use the lower-case `user-<id>` namespace.  Authenticated
+  // deployments ignore it and derive owner from the Bearer principal.
+  userId: storedWebUserId() || legacyWebUserId(),
+  legacyIdentity: !storedWebUserId() && Boolean(legacyWebUserId()),
+  identityRequired: false,
   authenticationRequired: false,
   importedSelection: null,
   validatedTarget: "",
@@ -40,6 +43,9 @@ class ApiError extends Error {
 }
 
 async function api(path, options = {}) {
+  if (state.identityRequired && !state.authenticationRequired && path !== "/health") {
+    throw new Error("请先输入用户标识；它仅用于可信内网的任务隔离，不是登录认证");
+  }
   const headers = new Headers(options.headers || {});
   if (state.userId) headers.set("X-Rsim-User", state.userId);
   if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
@@ -77,19 +83,81 @@ async function api(path, options = {}) {
   return payload;
 }
 
-function browserUserId() {
-  const key = "rsimBrowserUserId";
+function storedWebUserId() {
+  const key = "rsimUserId";
   try {
     const current = localStorage.getItem(key) || "";
-    if (/^web-[a-f0-9]{24,64}$/i.test(current)) return current;
-    const random = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
-      ? globalThis.crypto.randomUUID().replaceAll("-", "")
-      : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
-    const value = `web-${random.slice(0, 32)}`;
-    localStorage.setItem(key, value);
-    return value;
+    return /^user-[a-z0-9][a-z0-9_.-]{0,127}$/.test(current.trim()) ? current.trim() : "";
   } catch {
     return "";
+  }
+}
+
+function legacyWebUserId() {
+  try {
+    const current = localStorage.getItem("rsimBrowserUserId") || "";
+    return /^web-[a-f0-9]{24,64}$/i.test(current.trim()) ? current.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function stableWebUserId(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_.-]{0,127}$/.test(normalized)) return "";
+  return normalized.startsWith("user-") ? normalized : `user-${normalized}`;
+}
+
+function showStableIdentityEntry(message = "请输入与 SDK 相同的用户标识", { required = true } = {}) {
+  if (state.authenticationRequired) return;
+  state.identityRequired = required;
+  const entry = byId("identityEntry");
+  if (entry) entry.hidden = false;
+  const input = byId("userIdentity");
+  if (input) {
+    input.value = state.legacyIdentity ? "" : state.userId;
+    input.setAttribute("aria-invalid", "false");
+    input.focus();
+  }
+  const status = byId("apiState");
+  if (status) {
+    status.textContent = message;
+    status.className = "api-state local-reconnecting";
+  }
+}
+
+async function saveStableIdentity() {
+  const input = byId("userIdentity");
+  const entered = String(input?.value || "").trim();
+  const value = stableWebUserId(entered);
+  if (!value) {
+    if (input) input.setAttribute("aria-invalid", "true");
+    showStableIdentityEntry("用户标识需为字母、数字、点、下划线或短横线");
+    return;
+  }
+  try {
+    localStorage.setItem("rsimUserId", value);
+    localStorage.removeItem("rsimBrowserUserId");
+  } catch {
+    // A private browsing context may reject storage.  Keep the value for the
+    // current page; the user can enter it again in a new context.
+  }
+  state.userId = value;
+  state.legacyIdentity = false;
+  state.identityRequired = false;
+  if (input) input.setAttribute("aria-invalid", "false");
+  const entry = byId("identityEntry");
+  if (entry) entry.hidden = true;
+  try {
+    await refreshCapabilities();
+    const status = byId("apiState");
+    if (status) {
+      status.textContent = "Linux 服务已连接";
+      status.className = "api-state ok";
+    }
+    if (state.view === "tasks") await loadJobs();
+  } catch (error) {
+    showStableIdentityEntry(error.message || "用户标识连接失败");
   }
 }
 
@@ -293,7 +361,6 @@ function runConfigFromForm() {
     throw new Error("请填写 Selena 产物文件夹");
   }
   if (!runtimeXml) throw new Error("请选择与 Selena 匹配的 Runtime XML");
-  if (!matFilter) throw new Error("请选择 MatFilter 配置文件");
 
   const selena = {
     source,
@@ -810,7 +877,8 @@ function renderJobDetail(job, events, manifest) {
   stagesTitle.textContent = "执行阶段";
   const stages = document.createElement("div");
   stages.className = "stage-list";
-  (job.stages || []).forEach((stage) => stages.append(renderStage(job, stage)));
+  const visibleSteps = (job.business_steps || []).length ? job.business_steps : (job.stages || []);
+  visibleSteps.forEach((stage) => stages.append(renderStage(job, stage)));
   stagesSection.append(stagesTitle, stages);
 
   const summarySection = document.createElement("section");
@@ -1024,16 +1092,17 @@ function renderStage(job, stage) {
   const copy = document.createElement("div");
   copy.className = "stage-copy";
   const title = document.createElement("strong");
-  title.textContent = stageName(stage.stage_type || stage.task_type);
+  title.textContent = stage.label || stageName(stage.stage_type || stage.task_type || stage.id);
   const detail = document.createElement("small");
-  const waiting = windowsWaitState(job, stage);
+  const isBusinessStep = Boolean(stage.id && !stage.stage_id && !stage.task_id);
+  const waiting = isBusinessStep ? windowsWaitState(job) : windowsWaitState(job, stage);
   detail.textContent = waiting
     ? `${waiting.reconnecting ? "本机正在自动重连" : "等待连接本机"}：${waiting.capability}`
-    : friendlyStageDetail(stage);
+    : (isBusinessStep ? `${Math.round((stage.progress || 0) * 100)}%` : friendlyStageDetail(stage));
   copy.append(title, detail);
   const actions = document.createElement("div");
   actions.className = "stage-actions";
-  if (["failed", "cancelled"].includes(stage.status)) {
+  if (!isBusinessStep && ["failed", "cancelled"].includes(stage.status)) {
     actions.append(actionButton("重试", "secondary", () => retryStage(job.id, stage.stage_id || stage.task_id)));
   }
   const canUpload = (stage.error?.actions || []).some((action) => action.type === "upload_data");
@@ -1201,6 +1270,7 @@ async function initialize() {
   byId("refreshJobs").addEventListener("click", loadJobs);
   byId("statusFilter").addEventListener("change", loadJobs);
   byId("saveToken").addEventListener("click", saveAccessToken);
+  byId("saveIdentity").addEventListener("click", saveStableIdentity);
   byId("connectWindowsFromCreate").addEventListener("click", () => {
     const button = byId("connectWindowsFromCreate");
     const status = byId("createWindowsStatus");
@@ -1208,6 +1278,9 @@ async function initialize() {
   });
   byId("accessToken").addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveAccessToken();
+  });
+  byId("userIdentity").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") saveStableIdentity();
   });
   updateConditionalFields();
   updateRouteSummary();
@@ -1226,7 +1299,18 @@ async function initialize() {
     } else {
       byId("apiState").textContent = health.ok ? "Linux 服务已连接" : "Linux 服务异常";
       byId("apiState").className = `api-state ${health.ok ? "ok" : "error"}`;
-      if (health.ok) await refreshCapabilities();
+      if (health.ok) {
+        if (state.userId) {
+          await refreshCapabilities();
+          if (state.legacyIdentity) {
+            showStableIdentityEntry(
+              "当前浏览器仍使用旧临时身份；输入公司 NTID 可升级，更新 Connector 后任务将使用稳定 owner。",
+              { required: false },
+            );
+          }
+        }
+        else showStableIdentityEntry();
+      }
     }
   } catch (error) {
     byId("apiState").textContent = "Linux 服务连接失败";

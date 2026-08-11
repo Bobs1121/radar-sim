@@ -29,6 +29,35 @@ def test_agent_parser_defaults_to_unified_mode():
     assert args.api_token == ""
 
 
+def test_direct_transfer_runtime_bundle_excludes_build_debug_files(tmp_path):
+    runtime = tmp_path / "RelWithDebInfo"
+    plugins = runtime / "plugins"
+    plugins.mkdir(parents=True)
+    (runtime / "selena.exe").write_bytes(b"exe")
+    (runtime / "selena_dll.dll").write_bytes(b"dll")
+    (plugins / "runtime_plugin.dll").write_bytes(b"plugin")
+    (runtime / "selena.pdb").write_bytes(b"debug")
+    (runtime / "selena.ilk").write_bytes(b"link")
+    (runtime / "selena.lib").write_bytes(b"library")
+
+    items = agent_module._scan_direct_transfer_items(runtime, source_role="runtime_bundle")
+
+    assert [item["relative_path"] for item in items] == [
+        "plugins/runtime_plugin.dll",
+        "selena.exe",
+        "selena_dll.dll",
+    ]
+
+
+def test_direct_transfer_runtime_bundle_requires_selena_exe(tmp_path):
+    runtime = tmp_path / "RelWithDebInfo"
+    runtime.mkdir()
+    (runtime / "runtime.dll").write_bytes(b"dll")
+
+    with pytest.raises(ValueError, match="does not contain selena.exe"):
+        agent_module._scan_direct_transfer_items(runtime, source_role="runtime_bundle")
+
+
 def test_missing_optional_dependency_has_stable_connector_diagnostic():
     error = ModuleNotFoundError("No module named 'yaml'")
     assert agent_module._missing_connector_dependency(error) == "yaml"

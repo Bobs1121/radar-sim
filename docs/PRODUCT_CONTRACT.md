@@ -2,7 +2,9 @@
 
 > 状态：权威、强制
 > 最近确认：2026-08-05
-> 适用范围：Web、Python SDK、REST API、Linux 控制面、Windows full/light Agent、Cluster 调度
+> 适用范围：Web、Python SDK、REST API、Linux 控制面、统一 Windows Connector、Cluster 调度
+>
+> 当前 P0 实施边界（2026-08-11）：用户只安装一个统一 Connector；`full/light` 仅为历史内部能力标签，不是用户选择。Cluster 方向的 `shared_copy` 已实现。远端资源无法被本地仿真 Windows 原地读取时，真正的 `source_to_local` 仍缺少目标 Windows 受控缓存与目标 Agent 授权，因此当前必须返回稳定 `source_to_local_unavailable`，不得把 Cluster staging 冒充本地缓存。该限制不影响资源均可由同一 Windows 读取的本地仿真。
 
 本文件记录产品经理（用户）最终确认的用户侧合同。若 `PRD.md`、`docs/DETAILED_DESIGN.md`、历史测试或旧实现与本文件冲突，以本文件为准；开发必须修正旧实现，不能要求用户迁就内部对象。
 
@@ -45,7 +47,9 @@ data:
 simulation:
   target: auto                  # auto | local | cluster
   adapter_file: ""             # 可选；仅在当前 Selena/数据链确实需要时填写
-  mat_filter: "C:/path/to/MatFilter.cfg"
+  # 可选；显式填写时严格使用用户值。留空时由 SDK/Connector 从代码仓
+  # 推导唯一高置信候选，无法唯一确定时再提示用户选择。
+  mat_filter: ""
 ```
 
 强制约束：
@@ -82,12 +86,12 @@ simulation:
 |---|---|---|
 | Cluster 已可访问的 UNC/共享路径 | 原地引用，零复制 | `transfer_skipped`，登记受控引用后继续 |
 | Windows 本地路径 + Web | 一键连接组件按 Linux 签发的目标直写 Cluster 共享工作区 | Job 进入 `waiting_for_local_connector`；连接后自动继续，不要求重新提交 |
-| Windows 本地路径 + SDK | SDK 可直接执行受控传输；需要编译时复用一次安装、持久在线的 light/full 连接组件 | 返回传输计划并展示进度；文件正文不经过 API |
+| Windows 本地路径 + SDK | SDK 可直接执行受控传输；需要编译或本地仿真时复用一次安装、持久在线的统一 Connector | 返回传输计划并展示进度；文件正文不经过 API |
 | Linux 工作站本地路径 + SDK | SDK 使用该工作站已挂载的 Cluster 共享目录或 Cluster 上传适配器直传 | 无可用直传适配器时在传输前返回明确处理动作，不提示安装 Windows 组件 |
 | Linux/Windows 本地路径 + 纯浏览器 Web | 浏览器不能凭路径读取任意本机文件 | 提示连接本机组件或改用本机 SDK；不得回退为经 Linux Web 端口上传大文件 |
 | 已登记的 `dataset://` / Bundle / Asset 引用 | 引用的物理位置必须已对 Cluster 可达，直接复用 | 校验所有权、完整性和可达性后继续 |
 | 本机已有/本机可读共享输入 + 本地仿真 | 原地读取，不搬运 | `transfer_skipped_local_execution`，直接进入本机预检/仿真 |
-| 远端数据或远端 Selena + 本地仿真 | 优先由 Windows full 原地读取共享路径；不可原地读取时由源端直传该 Windows 的受控缓存 | Linux 只编排 `source_to_local`，不接收文件正文 |
+| 远端数据或远端 Selena + 本地仿真 | 优先由执行仿真的 Windows Connector 原地读取共享路径；当前 P0 若不可原地读取则在仿真前返回 `source_to_local_unavailable` | Linux 不接收文件正文；后续实现目标 Windows 受控缓存后再开放跨设备直传 |
 
 直传过程必须具备：按用户和 Job 隔离的不可猜测目标、路径越界保护、断点续传、内容指纹去重、取消、进度上报、重试幂等和完成 Manifest。目标 UNC、挂载点、凭据、上传网关和保留期属于部署配置，不进入用户 YAML。Linux 只能接收文件清单、大小、校验值、进度和逻辑引用，不能接收 MF4/Bundle 文件正文。
 
@@ -97,8 +101,8 @@ simulation:
 
 - Selena：当前 Windows 工作区自动编译、本机已有目录、共享/远端已有目录、已登记逻辑引用；
 - 数据：执行机本地目录、共享/远端路径、已登记逻辑引用；
-- Runtime/MatFilter/Adapter：跟随用户显式路径，按相同可达性规则解析；
-- 执行位置：Windows full 本地仿真或 Cluster 仿真。
+- Runtime/Adapter：跟随用户显式路径，按相同可达性规则解析；MatFilter 显式路径优先，留空时仅依据当前代码仓结构做项目无关推导，禁止从项目名或历史任务静默补值；
+- 执行位置：统一 Windows Connector 下发本地仿真，或 Cluster 仿真。
 
 统一决策顺序为：`选择执行位置 -> 解析每项输入的可达执行节点 -> 原地读取优先 -> 内容指纹复用 -> 源端直传执行端 -> 登记逻辑引用 -> 启动仿真`。不同输入可以来自不同位置，不能要求它们预先位于同一目录或同一电脑。
 
@@ -119,15 +123,15 @@ simulation:
 
 | 部署形态 | 能力 | 明确不支持 |
 |---|---|---|
-| Windows full | 本地编译、已有 Selena、本地仿真、直传 Cluster 后云端仿真 | 不充当中央 Linux 控制面；本地仿真不上传输入 |
-| Linux + Windows light Agent | Windows 本地编译、完整产物/必要数据直传 Cluster；Linux 后续调度 Cluster | light 首版不支持本地仿真，不承担 Cluster 运行期 |
-| 完全不部署 / 没有 Windows | 在 Web/SDK 填写 Cluster 可达的已有 Selena/数据路径；Linux 调度 Cluster。Linux 工作站本地文件需由该工作站 SDK 的直传适配器处理 | 不支持 Selena 编译，不支持本地仿真；不允许经 Linux 控制面中转大文件 |
+| 安装统一 Windows Connector | 本地编译、已有 Selena、本地仿真、直传 Cluster 后云端仿真；实际能力由该电脑既有环境决定 | 不充当中央 Linux 控制面；本地仿真不上传输入；Connector 不代替用户安装仿真环境 |
+| Linux 工作站使用 SDK | 本地可读文件由 SDK 直接写 Cluster 数据面；共享输入零复制；Linux 中央服务继续调度 | 不支持 Selena 编译和 Windows 本地仿真；纯浏览器不能读取任意 Linux 本地路径 |
+| 完全不安装 Connector | 在 Web/SDK 填写 Cluster 可达的已有 Selena/数据路径；Linux 调度 Cluster | 不支持 Windows 本地编译或本地仿真；不允许经 Linux 控制面中转大文件 |
 
-Windows Agent 安装必须一键完成，并且是当前 Windows 用户的一次性持久连接：服务地址、用户范围、部署模式和受限凭证写入本机安装目录，登录自启、断线重连和后续任务复用都由组件完成，不要求用户每次任务重新配置。只有换电脑、换 Linux 服务地址、切换 full/light 或主动卸载时才重新安装。Visual Studio 由用户自行安装，Agent 负责识别可用 C++ toolset、校验并对 Selena 脚本的 VS 参数做最小适配，不代替用户安装 VS。其余可自动发现且安全的环境在第一次任务中自动配置并持久复用；环境缺失必须在任务执行前给出明确检查结果和处理动作。
+Windows Connector 安装必须一键完成，并且是当前 Windows 用户的一次性持久连接：服务地址、稳定用户身份和受限凭证写入本机安装目录，登录自启、断线重连和后续任务复用都由组件完成，不要求用户每次任务重新配置。只有换电脑、换 Linux 服务地址、切换服务身份或主动卸载时才重新安装。Visual Studio 由用户自行安装，Connector 负责识别可用 C++ toolset、校验并对 Selena 脚本的 VS 参数做最小适配，不代替用户安装 VS。其余可自动发现且安全的外围环境在第一次任务中自动配置并持久复用；仿真环境由用户维护，缺失时只给出明确检查结果和处理动作。
 
 连接的恢复边界：电脑重启后，用户登录 Windows 即由计划任务或 Startup 回退自动拉起连接；电脑关机、睡眠、尚未登录或网络隔离时，Linux/Web/SDK 不能远程唤醒电源或启动本机进程，只能保持等待/重连，恢复后继续原任务。用户路径在 Web、SDK 和 Agent 绑定层统一规范化，接受正斜杠、反斜杠、重复分隔符、`.`/`..` 和 Windows UNC 等价写法；`shared://`、`dataset://` 等逻辑 URI 不按本地文件系统规则改写。
 
-Agent 不是所有用户的必需组件：`source=existing + target=cluster` 且 Selena、Runtime、MatFilter、数据均位于 Cluster 可访问位置时，Linux Web 和 SDK 均可直接提交；只有输入仍在 Windows 本地，或用户要求 Windows 编译/本地仿真时，才需要对应的 light/full 连接。SDK 调用方可在本机具备 Cluster 直达能力时自行执行受控直传；Linux SDK 调用机不能读取 Windows 本地盘，应改用共享路径或连接实际存放文件的 Windows 电脑。
+Connector 不是所有用户的必需组件：`source=existing + target=cluster` 且 Selena、Runtime、MatFilter、数据均位于 Cluster 可访问位置时，Linux Web 和 SDK 均可直接提交；只有输入仍在 Windows 本地，或用户要求 Windows 编译/本地仿真时，才需要统一 Connector。SDK 调用方可在本机具备 Cluster 直达能力时自行执行受控直传；Linux SDK 调用机不能读取 Windows 本地盘，应改用共享路径或连接实际存放文件的 Windows 电脑。
 
 ## 5. 任务编排与可视化验收
 
@@ -156,7 +160,7 @@ Web 和 SDK 必须能读取同样的 Job/Stage/Event。Web 至少展示：当前
 - Cluster 路径的 MF4、Selena Bundle 和配置资产传输抓包/指标证明文件正文不经过 Linux API 端口，Linux 服务在大文件传输期间仍能稳定响应 Web、SDK 和 Agent 心跳；
 - 两条输入均本机可达的本地仿真路径证明不会创建上传会话、Cluster staging 目录或数据传输 Stage；远端输入到本地仿真则只允许源端到 Windows full 的直接传输；
 - Windows Web、Windows SDK、Linux SDK 的本地文件直传，以及共享路径零复制均有合同测试；
-- Linux 节点无法领取 Selena 编译或本地仿真 Stage；light Agent 无法领取本地仿真 Stage；
+- Linux 节点无法领取 Selena 编译或本地仿真 Stage；统一 Connector 只领取其真实声明且服务端允许的本机能力；
 - 真实失败能停在正确 Stage，不能再出现由内部默认值造成的 `output_root must be narrower than workspace_root`；
 - 在 `10.190.171.44` 完成 Linux 部署、Web/SDK 健康检查和至少一条目标环境 Cluster 烟测；
 - `HANDOFF.md` 如实记录代码证据、测试证据、外部环境未验收项和已知限制。

@@ -1,6 +1,8 @@
-# radar-sim V1 首版交付范围
+# radar-sim V1 历史首版交付范围
 
-> 状态：当前最高实施优先级
+> **已被取代（2026-08-11）：** 本文记录 2026-07-16 的第一条纵向切片，不能作为当前 Web、SDK、Connector 或数据面实现合同。当前权威边界依次为 `docs/PRODUCT_CONTRACT.md`、`docs/CONTROL_DATA_PLANE_PLAN.md` 和 `docs/AI_INTEGRATION_CONTRACT.md`。本文后续所称“上传”是历史 Linux staging 实现；当前 UserRunConfig 主链禁止把 MF4、Selena、Runtime、MatFilter 或 Adapter 正文发送到 Linux API。
+
+> 状态：历史归档，不再作为实施入口
 > 确认日期：2026-07-16
 > 与总 PRD 的关系：这是完整产品中的第一条纵向子功能；`PRD.md` 和 `docs/PRODUCT_CONTRACT.md` 保持不变，其余组合进入后续版本。
 

@@ -337,7 +337,19 @@ class TransferService:
             raise TransferError("client_target_root_rejected", "Transfer targets are selected by deployment configuration", status_code=403)
         if mode == "gateway_upload":
             raise TransferError("cluster_direct_transfer_unavailable", "gateway_upload is not available in the P0 transfer kernel", status_code=503, actions=[{"type": "use_shared_copy", "label": "Use a mounted Cluster share"}])
-        if mode not in {"shared_copy", "source_to_local"}:
+        if mode == "source_to_local":
+            raise TransferError(
+                "source_to_local_unavailable",
+                "A target-specific Windows cache adapter is not configured",
+                status_code=503,
+                actions=[
+                    {
+                        "type": "use_co_located_inputs",
+                        "label": "Use inputs readable by the local simulation computer",
+                    }
+                ],
+            )
+        if mode != "shared_copy":
             raise TransferError("invalid_transfer_mode", "Unsupported transfer mode", status_code=422)
         if source_role not in SOURCE_ROLES:
             raise TransferError("invalid_source_role", "Unsupported source role", status_code=422)

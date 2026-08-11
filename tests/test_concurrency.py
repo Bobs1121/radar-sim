@@ -89,6 +89,146 @@ def test_assigned_agent_id_blocks_other_agent(svc):
     assert claimed_a["assigned_agent_id"] == "agent-A"
 
 
+def test_cluster_worker_claims_role_bound_stage_without_relaxing_other_bindings(svc):
+    """Only a correctly registered role worker may claim the role root ID."""
+    from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID
+
+    worker_id = f"{LINUX_STAGE_AGENT_ID}-worker-1"
+    fake_worker_id = f"{LINUX_STAGE_AGENT_ID}-worker-9"
+    fake_record = svc.register_agent(
+        name=fake_worker_id,
+        agent_id=fake_worker_id,
+        platform="linux",
+        hostname="cluster",
+        capabilities=["result.collect"],
+        metadata={
+            "claim_group": LINUX_STAGE_AGENT_ID,
+            "cluster_role": LINUX_STAGE_AGENT_ID,
+            "cluster_worker_identity": "control_service_v1",
+            "cluster_worker_index": 9,
+            "cluster_worker_count": 10,
+            "node_kind": "linux_executor",
+        },
+        node_kind="linux_executor",
+    )
+    assert "cluster_worker_identity" not in fake_record["metadata"]
+    svc.register_cluster_worker(
+        name=worker_id,
+        role_id=LINUX_STAGE_AGENT_ID,
+        worker_id=worker_id,
+        worker_index=1,
+        worker_count=2,
+        platform="linux",
+        hostname="cluster",
+        capabilities=["result.collect"],
+        node_kind="linux_executor",
+    )
+    svc.register_agent(
+        name="unrelated",
+        agent_id="unrelated",
+        platform="linux",
+        hostname="cluster",
+        capabilities=["result.collect"],
+        metadata={"node_kind": "linux_executor"},
+        node_kind="linux_executor",
+    )
+    svc.create_job(
+        "cluster.run",
+        tasks=[{
+            "task_type": "collect_results",
+            "stage_type": "collect_results",
+            "assigned_agent_id": LINUX_STAGE_AGENT_ID,
+            "required_agent_id": LINUX_STAGE_AGENT_ID,
+        }],
+    )
+
+    heartbeat = svc.heartbeat(
+        fake_worker_id,
+        status="idle",
+        metadata={
+            "claim_group": LINUX_STAGE_AGENT_ID,
+            "cluster_role": LINUX_STAGE_AGENT_ID,
+            "cluster_worker_identity": "control_service_v1",
+            "cluster_worker_index": 9,
+            "cluster_worker_count": 10,
+        },
+    )
+    assert "cluster_worker_identity" not in heartbeat["agent"]["metadata"]
+    assert svc.claim_next_task(fake_worker_id) is None
+    assert svc.claim_next_task("unrelated") is None
+    claimed = svc.claim_next_task(worker_id)
+    assert claimed is not None
+    assert claimed["assigned_agent_id"] == worker_id
+    assert claimed["required_agent_id"] == LINUX_STAGE_AGENT_ID
+
+
+def test_cluster_worker_claim_prefers_owner_with_fewer_running_role_stages(tmp_path):
+    """Two workers should not let Alice's queued collect stages starve Bob."""
+    from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID
+
+    clock = {"value": 0.0}
+
+    def now():
+        clock["value"] += 1.0
+        return clock["value"]
+
+    svc = ControlService(tmp_path / "control.db", now_fn=now)
+    worker_kwargs = {
+        "role_id": LINUX_STAGE_AGENT_ID,
+        "platform": "linux",
+        "hostname": "cluster",
+        "capabilities": ["result.collect"],
+        "node_kind": "linux_executor",
+        "worker_count": 2,
+    }
+    root_worker = svc.register_cluster_worker(
+        "linux worker 0", worker_id=LINUX_STAGE_AGENT_ID,
+        worker_index=0, **worker_kwargs,
+    )
+    worker_one = svc.register_cluster_worker(
+        "linux worker 1", worker_id=f"{LINUX_STAGE_AGENT_ID}-worker-1",
+        worker_index=1, **worker_kwargs,
+    )
+    assert root_worker["metadata"]["cluster_worker_identity"]
+    assert worker_one["metadata"]["cluster_worker_identity"]
+
+    jobs = {}
+    for owner, label in (("alice", "alice-1"), ("alice", "alice-2"), ("bob", "bob-1")):
+        job = svc.create_job(
+            "cluster.run",
+            owner=owner,
+            tasks=[{
+                "task_id": label,
+                "task_type": "collect_results",
+                "stage_type": "collect_results",
+                "assigned_agent_id": LINUX_STAGE_AGENT_ID,
+                "required_agent_id": LINUX_STAGE_AGENT_ID,
+            }],
+        )
+        jobs[job["job_id"]] = owner
+
+    first = svc.claim_next_task(LINUX_STAGE_AGENT_ID)
+    assert first is not None
+    assert jobs[first["job_id"]] == "alice"
+    second = svc.claim_next_task(f"{LINUX_STAGE_AGENT_ID}-worker-1")
+    assert second is not None
+    assert jobs[second["job_id"]] == "bob"
+
+    # Once both running Stages finish, the remaining Alice Stage is still
+    # claimable; fairness is a preference, not a per-owner quota.
+    svc.submit_task_result(
+        first["task_id"], agent_id=LINUX_STAGE_AGENT_ID,
+        status="succeeded", returncode=0,
+    )
+    svc.submit_task_result(
+        second["task_id"], agent_id=f"{LINUX_STAGE_AGENT_ID}-worker-1",
+        status="succeeded", returncode=0,
+    )
+    third = svc.claim_next_task(LINUX_STAGE_AGENT_ID)
+    assert third is not None
+    assert jobs[third["job_id"]] == "alice"
+
+
 def test_unbound_task_claimable_by_any_agent(svc):
     """No assigned_agent_id → backward compatible, any agent can claim."""
     _register(svc, "agent-A", ["local.check"])

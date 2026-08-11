@@ -4,6 +4,10 @@ Each user gets a separate SQLite control DB (``_control_<user>.db``) so jobs,
 agents, and logs are fully isolated between users on a shared server. The user
 identity is taken from ``RSIM_USER`` (explicit) or the OS username, and flows
 through the HTTP layer via the ``X-Rsim-User`` request header.
+
+The Web/SDK stable no-auth convention is ``user-<lowercase-id>``; the header
+still remains a trusted-intranet label and is never a substitute for Bearer
+authentication.
 """
 
 from __future__ import annotations
@@ -47,7 +51,24 @@ def current_user() -> str:
             raw = getpass.getuser()
         except Exception:
             raw = ""
-    return normalize_user(raw)
+    return normalize_user(raw.casefold())
+
+
+def stable_user_identity(user: str | None) -> str:
+    """Return the cross-client no-auth owner format.
+
+    The Web asks for a human-entered NTID while the SDK/Connector can read an
+    OS login.  Lower-casing both and adding the ``user-`` namespace gives the
+    same owner without exposing machine fingerprints.  Explicit legacy
+    ``X-Rsim-User`` labels remain untouched by the HTTP adapters for backward
+    compatibility; callers opting into the stable identity should use this
+    helper (the SDK default does so automatically).
+    """
+
+    value = normalize_user(str(user or "").strip().casefold())
+    if value.startswith("user-"):
+        return value
+    return f"user-{value}"
 
 
 def control_db_path_for_user(user: str | None = None) -> Path:

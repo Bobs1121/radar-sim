@@ -4,6 +4,16 @@
 > 状态来源：本顶部区域是 v5 唯一实时实施状态。
 > 下方 `Legacy History` 保留历史原文，不代表当前 v5 完成度。
 
+## 0.0.7 多用户与资源路由收口（2026-08-11，未部署）
+
+- 用户侧只保留一个统一 Windows Connector；Web、SDK 和 Connector 的 no-auth owner 统一为稳定 `user-<lowercase NTID/OS login>`。不再为每个浏览器生成随机 `web-*` 身份；正式 Bearer 鉴权仍是最终 owner 权威。旧 `web-*`/`sdk-*` Connector 可由一次更新安装迁移，历史任务不篡改。
+- Cluster Linux/Gateway 执行器改为有界 worker pool（默认每角色 2），每个 worker 独立 heartbeat/current-task；服务端专用注册防止普通 Agent 伪造 Cluster worker。原子 claim、stale recovery 保留，并按同角色当前运行数做 owner 公平排序，无硬配额、无无限线程。
+- 数据根现代绑定从项目名改为 `owner + device_id + normalized root`；旧 project 行只做兼容读取。资源路由独立判断 Selena 目录、Runtime、数据、MatFilter、Adapter，项目识别不再决定传输和仿真参数。MatFilter 显式路径优先；留空时由能读取代码仓的 SDK/Connector 进行有界、项目无关的唯一高置信推导，歧义时要求用户选择。
+- `existing + cluster` 的本地资源由统一 Connector/SDK 在一个 source-side barrier 中按角色直写 Cluster 数据面；Linux 只持久化签名计划、进度和无路径 Manifest，不接收文件正文。已有 Selena 不进入 VS/编译依赖链。
+- 新用户可先提交本地仿真再连接 Connector：没有在线 Connector 时任务保持可恢复 queued/waiting，不会永久 blocked。Web/SDK 新增四个稳定业务步骤投影，内部 DAG 只用于审计和恢复。
+- 当前明确未开放 `source_to_local`：缺少目标 Windows 受控缓存与目标 Agent 授权时返回 `source_to_local_unavailable`，绝不把 Cluster staging 伪装成本地缓存。Linux 本地文件的 P0 入口是调用机 Python SDK；纯浏览器 Linux 本地文件无 Connector。
+- 本轮没有部署、没有真实仿真。详细实施、边界和测试证据见 `docs/handoffs/2026-08-11-business-convergence-master.md`、`identity-unification.md`、`cluster-concurrency.md`。
+
 ## 0.0.6 Windows Connector 契约门禁（2026-08-11）
 
 ### 现场事实与根因

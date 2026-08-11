@@ -42,6 +42,7 @@ def _register(control, *, agent_id, mode):
         agent_id=agent_id,
         capabilities=list(DEFAULT_FULL_CAPABILITIES if full else DEFAULT_LIGHT_CAPABILITIES),
         metadata={
+            "user": "alice",
             "node_kind": "windows_full" if full else "windows_agent",
             "windows_mode": mode,
             "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
@@ -89,16 +90,14 @@ def test_existing_cluster_resolve_can_bind_light_agent(tmp_path):
     _register(control, agent_id="light-1", mode="light")
     api.submit_user_run("alice", config_payload=config)
 
-    bound = control.bind_pending_run_config_resolution("light-1")
+    assert control.bind_pending_run_config_resolution("light-1") is None
+    bound = control.bind_pending_data_stage("light-1")
     assert bound is not None
-    assert bound["payload"]["selected_target"] == "cluster"
-    assert bound["payload"]["mat_filter"] == config["simulation"]["mat_filter"]
-    assert bound["payload"]["adapter_file"] == config["simulation"]["adapter_file"]
-    assert bound["payload"]["code_path"] == "C:/BYD_OVS_CB"
-    assert bound["payload"]["selena_build_script"].endswith(
-        "jenkins_selena_build.bat"
-    )
-    assert bound["payload"]["package_build_script"].endswith("package.bat")
+    assert bound["payload"]["dispatch_scope"] == "direct_transfer"
+    assert set(bound["payload"]["source_roles"]) == {
+        "adapter", "dataset", "mat_filter", "runtime_bundle", "runtime_xml"
+    }
+    assert all("code_path" not in item for item in bound["payload"]["source_paths"])
 
 
 def test_configured_one_click_agent_does_not_claim_unmatched_existing_folder(tmp_path):
@@ -111,6 +110,7 @@ def test_configured_one_click_agent_does_not_claim_unmatched_existing_folder(tmp
         agent_id="old-windows-1",
         capabilities=list(DEFAULT_LIGHT_CAPABILITIES),
         metadata={
+            "user": "alice",
             "node_kind": "windows_agent",
             "windows_mode": "light",
             "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
@@ -129,8 +129,9 @@ def test_configured_one_click_agent_does_not_claim_unmatched_existing_folder(tmp
     job = api.submit_user_run("alice", config_payload=config)
 
     assert control.bind_pending_run_config_resolution("old-windows-1") is None
-    assert job["waiting"]["reason"] == "windows_path_access_required"
-    assert job["waiting"]["connection_state"] == "connected_but_path_unavailable"
+    bound = control.bind_pending_data_stage("old-windows-1")
+    assert bound is not None
+    assert bound["payload"]["auto_configure"] is True
 
 
 def test_owner_scoped_one_click_agent_reconfigures_new_existing_folder(tmp_path):
@@ -157,10 +158,14 @@ def test_owner_scoped_one_click_agent_reconfigures_new_existing_folder(tmp_path)
     )
 
     api.submit_user_run("alice", config_payload=config)
-    bound = control.bind_pending_run_config_resolution("alice-windows-1")
+    bound = control.bind_pending_data_stage("alice-windows-1")
 
     assert bound is not None
-    assert bound["payload"]["existing_path"] == "D:/alice/new-selena"
+    assert any(
+        item["source_role"] == "runtime_bundle"
+        and item["path"] == "D:/alice/new-selena"
+        for item in bound["payload"]["source_paths"]
+    )
 
 
 def test_agent_uploads_local_simulation_assets_without_changing_user_config(tmp_path):
@@ -283,10 +288,8 @@ def test_agent_existing_resolution_imports_bundle_for_task_owner(tmp_path, monke
         client, "light-1", task, heartbeat_interval=1, node_kind="windows_agent"
     ) == 0
     recognition = client.results[0]["result"]["recognition"]
-    assert client.imports[0][0] == "alice"
-    assert recognition["registered_runtime_bundle"]["storage_ref"].startswith(
-        "shared://selena-bundles/"
-    )
+    assert client.imports == []
+    assert recognition["registered_runtime_bundle"] == {}
 
 
 def _complete_existing_resolution(control, api, config, *, agent_id, mode, shared_storage=True):
@@ -342,21 +345,22 @@ def test_existing_folder_cluster_handoff_registers_bundle_and_uploads_local_data
     config, *_ = _existing_config(tmp_path, target="cluster")
     config["data"]["path"] = "D:/agent-local/data"
 
-    job, bound = _complete_existing_resolution(
-        control, api, config, agent_id="light-1", mode="light"
-    )
+    _register(control, agent_id="light-1", mode="light")
+    submitted = api.submit_user_run("alice", config_payload=config)
+    bound = control.bind_pending_data_stage("light-1")
+    assert bound is not None
+    job = control.get_job(submitted["id"])
     stages = {item["stage_type"]: item for item in job["stages"]}
 
-    assert bound["stage_type"] == "environment_check"
-    assert bound["assigned_agent_id"] == "linux-v2-stage-executor"
-    assert stages["register_artifact"]["assigned_agent_id"] == "light-1"
-    assert stages["register_artifact"]["payload"]["already_registered"] is True
+    assert bound["stage_type"] == "prepare_data"
+    assert bound["assigned_agent_id"] == "light-1"
+    assert stages["resolve_spec"]["status"] == "skipped"
+    assert stages["register_artifact"]["status"] == "skipped"
     assert stages["prepare_data"]["assigned_agent_id"] == "light-1"
-    assert stages["prepare_data"]["payload"]["dispatch_scope"] == "data_upload"
-    assert job["resolved_spec"]["decisions"]["selena"]["status"] == "resolved"
-    assert job["resolved_spec"]["decisions"]["simulation_assets"]["mat_filter"].startswith(
-        "config-asset://sha256/"
-    )
+    assert stages["prepare_data"]["payload"]["dispatch_scope"] == "direct_transfer"
+    assert stages["environment_check"]["dependencies"] == [
+        stages["prepare_data"]["stage_id"]
+    ]
 
 
 def test_existing_folder_local_handoff_reuses_bundle_on_full_agent(tmp_path):

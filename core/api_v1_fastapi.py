@@ -28,7 +28,7 @@ from core.control_service import ControlService
 from core.http_auth import AuthPrincipal, HttpAuthError, HttpTokenAuthenticator
 from core.spec import SimulationSpec
 from core.user_config import UserRunConfig
-from core.user import USER_HEADER, current_user, normalize_user
+from core.user import USER_HEADER, current_user, normalize_user, stable_user_identity
 from core.windows_connector import (
     WindowsConnectorError,
     public_server_url,
@@ -283,7 +283,16 @@ def create_app(
                 raise ApiV1Error(
                     "authentication_failed", "Bearer authentication failed", status_code=401,
                 ) from exc
-        return normalize_user(request.headers.get(USER_HEADER, "").strip() or current_user())
+        # In the trusted no-auth deployment this remains a caller-controlled
+        # grouping label, not authentication.  Formal deployments take the
+        # owner exclusively from the Bearer principal above.
+        raw_user = request.headers.get(USER_HEADER, "").strip()
+        # Stable cross-client labels are case-insensitive by contract.  Keep
+        # arbitrary legacy trusted-intranet labels byte-compatible for old
+        # databases and tests.
+        if raw_user.casefold().startswith("user-"):
+            return stable_user_identity(raw_user)
+        return normalize_user(raw_user or current_user())
 
     def agent_principal(request: Request) -> AuthPrincipal | None:
         if authenticator is None:

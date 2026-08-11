@@ -73,7 +73,8 @@ def test_runtime_bundle_http_sdk_and_trusted_control_evidence(tmp_path):
         tasks=[{"task_type": "build_selena", "stage_type": "build_selena"}],
     )
     control.register_agent(
-        "agent", agent_id="agent-1", node_kind="windows_agent", capabilities=["build.selena"]
+        "agent", agent_id="agent-1", node_kind="windows_agent", capabilities=["build.selena"],
+        metadata={"user": "alice", "connector_contract_version": 3},
     )
     claimed = control.claim_next_task("agent-1")
     control.submit_task_result(
@@ -107,14 +108,18 @@ def test_runtime_bundle_http_sdk_and_trusted_control_evidence(tmp_path):
     config = run_config_dict()
     config["selena"] = {
         "source": "existing",
-        "existing_path": bundle.manifest.id,
+        "existing_path": "D:/existing/Selena/RelWithDebInfo",
         "runtime_xml": "D:/existing/Selena/Runtime.xml",
     }
     run_api = ApiV1Service(
         control_service_factory=lambda _owner: control,
         runtime_bundle_upload_service_factory=lambda _owner: service,
     )
-    selected = run_api.submit_user_run("alice", config_payload=config)
+    selected = run_api.submit_user_run(
+        "alice",
+        config_payload=config,
+        prepared_runtime_bundle_id=bundle.manifest.id,
+    )
     assert selected["resolved_spec"]["decisions"]["selena"]["runtime_bundle"]["id"] == bundle.manifest.id
     stages = {stage["stage_type"]: stage for stage in selected["stages"]}
     assert stages["resolve_spec"]["status"] == "skipped"

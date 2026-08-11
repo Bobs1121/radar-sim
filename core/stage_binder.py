@@ -125,18 +125,47 @@ def bind_run_config_environment(
             (item for item in control.list_agents() if str(item.get("agent_id") or "") == agent_id),
             None,
         )
-        advertised = {
-            str(item.get("id") or "")
-            for item in dict((agent or {}).get("metadata") or {}).get("data_bindings") or []
-            if isinstance(item, dict)
-            and item.get("healthy") is True
-            and str(item.get("project") or "") == internal_project
-        }
+        advertised: set[str] = set()
+        owner_raw = str(job.get("owner") or (job.get("metadata") or {}).get("owner") or "").strip()
+        owner_token = owner_raw.casefold()
+        for item in dict((agent or {}).get("metadata") or {}).get("data_bindings") or []:
+            if not isinstance(item, dict) or item.get("healthy") is not True:
+                continue
+            binding_id = str(item.get("id") or "").strip()
+            if not binding_id.startswith("data-root:sha256:"):
+                continue
+            # New bindings are authorized by owner + device + normalized root;
+            # the Selena recognizer's internal project is intentionally ignored.
+            binding_owner = str(item.get("owner") or "").strip().casefold()
+            binding_device = str(item.get("device_id") or item.get("device") or "").strip()
+            if binding_owner or binding_device:
+                if owner_token and binding_owner and binding_owner != owner_token:
+                    continue
+                if binding_device and binding_device != agent_id:
+                    continue
+                advertised.add(binding_id)
+                continue
+            # Legacy connector projection: keep the historical project check
+            # only when owner/device evidence is absent.
+            if str(item.get("project") or "") == internal_project:
+                advertised.add(binding_id)
         binding = (
             selected_data_binding_id
             if selected_data_binding_id.startswith("data-root:sha256:")
+            and selected_data_binding_id in advertised
             else next(
-                (item for item in candidate_data_binding_ids(internal_project, data_path) if item in advertised),
+                (
+                    item
+                    for item in (
+                        candidate_data_binding_ids(
+                            owner=owner_raw,
+                            device_id=agent_id,
+                            data_path=data_path,
+                        )
+                        + candidate_data_binding_ids(internal_project, data_path)
+                    )
+                    if item in advertised
+                ),
                 "",
             )
         )
@@ -214,13 +243,11 @@ def bind_existing_runtime_resolution(
     agent_id = str(resolution.get("required_agent_id") or resolution.get("assigned_agent_id") or "")
     attempt = int(resolution.get("attempt_count") or 0)
     target = _selected_execution_target(job)
-    # A local run only needs the Agent-private Runtime Bundle lease created
-    # during recognition.  A Cluster run additionally needs a path-free
-    # shared storage reference, because the Cluster executor cannot read the
-    # Windows Agent's private cache.  Requiring ``storage_ref`` for both
-    # routes made an otherwise valid local existing-Selena run stop after
-    # resolve_spec with a misleading handoff block.
-    requires_shared_bundle = target == "cluster"
+    # Recognition only creates a node-private lease.  For Cluster execution
+    # the following register_artifact Stage copies that lease directly from
+    # the Connector to Cluster storage.  Requiring a shared storage_ref here
+    # would force the resolver to upload through the Linux control plane and
+    # violate the control/data-plane boundary.
     if (
         recognition.get("source") != "existing"
         or not agent_id
@@ -228,7 +255,6 @@ def bind_existing_runtime_resolution(
         or not project
         or not lease_ref.startswith("runtime-bundle-lease:sha256:")
         or not str(bundle.get("id") or "").startswith("selena-bundle:sha256:")
-        or (requires_shared_bundle and not str(bundle.get("storage_ref") or "").startswith("shared://selena-bundles/"))
         or attempt < 1
     ):
         raise StageBindingError("existing Selena resolution evidence is invalid")
@@ -270,7 +296,11 @@ def bind_existing_runtime_resolution(
             payload_patch={
                 "contract": "user-run-config/2.0",
                 "project": project,
-                "already_registered": True,
+                "already_registered": bool(
+                    str(bundle.get("storage_ref") or "").startswith(
+                        "shared://selena-bundles/"
+                    )
+                ),
                 "runtime_bundle": bundle,
                 "runtime_bundle_lease_ref": lease_ref,
                 "build_evidence_ref": f"{resolution_stage_id}:{attempt}",
@@ -818,6 +848,12 @@ def maybe_bind_local_preflight(control: ControlService, job_id: str) -> dict | N
             "dataset_id": str(dataset.get("id") or ""),
             "adapter_file": adapter_file,
             "mat_filter": mat_filter,
+            "resource_discovery": {
+                "code_path": str((spec.get("selena") or {}).get("code_path") or ""),
+                "existing_path": str((spec.get("selena") or {}).get("existing_path") or ""),
+                "selena_build_script": str((spec.get("selena") or {}).get("selena_build_script") or ""),
+                "runtime_xml": str((spec.get("selena") or {}).get("runtime_xml") or ""),
+            },
             "limit": int((spec.get("data") or {}).get("limit") or 0),
             "timeout_minutes": int(simulation.get("timeout_minutes") or 0),
             "owner": str(job.get("owner") or (job.get("metadata") or {}).get("owner") or ""),

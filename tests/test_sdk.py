@@ -74,7 +74,7 @@ def test_sdk_downloads_one_time_windows_connector_for_current_scope(tmp_path):
     assert "__RSIM_OWNER_BASE64__" not in content
 
 
-def test_sdk_without_explicit_user_gets_stable_machine_scoped_identity(monkeypatch):
+def test_sdk_without_explicit_user_gets_stable_os_login_identity(monkeypatch):
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -82,15 +82,13 @@ def test_sdk_without_explicit_user_gets_stable_machine_scoped_identity(monkeypat
         return httpx.Response(200, json={"ok": True, "api_version": "v1"})
 
     monkeypatch.setattr("radar_sim_sdk.client.getpass.getuser", lambda: "new-user")
-    monkeypatch.setattr("radar_sim_sdk.client.socket.gethostname", lambda: "new-pc")
     with RadarSimClient("http://testserver", transport=httpx.MockTransport(handler)) as first:
         first.health()
     with RadarSimClient("http://testserver", transport=httpx.MockTransport(handler)) as second:
         second.health()
 
     assert seen[0] == seen[1]
-    assert seen[0].startswith("sdk-")
-    assert len(seen[0]) == 28
+    assert seen[0] == "user-new-user"
 
 
 def test_sdk_dataset_transfer_fingerprints_project_rl_to_radar_rl(monkeypatch, tmp_path: Path):

@@ -117,11 +117,11 @@ def test_build_source_accepts_missing_package_build_script():
     assert "package_build_script:" not in parsed.to_yaml()
 
 
-def test_mat_filter_is_always_required():
+def test_mat_filter_can_be_omitted_for_source_side_repository_discovery():
     config = _build_config()
     config["simulation"]["mat_filter"] = ""
-    with pytest.raises(ValidationError, match="mat_filter"):
-        UserRunConfig.from_dict(config)
+    parsed = UserRunConfig.from_dict(config)
+    assert parsed.simulation.mat_filter == ""
 
 
 def test_adapter_file_is_optional():

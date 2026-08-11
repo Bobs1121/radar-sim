@@ -172,6 +172,8 @@ def test_execution_capabilities_reports_configured_windows_reconnecting(tmp_path
         metadata={
             "node_kind": "windows_full",
             "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+            "user": "alice",
+            "auto_configure": True,
         },
     )
 
@@ -844,6 +846,8 @@ def test_auto_prefers_full_windows_for_local_simulation(tmp_path):
         metadata={
             "node_kind": "windows_full",
             "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+            "user": "alice",
+            "auto_configure": True,
         },
     )
     api = ApiV1Service(control_service_factory=lambda _owner: control)
@@ -890,6 +894,30 @@ def test_auto_keeps_uploaded_data_on_cluster_even_when_full_windows_is_online(tm
         "selected_target": "cluster",
         "reason": "cluster_accessible_data",
     }
+
+
+def test_explicit_local_submission_waits_for_first_connector_instead_of_failing(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config = run_config_dict()
+    config["simulation"]["target"] = "local"
+    config["data"] = {"path": "D:/measurements/local"}
+
+    job = api.submit_user_run("alice", config_payload=config)
+
+    assert job["status"] == "queued"
+    assert job["waiting"]["reason"] == "windows_connection_required"
+    assert [step["id"] for step in job["business_steps"]] == [
+        "resolve_inputs",
+        "prepare_execution",
+        "run_simulation",
+        "collect_results",
+    ]
+    assert all(stage["status"] != "blocked" for stage in job["stages"])
+    assert all(
+        (stage.get("error") or {}).get("code") != "source_to_local_unavailable"
+        for stage in job["stages"]
+    )
 
 
 def test_build_cluster_shared_data_is_owned_by_linux_before_bundle_exists(tmp_path):

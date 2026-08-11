@@ -356,8 +356,16 @@ $existing = $null
 if (Test-Path $ConfigPath) {
     try { $existing = Get-Content -Raw -Encoding UTF8 $ConfigPath | ConvertFrom-Json } catch { }
 }
-if (-not $Owner -and $existing -and $existing.owner) {
-    $Owner = [string]$existing.owner
+$existingOwner = if ($existing -and $existing.owner) { [string]$existing.owner } else { "" }
+if (-not $Owner -and $existingOwner) {
+    $Owner = $existingOwner
+} elseif ($Owner -and $existingOwner -and $existingOwner -ne $Owner -and $existingOwner -match '^(web|sdk)-[0-9a-f]{24,64}$') {
+    # Older one-click downloads paired the Connector to a generated browser
+    # or machine hash.  A later Web/SDK launch supplies the user's durable
+    # no-auth grouping label; migrate only those legacy labels while keeping
+    # Agent ID, path bindings and the install root intact.  Never silently
+    # replace an existing explicit owner.
+    Write-Warn "Migrating the legacy generated Connector owner to the supplied stable user identifier."
 }
 $Owner = [string]$Owner.Trim()
 if ($Owner) { $env:RSIM_USER = $Owner }

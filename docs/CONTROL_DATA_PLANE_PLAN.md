@@ -1,6 +1,6 @@
 # radar-sim 控制面与数据面分离实施计划
 
-> 状态：已确认产品方向，待按阶段实施
+> 状态：P0 Cluster `shared_copy` 已实施；本地目标 `source_to_local` 与 `gateway_upload` 待实施
 > 日期：2026-08-05
 > 权威上位合同：`docs/PRODUCT_CONTRACT.md`
 
@@ -53,7 +53,7 @@ Linux 服务是自动化脚手架，不是文件服务器。Web、SDK 和未来 
   "owner_scope": "<opaque>",
   "job_id": "job_xxx",
   "stage_id": "task_xxx",
-  "mode": "shared_copy|source_to_local|gateway_upload",
+  "mode": "shared_copy",
   "source_role": "dataset|runtime_bundle|runtime_xml|mat_filter|adapter",
   "target_root": "<deployment managed cluster UNC or gateway target>",
   "relative_root": "<opaque isolated prefix>",
@@ -76,7 +76,9 @@ Linux 服务是自动化脚手架，不是文件服务器。Web、SDK 和未来 
 
 ## 5. 客户端适配器
 
-P0 提供 `shared_copy`：Windows Connector 或 SDK 将文件直接复制到现有 Cluster UNC 工作区，保留目录结构并支持 `.partial`、续传和完成后的原子重命名。复用用户现有域账号/共享盘访问能力，不在 Linux 保存用户 SMB 凭据。本地仿真需要远端输入时使用同一轻量传输内核的 `source_to_local` 模式，目标是 Windows full 的 owner/Job 隔离缓存，不经过 Linux。
+P0 提供 `shared_copy`：Windows Connector 或 SDK 将文件直接复制到现有 Cluster UNC 工作区，保留目录结构并支持 `.partial`、续传和完成后的原子重命名。复用用户现有域账号/共享盘访问能力，不在 Linux 保存用户 SMB 凭据。
+
+`source_to_local` 是后续模式：只有实现目标 Windows 的 owner/Job 隔离缓存、目标 Agent 授权和目标根签发后才可开放。当前 TransferService 明确以 `source_to_local_unavailable` 拒绝，不能复用 Cluster `client_target_root`。`gateway_upload` 同样保持未开放。
 
 Linux SDK 调用机满足以下任一条件即可直传：
 

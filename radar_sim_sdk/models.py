@@ -45,6 +45,7 @@ class Job:
     available_actions: list[dict[str, Any]] = field(default_factory=list)
     spec: dict[str, Any] = field(default_factory=dict)
     resolved_spec: dict[str, Any] = field(default_factory=dict)
+    business_steps: list[dict[str, Any]] = field(default_factory=list)
     stages: list[dict[str, Any]] = field(default_factory=list)
     tasks: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -69,6 +70,7 @@ class Job:
             available_actions=list(data.get("available_actions") or []),
             spec=dict(data.get("spec") or {}),
             resolved_spec=dict(data.get("resolved_spec") or {}),
+            business_steps=list(data.get("business_steps") or []),
             stages=list(data.get("stages") or []),
             tasks=list(data.get("tasks") or []),
             metadata=dict(data.get("metadata") or {}),

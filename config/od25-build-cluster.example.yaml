@@ -17,4 +17,4 @@ data:
 simulation:
   target: cluster
   adapter_file: "D:/path/to/OD25_adapter.txt"
-  mat_filter: "D:/path/to/OD25_mat.filter"
+  mat_filter: ""  # 可选；显式填写优先，留空时从代码仓推导唯一候选

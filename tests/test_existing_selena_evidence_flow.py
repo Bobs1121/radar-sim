@@ -133,11 +133,10 @@ def test_sdk_passes_existing_workspace_evidence_to_local_import(tmp_path, monkey
     monkeypatch.setattr(client, "_upload_existing_selena", upload)
     payload, bundle_id = client._prepare_user_run(config, dry_run=False)
 
-    assert bundle_id.endswith("a" * 64)
-    assert captured["code_path"] == "D:/workspace"
-    assert captured["selena_build_script"].endswith("build_selena.bat")
-    assert captured["package_build_script"].endswith("build_package.bat")
+    assert bundle_id == ""
+    assert captured == {}
     assert payload["selena"]["source"] == "existing"
+    assert payload["selena"]["existing_path"] == existing.as_posix()
 
 
 def test_sdk_does_not_block_user_inputs_on_signal_contract(tmp_path, monkeypatch):
@@ -180,5 +179,5 @@ def test_sdk_does_not_block_user_inputs_on_signal_contract(tmp_path, monkeypatch
 
     payload, bundle_id = client._prepare_user_run(config, dry_run=False)
 
-    assert bundle_id == "selena-bundle:sha256:" + "a" * 64
-    assert payload["data"]["path"] == "dataset://sha256/" + "b" * 64
+    assert bundle_id == ""
+    assert payload["data"]["path"] == data.as_posix()

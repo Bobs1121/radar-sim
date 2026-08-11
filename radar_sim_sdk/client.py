@@ -8,7 +8,6 @@ import getpass
 import ipaddress
 import json
 import hashlib
-import socket
 import ssl
 import tempfile
 import time
@@ -29,7 +28,7 @@ from core.spec import SimulationSpec
 from core.user_config import UserRunConfig
 from core.data import iter_mf4_inputs
 from core.datasets import classify_data_path
-from core.user import USER_HEADER
+from core.user import USER_HEADER, normalize_user, stable_user_identity
 from radar_sim_sdk.errors import RadarSimApiError, RadarSimTransportError
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
 from radar_sim_sdk.models import (
@@ -69,11 +68,26 @@ class RadarSimClient:
         # A no-auth Linux deployment still needs deterministic caller
         # isolation.  Without a header FastAPI falls back to the *server* OS
         # account, which merged every SDK caller into the same job/Agent
-        # scope.  Keep the generated value stable for one OS user + machine so
-        # reconnecting an SDK-downloaded Windows connector also keeps working
-        # after process and machine restarts.
-        if not any(str(key).casefold() == USER_HEADER.casefold() for key in merged_headers):
-            merged_headers[USER_HEADER] = str(user or _default_sdk_user())
+        # scope.  Keep the generated value stable for the OS login so a
+        # Connector downloaded by SDK and one paired from Web use one owner.
+        user_header_key = next(
+            (key for key in merged_headers if str(key).casefold() == USER_HEADER.casefold()),
+            None,
+        )
+        if user_header_key is None:
+            # Keep explicit legacy labels backwards compatible, but normalize
+            # their case so ``HOZ2WX`` and ``hoz2wx`` cannot create two local
+            # owner DBs.  The no-config path uses the shared ``user-*``
+            # namespace understood by the Web identity prompt.
+            merged_headers[USER_HEADER] = (
+                normalize_user(str(user).strip().casefold())
+                if str(user or "").strip()
+                else _default_sdk_user()
+            )
+        elif str(merged_headers[user_header_key]).casefold().startswith("user-"):
+            # Caller-supplied stable labels are case-insensitive too; leave
+            # legacy arbitrary grouping labels byte-compatible.
+            merged_headers[user_header_key] = stable_user_identity(merged_headers[user_header_key])
         if token:
             merged_headers.setdefault("Authorization", f"Bearer {token}")
         default_timeout = httpx.Timeout(timeout=60.0, connect=5.0, read=60.0, write=30.0, pool=5.0)
@@ -166,8 +180,11 @@ class RadarSimClient:
 
     def validate_run(self, config: UserRunConfig | dict[str, Any]) -> RunConfigValidationResult:
         """Validate the project-free YAML contract used by the Web console."""
+        parsed = _with_inferred_mat_filter(
+            UserRunConfig.from_dict(self._run_config_payload(config))
+        )
         return RunConfigValidationResult.from_dict(
-            self._request("POST", "/api/v1/run-configs/validate", json=self._run_config_payload(config))
+            self._request("POST", "/api/v1/run-configs/validate", json=parsed.to_dict())
         )
 
     def submit_run(
@@ -181,7 +198,9 @@ class RadarSimClient:
         progress_callback: Callable[[TransferProgress], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> Job:
-        parsed = UserRunConfig.from_dict(self._run_config_payload(config))
+        parsed = _with_inferred_mat_filter(
+            UserRunConfig.from_dict(self._run_config_payload(config))
+        )
         payload, prepared_bundle_id = self._prepare_user_run(parsed, dry_run=bool(dry_run))
         client_transfer_roles = (
             []
@@ -256,7 +275,9 @@ class RadarSimClient:
         ``submit_run`` uses one attempt; callers can resume with bounded retries
         while a newly-created Job is still persisting its ``prepare_data`` Stage.
         """
-        parsed = UserRunConfig.from_dict(self._run_config_payload(config))
+        parsed = _with_inferred_mat_filter(
+            UserRunConfig.from_dict(self._run_config_payload(config))
+        )
         current = job if isinstance(job, Job) else self.get_job(str(job))
         selected_target = str(
             ((current.resolved_spec.get("decisions") or {}).get("execution") or {}).get(
@@ -1327,18 +1348,19 @@ def _find_sdk_prepare_data_stage(job: Job) -> dict[str, Any] | None:
 
 
 def _default_sdk_user() -> str:
-    """Return one stable, opaque no-config identity per OS user and machine."""
+    """Return the stable no-config owner shared with the Web Connector.
+
+    No-auth deployments use ``X-Rsim-User`` as a trusted-intranet grouping
+    label rather than authentication.  A machine hash made Web and SDK use
+    different owners, so the SDK now follows the lower-case ``user-<login>``
+    namespace also used by Web.  Callers that need a different stable account
+    can still pass ``user=...`` explicitly.
+    """
     try:
         login = getpass.getuser()
     except Exception:
         login = ""
-    try:
-        hostname = socket.gethostname()
-    except Exception:
-        hostname = ""
-    seed = f"{login.strip().casefold()}@{hostname.strip().casefold()}" or "radar-sim-sdk"
-    digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()
-    return f"sdk-{digest[:24]}"
+    return stable_user_identity(login)
 
 
 def _sdk_local_transfer_sources(config: UserRunConfig) -> list[tuple[str, Path]]:
@@ -1390,6 +1412,33 @@ def _sdk_local_transfer_sources(config: UserRunConfig) -> list[tuple[str, Path]]
         seen.add(key)
         result.append((role, resolved))
     return result
+
+
+def _with_inferred_mat_filter(config: UserRunConfig) -> UserRunConfig:
+    """Resolve an omitted MatFilter when this SDK can read the repository."""
+
+    if str(config.simulation.mat_filter or "").strip():
+        return config
+    from core.mat_filter_resolver import MatFilterResolutionError, resolve_mat_filter
+
+    try:
+        resolved = resolve_mat_filter(
+            code_path=config.selena.code_path,
+            existing_path=config.selena.existing_path,
+            selena_build_script=config.selena.selena_build_script,
+            runtime_xml=config.selena.runtime_xml,
+        )
+    except MatFilterResolutionError as exc:
+        # A remote SDK may intentionally submit paths owned by a different
+        # Connector.  Only a locally derived repository may make this SDK
+        # authoritative; otherwise leave discovery to that source node.
+        if exc.code == "mat_filter_repository_unavailable":
+            return config
+        raise
+    simulation = config.simulation.model_copy(
+        update={"mat_filter": str(resolved.path).replace("\\", "/")}
+    )
+    return config.model_copy(update={"simulation": simulation})
 
 
 def _scan_sdk_transfer_items(

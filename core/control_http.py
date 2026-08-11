@@ -141,13 +141,18 @@ def make_control_handler(service, allowed_task_types=None):
     whose ``job_type`` or any ``tasks[].task_type`` is not in the set with HTTP
     400 — this is the Mode A (Linux cluster-only service) behavior.
     """
-    from core.user import USER_HEADER, current_user
+    from core.user import USER_HEADER, current_user, normalize_user, stable_user_identity
 
     allowed = set(allowed_task_types) if allowed_task_types else None
 
     def resolve(handler):
         if callable(service) and not isinstance(service, ControlService):
-            user = handler.headers.get(USER_HEADER, "").strip() or current_user()
+            raw_user = handler.headers.get(USER_HEADER, "").strip()
+            user = (
+                stable_user_identity(raw_user)
+                if raw_user.casefold().startswith("user-")
+                else normalize_user(raw_user or current_user())
+            )
             return service(user), user
         return service, current_user()
 

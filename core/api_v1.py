@@ -51,6 +51,7 @@ from core.transfer_service import (
     TransferProgress,
     TransferService,
 )
+from core.business_progress import business_steps
 
 API_VERSION = "v1"
 TERMINAL_STATUSES = {"succeeded", "partial", "failed", "cancelled"}
@@ -487,6 +488,12 @@ class ApiV1Service:
         )
         for task in task_specs:
             stage_type = str(task.get("stage_type") or "")
+            # Private Stage payload only: the Agent needs the authenticated
+            # owner when creating owner/device-scoped data bindings.  Public
+            # run-stage projections strip payloads entirely.
+            task_payload = dict(task.get("payload") or {})
+            task_payload.setdefault("owner", owner)
+            task["payload"] = task_payload
             if task.get("stage_type") == "resolve_spec":
                 payload = dict(task.get("payload") or {})
                 payload.update(
@@ -621,6 +628,12 @@ class ApiV1Service:
                 selected_runtime_project=selected_runtime_project,
                 client_transfer_roles=sdk_transfer_roles,
             )
+        elif selected_target == "local":
+            self._apply_source_to_local_stage(
+                task_specs,
+                config,
+                owner=owner,
+            )
         if dry_run:
             # UserRunConfig dry-run is plan-only: it must never switch branches,
             # compile, upload data, launch Selena or submit a Cluster job.
@@ -719,6 +732,12 @@ class ApiV1Service:
                 "contract": "user-run-config/2.0",
                 "transfer_mode": "shared_copy",
                 "source_roles": sorted({item["source_role"] for item in local_sources}),
+                "resource_discovery": {
+                    "code_path": str(config.selena.code_path or ""),
+                    "existing_path": str(config.selena.existing_path or ""),
+                    "selena_build_script": str(config.selena.selena_build_script or ""),
+                    "runtime_xml": str(config.selena.runtime_xml or ""),
+                },
             }
         )
         if local_sources:
@@ -820,18 +839,273 @@ class ApiV1Service:
         requested = config.simulation.target
         if requested != "auto":
             return requested, "explicit_user_selection"
-        data_path = str(config.data.path)
-        if (
-            data_path.lower().startswith("dataset://")
-            or classify_data_path(data_path) in {"shared", "central"}
-        ):
-            return "cluster", "cluster_accessible_data"
-        capabilities = self.execution_capabilities(self._owner(owner))["capabilities"]
-        if capabilities["windows_full"]["available"]:
+        owner = self._owner(owner)
+        capabilities = self.execution_capabilities(owner)["capabilities"]
+        cluster_available = bool(capabilities.get("cluster", {}).get("available"))
+        resources = self._user_run_resource_paths(config)
+        kinds = {
+            "central"
+            if value.lower().startswith(("dataset://", "shared://"))
+            else classify_data_path(value)
+            for _role, value in resources
+        }
+        has_cluster_side_input = bool(kinds.intersection({"shared", "central"}))
+        local_full = self._compatible_local_execution_agents(owner, config)
+
+        # A fully shared/registered job is the true zero-copy Cluster route.
+        # Mixed local/shared input also stays on Cluster: choosing Windows
+        # would assume that a particular laptop can read every remote share,
+        # while local inputs already have the supported source->Cluster path.
+        if has_cluster_side_input:
+            data_value = str(config.data.path or "").strip().lower()
+            if data_value.startswith(("dataset://", "shared://")):
+                return "cluster", "cluster_accessible_data"
+            return (
+                "cluster",
+                "cluster_zero_copy_inputs" if kinds.issubset({"shared", "central"})
+                else "mixed_inputs_cluster_transfer",
+            )
+
+        # Select local only when one same-owner Windows execution node can
+        # truthfully validate every caller-local resource.  A fresh unified
+        # Connector with auto_configure is allowed to perform that validation
+        # at claim time; no cross-machine source_to_local transfer is assumed.
+        if local_full:
             return "local", "windows_full_available"
-        if capabilities["windows_light"]["available"] and config.selena.source == "build":
+
+        if config.selena.source == "build" and (
+            capabilities["windows_light"]["available"]
+            or capabilities["windows_full"]["available"]
+        ):
             return "cluster", "windows_light_build_then_cluster"
-        return "cluster", "cluster_fallback"
+        return (
+            "cluster",
+            "cluster_available_local_inputs_require_transfer"
+            if cluster_available
+            else "cluster_fallback_waiting_for_capability",
+        )
+
+    @staticmethod
+    def _user_run_resource_paths(config: UserRunConfig) -> list[tuple[str, str]]:
+        """Return resource roles used by route planning (never public fields)."""
+        values: list[tuple[str, str]] = [("dataset", str(config.data.path or ""))]
+        if config.selena.source == "existing":
+            values.extend(
+                [
+                    ("runtime_bundle", str(config.selena.existing_path or "")),
+                    ("runtime_xml", str(config.selena.runtime_xml or "")),
+                ]
+            )
+        else:
+            values.extend(
+                [
+                    ("code_path", str(config.selena.code_path or "")),
+                    ("selena_build_script", str(config.selena.selena_build_script or "")),
+                    ("package_build_script", str(config.selena.package_build_script or "")),
+                    ("runtime_xml", str(config.selena.runtime_xml or "")),
+                ]
+            )
+        values.extend(
+            [
+                ("mat_filter", str(config.simulation.mat_filter or "")),
+                ("adapter", str(config.simulation.adapter_file or "")),
+            ]
+        )
+        return [(role, value.strip()) for role, value in values if value.strip()]
+
+    def _compatible_local_execution_agents(
+        self,
+        owner: str,
+        config: UserRunConfig,
+    ) -> list[Mapping[str, Any]]:
+        """Return online same-owner full Connectors for one local route."""
+
+        owner_token = str(owner or "").strip().casefold()
+        now = float(self.now_fn())
+        result: list[Mapping[str, Any]] = []
+        for agent in self._control(owner).list_agents():
+            metadata = dict(agent.get("metadata") or {})
+            if str(metadata.get("node_kind") or metadata.get("node.kind") or "") != "windows_full":
+                continue
+            registered_owner = str(metadata.get("user") or "").strip().casefold()
+            if registered_owner and owner_token and registered_owner != owner_token:
+                continue
+            if str(agent.get("status") or "") == "offline":
+                continue
+            heartbeat = float(agent.get("last_heartbeat") or 0.0)
+            if heartbeat and now - heartbeat > 120:
+                continue
+            if not windows_connector_contract_is_current(metadata):
+                continue
+            if metadata.get("auto_configure") is True or self._agent_can_read_local_resources(
+                agent,
+                config,
+                owner=owner,
+                require_full=True,
+            ):
+                result.append(agent)
+        return result
+
+    @staticmethod
+    def _agent_can_read_local_resources(
+        agent: Mapping[str, Any],
+        config: UserRunConfig,
+        *,
+        owner: str,
+        require_full: bool,
+    ) -> bool:
+        """Check advertised owner/device/root bindings without project filters."""
+        metadata = dict(agent.get("metadata") or {})
+        node_kind = str(metadata.get("node_kind") or metadata.get("node.kind") or "")
+        if require_full and node_kind != "windows_full":
+            return False
+        if node_kind not in {"windows_agent", "windows_full"}:
+            return False
+        registered_owner = str(metadata.get("user") or "").strip().casefold()
+        owner_token = str(owner or "").strip().casefold()
+        if registered_owner and owner_token and registered_owner != owner_token:
+            return False
+        if str(agent.get("status") or "") == "offline":
+            return False
+        workspace_ids = {
+            str(item.get("path_id") or "")
+            for item in metadata.get("workspace_bindings") or []
+            if isinstance(item, dict) and item.get("healthy") is True
+        }
+        asset_ids = {
+            str(item.get("id") or "")
+            for item in metadata.get("asset_bindings") or []
+            if isinstance(item, dict) and item.get("healthy") is True
+        }
+        data_bindings = [
+            item
+            for item in metadata.get("data_bindings") or []
+            if isinstance(item, dict) and item.get("healthy") is True
+        ]
+        from core.agent_bindings import make_workspace_path_id
+        from core.agent_asset_bindings import candidate_asset_binding_ids
+        from core.agent_data_bindings import candidate_data_binding_ids
+
+        agent_id = str(agent.get("agent_id") or "")
+        for role, value in ApiV1Service._user_run_resource_paths(config):
+            kind = classify_data_path(value)
+            if kind != "agent":
+                # Shared/central references are not proven readable by a
+                # particular Windows full node from control-plane metadata.
+                continue
+            if role == "dataset":
+                candidates = set(
+                    candidate_data_binding_ids(owner=owner, device_id=agent_id, data_path=value)
+                )
+                for item in data_bindings:
+                    if str(item.get("project") or ""):
+                        candidates.update(
+                            candidate_data_binding_ids(str(item.get("project") or ""), value)
+                        )
+                if not candidates.intersection(
+                    {str(item.get("id") or "") for item in data_bindings}
+                ):
+                    return False
+            elif role == "code_path" and make_workspace_path_id(value) not in workspace_ids:
+                return False
+            elif role in {"selena_build_script", "package_build_script"}:
+                # UserRunConfig requires build scripts to live below code_path;
+                # the authorized workspace binding covers those files.
+                continue
+            elif role == "runtime_bundle" and not set(candidate_asset_binding_ids(value)).intersection(asset_ids):
+                return False
+            else:
+                if not set(candidate_asset_binding_ids(value)).intersection(asset_ids):
+                    return False
+        return True
+
+    def _apply_source_to_local_stage(
+        self,
+        task_specs: list[dict[str, Any]],
+        config: UserRunConfig,
+        *,
+        owner: str,
+    ) -> None:
+        """Fail truthfully when local inputs are not co-located for execution.
+
+        The current deployment TransferService has only a Cluster data-plane
+        target root.  It cannot authorize a different Windows machine's cache,
+        so this method must never issue a plan disguised as source_to_local.
+        """
+        stage = next(
+            (item for item in task_specs if str(item.get("stage_type") or "") == "prepare_data"),
+            None,
+        )
+        if stage is None:
+            return
+        local_sources = [
+            {"source_role": role, "path": value}
+            for role, value in self._user_run_resource_paths(config)
+            if classify_data_path(value) == "agent"
+        ]
+        if not local_sources:
+            return
+        owner_token = self._owner(owner)
+        if self._compatible_local_execution_agents(owner_token, config):
+            return
+        # A new user must be able to submit first and connect the unified
+        # Windows component afterwards.  With no online full Connector this is
+        # a normal resumable wait state, not a permanent routing failure.
+        now = float(self.now_fn())
+        online_full = [
+            agent
+            for agent in self._control(owner_token).list_agents()
+            if str((agent.get("metadata") or {}).get("user") or "").strip().casefold()
+            == owner_token.strip().casefold()
+            and str(agent.get("mode") or "") == "windows_full"
+            and windows_connector_contract_is_current(agent.get("metadata") or {})
+            and now - float(agent.get("last_seen") or 0.0) <= 120.0
+        ]
+        if not online_full:
+            return
+        payload = dict(stage.get("payload") or {})
+        payload.update(
+            {
+                "contract": "user-run-config/2.0",
+                "dispatch_scope": "local_execution_unavailable",
+                "transfer_status": "source_to_local_unavailable",
+                "transfer_required": False,
+                "source_roles": sorted({item["source_role"] for item in local_sources}),
+                "source_paths": local_sources,
+                "data_path": str(config.data.path or ""),
+                "required_signals": [],
+            }
+        )
+        stage["payload"] = payload
+        # A source-side -> Windows cache adapter is not wired to a
+        # target-specific root yet.  Block before any Agent can claim the
+        # Stage; this is intentionally truthful rather than a Cluster-root
+        # masquerade.
+        self._block_source_to_local_tasks(task_specs)
+
+    @staticmethod
+    def _block_source_to_local_tasks(task_specs: list[dict[str, Any]]) -> None:
+        error = {
+            "code": "source_to_local_unavailable",
+            "status": "needs_input",
+            "message": "The connected simulation computer cannot read one or more configured inputs.",
+            "actions": [
+                {
+                    "type": "use_co_located_inputs",
+                    "label": "Use paths readable by the local simulation computer",
+                }
+            ],
+        }
+        for task in task_specs:
+            if str(task.get("status") or task.get("initial_status") or "") == "skipped":
+                continue
+            task["status"] = "blocked"
+            task["initial_status"] = "blocked"
+            task["skip_reason"] = "source_to_local_unavailable"
+            task["error"] = dict(error)
+            payload = dict(task.get("payload") or {})
+            payload["transfer_status"] = "source_to_local_unavailable"
+            task["payload"] = payload
 
     def _server_visible_path(self, value: str) -> Path:
         """Resolve a raw or administrator-authorized shared path on Linux."""
@@ -1293,6 +1567,38 @@ class ApiV1Service:
                 status_code=403,
                 detail={"job_id": str(job_id), "stage_id": stage_key},
             )
+        transfer_mode = str(stage_payload.get("transfer_mode") or "shared_copy").strip().lower()
+        if transfer_mode == "source_to_local":
+            raise ApiV1Error(
+                "source_to_local_unavailable",
+                "A target-specific Windows cache adapter is not configured",
+                status_code=503,
+                actions=[
+                    {
+                        "type": "use_co_located_inputs",
+                        "label": "Use inputs readable by the local simulation computer",
+                    }
+                ],
+            )
+        if transfer_mode == "gateway_upload":
+            raise ApiV1Error(
+                "cluster_direct_transfer_unavailable",
+                "gateway_upload is not available in the current transfer kernel",
+                status_code=503,
+                actions=[
+                    {
+                        "type": "use_shared_copy",
+                        "label": "Use a deployment-managed direct-transfer root",
+                    }
+                ],
+            )
+        if transfer_mode != "shared_copy":
+            raise ApiV1Error(
+                "invalid_transfer_mode",
+                "Unsupported transfer mode",
+                status_code=422,
+                detail={"mode": transfer_mode},
+            )
         allowed_roles = {
             str(item).strip()
             for item in list(stage_payload.get("source_roles") or [])
@@ -1345,10 +1651,10 @@ class ApiV1Service:
                 owner=owner,
                 job_id=str(job_id),
                 stage_id=stage_key,
-                # P0 local-input Cluster transfers always use the deployed
-                # shared-copy adapter.  The mode is server policy, not a
-                # client-selectable field.
-                mode="shared_copy",
+                # The Stage's server-side route selects the mode.  Clients
+                # cannot override a Cluster shared-copy or local
+                # source-to-local decision in the request body.
+                mode=transfer_mode,
                 source_role=requested_role,
                 items=tuple(plan_items),
                 source_fingerprints=source_fingerprints,
@@ -2294,6 +2600,7 @@ class ApiV1Service:
             "progress": self._job_progress(stages, status),
             "current_stage": self._current_stage(stages),
             "available_actions": self._available_actions(str(job["job_id"]), status, stages),
+            "business_steps": business_steps(stages) if is_run_config else [],
             "stages": stages,
             "tasks": stages if is_run_config else list(job.get("tasks") or []),
             "metadata": dict(job.get("metadata") or {}),

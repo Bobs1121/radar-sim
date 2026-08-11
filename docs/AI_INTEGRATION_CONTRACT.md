@@ -15,6 +15,17 @@ Web、Python SDK、未来 Skill/MCP 只使用同一套 `/api/v1`，不得复制�
 7. `manifest()` 获取运行清单。
 8. `list_results()` / `get_result()` / `download_result()` 获取并校验结果。
 
+### Owner identity
+
+在可信内网 `--insecure-no-auth` 试用中，Web 首次打开会要求用户输入
+NTID；浏览器只保存规范化后的 `user-<小写标识>`，SDK 未显式传入 `user`
+时使用相同格式的本机登录名。要跨电脑复用同一个 Connector，Web 与 SDK
+应使用同一个稳定标识。清理浏览器缓存或更换浏览器后重新输入该标识即可；
+旧 `web-*`/`sdk-*` 身份会保留到升级动作完成，服务不会把它们静默合并为另一个
+owner。`X-Rsim-User` 在该模式下只是可伪造的隔离标签，不是认证，不能把服务
+暴露到不受信网络。正式认证模式忽略此头，owner 只能来自用户 Bearer token，
+Connector 配对仍需部署方提供受控的短期配对流程。
+
 当任务需要读取 Windows 本地路径或执行 Windows 编译/本地仿真时，SDK 集成方可先调用
 `RadarSimClient.download_windows_connector(destination)` 下载同源的一键连接入口（内部兼容参数固定为 `unified`），
 并由实际的 Windows 用户执行一次。该方法不在 Linux 上执行 PowerShell，也不把 Agent Token 写入 YAML；
@@ -48,8 +59,8 @@ SDK：`RadarSimClient.diagnosis(job_id)`
 | 字段 | 含义 |
 |---|---|
 | `status` | 调度任务状态 |
-| `outcome` | 归一化业务结果：`pending`、`needs_input`、`succeeded`、`failed`、`cancelled` |
-| `code` | 稳定结论码，例如 `simulation_failed`、`infrastructure_failed` |
+| `outcome` | 归一化业务结果：`pending`、`needs_input`、`succeeded`、`partial`、`failed`、`cancelled` |
+| `code` | 稳定结论码，例如 `simulation_partial`、`simulation_failed`、`infrastructure_failed` |
 | `category` | `none`、`configuration`、`infrastructure`、`simulation`、`system` |
 | `summary` | 不含路径、密钥和堆栈的稳定说明 |
 | `action` | 下一项可执行动作；可直接映射到 SDK 方法 |
@@ -72,7 +83,7 @@ Windows 本地运行的 Stage 结果会携带有限的 `diagnostics`（失败输
 
 ### 批量输入的部分成功
 
-一次任务的 `data.path` 可以解析为多个输入文件。Windows 本地执行和 Cluster 执行都不因单个输入返回非零而截断整个批次：只要至少有一个输入成功并产生输出，控制面会继续执行结果收集与 Manifest 归档。最终 Job 仍以 `failed` 结论表示“批次不是全成功”，但 `artifacts_available=true`，成功输出和失败诊断都可读取。
+一次任务的 `data.path` 可以解析为多个输入文件。Windows 本地执行和 Cluster 执行都不因单个输入返回非零而截断整个批次：只要至少有一个输入成功并产生输出，控制面会继续执行结果收集与 Manifest 归档。最终 Job 与 Diagnosis 均使用 `partial` 表示“部分成功”，稳定码为 `simulation_partial`；`artifacts_available=true`，成功输出和失败诊断都可读取。`partial` 不是全成功，也不是基础设施失败。
 
 Manifest 在这种情况下使用 `status=partial`，并提供：
 
@@ -84,10 +95,11 @@ Manifest 在这种情况下使用 `status=partial`，并提供：
 
 结果判断优先级：
 
-1. Manifest 明确为 failed/failure/cancelled/partial 时，业务结果为 `simulation_failed`。
-2. 否则 Job 为 failed 时，按 Stage 稳定错误码区分 configuration、infrastructure、system。
-3. 其余结果跟随 Job 调度状态。
-4. Job 与 Manifest 结论冲突时，返回 `job_manifest_outcome_mismatch`，同时使用上述归一化结论。
+1. Manifest 明确为 `partial` 时，业务结果为 `partial`，稳定码为 `simulation_partial`。
+2. Manifest 明确为 failed/failure/cancelled 时，分别归一化为失败或取消；业务失败使用 `simulation_failed`。
+3. 否则 Job 为 failed 时，按 Stage 稳定错误码区分 configuration、infrastructure、system。
+4. 其余结果跟随 Job 调度状态。
+5. Job 与 Manifest 结论冲突时，返回 `job_manifest_outcome_mismatch`，同时使用上述归一化结论。
 
 Diagnosis 不返回用户本地绝对路径、共享盘路径、Agent 标识、服务端物理位置、密钥、任意原始错误消息或堆栈。
 

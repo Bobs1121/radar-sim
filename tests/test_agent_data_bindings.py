@@ -59,3 +59,33 @@ def test_central_candidate_ids_match_windows_ancestor_root():
 
 def test_non_windows_path_has_no_central_candidate_binding():
     assert candidate_data_binding_ids("ovrs25", "/mnt/data/case") == ()
+
+
+def test_owner_device_binding_survives_internal_project_change(tmp_path: Path):
+    root = tmp_path / "measurements"
+    root.mkdir()
+    store = AgentDataBindingStore(tmp_path / "bindings.db")
+
+    binding = store.register(owner="alice", device_id="agent-1", root_path=root)
+    assert binding.public_dict == {
+        "id": binding.binding_id,
+        "healthy": True,
+        "owner": "alice",
+        "device_id": "agent-1",
+    }
+    # Selena recognition is intentionally absent from the v2 identity.  A
+    # changed internal project token still resolves the same owner/device root.
+    assert store.get(binding.binding_id, project="new-recognized-project").binding_id == binding.binding_id
+    assert store.list(project="other-project") == []
+    assert store.list(owner="alice", device_id="agent-1")[0].binding_id == binding.binding_id
+
+
+def test_legacy_project_binding_remains_readable_after_store_migration(tmp_path: Path):
+    root = tmp_path / "measurements"
+    root.mkdir()
+    store = AgentDataBindingStore(tmp_path / "bindings.db")
+    legacy = store.register(project="ovrs25", root_path=root)
+
+    assert store.get(legacy.binding_id, project="ovrs25").project == "ovrs25"
+    with pytest.raises(AgentDataBindingError, match="unavailable"):
+        store.get(legacy.binding_id, project="other")

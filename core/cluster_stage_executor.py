@@ -45,7 +45,25 @@ from core.agent_policy import (
 
 LINUX_STAGE_AGENT_ID = "linux-v2-stage-executor"
 CLUSTER_GATEWAY_AGENT_ID = "cluster-v2-platform-gateway"
+_CLUSTER_WORKER_SUFFIX = "-worker-"
+_DEFAULT_ROLE_WORKERS = 2
+_MAX_ROLE_WORKERS = 16
 _LOG = logging.getLogger(__name__)
+
+
+def _bounded_worker_count(value: int) -> int:
+    """Normalize a role pool size to a small, explicit deployment bound."""
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = _DEFAULT_ROLE_WORKERS
+    return min(max(count, 1), _MAX_ROLE_WORKERS)
+
+
+def _role_worker_id(role_id: str, index: int) -> str:
+    """Return a stable worker identity while retaining role worker zero."""
+    index = int(index)
+    return str(role_id) if index == 0 else f"{role_id}{_CLUSTER_WORKER_SUFFIX}{index}"
 
 
 class ClusterStageExecutionError(RuntimeError):
@@ -112,28 +130,76 @@ class ClusterStageExecutor:
         *,
         poll_interval: float = 1.0,
         heartbeat_interval: float = 10.0,
+        linux_worker_count: int = _DEFAULT_ROLE_WORKERS,
+        gateway_worker_count: int = _DEFAULT_ROLE_WORKERS,
     ) -> None:
         self.control = control
         self.context = context
         self.poll_interval = max(float(poll_interval), 0.05)
         self.heartbeat_interval = max(float(heartbeat_interval), 0.05)
+        self.linux_worker_count = _bounded_worker_count(linux_worker_count)
+        self.gateway_worker_count = _bounded_worker_count(gateway_worker_count)
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
     def start(self) -> None:
-        self.control.register_agent(
-            "Linux v2 stage executor", agent_id=LINUX_STAGE_AGENT_ID,
-            platform="linux", capabilities=list(LINUX_EXECUTOR_CAPABILITIES),
-            metadata={}, node_kind=NODE_KIND_LINUX_EXECUTOR,
+        if any(thread.is_alive() for thread in self._threads):
+            return
+        self._stop.clear()
+        self._threads = []
+        # The role IDs remain the stable affinity IDs written by ApiV1/stage
+        # binding.  Worker 0 uses that root ID for backwards compatibility;
+        # additional workers have deterministic IDs and therefore retain
+        # their current_task_id across a connector/service restart.
+        roles = (
+            (
+                LINUX_STAGE_AGENT_ID,
+                "Linux v2 stage executor",
+                "linux",
+                list(LINUX_EXECUTOR_CAPABILITIES),
+                NODE_KIND_LINUX_EXECUTOR,
+                self.linux_worker_count,
+            ),
+            (
+                CLUSTER_GATEWAY_AGENT_ID,
+                "Cluster v2 platform gateway",
+                "gateway",
+                list(PLATFORM_GATEWAY_CAPABILITIES),
+                NODE_KIND_PLATFORM_GATEWAY,
+                self.gateway_worker_count,
+            ),
         )
-        self.control.register_agent(
-            "Cluster v2 platform gateway", agent_id=CLUSTER_GATEWAY_AGENT_ID,
-            platform="gateway", capabilities=list(PLATFORM_GATEWAY_CAPABILITIES),
-            metadata={}, node_kind=NODE_KIND_PLATFORM_GATEWAY,
-        )
-        for agent_id in (LINUX_STAGE_AGENT_ID, CLUSTER_GATEWAY_AGENT_ID):
+        worker_ids: list[str] = []
+        for role_id, role_name, platform, capabilities, node_kind, count in roles:
+            for index in range(count):
+                worker_id = _role_worker_id(role_id, index)
+                register_worker = getattr(self.control, "register_cluster_worker", None)
+                if callable(register_worker):
+                    register_worker(
+                        f"{role_name} worker {index}", role_id=role_id,
+                        worker_id=worker_id, worker_index=index,
+                        worker_count=count, platform=platform,
+                        capabilities=list(capabilities), node_kind=node_kind,
+                    )
+                else:
+                    # Keep small test/dry-run control doubles compatible.  The
+                    # production ControlService exposes the server-owned
+                    # registration primitive above.
+                    self.control.register_agent(
+                        f"{role_name} worker {index}", agent_id=worker_id,
+                        platform=platform, capabilities=list(capabilities),
+                        metadata={
+                            "cluster_role": role_id,
+                            "claim_group": role_id,
+                            "cluster_worker_index": index,
+                            "cluster_worker_count": count,
+                        },
+                        node_kind=node_kind,
+                    )
+                worker_ids.append(worker_id)
+        for worker_id in worker_ids:
             thread = threading.Thread(
-                target=self._loop, args=(agent_id,), daemon=True, name=agent_id
+                target=self._loop, args=(worker_id,), daemon=True, name=worker_id
             )
             thread.start()
             self._threads.append(thread)

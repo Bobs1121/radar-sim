@@ -95,18 +95,13 @@ class UserDataConfig(_Frozen):
 class UserSimulationConfig(_Frozen):
     target: Literal["auto", "local", "cluster"] = "auto"
     adapter_file: str = ""
-    mat_filter: str
+    mat_filter: str = ""
 
     @field_validator("adapter_file", "mat_filter", mode="before")
     @classmethod
     def _normalize_paths(cls, value: Any) -> Any:
         return _path(value) if isinstance(value, str) else value
 
-    @model_validator(mode="after")
-    def _required_assets(self) -> "UserSimulationConfig":
-        if not self.mat_filter:
-            raise ValueError("simulation.mat_filter is required")
-        return self
 
 
 class UserRunConfig(_Frozen):
