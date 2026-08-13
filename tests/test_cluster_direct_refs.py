@@ -12,8 +12,11 @@ from core.cluster_stage_executor import (
     _validate_transfer_resources,
     execute_cluster_preflight,
     execute_cluster_environment,
+    execute_cluster_submit,
     resolve_cluster_data,
 )
+from core.cluster_runs import ClusterRunStore
+from core.datasets import DatasetCatalog
 
 
 def _resource(role: str, entries: list[dict], *, root: str = "//cluster/share", relative_root: str = "iso") -> dict:
@@ -146,6 +149,106 @@ def test_direct_runtime_environment_uses_global_config_without_bundle_catalog(
     result = execute_cluster_environment(context, job)
     assert loaded == ["run-config-v2"]
     assert result["environment_snapshot"]["status"] == "ready"
+
+
+def test_shared_existing_cluster_preflight_and_submit_without_windows_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shared existing Selena reaches the fake Cluster gateway without a Connector."""
+
+    selena = tmp_path / "selena"
+    selena.mkdir()
+    (selena / "Selena.exe").write_bytes(b"exe")
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "one.MF4").write_bytes(b"mf4")
+    (tmp_path / "Runtime.xml").write_text("<runtime/>", encoding="utf-8")
+    (tmp_path / "MatFilter.cfg").write_text("signal=*", encoding="utf-8")
+    deployment = {
+        "cluster": {},
+        "simulation": {},
+        "shared_namespaces": [
+            {
+                "id": "cluster-share",
+                "shared_prefix": "//cluster/share",
+                "central_root": str(tmp_path),
+                "worker_root": "//cluster/share",
+            }
+        ],
+    }
+    job = {
+        "job_id": "job-shared-existing",
+        "owner": "alice",
+        "payload": {"spec_hash": "sha256:" + "1" * 64},
+        "spec": {
+            "selena": {
+                "source": "existing",
+                "existing_path": "//cluster/share/selena",
+                "runtime_xml": "//cluster/share/Runtime.xml",
+            },
+            "data": {"path": "//cluster/share/data"},
+            "simulation": {
+                "target": "cluster",
+                "source": "",
+                "adapter_file": "",
+                "mat_filter": "//cluster/share/MatFilter.cfg",
+            },
+        },
+        "resolved_spec": {"decisions": {}},
+    }
+    captured: dict[str, object] = {}
+
+    def fake_prepare(config, **kwargs):
+        captured["config"] = config
+        captured["kwargs"] = kwargs
+        package = tmp_path / "package"
+        package.mkdir(exist_ok=True)
+        (package / "manifest.json").write_text("{}", encoding="utf-8")
+        return SimpleNamespace(
+            manifest_path=str(package / "manifest.json"),
+            config_path="//cluster/jobs/job-shared-existing/Config.cfg",
+            profile="default",
+        )
+
+    monkeypatch.setattr("core.cluster.prepare_cluster_job", fake_prepare)
+    context = SimpleNamespace(
+        config_loader=lambda _project: deployment,
+        runtime_catalog=SimpleNamespace(
+            get=lambda _bundle_id: (_ for _ in ()).throw(
+                AssertionError("shared existing route must not query RuntimeBundle catalog")
+            )
+        ),
+        runtime_store=SimpleNamespace(),
+        dataset_catalog=DatasetCatalog(tmp_path / "datasets.db"),
+        config_assets=SimpleNamespace(),
+        run_store=ClusterRunStore(tmp_path / "runs.db"),
+        work_root=tmp_path / "work",
+    )
+
+    result = execute_cluster_preflight(context, job)
+    assert result["selena"]["code"] == "shared_existing_runtime"
+    assert result["selena"]["runtime_bundle"]["id"].startswith("selena-bundle:sha256:")
+    assert result["dataset"]["source_kind"] == "shared_path"
+    assert captured["kwargs"]["copy_selena"] is False
+    assert captured["kwargs"]["copy_data"] is False
+    config = captured["config"]
+    assert config["cluster"]["selena_exe"].replace("\\", "/") == "//cluster/share/selena/Selena.exe"
+    assert config["simulation"]["runtime_xml"].replace("\\", "/") == "//cluster/share/Runtime.xml"
+
+    # The Cluster gateway is the only external submitter; no Windows Agent is
+    # registered or consulted by this route.
+    job["resolved_spec"]["decisions"] = {
+        "selena": result["selena"],
+        "data": {"dataset": result["dataset"], "status": "resolved"},
+    }
+    monkeypatch.setattr(
+        "core.cluster.submit_cluster_job",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="cluster-job-42\n", stderr="", mode="xmlrpc"
+        ),
+    )
+    submitted = execute_cluster_submit(context, job, result["cluster_run_ref"])
+    assert submitted["cluster_run"]["external_job_id"] == "cluster-job-42"
 
 
 def test_dataset_uri_direct_transfer_can_resolve_without_legacy_catalog(tmp_path: Path) -> None:

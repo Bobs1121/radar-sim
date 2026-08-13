@@ -45,6 +45,7 @@ param(
     [string]$ApiToken = "",
     [string]$Owner = "",
     [string]$InstallRoot = "",
+    [switch]$ForceRebind,
     [switch]$SkipDeps,
     [switch]$SkipCheck,
     [switch]$RegisterStartup,
@@ -357,20 +358,43 @@ if (Test-Path $ConfigPath) {
     try { $existing = Get-Content -Raw -Encoding UTF8 $ConfigPath | ConvertFrom-Json } catch { }
 }
 $existingOwner = if ($existing -and $existing.owner) { [string]$existing.owner } else { "" }
+$existingServerUrl = if ($existing -and $existing.server_url) { ([string]$existing.server_url).TrimEnd('/') } else { "" }
 if (-not $Owner -and $existingOwner) {
     $Owner = $existingOwner
-} elseif ($Owner -and $existingOwner -and $existingOwner -ne $Owner -and $existingOwner -match '^(web|sdk)-[0-9a-f]{24,64}$') {
+} elseif (
+    $Owner -and $existingOwner -and
+    -not [string]::Equals($existingOwner, $Owner, [StringComparison]::OrdinalIgnoreCase) -and
+    $existingOwner -match '^(web|sdk)-[0-9a-f]{24,64}$' -and
+    $Owner -match '^user-[a-z0-9_.-]+$'
+) {
     # Older one-click downloads paired the Connector to a generated browser
     # or machine hash.  A later Web/SDK launch supplies the user's durable
     # no-auth grouping label; migrate only those legacy labels while keeping
     # Agent ID, path bindings and the install root intact.  Never silently
     # replace an existing explicit owner.
     Write-Warn "Migrating the legacy generated Connector owner to the supplied stable user identifier."
+} elseif (
+    $Owner -and $existingOwner -and
+    -not [string]::Equals($existingOwner, $Owner, [StringComparison]::OrdinalIgnoreCase) -and
+    -not $ForceRebind
+) {
+    Fail "This Windows profile is already connected with another Web/SDK identity. Open the service with the original NTID, or ask the administrator to perform an explicit rebind. An update never changes the bound user."
 }
 $Owner = [string]$Owner.Trim()
 if ($Owner) { $env:RSIM_USER = $Owner }
 if (-not $AgentId) {
-    $AgentId = if ($existing.agent_id) { [string]$existing.agent_id } else { "agent-$env:USERNAME-$env:COMPUTERNAME" }
+    if ($existing.agent_id -and -not $ForceRebind) {
+        $AgentId = [string]$existing.agent_id
+    } else {
+        $identityBytes = [Text.Encoding]::UTF8.GetBytes($Owner.ToLowerInvariant())
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $identitySuffix = ([BitConverter]::ToString($sha.ComputeHash($identityBytes))).Replace("-", "").Substring(0, 12).ToLowerInvariant()
+        } finally {
+            $sha.Dispose()
+        }
+        $AgentId = "agent-$env:USERNAME-$env:COMPUTERNAME-$identitySuffix"
+    }
 }
 if (-not $ControlPlane) {
     if ($RequestedMode -in @("unified", "light")) { $ControlPlane = "linux" }
@@ -390,6 +414,13 @@ if ($UseLocalControl) {
     $ApiToken = ""
     $AgentToken = ""
 } else {
+    if (
+        $ServerUrl -and $existingServerUrl -and
+        -not [string]::Equals($existingServerUrl, $ServerUrl.TrimEnd('/'), [StringComparison]::OrdinalIgnoreCase) -and
+        -not $ForceRebind
+    ) {
+        Fail "This Windows profile is already connected to another radar-sim server. Updating cannot silently change the server; request an explicit rebind."
+    }
     if (-not $ServerUrl -and $existing.server_url) { $ServerUrl = [string]$existing.server_url }
     if (-not $ServerUrl) { Fail "$Mode + linux requires the Linux -ServerUrl." }
     $ServerUrl = $ServerUrl.TrimEnd('/')
@@ -665,12 +696,15 @@ if ($Start) {
         $capabilityHeaders = @{}
         if ($Owner) { $capabilityHeaders["X-Rsim-User"] = $Owner }
         $connected = $false
+        $connectionReason = "not_registered"
+        $encodedAgentId = [Uri]::EscapeDataString([string]$AgentId)
         foreach ($attempt in 1..30) {
             try {
                 $snapshot = Invoke-RestMethod -Method Get `
-                    -Uri "$ServerUrl/api/v1/capabilities" `
+                    -Uri "$ServerUrl/api/v1/windows-connector/status?agent_id=$encodedAgentId" `
                     -Headers $capabilityHeaders -TimeoutSec 5
-                if ([bool]$snapshot.capabilities.windows.available) {
+                $connectionReason = [string]$snapshot.reason
+                if ([bool]$snapshot.available -and [bool]$snapshot.contract_current) {
                     $connected = $true
                     break
                 }
@@ -678,8 +712,14 @@ if ($Start) {
             Start-Sleep -Seconds 1
         }
         if (-not $connected) {
-            Fail "The background connector did not become available within 30 seconds."
+            if ($connectionReason -eq "connector_owner_mismatch") {
+                Fail "The connector process started, but this Windows profile is bound to a different Web/SDK identity. Reopen the Web with the original NTID or request an explicit rebind."
+            }
+            if ($connectionReason -eq "windows_connector_update_required") {
+                Fail "The connector registered, but its task contract is outdated. Download the current one-click update from this Web service."
+            }
+            Fail "Linux did not confirm this exact PC within 30 seconds (state: $connectionReason). The installer preserved the local diagnostics for the service administrator."
         }
-        Write-Ok "Linux confirmed this PC is available for task scheduling."
+        Write-Ok "Linux confirmed this exact PC and user binding are available for task scheduling."
     }
 }

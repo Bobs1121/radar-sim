@@ -8,6 +8,7 @@ results contain only logical references and path-free summaries.
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import ntpath
 import os
@@ -26,6 +27,8 @@ from core.datasets import (
     DatasetError,
     DatasetFileRef,
     DatasetRef,
+    classify_data_path,
+    discover_dataset_metadata,
     dataset_fingerprint,
     dataset_id_from_uri,
     resolve_data_reference,
@@ -276,6 +279,11 @@ class ClusterStageExecutor:
                 self._record_dataset(job, result)
             elif stage_type == "preflight":
                 result = execute_cluster_preflight(self.context, job)
+                if result.get("selena"):
+                    # Shared existing Selena has no Windows resolver stage;
+                    # persist its opaque runtime identity before finalize
+                    # builds the public manifest.
+                    self._record_selena(job, dict(result["selena"]))
                 if result.get("dataset"):
                     # All-shared jobs may skip prepare_data.  Persist the
                     # metadata-only DatasetRef before later finalize/manifest
@@ -344,7 +352,8 @@ class ClusterStageExecutor:
             )
 
     def _record_dataset(self, job: dict[str, Any], result: dict[str, Any]) -> None:
-        resolved = dict(job.get("resolved_spec") or {})
+        current = self.control.get_job(str(job.get("job_id") or ""))
+        resolved = dict(current.get("resolved_spec") or {})
         decisions = dict(resolved.get("decisions") or {})
         route = str(result.get("data_route") or "central").strip().lower()
         code = "shared_dataset_resolved" if route == "shared" else "central_dataset_resolved"
@@ -355,6 +364,27 @@ class ClusterStageExecutor:
         }
         resolved["decisions"] = decisions
         resolved["status"] = "resolved" if str((decisions.get("selena") or {}).get("status") or "") == "resolved" else "partial"
+        self.control.update_resolved_spec(str(job.get("job_id") or ""), resolved)
+
+    def _record_selena(self, job: dict[str, Any], result: dict[str, Any]) -> None:
+        """Persist a path-free runtime identity produced by Cluster preflight."""
+
+        bundle = dict(result.get("runtime_bundle") or {})
+        bundle_id = str(bundle.get("id") or "")
+        if not bundle_id:
+            return
+        current = self.control.get_job(str(job.get("job_id") or ""))
+        resolved = dict(current.get("resolved_spec") or {})
+        decisions = dict(resolved.get("decisions") or {})
+        decisions["selena"] = {
+            "status": "resolved",
+            "code": str(result.get("code") or "shared_existing_runtime"),
+            "action": "use_runtime_bundle",
+            "runtime_bundle": bundle,
+            "evidence": dict(result.get("evidence") or {}),
+        }
+        resolved["decisions"] = decisions
+        resolved["status"] = "resolved" if str((decisions.get("data") or {}).get("status") or "") == "resolved" else "partial"
         self.control.update_resolved_spec(str(job.get("job_id") or ""), resolved)
 
 
@@ -377,6 +407,33 @@ def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> d
             "evidence_ref": "central-dataset-resolution",
         }
     project = _data_project(context, job)
+    if classify_data_path(data_path) == "central":
+        try:
+            files = discover_dataset_metadata(Path(data_path))
+            dataset = context.dataset_catalog.register_shared(
+                project=project,
+                owner=owner,
+                source_path=data_path,
+                probe_path=data_path,
+                files=files,
+            )
+        except (DatasetError, OSError) as exc:
+            raise ClusterStageExecutionError(
+                "Cluster cannot access the configured central dataset path",
+                code="CLUSTER_SHARED_DATA_UNAVAILABLE",
+                actions=(
+                    {
+                        "type": "check_shared_path",
+                        "label": "Check the Cluster shared-storage mapping and retry this stage",
+                    },
+                ),
+            ) from exc
+        return {
+            "dataset": dataset.to_dict(),
+            "dataset_id": dataset.id,
+            "data_route": "central",
+            "evidence_ref": "central-dataset-resolution",
+        }
     config = context.config_loader(project)
     outcome = resolve_data_reference(
         context.dataset_catalog,
@@ -391,7 +448,33 @@ def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> d
         metadata_only=True,
     )
     if outcome.status != "resolved" or outcome.dataset is None:
-        raise ClusterStageExecutionError(outcome.action or "Dataset must be uploaded before Cluster execution")
+        reason = str(outcome.action or "Dataset must be uploaded before Cluster execution")
+        lowered = reason.casefold()
+        unavailable = any(
+            token in lowered
+            for token in (
+                "unavailable",
+                "not accessible",
+                "not mounted",
+                "not found",
+                "cannot access",
+                "permission",
+            )
+        )
+        raise ClusterStageExecutionError(
+            (
+                "Cluster cannot access the configured shared dataset path"
+                if unavailable
+                else reason
+            ),
+            code=("CLUSTER_SHARED_DATA_UNAVAILABLE" if unavailable else "CLUSTER_DATA_UNRESOLVED"),
+            actions=(
+                {
+                    "type": "check_shared_path",
+                    "label": "Check the Cluster shared-storage mapping and retry this stage",
+                },
+            ),
+        )
     return {
         "dataset": outcome.dataset.to_dict(),
         "dataset_id": outcome.dataset.id,
@@ -402,8 +485,9 @@ def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> d
 def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any]) -> dict[str, Any]:
     """Check only central/Gateway prerequisites; Linux never checks build tools."""
     transfer_resources = _transfer_resources(job)
+    shared_existing = _shared_existing_execution_expected(job)
     bundle = None
-    if transfer_resources or _direct_transfer_environment_expected(job):
+    if transfer_resources or _direct_transfer_environment_expected(job) or shared_existing:
         # A completed direct transfer is already the Selena/data identity for
         # this Stage.  Do not require a RuntimeBundle catalog row (or inspect
         # an archive) just to check the deployment's Cluster manager.
@@ -415,6 +499,8 @@ def execute_cluster_environment(context: ClusterStageContext, job: dict[str, Any
             .get("id")
             or ""
         )
+        if shared_existing and not bundle_id:
+            bundle_id = _shared_existing_bundle_id(job)
     else:
         bundle = _bundle(context, job)
         project = bundle.internal_project
@@ -473,6 +559,79 @@ def _direct_transfer_environment_expected(job: dict[str, Any]) -> bool:
     return False
 
 
+def _cluster_visible_reference(value: object) -> bool:
+    """Classify a path that may be referenced directly by a Cluster worker."""
+
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.casefold().startswith(("dataset://", "config-asset://", "config-asset:")):
+        return True
+    return classify_data_path(text) in {"shared", "central"}
+
+
+def _shared_existing_execution_expected(job: dict[str, Any]) -> bool:
+    """Return whether V2 existing Selena inputs are all non-local references."""
+
+    # A completed source-side manifest is authoritative, even when the
+    # original spelling happened to be a POSIX path.  Keep that route's
+    # direct-transfer evidence and diagnostics instead of relabelling it as a
+    # shared-folder execution.
+    if _transfer_resources(job).get("runtime_bundle"):
+        return False
+    spec = dict(job.get("spec") or {})
+    selena = dict(spec.get("selena") or {})
+    if str(selena.get("source") or "").strip().casefold() != "existing":
+        return False
+    selected = dict(
+        ((job.get("resolved_spec") or {}).get("decisions") or {}).get("selena") or {}
+    )
+    # An explicit catalog selection keeps its catalog/cache semantics.  This
+    # generic shared-folder shortcut is only for a public path that has not
+    # already been resolved to a registered Runtime Bundle.
+    if str(selected.get("code") or "") == "registered_runtime_bundle_selected":
+        return False
+    required = (
+        selena.get("existing_path"),
+        selena.get("runtime_xml"),
+        dict(spec.get("data") or {}).get("path"),
+    )
+    optional = (
+        dict(spec.get("simulation") or {}).get("adapter_file"),
+        dict(spec.get("simulation") or {}).get("mat_filter"),
+    )
+    return all(_cluster_visible_reference(value) for value in required) and all(
+        not str(value or "").strip() or _cluster_visible_reference(value)
+        for value in optional
+    )
+
+
+def _shared_existing_bundle_id(job: dict[str, Any]) -> str:
+    """Build an opaque, project-free identity for a shared Selena folder."""
+
+    spec = dict(job.get("spec") or {})
+    selena = dict(spec.get("selena") or {})
+    material = "\0".join(
+        (
+            str(selena.get("existing_path") or "").strip(),
+            str(selena.get("runtime_xml") or "").strip(),
+        )
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return "selena-bundle:sha256:" + digest
+
+
+def _shared_existing_worker_executable(value: str) -> str:
+    """Turn a shared Selena folder or executable reference into worker path."""
+
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    if ntpath.splitext(text)[1].casefold() == ".exe":
+        return text
+    return text.rstrip("/") + "/Selena.exe"
+
+
 def _public_environment_error_detail(item: Any) -> str:
     """Keep deployment paths private while preserving actionable OS errors."""
     detail = str(getattr(item, "detail", "") or "").strip()
@@ -511,7 +670,11 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     data_decision = dict(decisions.get("data") or {})
     data_path = str(((job.get("spec") or {}).get("data") or {}).get("path") or "").strip()
     if not str((data_decision.get("dataset") or {}).get("id") or ""):
-        if data_path.lower().startswith("dataset://") or data_path.startswith(("//", "\\\\")):
+        if (
+            data_path.lower().startswith("dataset://")
+            or data_path.startswith(("//", "\\\\"))
+            or classify_data_path(data_path) == "central"
+        ):
             resolved_data_result = resolve_cluster_data(context, job)
             resolved = dict(job.get("resolved_spec") or {})
             resolved_decisions = dict(resolved.get("decisions") or {})
@@ -527,10 +690,11 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
             job["resolved_spec"] = resolved
     dataset = _dataset(context, job, owner=owner)
     direct_runtime = bool(transfer_resources.get("runtime_bundle"))
+    shared_existing = _shared_existing_execution_expected(job)
     # Dataset/runtime_xml transfers do not invalidate a registered/shared
     # Selena bundle.  Only a direct runtime_bundle can be prepared without
     # consulting its catalog row.
-    bundle = None if direct_runtime else _bundle(context, job)
+    bundle = None if (direct_runtime or shared_existing) else _bundle(context, job)
     if bundle is not None:
         project = bundle.internal_project
         bundle_source = getattr(getattr(bundle, "manifest", None), "source", None)
@@ -581,6 +745,10 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         or dict(config.get("selena") or {}).get("exe")
         or ""
     ).strip()
+    if shared_existing and not configured_selena_exe:
+        configured_selena_exe = _shared_existing_worker_executable(
+            str(spec_selena.get("existing_path") or "")
+        )
     for key in (
         "source",
         "mounting_position",
@@ -607,7 +775,7 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     if direct_refs:
         transfer_paths = _validate_transfer_resources(context, job, config)
 
-    if not direct_refs:
+    if not direct_refs and not shared_existing:
         # Compatibility path for pre-transfer jobs.  New Cluster jobs must
         # never enter this branch: it reads/extracts the archive on Linux.
         private_root = context.work_root / _safe_token(job_id)
@@ -702,6 +870,12 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     ).strip()
     if transfer_paths.get("adapter"):
         adapter = Path(transfer_paths["adapter"][0][2])
+    elif shared_existing and adapter_value and _cluster_visible_reference(adapter_value):
+        adapter = (
+            _resolve_config_asset(context, registry, owner, "adapter", adapter_value)
+            if is_config_asset_ref(adapter_value)
+            else Path(adapter_value)
+        )
     else:
         adapter = (
             _resolve_config_asset(context, registry, owner, "adapter", adapter_value)
@@ -715,6 +889,12 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     )
     if transfer_paths.get("mat_filter"):
         mat_filter = Path(transfer_paths["mat_filter"][0][2])
+    elif shared_existing and str(mat_filter_value or "").strip() and _cluster_visible_reference(mat_filter_value):
+        mat_filter = (
+            _resolve_config_asset(context, registry, owner, "mat_filter", mat_filter_value)
+            if is_config_asset_ref(str(mat_filter_value))
+            else Path(str(mat_filter_value))
+        )
     else:
         mat_filter = (
             _resolve_config_asset(
@@ -740,7 +920,7 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     config.setdefault("paths", {})["build_output"] = str(exe.parent)
     config.setdefault("selena", {})["exe_pattern"] = "{executable_name}"
     config["selena"]["executable_name"] = exe.name
-    if direct_refs:
+    if direct_refs or shared_existing:
         config.setdefault("cluster", {})["selena_exe"] = str(exe)
     config.setdefault("build", {})["selena_branch"] = bundle_branch
     sim = config.setdefault("simulation", {})
@@ -759,15 +939,23 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     sim["adapter_file"] = str(adapter) if adapter is not None else ""
     sim["matfilefilter"] = str(mat_filter) if mat_filter is not None else ""
     sim["input_mf4"] = str(data_location)
-    if direct_refs:
+    logical_config_assets = any(
+        is_config_asset_ref(str(value or "").strip())
+        for value in (adapter_value, mat_filter_value)
+        if str(value or "").strip()
+    )
+    if direct_refs or shared_existing:
         # Tell the existing Cluster adapter that all bytes are already in the
         # worker-visible data plane.  It must not copy assets, infer a radar
         # source by opening MF4, or inspect a project branch on Linux.
-        config["_cluster_zero_copy"] = True
+        # A logical ConfigAsset is already on the Linux store, not necessarily
+        # on the Cluster worker; let the mature small-asset copier stage that
+        # file while keeping Selena/data zero-copy.
+        config["_cluster_zero_copy"] = not logical_config_assets
         config["_cluster_skip_mf4_probe"] = True
         config["_cluster_source_explicit"] = bool(configured_radar or dataset_radar)
 
-    if direct_refs:
+    if direct_refs or shared_existing:
         # Direct-transfer references are already validated by the manifest and
         # bounded probe.  Running the legacy preflight would read MF4 bytes (or
         # inspect project branches) on Linux, so keep only an explicit
@@ -775,8 +963,9 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         preflight = type("TransferPreflight", (), {"ok": True, "checks": ()})()
     else:
         from core.preflight import run_preflight
-        # Compatibility path only.  New Cluster direct-transfer jobs skip this
-        # body entirely so Linux never parses a potentially huge MF4.
+        # Compatibility path only.  New Cluster direct-transfer and shared
+        # existing-reference jobs skip this body entirely so Linux never
+        # parses a potentially huge MF4 or checks a worker-only path.
         preflight = run_preflight(config)
 
     from core.cluster import prepare_cluster_job
@@ -785,22 +974,26 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         input_path=str(data_location),
         run_id=_safe_token(job_id),
         copy_data=False if direct_dataset or dataset.source_kind == "shared_path" else True,
-        copy_selena=False if direct_refs else True,
+        copy_selena=False if direct_refs or shared_existing else True,
     )
     local_job_root = Path(package.manifest_path).parent
     if not bundle_id:
-        # A direct transfer can arrive before the catalog synthetic decision
-        # is persisted.  Keep the private ClusterRun lease valid without
-        # inventing a public RuntimeBundle body.
-        transfer_id = str(
-            (transfer_resources.get("runtime_bundle") or transfer_resources.get("runtime_xml") or [{}])[0]
-            .get("transfer_id")
-            or "direct-runtime"
-        )
-        token = re.sub(r"[^A-Za-z0-9_.:-]+", "-", transfer_id).strip("-.")[:120] or "direct-runtime"
-        bundle_id = "direct-runtime:" + token
+        if shared_existing:
+            bundle_id = _shared_existing_bundle_id(job)
+        else:
+            # A direct transfer can arrive before the catalog synthetic
+            # decision is persisted.  Keep the private ClusterRun lease valid
+            # without inventing a public RuntimeBundle body.
+            transfer_id = str(
+                (transfer_resources.get("runtime_bundle") or transfer_resources.get("runtime_xml") or [{}])[0]
+                .get("transfer_id")
+                or "direct-runtime"
+            )
+            token = re.sub(r"[^A-Za-z0-9_.:-]+", "-", transfer_id).strip("-.")[:120] or "direct-runtime"
+            bundle_id = "direct-runtime:" + token
     if not bundle_storage_ref:
-        bundle_storage_ref = "shared://selena-bundles/direct/" + re.sub(
+        storage_prefix = "shared" if shared_existing else "direct"
+        bundle_storage_ref = f"shared://selena-bundles/{storage_prefix}/" + re.sub(
             r"[^A-Za-z0-9_.-]+", "-", bundle_id
         ).strip("-.")
     run = context.run_store.create_run(
@@ -818,6 +1011,22 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     result_payload = {
         "cluster_run": run.to_dict(),
         "cluster_run_ref": run.ref,
+        "selena": {
+            "status": "resolved",
+            "code": "shared_existing_runtime" if shared_existing else "direct_runtime_transfer",
+            "action": "use_runtime_bundle",
+            "runtime_bundle": {
+                "id": bundle_id,
+                "storage_ref": bundle_storage_ref,
+                "visibility": "shared",
+                "source": {
+                    "kind": "shared_existing" if shared_existing else "direct_transfer",
+                },
+            },
+            "evidence": {
+                "reason": "cluster_visible_existing_selena" if shared_existing else "trusted_direct_transfer",
+            },
+        },
         "preflight": {
             # Static inspection is diagnostic only.  Selena/Cluster result
             # collection is the execution truth and decides the terminal job
@@ -922,6 +1131,19 @@ def execute_cluster_collect(
             )
             return {"cluster_run_ref": run_ref, "result": result.to_dict(), "result_ref": result.ref}
         info = get_cluster_web_status(config, query)
+        status_error = str(info.get("error") or "").strip()
+        if status_error and _is_transient_cluster_gateway_error(status_error):
+            # ``get_cluster_web_status`` intentionally returns a path-free
+            # observation object instead of raising transport exceptions.
+            # Do not let a refused/timed-out gateway turn into a two-hour
+            # polling stall or a generic non-retryable Stage failure.  The
+            # prepared run remains ``running`` and the scheduler can retry
+            # collection without resubmitting the remote simulation.
+            raise ClusterStageExecutionError(
+                "Cluster gateway is temporarily unavailable; retry collection without rerunning simulation",
+                code="CLUSTER_GATEWAY_UNREACHABLE",
+                actions=({"type": "retry_stage", "label": "Retry Cluster result collection"},),
+            )
         state = _terminal_state(info)
         # Some Cluster V2.0 deployments return a submission success flag
         # (commonly ``1``) instead of the durable job id, and the official
@@ -936,7 +1158,9 @@ def execute_cluster_collect(
             state == "running" and not list(info.get("tasks") or [])
         ) or state == "succeeded"
         if should_probe:
-            inspected_probe = inspect_cluster_job(lease.job_dir)
+            inspected_probe = _inspect_cluster_job_for_collection(
+                lease.job_dir, expected_count=expected_count
+            )
             inspected_state = str(inspected_probe.get("state") or "")
             finished_probe = int(inspected_probe.get("success_count") or 0) + int(
                 inspected_probe.get("fail_count") or 0
@@ -965,7 +1189,9 @@ def execute_cluster_collect(
         # A local polling deadline must never lie that the remote job failed.
         raise ClusterStageExecutionError("Cluster job is still running after the observation window")
 
-    inspected = inspect_cluster_job(lease.job_dir)
+    inspected = _inspect_cluster_job_for_collection(
+        lease.job_dir, expected_count=expected_count
+    )
     finished_count = int(inspected.get("success_count") or 0) + int(
         inspected.get("fail_count") or 0
     )
@@ -986,6 +1212,15 @@ def execute_cluster_collect(
     if state == "succeeded" and not output_files:
         state = "failed"
         message = "Cluster worker produced no simulation output MF4"
+        if message not in errors:
+            errors.append(message)
+    if state == "succeeded" and not list(inspected.get("result_files") or []):
+        # A worker-visible MF4 is not sufficient evidence of a completed
+        # simulation.  ``result.ini`` is the per-input success/failure record
+        # used by the mature collector; without it the result cannot be
+        # classified or safely exposed as succeeded.
+        state = "failed"
+        message = "Cluster worker produced no result.ini for any simulation input"
         if message not in errors:
             errors.append(message)
     # The Cluster manager may report all tasks as "finished" even when Selena
@@ -1055,6 +1290,36 @@ def _expected_cluster_task_count(job: dict[str, Any]) -> int:
         return max(int(dataset.get("file_count") or 0), 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _inspect_cluster_job_for_collection(job_dir: str, *, expected_count: int = 0) -> dict[str, Any]:
+    """Inspect a result directory without losing ``result.ini`` evidence.
+
+    ``inspect_cluster_job`` intentionally caps its first walk.  A large batch
+    can therefore fill the cap with MF4/log files before any per-input
+    ``result.ini`` is seen.  One bounded second walk is safe: it still reads
+    only metadata/result text, never MF4 bytes, and avoids falsely reporting a
+    successful batch as missing simulation evidence.  Small test/deployment
+    doubles that do not accept ``max_files`` retain the original call shape.
+    """
+
+    from core.cluster import inspect_cluster_job
+
+    inspected = inspect_cluster_job(job_dir)
+    if not bool(inspected.get("truncated")) or list(inspected.get("result_files") or []):
+        return inspected
+    try:
+        count = max(int(expected_count or 0), 0)
+    except (TypeError, ValueError):
+        count = 0
+    retry_limit = min(max(1000, count * 4 + 256), 10_000)
+    try:
+        expanded = inspect_cluster_job(job_dir, max_files=retry_limit)
+    except TypeError:
+        # Existing tests and minimal deployment doubles expose only the
+        # original one-argument helper; their bounded result is authoritative.
+        return inspected
+    return expanded if isinstance(expanded, dict) else inspected
 
 
 def _dedupe_relative_paths(values: list[str]) -> list[str]:
@@ -1257,9 +1522,11 @@ def _project(context: ClusterStageContext, job: dict[str, Any]) -> str:
 
 def _data_project(context: ClusterStageContext, job: dict[str, Any]) -> str:
     """Resolve the hidden project before a concurrent Selena build finishes."""
-    if _transfer_resources(job):
+    if _transfer_resources(job) or _shared_existing_execution_expected(job):
         # Direct resources do not require a catalog RuntimeBundle row.  Shared
-        # namespace resolution still uses deployment-wide infrastructure.
+        # namespace resolution still uses deployment-wide infrastructure.  A
+        # shared existing Selena route has the same generic infrastructure
+        # identity and never asks a Windows resolver for a product project.
         return "run-config-v2"
     decision = dict(((job.get("resolved_spec") or {}).get("decisions") or {}).get("selena") or {})
     if str((decision.get("runtime_bundle") or {}).get("id") or ""):
@@ -1378,7 +1645,7 @@ def _dataset_ref_from_transfer_resources(
     return _dataset_ref_from_metadata(metadata, owner=owner)
 
 
-def _dataset_radar_metadata(resources: list[dict[str, Any]]) -> dict[str, str]:
+def _dataset_radar_metadata(resources: list[dict[str, Any]]) -> dict[str, Any]:
     """Return the first validated radar projection from dataset resources."""
 
     for resource in resources:
@@ -1732,6 +1999,41 @@ def _terminal_state(info: dict[str, Any]) -> str:
     if state in {"failed", "error", "aborted", "cancelled"}:
         return "failed"
     return "running"
+
+
+def _is_transient_cluster_gateway_error(value: str) -> bool:
+    """Recognize transport failures without classifying a missing job as one.
+
+    The official status helper also uses ``error`` for an ordinary path lookup
+    miss (``job id not found``), which is expected immediately after submit and
+    should keep polling.  Only network/HTTP availability markers are
+    recoverable gateway outages here.
+    """
+
+    lowered = str(value or "").casefold()
+    if not lowered or "job id not found" in lowered:
+        return False
+    return any(
+        token in lowered
+        for token in (
+            "timed out",
+            "timeout",
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+            "no route to host",
+            "name or service not known",
+            "temporary failure",
+            "urlopen error",
+            "http error 502",
+            "http error 503",
+            "http error 504",
+            "bad gateway",
+            "service unavailable",
+            "连接超时",
+            "无法访问",
+        )
+    )
 
 
 def _public_cluster_summary(info: dict[str, Any]) -> dict[str, Any]:

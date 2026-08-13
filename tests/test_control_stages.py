@@ -337,6 +337,29 @@ def test_reclaim_stale_cancel_requested_finishes_cancelled_without_requeue(tmp_p
     assert any(event["event"] == "stage.cancelled" and event["code"] == "AGENT_STALE" for event in service.list_events(job["job_id"])["events"])
 
 
+def test_reclaim_stale_cancelling_status_finishes_cancelled_without_flag(tmp_path):
+    """Older Connector versions may persist an intermediate cancelling status."""
+    service = make_service(tmp_path)
+    job = service.create_job("local.check")
+    service.register_agent("runner", agent_id="runner", capabilities=["*"])
+    stage = service.claim_next_task("runner")
+    with service._lock:
+        conn = service._conn()
+        try:
+            conn.execute("UPDATE tasks SET status='cancelling' WHERE task_id=?", (stage["stage_id"],))
+            conn.commit()
+        finally:
+            conn.close()
+
+    reclaimed = service.reclaim_stale_tasks(stale_after_seconds=-1, max_attempts=3)
+
+    assert reclaimed[0]["new_status"] == "cancelled"
+    current = service.get_job(job["job_id"])
+    assert current["status"] == "cancelled"
+    assert current["stages"][0]["status"] == "cancelled"
+    assert service.list_attempts(stage["stage_id"])[0]["status"] == "cancelled"
+
+
 def test_cancelled_job_with_succeeded_upstream_is_not_reported_failed(tmp_path):
     service = make_service(tmp_path)
     job = service.create_job(

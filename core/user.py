@@ -71,6 +71,22 @@ def stable_user_identity(user: str | None) -> str:
     return f"user-{value}"
 
 
+def connector_owner_identity() -> str:
+    """Return the owner a long-running Connector must use on every request.
+
+    ``RSIM_USER`` is written by the server-generated installer and is already
+    the control-plane owner.  Treat it as an opaque binding: applying
+    ``stable_user_identity`` a second time changes legacy ``web-*``/``sdk-*``
+    owners and splits registration from Web capability checks.  Only a bare
+    developer launch without an explicit binding derives ``user-<os-login>``.
+    """
+
+    configured = os.environ.get("RSIM_USER", "").strip()
+    if configured and os.environ.get("RSIM_OWNER_BOUND", "").strip() == "1":
+        return normalize_user(configured)
+    return stable_user_identity(current_user())
+
+
 def control_db_path_for_user(user: str | None = None) -> Path:
     """Return the control DB path for a user (follows RSIM_HOME)."""
     from core.control_service import _data_root

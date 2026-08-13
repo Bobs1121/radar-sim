@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from cli.agent import _build_progress_from_output, _build_task_command, _run_task
+from cli.agent import (
+    _build_progress_from_output,
+    _build_task_command,
+    _build_timeout_seconds,
+    _run_task,
+)
 
 
 def test_selena_build_progress_output_is_normalized():
@@ -20,6 +25,15 @@ def test_selena_build_progress_output_is_normalized():
         "Selena build in progress",
     )
     assert _build_progress_from_output("ordinary compiler warning") == (None, "")
+
+
+def test_build_timeout_is_framework_owned_bounded_and_deployment_tunable(monkeypatch):
+    monkeypatch.delenv("RSIM_BUILD_TIMEOUT_SECONDS", raising=False)
+    assert _build_timeout_seconds({}) == 14400
+    monkeypatch.setenv("RSIM_BUILD_TIMEOUT_SECONDS", "7200")
+    assert _build_timeout_seconds({}) == 7200
+    assert _build_timeout_seconds({"build_timeout_seconds": 1}) == 60
+    assert _build_timeout_seconds({"build_timeout_seconds": 999999}) == 86400
 
 
 def test_build_task_command_for_local_run_sim_matches_cli_flags():
@@ -362,3 +376,55 @@ def test_run_v5_build_failure_returns_visual_studio_diagnostic(monkeypatch, tmp_
     assert result["code"] == "VISUAL_STUDIO_UNAVAILABLE"
     assert result["diagnostic"]["category"] == "environment"
     assert any(line.startswith("[diagnostic]") for line in client.logs)
+
+
+def test_run_v5_build_timeout_is_terminal_and_actionable(monkeypatch, tmp_path):
+    prepared = SimpleNamespace(
+        command=("cmd", "/c", "build.bat"),
+        cwd=tmp_path,
+        source_lease_ref="",
+    )
+
+    class StuckProcess:
+        returncode = None
+        pid = 0
+
+        def __init__(self, *_args, **_kwargs):
+            self.stdout = io.StringIO("")
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, **_kwargs):
+            return int(self.returncode if self.returncode is not None else 0)
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    ticks = iter((0.0, 61.0, 61.0, 61.0))
+    monkeypatch.setattr("cli.agent._prepare_v5_selena_build", lambda _payload: prepared)
+    monkeypatch.setattr("cli.agent._verify_v5_selena_build", lambda _prepared: None)
+    monkeypatch.setattr("cli.agent.subprocess.Popen", StuckProcess)
+    monkeypatch.setattr("cli.agent.time.monotonic", lambda: next(ticks, 61.0))
+    client = _V5Client()
+
+    assert _run_task(
+        client,
+        "windows-a",
+        {
+            "task_id": "stage-build-timeout",
+            "task_type": "build_selena",
+            "attempt_count": 1,
+            "payload": {"build_timeout_seconds": 60},
+        },
+        heartbeat_interval=1,
+        node_kind="windows_agent",
+    ) == 1
+    result = client.results[-1]
+    assert result["status"] == "failed"
+    assert result["returncode"] == 124
+    assert result["result"]["code"] == "BUILD_TIMEOUT"
+    assert result["result"]["diagnostic"]["category"] == "framework"

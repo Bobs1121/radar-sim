@@ -3,14 +3,134 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import Any, Callable, Optional
 
 from core.control_http import make_control_handler
 from core.control_service import ControlService, default_control_db_path
 
 # This command runs on the control server (possibly Linux) without project config.
 NO_CONFIG = True
+
+_LOGGER = logging.getLogger(__name__)
+_DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 30.0
+_DEFAULT_MAINTENANCE_STALE_AFTER_SECONDS = 300.0
+_DEFAULT_MAINTENANCE_MAX_ATTEMPTS = 3
+
+
+def _positive_env_float(name: str, default: float, *, minimum: float = 0.1) -> float:
+    """Read a bounded maintenance duration without allowing bad env to kill serve."""
+
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        _LOGGER.warning("Ignoring invalid %s=%r; using %.3fs", name, raw, default)
+        return float(default)
+    if value < float(minimum):
+        _LOGGER.warning("Ignoring unsafe %s=%r; using %.3fs", name, raw, default)
+        return float(default)
+    return value
+
+
+def _maintenance_settings() -> tuple[float, float, Optional[int]]:
+    """Return server-owned stale-task maintenance settings.
+
+    These are deployment controls, intentionally not part of the user YAML.
+    ``max_attempts=0`` retains the existing unlimited-requeue semantics.
+    """
+
+    interval = _positive_env_float(
+        "RSIM_MAINTENANCE_INTERVAL_SECONDS",
+        _DEFAULT_MAINTENANCE_INTERVAL_SECONDS,
+    )
+    stale_after = _positive_env_float(
+        "RSIM_MAINTENANCE_STALE_AFTER_SECONDS",
+        _DEFAULT_MAINTENANCE_STALE_AFTER_SECONDS,
+    )
+    raw_attempts = str(os.environ.get("RSIM_MAINTENANCE_MAX_ATTEMPTS", "") or "").strip()
+    max_attempts = _DEFAULT_MAINTENANCE_MAX_ATTEMPTS
+    if raw_attempts:
+        try:
+            parsed = int(raw_attempts)
+            if parsed < 0:
+                raise ValueError
+            max_attempts = parsed
+        except (TypeError, ValueError):
+            _LOGGER.warning(
+                "Ignoring invalid RSIM_MAINTENANCE_MAX_ATTEMPTS=%r; using %d",
+                raw_attempts,
+                _DEFAULT_MAINTENANCE_MAX_ATTEMPTS,
+            )
+    return interval, stale_after, (max_attempts if max_attempts > 0 else None)
+
+
+class _MaintenanceLoop:
+    """One server-owned stale-agent recovery loop.
+
+    The V2 server is deliberately started with one Uvicorn worker.  Keeping a
+    single daemon thread per process makes recovery independent of HTTP
+    traffic, while ``Event`` + ``join`` provides a clean shutdown.  A failed
+    maintenance pass is logged and the next pass continues; maintenance must
+    never terminate the API process.
+    """
+
+    def __init__(
+        self,
+        reclaim: Callable[[], list[dict[str, Any]]],
+        *,
+        interval_seconds: float,
+    ) -> None:
+        self._reclaim = reclaim
+        self._interval_seconds = max(0.1, float(interval_seconds))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()
+
+    @property
+    def thread(self) -> threading.Thread | None:
+        return self._thread
+
+    def start(self) -> None:
+        with self._start_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="radar-sim-stale-task-maintenance",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self, *, timeout_seconds: float = 5.0) -> None:
+        with self._start_lock:
+            thread = self._thread
+            self._stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, float(timeout_seconds)))
+        with self._start_lock:
+            if self._thread is thread and (thread is None or not thread.is_alive()):
+                self._thread = None
+
+    def _run(self) -> None:
+        # Run one pass immediately so stale work is recovered promptly after a
+        # service restart; subsequent passes are interruptible waits.
+        while not self._stop.is_set():
+            try:
+                reclaimed = self._reclaim() or []
+                if reclaimed:
+                    _LOGGER.info("Reclaimed %d stale task(s)", len(reclaimed))
+            except Exception:
+                _LOGGER.exception("Stale-task maintenance pass failed; will retry")
+            if self._stop.wait(self._interval_seconds):
+                break
 
 
 def register(subparsers):
@@ -474,13 +594,28 @@ def _run_serve_v1(args) -> int:
         )
         cluster_stage_executor = ClusterStageExecutor(service, cluster_stage_context)
         cluster_stage_executor.start()
+    maintenance_interval, maintenance_stale_after, maintenance_max_attempts = _maintenance_settings()
+    maintenance_loop = _MaintenanceLoop(
+        lambda: service.reclaim_stale_tasks(
+            stale_after_seconds=maintenance_stale_after,
+            max_attempts=maintenance_max_attempts,
+        ),
+        interval_seconds=maintenance_interval,
+    )
     print(f"Radar Sim v1 API server: http://{host}:{port}/api/v1/")
     print("HTTP Bearer authentication: " + ("enabled" if authenticator is not None else "disabled (loopback/development)"))
     print("Linux/Gateway Cluster Stage executor: " + ("enabled" if cluster_stage_executor else "disabled"))
     print("Windows Agent control endpoints: enabled on this same server")
+    print(
+        "Stale-task maintenance: enabled "
+        f"(interval={maintenance_interval:g}s, stale_after={maintenance_stale_after:g}s, "
+        f"max_attempts={maintenance_max_attempts if maintenance_max_attempts is not None else 'unlimited'})"
+    )
+    maintenance_loop.start()
     try:
         uvicorn.run(app, host=host, port=port, workers=1)
     finally:
+        maintenance_loop.stop()
         if cluster_stage_executor is not None:
             cluster_stage_executor.stop()
     return 0

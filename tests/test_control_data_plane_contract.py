@@ -377,6 +377,26 @@ def test_shared_cluster_inputs_are_zero_copy_and_need_no_windows_connector(tmp_p
     )
 
 
+def test_shared_existing_cluster_skips_windows_resolution_and_registration(tmp_path: Path) -> None:
+    """A fully Cluster-visible existing Selena run starts on Linux only."""
+
+    control = ControlService(tmp_path / "shared-existing-control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config = _shared_existing_config()
+
+    job = api.submit_user_run("alice", config_payload=config)
+    private = control.get_job(job["id"])
+    stages = {item["stage_type"]: item for item in private["stages"]}
+
+    assert job["current_stage"] == "environment_check"
+    assert job["waiting"] is None
+    assert stages["resolve_spec"]["status"] == "skipped"
+    assert stages["register_artifact"]["status"] == "skipped"
+    assert stages["environment_check"]["required_agent_id"] == "linux-v2-stage-executor"
+    assert stages["environment_check"]["payload"]["dispatch_scope"] == "shared_existing_environment"
+    assert stages["prepare_data"]["required_agent_id"] == "linux-v2-stage-executor"
+
+
 def test_existing_cluster_direct_transfer_uses_prepare_data_barrier_without_agent_wait(
     tmp_path: Path,
 ) -> None:

@@ -348,7 +348,7 @@ def discover_radar_acquisition_sources(mf4_path: str) -> list[str]:
     return found or _discover_mf4_acquisition_sources_stdlib(path)
 
 
-def normalize_radar_metadata(value: Any) -> dict[str, str]:
+def normalize_radar_metadata(value: Any) -> dict[str, Any]:
     """Whitelist transfer radar metadata and derive a consistent mapping.
 
     The wire format uses flat source-fingerprint keys, while the projected
@@ -374,7 +374,7 @@ def normalize_radar_metadata(value: Any) -> dict[str, str]:
         source = by_mounting[mounting]
     if not source:
         return {}
-    return {
+    normalized: dict[str, Any] = {
         "source": source,
         "mounting_position": next(
             mapping["mounting_position"]
@@ -382,6 +382,20 @@ def normalize_radar_metadata(value: Any) -> dict[str, str]:
             if mapping["source"] == source
         ),
     }
+    raw_sources = raw.get("radar_sources") or raw.get("sources") or []
+    if isinstance(raw_sources, str):
+        raw_sources = raw_sources.split(",")
+    if isinstance(raw_sources, (list, tuple)):
+        sources: list[str] = []
+        for value in raw_sources[:16]:
+            candidate = canonical_radar_source(value)
+            if candidate and candidate not in sources:
+                sources.append(candidate)
+        if len(sources) > 1:
+            normalized["sources"] = sources
+            normalized["source_status"] = "mixed"
+            normalized["source_selection"] = "metadata_order"
+    return normalized
 
 
 def _first_dataset_mf4(path: str) -> str:

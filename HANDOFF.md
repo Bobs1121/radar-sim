@@ -1,7 +1,7 @@
 # radar-sim V2 当前交接
 
 > 更新时间：2026-08-13
-> 状态：V2 project-free 单轨首版已发布；本地与 Cluster 真实验收已通过
+> 状态：V2 project-free 单轨首版已发布；Connector v9 与全链异常收口正在最终部署验收
 > 分支：`codex/new-branch`
 > 当前生产基线：`8f8601c`，Linux release `/home/hoz2wx/radar-sim-8f8601c`
 > 回滚基线：`3cd10ae`，Linux release `/home/hoz2wx/radar-sim-3cd10ae`
@@ -37,6 +37,14 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 8. README、PRD、开发计划、产品合同、V2 架构和详细设计已统一到 2026-08-13 V2 单轨口径；根 handoff 已精简，旧 V1/项目化部署、配置、环境和实战文档只保留归档跳转，不再暴露冲突步骤。
 9. TransferPlan 已实现通用幂等：同一 owner/job/stage/role、同一输入元数据与目标根的并发或网络重试复用同一计划；失败、取消、过期或输入改变才签发新计划。SQLite 使用短事务串行签发，避免一个 Job 因 SDK 超时重试产生多个大文件传输。
 10. V2 编译输出推导已彻底断开历史项目上下文解析。只读取用户 Selena 脚本中的通用 build/output 开关；无法静态解析时回退工作区内受限 `ip_dc/build`/`build` 并在编译后查找实际 Selena.exe。`/apl/`、`byd`、R2D2、hex 或产品名不再影响 V2 输出路径。
+11. 新用户 Connector 安装误失败已定位为身份双重规范化：Web/安装配置使用旧 `web-*`，运行进程又改写为 `user-web-*`，导致进程实际已注册轮询但安装器在另一 owner 下等待。v9 将安装 owner 视为服务端绑定的 opaque identity，注册、轮询、传输和精确设备状态使用同一值；旧随机 owner 只能在旧合同升级时一次性迁移到稳定 `user-<NTID>`，之后禁止静默换 owner 或服务器。
+12. 安装完成按本次 `agent_id + owner + contract` 精确确认本机；同一稳定设备 ID 的 owner 检查位于 SQLite 原子 UPSERT 临界区。Poll、heartbeat、日志、进度和结果回调也校验 Job/Connector owner，避免共享控制库中的偶然串线。
+13. Web 停用旧浏览器随机身份，必须输入稳定 NTID 后才能继续；同一 YAML 的提交幂等键跨页面刷新保留。SDK/Web 对下载断流、结果引用缺失、重复下载、重复 Transfer role、路径 token 和大文件超时给出稳定错误，失败临时文件自动清理。
+14. 编译增加框架内部安全超时（默认 4 小时，可由部署环境调整，非用户/项目配置），超时/取消终止 Windows 子进程树并返回 `BUILD_TIMEOUT`。本地仿真 Lease 增加执行 token/PID 锁：活进程存在时重启后的 Connector 只观察，不重复启动 Selena；旧进程已死时允许接管。
+15. 批量本地任务只有 `selena_failed` 这类 Selena 内部逐输入失败可以形成 partial；paramconfig、loader、依赖、timeout 和 runner contract 等外围失败必须使 Stage 失败。Cluster 状态网关中断可重试 collect 且不重复提交；非空 MF4 没有任何 `result.ini` 不再判成功；大批量扫描截断会有界复扫；共享路径不可达返回 `CLUSTER_SHARED_DATA_UNAVAILABLE`。
+16. 数据传输重试跳过已经持久化完成的 role，防止重复复制/重复仿真；多 MF4 mixed source 的候选和选择依据贯穿 Transfer/Cluster 证据，同时仍按用户合同自动选择一个继续运行。结果 ZIP/Manifest 缺失不能形成业务成功。
+17. `serve-v1` 增加服务端维护循环：启动即回收一次、之后默认每 30 秒检查失联任务。已请求取消的离线 Stage 会最终落为 `cancelled`；普通 stale Stage 仍按最多 3 次的既有策略重排/失败，避免任务永久停在 `running/cancelling`。周期、失联阈值和重试上限只由部署环境变量控制，不进入用户 YAML。
+18. `existing + cluster` 在 Selena、runtime、数据和配置均位于 Cluster 可见共享/central namespace 时，完全跳过 Windows resolver/build/register，直接由 Linux/Cluster 环境检查、预检和提交；无需 Connector，也不加载项目规则。逻辑 `config-asset:*` 仍通过成熟的小配置复制链处理，不把 Linux 内部引用冒充 worker 可见路径。
 
 ### 自动化证据
 
@@ -45,6 +53,11 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 - 全仓最终回归：`1553 passed, 12 skipped, 1 warning`，零失败，耗时 `384.27 s`。
 - 幂等修复后全仓最终回归：`1556 passed, 12 skipped, 1 warning`，零失败，耗时 `429.94 s`。
 - project-free 输出推导修复后全仓回归：`1557 passed, 12 skipped, 1 warning`，零失败，耗时 `502.79 s`。
+- Connector v9/全链异常矩阵聚焦回归：`309 passed, 4 skipped`、`203 passed, 1 skipped`、身份安装 `103 passed`，均零失败。
+- v9 第一次全仓门禁：`1581 passed, 12 skipped, 1 warning`，仅 1 个旧测试夹具因直接注册 Windows Agent 未写 owner 被新的生产隔离合同拒绝；夹具已改为真实注册形态，相关隔离回归 `82 passed`。
+- Connector v9/全链收口最终全仓门禁：`1582 passed, 12 skipped, 1 warning`，零失败，耗时 `543.12 s`。唯一 warning 仍是 Starlette/httpx 弃用提示。
+- 最终复审补充本地 Lease 过期接管保护后再次全仓回归：`1583 passed, 12 skipped, 1 warning`，零失败，耗时 `534.36 s`。
+- 服务端自动维护、共享 existing Selena 无 Connector 闭环及全部叠加修改最终全仓门禁：`1591 passed, 12 skipped, 1 warning`，零失败，耗时 `405.28 s`；共享路径/逻辑资产扩大回归 `142 passed, 1 warning`，服务维护/回收回归 `62 passed`。
 - Linux 候选 release 平台无关门禁：`78 passed`；其中 TransferPlan 幂等、API、Cluster Stage 均通过。
 - 唯一 warning 是 Starlette/httpx 弃用提示，不是业务失败。
 
@@ -75,7 +88,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 1. `8f8601c` 已推送至 `origin/codex/new-branch` 并部署为不可变 release `/home/hoz2wx/radar-sim-8f8601c`。
 2. 正确的用户级 `radar-sim-v1.service` 为 `active/running`，`NRestarts=0`；健康接口返回 `ok=true`。系统级同名 unit 未启用，排查时不要查错作用域。
 3. Windows Connector 包为 `8,336,982` bytes，SHA-256 `1e1daea6bcb8f0da1705b4377329959e94b704b7411747d2619e2d686207cf3f`；Range 下载返回 `206`，现有 Connector 在服务重启后自动恢复轮询。
-4. 本次 Connector 执行合同未升级，普通用户不需要为了 TransferPlan 服务端幂等修复重新安装；Web 的一键连接/更新入口继续使用同一统一安装包。
+4. **待本轮部署完成后** Connector 执行合同升级为 9。所有旧 Connector 会被服务端阻止领取任务，Web 显示更新入口；用户只需再次运行一次同一“一键连接/更新本机”，原路径绑定、自启方式和稳定设备身份保留。新用户必须先输入稳定 NTID。
 
 ### 明确边界，不得伪装成已完成
 
@@ -89,7 +102,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 
 1. `build + local`、`build + cluster` 在代码和自动化层已具备，仍需要在最终 release 上补充真实脚本的黑盒证据；实现时不得引入项目识别，唯一执行依据是用户编译脚本及其实际产物。
 2. 多 MF4 source 已使用有界元数据推导；显式 `simulation.source` 永远优先。后续可增强 mixed-source 的逐条呈现，但不得引入项目映射。
-3. Cluster collect 当前存在 50/200/500 条展示或扫描上限；超大批量需增加明确 truncation 元数据。
+3. Cluster collect 对首次扫描截断且未发现 `result.ini` 的情况已增加一次最多 10000 文件的有界复扫；Web/诊断的超大批量展示仍应增加显式 truncation 元数据。
 4. 登录鉴权、Cluster 结果反向直传/解压、独立 MCP/Skill 包和关机唤醒属于独立版本，不得塞回当前薄层主链。
 
 ## 6. 下一位开发者启动步骤

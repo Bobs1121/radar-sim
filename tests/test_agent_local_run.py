@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -192,6 +194,70 @@ def test_injected_runner_writes_only_controlled_deterministic_outputs(tmp_path):
     assert all(item["checksum"].startswith("sha256:") for item in result["files"])
     assert str(tmp_path) not in json.dumps(result)
     assert seen == [path.split("/", 1)[1] for path in (item["relative_path"] for item in result["files"])]
+
+
+def test_duplicate_connector_process_observes_one_local_execution(tmp_path):
+    store, kwargs = _fixture(tmp_path)
+    lease = store.create_from_authorized_inputs(**kwargs)
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def runner(request, _cancel_requested):
+        calls.append(request.item_index)
+        if request.item_index == 1:
+            started.set()
+            assert release.wait(timeout=5)
+        request.output_mf4.write_bytes(b"output")
+        return LocalRunOutcome(0)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(execute_local_run, lease["lease_id"], store, runner=runner)
+        assert started.wait(timeout=5)
+        second = pool.submit(execute_local_run, lease["lease_id"], store, runner=runner)
+        release.set()
+        assert first.result(timeout=5) == 0
+        assert second.result(timeout=5) == 0
+
+    assert calls == [1, 2]
+    assert store.result(lease["lease_id"])["status"] == "succeeded"
+
+
+def test_dead_connector_execution_lock_is_recoverable(tmp_path, monkeypatch):
+    store, kwargs = _fixture(tmp_path)
+    lease = store.create_from_authorized_inputs(**kwargs)
+    store.mark_running(
+        lease["lease_id"], execution_token="a" * 32, execution_pid=999999
+    )
+    monkeypatch.setattr("core.agent_local_run._pid_alive", lambda _pid: False)
+
+    def runner(request, _cancel_requested):
+        request.output_mf4.write_bytes(b"recovered")
+        return LocalRunOutcome(0)
+
+    assert execute_local_run(lease["lease_id"], store, runner=runner) == 0
+    assert store.result(lease["lease_id"])["status"] == "succeeded"
+
+
+def test_expired_execution_lock_recovers_even_if_pid_was_reused(tmp_path, monkeypatch):
+    now = [10.0]
+    store, kwargs = _fixture(tmp_path, now=now[0])
+    # Re-open with a mutable clock while retaining the same durable lease DB.
+    store = AgentLocalRunLeaseStore(
+        store.db_path, runs_root=store.runs_root, now_fn=lambda: now[0]
+    )
+    lease = store.create_from_authorized_inputs(**kwargs)
+    store.mark_running(
+        lease["lease_id"], execution_token="a" * 32, execution_pid=4242
+    )
+    now[0] += kwargs["timeout_seconds"] * 2 + 301
+    monkeypatch.setattr("core.agent_local_run._pid_alive", lambda _pid: True)
+
+    def runner(request, _cancel_requested):
+        request.output_mf4.write_bytes(b"recovered-after-expiry")
+        return LocalRunOutcome(0)
+
+    assert execute_local_run(lease["lease_id"], store, runner=runner) == 0
 
 
 def test_cancellation_is_terminal_and_does_not_call_runner(tmp_path):

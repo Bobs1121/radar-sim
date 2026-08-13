@@ -33,7 +33,11 @@ from core.simulation import (
     discover_radar_acquisition_sources,
 )
 from radar_sim_sdk import Job, RadarSimApiError, RadarSimClient, UserRunConfig
-from radar_sim_sdk.client import _dataset_transfer_fingerprints, _trust_environment_proxy
+from radar_sim_sdk.client import (
+    _dataset_transfer_fingerprints,
+    _resolved_direct_transfer_roles,
+    _trust_environment_proxy,
+)
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
 from tests.test_api_v1_service import run_config_dict, spec_dict
 
@@ -760,6 +764,44 @@ def test_sdk_download_job_result_uses_receiver_default_when_result_path_is_empty
     assert downloaded.read_bytes() == archive
 
 
+@pytest.mark.parametrize("status", ["queued", "running", "failed"])
+def test_sdk_download_job_result_classifies_missing_archive(status):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/jobs/job-no-result":
+            return httpx.Response(200, json={"id": "job-no-result", "status": status, "spec": {}})
+        if request.url.path == "/api/v1/jobs/job-no-result/manifest":
+            return httpx.Response(
+                200,
+                json={"job_id": "job-no-result", "available": False, "manifest": None},
+            )
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    sdk = RadarSimClient("http://testserver", transport=httpx.MockTransport(handler), user="alice")
+    with pytest.raises(ValueError, match=r"^result_unavailable:"):
+        sdk.download_job_result("job-no-result")
+
+
+def test_sdk_result_download_wraps_stream_transport_error(tmp_path):
+    archive = b"result-zip"
+    checksum = "sha256:" + hashlib.sha256(archive).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/results/result:sha256:transport":
+            return httpx.Response(200, json={"archive_checksum": checksum})
+        if request.url.path == "/api/v1/results/result:sha256:transport/download":
+            def broken_stream() -> object:
+                yield archive[:3]
+                raise httpx.ReadError("connection dropped")
+
+            return httpx.Response(200, content=broken_stream())
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    sdk = RadarSimClient("http://testserver", transport=httpx.MockTransport(handler), user="alice")
+    with pytest.raises(RadarSimTransportError, match="connection dropped"):
+        sdk.download_result("result:sha256:transport", tmp_path / "result.zip")
+    assert not (tmp_path / "result.zip").exists()
+
+
 def test_sdk_v2_run_and_task_center_list(tmp_path):
     sdk, _ = make_sdk(tmp_path)
     job = sdk.submit_run(run_config_dict())
@@ -1188,6 +1230,33 @@ def test_sdk_submit_run_auto_transfers_existing_selena_dataset_and_assets(tmp_pa
         (plans["runtime_bundle"].relative_root + "/Selena.exe"),
         (plans["runtime_bundle"].relative_root + "/nested/Selena.dll"),
     }
+
+
+def test_sdk_retry_skips_roles_with_durable_transfer_manifests(tmp_path):
+    sdk, _ = make_sdk(tmp_path)
+    job = Job(
+        id="job-resume",
+        status="running",
+        resolved_spec={
+            "decisions": {
+                "transfers": {
+                    "resources": {
+                        "dataset": {
+                            "status": "resolved",
+                            "transfer_id": "transfer-dataset",
+                        },
+                        "runtime_xml": [
+                            {"status": "pending", "transfer_id": "transfer-old"},
+                            {"status": "resolved", "transfer_id": "transfer-runtime"},
+                        ],
+                        "mat_filter": {"status": "failed"},
+                    }
+                }
+            }
+        },
+    )
+
+    assert _resolved_direct_transfer_roles(job) == {"dataset", "runtime_xml"}
 
 
 def test_sdk_capabilities_and_job_transfer_status_are_public():

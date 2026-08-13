@@ -195,6 +195,160 @@ def test_submit_transport_failure_is_retryable_without_rebuilding(tmp_path: Path
     assert store.get(run.ref, owner="alice").state == "prepared"
 
 
+def test_collect_gateway_outage_is_retryable_without_waiting_for_timeout(
+    tmp_path: Path, monkeypatch
+):
+    """A status-page outage must not leave collection polling for hours."""
+
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="bydod25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/bydod25/runtime-bundle.zip",
+        profile="default", job_dir=str(tmp_path / "private-job"),
+        config_path=r"\\cluster\jobs\job-demo\Config.cfg",
+        output_location=str(tmp_path / "private-output"),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="10321", submit_mode="xmlrpc")
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 120}},
+        now_fn=lambda: 10.0,
+        result_catalog=None,
+    )
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: {
+            "found": False,
+            "tasks": [],
+            "error": "<urlopen error [Errno 111] Connection refused>",
+        },
+    )
+
+    with pytest.raises(ClusterStageExecutionError) as excinfo:
+        execute_cluster_collect(context, _job(), run.ref, sleep_fn=lambda _seconds: pytest.fail("must not poll"))
+
+    assert excinfo.value.code == "CLUSTER_GATEWAY_UNREACHABLE"
+    assert excinfo.value.actions == (
+        {"type": "retry_stage", "label": "Retry Cluster result collection"},
+    )
+    assert store.get(run.ref, owner="alice").state == "running"
+
+
+def test_collect_missing_result_ini_never_reports_success(tmp_path: Path, monkeypatch):
+    """A non-empty MF4 alone is not a complete Cluster result."""
+
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="bydod25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/bydod25/runtime-bundle.zip",
+        profile="default", job_dir=str(tmp_path / "private-job"),
+        config_path=r"\\cluster\jobs\job-demo\Config.cfg",
+        output_location=str(tmp_path / "private-output"),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="10321", submit_mode="xmlrpc")
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
+        now_fn=lambda: 10.0,
+        result_catalog=None,
+    )
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: {
+            "found": True,
+            "state": "finished",
+            "tasks": [{"simulation_state": "finished"}],
+        },
+    )
+    monkeypatch.setattr(
+        "core.cluster.inspect_cluster_job",
+        lambda *_args, **_kwargs: {
+            "state": "output-present",
+            "file_count": 1,
+            "success_count": 0,
+            "fail_count": 0,
+            "error_summary": [],
+            "output_mf4": [{"relative_path": "output/inputout.MF4", "size": 12}],
+            "result_files": [],
+        },
+    )
+
+    output = execute_cluster_collect(context, _job(), run.ref, sleep_fn=lambda _seconds: pytest.fail("must not poll"))
+
+    assert output["result"]["state"] == "failed"
+    assert output["result"]["summary"]["errors"] == [
+        "Cluster worker produced no result.ini for any simulation input"
+    ]
+
+
+def test_collect_rechecks_truncated_directory_before_declaring_result_ini_missing(
+    tmp_path: Path, monkeypatch
+):
+    """Large batches must not be failed just because the first walk hit its cap."""
+
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="bydod25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/bydod25/runtime-bundle.zip",
+        profile="default", job_dir=str(tmp_path / "private-job"),
+        config_path=r"\\cluster\jobs\job-demo\Config.cfg",
+        output_location=str(tmp_path / "private-output"),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="10321", submit_mode="xmlrpc")
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
+        now_fn=lambda: 10.0,
+        result_catalog=None,
+    )
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: {
+            "found": True,
+            "state": "finished",
+            "tasks": [{"simulation_state": "finished"}],
+        },
+    )
+    calls: list[tuple[str, int | None]] = []
+
+    def inspect(_job_dir: str, **kwargs: int) -> dict:
+        calls.append(("inspect", kwargs.get("max_files")))
+        if len(calls) == 1:
+            return {
+                "state": "finished-success",
+                "truncated": True,
+                "file_count": 500,
+                "success_count": 1,
+                "fail_count": 0,
+                "error_summary": [],
+                "output_mf4": [{"relative_path": "output/inputout.MF4", "size": 12}],
+                "result_files": [],
+            }
+        return {
+            "state": "finished-success",
+            "truncated": False,
+            "file_count": 3,
+            "success_count": 1,
+            "fail_count": 0,
+            "error_summary": [],
+            "output_mf4": [{"relative_path": "output/inputout.MF4", "size": 12}],
+            "result_files": [{"relative_path": "output/result.ini"}],
+            "task_results": [{"relative_path": "output/result.ini", "successfull": "1"}],
+        }
+
+    monkeypatch.setattr("core.cluster.inspect_cluster_job", inspect)
+    output = execute_cluster_collect(context, _job(), run.ref, sleep_fn=lambda _seconds: pytest.fail("must not poll"))
+
+    assert output["result"]["state"] == "succeeded"
+    assert calls == [("inspect", None), ("inspect", 1000), ("inspect", None)]
+
+
 def test_collect_uses_result_ini_when_official_page_has_no_tasks(tmp_path: Path, monkeypatch):
     store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
     run = store.create_run(
@@ -652,6 +806,38 @@ def test_shared_data_uses_trusted_recognition_while_runtime_is_still_building(mo
 
     assert result["dataset_id"] == dataset.id
     assert loaded == ["ovrs25"]
+
+
+def test_shared_data_unavailable_has_stable_retryable_infrastructure_error(monkeypatch):
+    context = SimpleNamespace(
+        config_loader=lambda _identity: {"shared_namespaces": []},
+        dataset_catalog=object(),
+    )
+    monkeypatch.setattr(
+        "core.cluster_stage_executor.resolve_data_reference",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            status="unresolved",
+            dataset=None,
+            action="Shared path is not mounted on the Cluster worker",
+        ),
+    )
+    job = {
+        "owner": "alice",
+        "spec": {"data": {"path": "//shared/data/input.MF4"}},
+        "resolved_spec": {"decisions": {}},
+        "stages": [{
+            "stage_type": "resolve_spec",
+            "status": "succeeded",
+            "result": {"recognition": {"internal_project": "run-config-v2"}},
+        }],
+    }
+
+    with pytest.raises(ClusterStageExecutionError) as caught:
+        resolve_cluster_data(context, job)
+
+    assert caught.value.code == "CLUSTER_SHARED_DATA_UNAVAILABLE"
+    assert caught.value.actions[0]["type"] == "check_shared_path"
+    assert "//shared" not in str(caught.value)
 
 
 @pytest.mark.parametrize("identity", ["workspace-anonymous123", "ovrs25", "xpeng-od25"])

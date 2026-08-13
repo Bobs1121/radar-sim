@@ -190,6 +190,9 @@ def test_manifest_projects_whitelisted_dataset_radar_metadata(tmp_path: Path) ->
             "source_fingerprints": {
                 "radar_source": "RadarRL",
                 "radar_mounting_position": "CRL",
+                "radar_sources": "RadarRL,RadarRR",
+                "radar_source_status": "mixed",
+                "radar_source_selection": "metadata_order",
                 "untrusted_path": "D:/must-not-project",
             },
         },
@@ -220,6 +223,9 @@ def test_manifest_projects_whitelisted_dataset_radar_metadata(tmp_path: Path) ->
     assert resources["dataset"]["radar"] == {
         "source": "RadarRL",
         "mounting_position": "CRL",
+        "sources": ["RadarRL", "RadarRR"],
+        "source_status": "mixed",
+        "source_selection": "metadata_order",
     }
     assert current["resolved_spec"]["decisions"]["data"]["dataset"]["radar"] == resources["dataset"]["radar"]
 

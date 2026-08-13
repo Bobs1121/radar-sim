@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from core.api_v1 import ApiV1Service
 from core.api_v1_fastapi import create_app
 from core.control_service import ControlService
-from core.user import current_user, stable_user_identity
+from core.user import connector_owner_identity, current_user, stable_user_identity
 from radar_sim_sdk import RadarSimClient
 from cli.agent import _ControlClient
 
@@ -20,6 +20,16 @@ def test_stable_user_identity_is_lowercase_and_namespaced(monkeypatch):
     assert current_user() == "hoz2wx"
     assert stable_user_identity("HOZ2WX") == "user-hoz2wx"
     assert stable_user_identity("user-HOZ2WX") == "user-hoz2wx"
+
+
+def test_connector_preserves_server_bound_legacy_owner_but_bare_launch_is_stable(monkeypatch):
+    monkeypatch.setenv("RSIM_USER", "web-0123456789abcdef01234567")
+    monkeypatch.setenv("RSIM_OWNER_BOUND", "1")
+    assert connector_owner_identity() == "web-0123456789abcdef01234567"
+    monkeypatch.delenv("RSIM_OWNER_BOUND")
+    monkeypatch.delenv("RSIM_USER")
+    monkeypatch.setattr("core.user.getpass.getuser", lambda: "Alice")
+    assert connector_owner_identity() == "user-alice"
 
 
 def test_web_stable_owner_matches_sdk_default_without_merging_legacy_labels(tmp_path, monkeypatch):
@@ -121,3 +131,27 @@ def test_bare_connector_control_requests_use_same_stable_owner_as_sdk(monkeypatc
     _ControlClient("http://control.invalid", timeout=1)._request("GET", "/api/agents")
 
     assert captured["owner"] == "user-alice"
+
+
+def test_installed_connector_control_requests_keep_the_exact_server_owner(monkeypatch):
+    monkeypatch.setenv("RSIM_USER", "web-0123456789abcdef01234567")
+    monkeypatch.setenv("RSIM_OWNER_BOUND", "1")
+    captured: dict[str, str] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b"{}"
+
+    def open_request(request, timeout):
+        captured["owner"] = request.headers["X-rsim-user"]
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", open_request)
+    _ControlClient("http://control.invalid", timeout=1)._request("GET", "/api/agents")
+    assert captured["owner"] == "web-0123456789abcdef01234567"

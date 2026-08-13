@@ -194,7 +194,10 @@ TransferPlan 具备 owner/job/stage/role、隔离相对路径、checksum、进�
 - 用户登录自启、监督重启、指数退避、单实例；
 - 使用隐藏窗口/`CREATE_NO_WINDOW`，不周期弹终端；
 - contract version 不匹配时旧实例不领任务，Web 提供一键更新；
-- 更新保留 identity、bindings 和自启配置。
+- 更新保留 identity、bindings 和自启配置；服务地址或稳定 owner 变化必须显式 rebind；
+- 安装成功按 exact `agent_id + owner + contract` 校验，不使用 owner 聚合 capability 代替本机确认；
+- Windows 注册 owner 冲突在共享 SQLite UPSERT 临界区原子拒绝；旧随机 owner 只允许在旧 contract 升级时一次性迁移；
+- 本地仿真 Lease 使用 execution token/PID 防止 watchdog/服务恢复后重复 Selena；编译使用框架默认安全超时并终止子进程树。
 
 内部数据库中可能暂存旧 node kind，迁移清理前仅供兼容和清理使用，不能进入用户 API、安装选项或 YAML。
 
@@ -216,6 +219,8 @@ TransferPlan 具备 owner/job/stage/role、隔离相对路径、checksum、进�
 - Cluster worker identity 为服务端注册，普通 Agent 不能伪造；
 - owner 公平排序，不设置硬配额；
 - heartbeat/stale reclaim/幂等完成处理服务重启和短暂断线。
+- TransferPlan 按 owner/job/stage/role/输入指纹幂等；已完成 role 不因 SDK 重连重复传输或重复提交仿真；
+- 本地执行 Lease 由 execution token/PID 互斥。控制面重排但旧进程仍存活时，新 Connector 观察原执行；确认旧 PID 已死后才恢复接管。
 
 ## 15. 错误分类
 
@@ -224,9 +229,9 @@ TransferPlan 具备 owner/job/stage/role、隔离相对路径、checksum、进�
 | control plane | Linux/DB/调度组件不可用 | 不搬大文件，稳定错误码，允许恢复/重试 |
 | connector | 未安装、离线、版本旧、路径不在该设备 | 引导一次连接/自动重连/更新或连接正确设备 |
 | routing | shared 未挂载、source_to_local 不可用 | needs-input/unavailable，不伪造成功 |
-| build | 脚本缺失、返回非零、无 Selena.exe | 保留编译日志和依赖提示 |
+| build | 脚本缺失、返回非零、无 Selena.exe、脚本永久阻塞 | 保留编译日志和依赖提示；内部安全超时终止子进程树并返回 `BUILD_TIMEOUT` |
 | simulation internal | Selena 返回非零、单条结果失败 | 不由框架修复；保留日志/Manifest，继续批量 |
-| result | Manifest 矛盾、归档不可用 | Job 不标成功，给出结果诊断 |
+| result | Manifest 矛盾、缺 `result.ini`、归档/下载不可用 | Job 不标成功；下载断流清理半包并允许重试 |
 
 ## 16. 测试与发布门禁
 

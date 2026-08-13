@@ -70,7 +70,7 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # Connectors can accept the Stage shape but fail to load Selena's external DLLs,
 # so the control plane must require a one-click update instead of silently
 # scheduling work to stale code.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 8
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 9
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

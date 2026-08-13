@@ -22,6 +22,7 @@ import re
 import sqlite3
 import stat
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Mapping, Protocol
@@ -38,6 +39,10 @@ class AgentLocalRunError(ValueError):
 
 class LocalRunnerUnavailable(AgentLocalRunError):
     """Raised when no native project-adapter runner has been connected."""
+
+
+class LocalRunAlreadyExecuting(AgentLocalRunError):
+    """Raised when another live Connector process owns the same run lease."""
 
 
 _LEASE_RE = re.compile(r"^local-run-lease:sha256:[0-9a-f]{64}$")
@@ -132,6 +137,9 @@ class AgentLocalRunLeaseStore:
                     error_count INTEGER NOT NULL DEFAULT 0,
                     error_code TEXT NOT NULL DEFAULT '',
                     diagnostics_json TEXT NOT NULL DEFAULT '{}',
+                    execution_token TEXT NOT NULL DEFAULT '',
+                    execution_pid INTEGER NOT NULL DEFAULT 0,
+                    running_since REAL NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
@@ -148,7 +156,16 @@ class AgentLocalRunLeaseStore:
                 conn.execute(
                     "ALTER TABLE agent_local_runs ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '{}'"
                 )
-                conn.commit()
+            for name, declaration in (
+                ("execution_token", "TEXT NOT NULL DEFAULT ''"),
+                ("execution_pid", "INTEGER NOT NULL DEFAULT 0"),
+                ("running_since", "REAL NOT NULL DEFAULT 0"),
+            ):
+                if name not in columns:
+                    conn.execute(
+                        f"ALTER TABLE agent_local_runs ADD COLUMN {name} {declaration}"
+                    )
+            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=10)
@@ -291,11 +308,62 @@ class AgentLocalRunLeaseStore:
             "diagnostics": json.loads(row["diagnostics_json"] or "{}"),
         }
 
-    def mark_running(self, lease_id: str) -> dict[str, Any]:
-        row = self._row(lease_id)
-        if str(row["status"]) not in {"ready", "running"}:
-            raise AgentLocalRunError("local run cannot enter running state")
-        return self._update(lease_id, status="running")
+    def mark_running(
+        self,
+        lease_id: str,
+        *,
+        execution_token: str,
+        execution_pid: int,
+    ) -> dict[str, Any]:
+        token = str(execution_token or "").strip()
+        pid = int(execution_pid or 0)
+        if not re.fullmatch(r"[0-9a-f]{32}", token) or pid <= 0:
+            raise AgentLocalRunError("local run execution identity is invalid")
+        now = float(self._now_fn())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM agent_local_runs WHERE lease_id=?", (lease_id,)
+            ).fetchone()
+            if row is None:
+                raise AgentLocalRunError("local run lease is unavailable")
+            status = str(row["status"])
+            existing_token = str(row["execution_token"] or "")
+            existing_pid = int(row["execution_pid"] or 0)
+            try:
+                input_count = len(json.loads(row["inputs_json"] or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                input_count = 1
+            max_running_age = max(int(row["timeout_seconds"]), 1) * max(input_count, 1) + 300
+            running_age = max(0.0, now - float(row["running_since"] or 0.0))
+            if (
+                status == "running"
+                and existing_token != token
+                and running_age <= max_running_age
+                and _pid_alive(existing_pid)
+            ):
+                raise LocalRunAlreadyExecuting("local run is already executing")
+            if status in _TERMINAL:
+                # A duplicate control callback may arrive just after the
+                # original process committed its terminal result.  Route it
+                # through the same observer path instead of rejecting a
+                # harmless at-least-once delivery or re-running Selena.
+                raise LocalRunAlreadyExecuting("local run is already terminal")
+            if status not in {"ready", "running"}:
+                raise AgentLocalRunError("local run cannot enter running state")
+            conn.execute(
+                """
+                UPDATE agent_local_runs
+                SET status='running',execution_token=?,execution_pid=?,running_since=?,updated_at=?
+                WHERE lease_id=?
+                """,
+                (token, pid, now, now, lease_id),
+            )
+            conn.commit()
+            updated = conn.execute(
+                "SELECT * FROM agent_local_runs WHERE lease_id=?", (lease_id,)
+            ).fetchone()
+        return self._public(updated)
 
     def finish(
         self,
@@ -306,6 +374,7 @@ class AgentLocalRunLeaseStore:
         error_count: int,
         error_code: str = "",
         diagnostics: dict[str, Any] | None = None,
+        execution_token: str = "",
     ) -> dict[str, Any]:
         if status not in _TERMINAL:
             raise AgentLocalRunError("local run terminal status is invalid")
@@ -316,6 +385,7 @@ class AgentLocalRunLeaseStore:
             error_count=max(0, int(error_count)),
             error_code=_safe_error_code(error_code),
             diagnostics=diagnostics,
+            expected_execution_token=execution_token,
         )
 
     def result(self, lease_id: str) -> dict[str, Any]:
@@ -371,10 +441,20 @@ class AgentLocalRunLeaseStore:
         error_count: int | None = None,
         error_code: str | None = None,
         diagnostics: dict[str, Any] | None = None,
+        expected_execution_token: str = "",
     ) -> dict[str, Any]:
-        self._row(lease_id)
         now = float(self._now_fn())
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT * FROM agent_local_runs WHERE lease_id=?", (lease_id,)
+            ).fetchone()
+            if current is None:
+                raise AgentLocalRunError("local run lease is unavailable")
+            if expected_execution_token and str(current["execution_token"] or "") != str(
+                expected_execution_token
+            ):
+                raise AgentLocalRunError("local run execution ownership changed")
             conn.execute(
                 """
                 UPDATE agent_local_runs SET status=?,outputs_json=COALESCE(?,outputs_json),
@@ -424,7 +504,29 @@ def execute_local_run(
     cancel = cancel_requested or (lambda: False)
     if runner is None:
         runner = _runner_unavailable
-    store.mark_running(lease_id)
+    execution_token = uuid.uuid4().hex
+    try:
+        store.mark_running(
+            lease_id,
+            execution_token=execution_token,
+            execution_pid=os.getpid(),
+        )
+    except LocalRunAlreadyExecuting:
+        # A watchdog may start a second Connector while the original process
+        # is still completing this immutable lease.  Observe the existing
+        # owner instead of launching a duplicate Selena process or overwriting
+        # its deterministic outputs.
+        wait_deadline = time.monotonic() + max(int(lease["timeout_seconds"]), 1) + 120
+        while time.monotonic() < wait_deadline:
+            if cancel():
+                return 130
+            observed = store.get_private(lease_id)
+            if observed["status"] in _TERMINAL:
+                return 0 if observed["status"] == "succeeded" else (
+                    130 if observed["status"] == "cancelled" else 1
+                )
+            time.sleep(0.25)
+        raise AgentLocalRunError("local run execution owner did not finish before timeout")
     outputs: list[dict[str, Any]] = []
     failures = 0
     terminal_error = ""
@@ -437,6 +539,7 @@ def execute_local_run(
                 lease_id, status="cancelled", outputs=outputs,
                 error_count=failures, error_code="cancelled",
                 diagnostics={"items": execution_items, "engine_log_tail": _bounded_lines(engine_log_tail)},
+                execution_token=execution_token,
             )
             return 130
         output_relative = str(item.get("output_relative_path") or "")
@@ -476,6 +579,7 @@ def execute_local_run(
                     lease_id, status="cancelled", outputs=outputs,
                     error_count=failures, error_code="cancelled",
                     diagnostics={"items": execution_items, "engine_log_tail": _bounded_lines(engine_log_tail)},
+                    execution_token=execution_token,
                 )
                 return 130
             if outcome.exit_code == 0:
@@ -544,6 +648,7 @@ def execute_local_run(
         lease_id, status=status, outputs=outputs,
         error_count=failures, error_code=terminal_error,
         diagnostics=diagnostics_payload,
+        execution_token=execution_token,
     )
     return 0 if status == "succeeded" else 1
 
@@ -551,6 +656,21 @@ def execute_local_run(
 def _runner_unavailable(request: LocalRunRequest, cancel_requested: Callable[[], bool]) -> LocalRunOutcome:
     del request, cancel_requested
     raise LocalRunnerUnavailable("native local Selena runner is not connected")
+
+
+def _pid_alive(pid: int) -> bool:
+    pid = int(pid or 0)
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _relative_input_path(item: Mapping[str, Any]) -> str:

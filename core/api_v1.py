@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from dataclasses import dataclass, replace
@@ -28,6 +29,7 @@ from core.spec import ProjectCatalog, SimulationSpec, UserBindings
 from core.stages import (
     PlannedStage,
     StagePlan,
+    cluster_visible_existing_selena,
     plan_simulation_stages,
     plan_user_environment_requirements,
     plan_user_run_stages,
@@ -56,6 +58,47 @@ from core.business_progress import business_steps
 API_VERSION = "v1"
 TERMINAL_STATUSES = {"succeeded", "partial", "failed", "cancelled"}
 V1_SCHEDULER_AGENT_ID = INTERNAL_V1_SCHEDULER_AGENT_ID
+_LEGACY_BROWSER_OWNER = re.compile(r"^(?:user-)?(?:web|sdk)-[0-9a-f]{24,64}$", re.IGNORECASE)
+_STABLE_HUMAN_OWNER = re.compile(r"^user-[a-z0-9][a-z0-9_.-]{0,127}$", re.IGNORECASE)
+
+
+def _same_owner_or_legacy_double_namespace(left: str, right: str) -> bool:
+    """Allow one repair for the v8 ``web-*`` -> ``user-web-*`` bug."""
+
+    first = str(left or "").strip().casefold()
+    second = str(right or "").strip().casefold()
+    if first == second:
+        return True
+    if not (_LEGACY_BROWSER_OWNER.fullmatch(first) and _LEGACY_BROWSER_OWNER.fullmatch(second)):
+        return False
+    if first.startswith("user-"):
+        first = first[5:]
+    if second.startswith("user-"):
+        second = second[5:]
+    return first == second
+
+
+def _connector_owner_transition_allowed(
+    existing_owner: str,
+    next_owner: str,
+    existing_metadata: Mapping[str, Any],
+) -> bool:
+    """Allow exact ownership or the one-time pre-v9 identity migration."""
+
+    if _same_owner_or_legacy_double_namespace(existing_owner, next_owner):
+        return True
+    old = str(existing_owner or "").strip().casefold()
+    new = str(next_owner or "").strip().casefold()
+    try:
+        contract = int(existing_metadata.get("connector_contract_version") or 0)
+    except (TypeError, ValueError):
+        contract = 0
+    return bool(
+        contract < WINDOWS_CONNECTOR_CONTRACT_VERSION
+        and _LEGACY_BROWSER_OWNER.fullmatch(old)
+        and _STABLE_HUMAN_OWNER.fullmatch(new)
+        and not _LEGACY_BROWSER_OWNER.fullmatch(new)
+    )
 
 
 class ApiV1Error(RuntimeError):
@@ -245,6 +288,10 @@ class ApiV1Service:
                 config.simulation.mat_filter,
             )
         )
+        cluster_visible_existing = cluster_visible_existing_selena(
+            config,
+            target=selected_target,
+        )
         windows_needed = bool(
             selected_target == "local"
             or config.selena.source == "build"
@@ -329,7 +376,12 @@ class ApiV1Service:
         if config.selena.source == "existing":
             existing_visible = self._server_visible_path(config.selena.existing_path).is_dir()
             runtime_visible = self._server_visible_path(config.selena.runtime_xml).is_file()
-            if not (existing_visible and runtime_visible) and not has_windows_build and not local_paths:
+            if (
+                not cluster_visible_existing
+                and not (existing_visible and runtime_visible)
+                and not has_windows_build
+                and not local_paths
+            ):
                 block(
                     "windows_selena_access_unavailable",
                     "现有 Selena 产物和 Runtime XML 需要由已连接的 Windows 电脑读取并打包；这条路径不需要安装 Visual Studio 或编译依赖。",
@@ -484,6 +536,10 @@ class ApiV1Service:
                 or "runtime_bundle" in sdk_transfer_roles
             )
         )
+        cluster_visible_existing = cluster_visible_existing_selena(
+            config,
+            target=selected_target,
+        )
         for task in task_specs:
             stage_type = str(task.get("stage_type") or "")
             # Private Stage payload only: the Agent needs the authenticated
@@ -513,6 +569,13 @@ class ApiV1Service:
                     task["status"] = "skipped"
                     task["initial_status"] = "skipped"
                     task["skip_reason"] = "runtime_bundle_direct_transfer"
+                elif cluster_visible_existing:
+                    # A Selena folder and all other required inputs already
+                    # live in the Cluster-visible namespace.  No Windows
+                    # resolver/build/register stage is needed for this route.
+                    task["status"] = "skipped"
+                    task["initial_status"] = "skipped"
+                    task["skip_reason"] = "existing_selena_is_cluster_visible"
             if (
                 config.selena.source == "existing"
                 and stage_type == "register_artifact"
@@ -534,6 +597,10 @@ class ApiV1Service:
                 task["status"] = "skipped"
                 task["initial_status"] = "skipped"
                 task["skip_reason"] = "runtime_bundle_direct_transfer"
+            elif cluster_visible_existing and stage_type == "register_artifact":
+                task["status"] = "skipped"
+                task["initial_status"] = "skipped"
+                task["skip_reason"] = "existing_selena_is_cluster_visible"
             if selected_runtime_project:
                 payload = dict(task.get("payload") or {})
                 payload["internal_project"] = selected_runtime_project
@@ -573,10 +640,18 @@ class ApiV1Service:
                 if (
                     stage_type == "environment_check"
                     and config.selena.source == "existing"
-                    and (selected_runtime_bundle is not None or direct_transfer_existing_cluster)
+                    and (
+                        selected_runtime_bundle is not None
+                        or direct_transfer_existing_cluster
+                        or cluster_visible_existing
+                    )
                 ):
                     task["assigned_agent_id"] = LINUX_STAGE_AGENT_ID
                     task["required_agent_id"] = LINUX_STAGE_AGENT_ID
+                    if cluster_visible_existing:
+                        payload = dict(task.get("payload") or {})
+                        payload["dispatch_scope"] = "shared_existing_environment"
+                        task["payload"] = payload
                 elif stage_type == "prepare_data" and (
                     not sdk_transfer_roles
                     and (
@@ -1218,7 +1293,13 @@ class ApiV1Service:
             # roles (Linux executor and gateway) remain shared infrastructure.
             if key:
                 registered_user = str(metadata.get("user") or "").strip().casefold()
-                if registered_user and owner_token and registered_user != owner_token:
+                if (
+                    registered_user
+                    and owner_token
+                    and not _same_owner_or_legacy_double_namespace(
+                        registered_user, owner_token
+                    )
+                ):
                     continue
             if key:
                 summary[key]["configured_count"] += 1
@@ -2076,14 +2157,159 @@ class ApiV1Service:
         # client-supplied metadata field.
         if node_kind in {"windows_agent", "windows_full"}:
             trusted_metadata["user"] = owner
-        return control.register_agent(
-            name, agent_id=agent_id, hostname=hostname, platform=platform,
-            capabilities=capabilities, metadata=trusted_metadata,
-            node_kind=node_kind,
+            existing = next(
+                (
+                    agent
+                    for agent in control.list_agents()
+                    if str(agent.get("agent_id") or "") == str(agent_id or "")
+                ),
+                None,
+            )
+            if existing is not None:
+                existing_metadata = dict(existing.get("metadata") or {})
+                existing_kind = str(existing_metadata.get("node_kind") or "")
+                existing_owner = str(existing_metadata.get("user") or "").strip()
+                if (
+                    existing_kind in {"windows_agent", "windows_full"}
+                    and existing_owner
+                    and not _connector_owner_transition_allowed(
+                        existing_owner, owner, existing_metadata
+                    )
+                ):
+                    raise ApiV1Error(
+                        "connector_owner_mismatch",
+                        "This Connector device is already bound to another user",
+                        status_code=409,
+                        detail={"agent_id": str(agent_id or "")},
+                        actions=[
+                            {
+                                "type": "use_original_identity",
+                                "label": "Open the Web with the originally connected user",
+                            },
+                            {
+                                "type": "rebind_connector",
+                                "label": "Explicitly rebind this Windows profile",
+                            },
+                        ],
+                    )
+        try:
+            return control.register_agent(
+                name, agent_id=agent_id, hostname=hostname, platform=platform,
+                capabilities=capabilities, metadata=trusted_metadata,
+                node_kind=node_kind,
+            )
+        except ValueError as exc:
+            if str(exc).startswith("connector_owner_mismatch"):
+                raise ApiV1Error(
+                    "connector_owner_mismatch",
+                    "This Connector device is already bound to another user",
+                    status_code=409,
+                    detail={"agent_id": str(agent_id or "")},
+                ) from exc
+            raise
+
+    def windows_connector_status(self, owner: str, agent_id: str) -> dict[str, Any]:
+        """Return an owner-scoped, exact-device installation status."""
+
+        owner = self._owner(owner)
+        requested = str(agent_id or "").strip()
+        existing = next(
+            (
+                agent
+                for agent in self._control(owner).list_agents()
+                if str(agent.get("agent_id") or "") == requested
+            ),
+            None,
         )
+        if existing is None:
+            return {
+                "agent_id": requested,
+                "configured": False,
+                "available": False,
+                "contract_current": False,
+                "reason": "not_registered",
+            }
+        metadata = dict(existing.get("metadata") or {})
+        node_kind = str(metadata.get("node_kind") or "")
+        registered_owner = str(metadata.get("user") or "").strip()
+        if node_kind not in {"windows_agent", "windows_full"}:
+            reason = "not_windows_connector"
+        elif not _same_owner_or_legacy_double_namespace(registered_owner, owner):
+            reason = "connector_owner_mismatch"
+        elif not windows_connector_contract_is_current(metadata):
+            reason = "windows_connector_update_required"
+        else:
+            reason = ""
+        last_heartbeat = float(existing.get("last_heartbeat") or 0.0)
+        available = bool(
+            not reason
+            and last_heartbeat > 0
+            and float(self.now_fn()) - last_heartbeat <= 120
+            and str(existing.get("status") or "") != "offline"
+        )
+        return {
+            "agent_id": requested,
+            "configured": reason not in {"not_windows_connector", "connector_owner_mismatch"},
+            "available": available,
+            "contract_current": windows_connector_contract_is_current(metadata),
+            "reason": reason or ("" if available else "reconnecting"),
+        }
+
+    def _require_connector_owner(self, owner: str, agent_id: str) -> ControlService:
+        """Reject accidental cross-user polling of a shared Connector row."""
+
+        owner = self._owner(owner)
+        control = self._control(owner)
+        requested = str(agent_id or "").strip()
+        existing = next(
+            (
+                agent
+                for agent in control.list_agents()
+                if str(agent.get("agent_id") or "") == requested
+            ),
+            None,
+        )
+        if existing is None:
+            raise ApiV1Error(
+                "connector_not_registered",
+                "This Connector must register before polling for work",
+                status_code=404,
+                actions=[{"type": "reconnect_connector", "label": "Reconnect this computer"}],
+            )
+        metadata = dict(existing.get("metadata") or {})
+        node_kind = str(metadata.get("node_kind") or "")
+        registered_owner = str(metadata.get("user") or "").strip()
+        if (
+            node_kind in {"windows_agent", "windows_full"}
+            and not _same_owner_or_legacy_double_namespace(registered_owner, owner)
+        ):
+            raise ApiV1Error(
+                "connector_owner_mismatch",
+                "This Connector is bound to another user",
+                status_code=409,
+                detail={"agent_id": requested},
+            )
+        return control
+
+    def _task_for_owner(
+        self, owner: str, task_id: str
+    ) -> tuple[ControlService, dict[str, Any]]:
+        """Return a task only when its Job belongs to this request owner."""
+
+        owner = self._owner(owner)
+        control = self._control(owner)
+        try:
+            task = control.get_task(task_id)
+            job = control.get_job(str(task.get("job_id") or ""))
+        except KeyError as exc:
+            raise ApiV1Error("task_not_found", "Task is unavailable", status_code=404) from exc
+        if self._owner(str(job.get("owner") or "")) != owner:
+            # Do not disclose whether another user's task identifier exists.
+            raise ApiV1Error("task_not_found", "Task is unavailable", status_code=404)
+        return control, task
 
     def poll_agent(self, owner: str, agent_id: str) -> dict[str, Any]:
-        control = self._control(self._owner(owner))
+        control = self._require_connector_owner(owner, agent_id)
         control.bind_pending_run_config_resolution(agent_id)
         control.bind_pending_runtime_bundle_cache(agent_id)
         control.bind_pending_environment_stage(agent_id)
@@ -2102,7 +2328,7 @@ class ApiV1Service:
         self, owner: str, agent_id: str, *, status: str, current_task_id: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self._control(self._owner(owner)).heartbeat(
+        return self._require_connector_owner(owner, agent_id).heartbeat(
             agent_id, status=status, current_task_id=current_task_id,
             metadata=dict(metadata or {}),
         )
@@ -2111,12 +2337,8 @@ class ApiV1Service:
         self, owner: str, task_id: str, *, lines: list[str], stream: str = "stdout",
         agent_id: str = "",
     ) -> dict[str, Any]:
-        control = self._control(self._owner(owner))
+        control, task = self._task_for_owner(owner, task_id)
         if agent_id:
-            try:
-                task = control.get_task(task_id)
-            except KeyError as exc:
-                raise ApiV1Error("task_not_found", "Task is unavailable", status_code=404) from exc
             assigned = str(task.get("assigned_agent_id") or "")
             required = str(task.get("required_agent_id") or "")
             if str(agent_id) not in {assigned, required}:
@@ -2136,11 +2358,7 @@ class ApiV1Service:
         progress: float,
         message: str = "",
     ) -> dict[str, Any]:
-        control = self._control(self._owner(owner))
-        try:
-            task = control.get_task(task_id)
-        except KeyError as exc:
-            raise ApiV1Error("task_not_found", "Task is unavailable", status_code=404) from exc
+        control, task = self._task_for_owner(owner, task_id)
         assigned = str(task.get("assigned_agent_id") or "")
         required = str(task.get("required_agent_id") or "")
         if str(agent_id) not in {assigned, required}:
@@ -2165,7 +2383,7 @@ class ApiV1Service:
         self, owner: str, task_id: str, *, agent_id: str, status: str,
         returncode: int, result: dict[str, Any],
     ) -> dict[str, Any]:
-        control = self._control(self._owner(owner))
+        control, task = self._task_for_owner(owner, task_id)
         try:
             completed = control.submit_task_result(
                 task_id, agent_id=agent_id, status=status,
@@ -2180,10 +2398,6 @@ class ApiV1Service:
             # visible to callers.
             if not str(exc).startswith(f"task already completed: {task_id}"):
                 raise
-            try:
-                task = control.get_task(task_id)
-            except KeyError:
-                raise exc
             assigned = {
                 str(task.get("assigned_agent_id") or ""),
                 str(task.get("required_agent_id") or ""),

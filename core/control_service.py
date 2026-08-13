@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -43,6 +44,48 @@ _NON_SUCCESS_MANIFEST_STATUSES = {
     "cancelled",
     "canceled",
 }
+_WINDOWS_NODE_KINDS = {"windows_agent", "windows_full"}
+_LEGACY_BROWSER_OWNER = re.compile(
+    r"^(?:user-)?(?:web|sdk)-[0-9a-f]{24,64}$", re.IGNORECASE
+)
+_STABLE_HUMAN_OWNER = re.compile(
+    r"^user-[a-z0-9][a-z0-9_.-]{0,127}$", re.IGNORECASE
+)
+
+
+def _same_connector_owner(left: str, right: str) -> bool:
+    """Compare persisted Connector owners, including one v8 repair alias."""
+
+    first = str(left or "").strip().casefold()
+    second = str(right or "").strip().casefold()
+    if first == second:
+        return True
+    if not (
+        _LEGACY_BROWSER_OWNER.fullmatch(first)
+        and _LEGACY_BROWSER_OWNER.fullmatch(second)
+    ):
+        return False
+    return first.removeprefix("user-") == second.removeprefix("user-")
+
+
+def _connector_owner_transition_allowed(
+    existing_metadata: dict[str, Any], next_metadata: dict[str, Any]
+) -> bool:
+    old = str(existing_metadata.get("user") or "").strip().casefold()
+    new = str(next_metadata.get("user") or "").strip().casefold()
+    if _same_connector_owner(old, new):
+        return True
+    try:
+        old_contract = int(existing_metadata.get("connector_contract_version") or 0)
+        new_contract = int(next_metadata.get("connector_contract_version") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        old_contract < new_contract
+        and _LEGACY_BROWSER_OWNER.fullmatch(old)
+        and _STABLE_HUMAN_OWNER.fullmatch(new)
+        and not _LEGACY_BROWSER_OWNER.fullmatch(new)
+    )
 
 
 def _validated_cluster_claim_group(agent_id: str, metadata: dict[str, Any]) -> str:
@@ -656,6 +699,35 @@ class ControlService:
         with self._lock:
             conn = self._conn()
             try:
+                # Registration is an UPSERT, so the ownership check must live
+                # in this same critical section.  An API-level pre-check alone
+                # leaves a race where two users can bind the same stable
+                # Windows device identity concurrently.
+                existing_row = conn.execute(
+                    "SELECT metadata_json FROM agents WHERE agent_id = ?",
+                    (agent_id,),
+                ).fetchone()
+                if existing_row is not None:
+                    try:
+                        existing_metadata = json.loads(existing_row["metadata_json"] or "{}")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        existing_metadata = {}
+                    existing_kind = str(existing_metadata.get("node_kind") or "")
+                    next_kind = str(metadata.get("node_kind") or "")
+                    existing_owner = str(existing_metadata.get("user") or "")
+                    next_owner = str(metadata.get("user") or "")
+                    if (
+                        existing_kind in _WINDOWS_NODE_KINDS
+                        and next_kind in _WINDOWS_NODE_KINDS
+                        and existing_owner
+                        and next_owner
+                        and not _connector_owner_transition_allowed(
+                            existing_metadata, metadata
+                        )
+                    ):
+                        raise ValueError(
+                            "connector_owner_mismatch: stable device identity is already bound"
+                        )
                 conn.execute(
                     """
                     INSERT INTO agents (
@@ -1973,12 +2045,12 @@ class ControlService:
                 # Running tasks whose agent hasn't heartbeat since the cutoff.
                 rows = conn.execute(
                     """
-                    SELECT t.task_id, t.job_id, t.assigned_agent_id, t.attempt_count,
+                    SELECT t.task_id, t.job_id, t.status, t.assigned_agent_id, t.attempt_count,
                            t.cancel_requested, t.result_json, t.error_json, j.cancel_requested AS job_cancel_requested
                     FROM tasks t
                     JOIN jobs j ON j.job_id = t.job_id
                     LEFT JOIN agents a ON a.agent_id = t.assigned_agent_id
-                    WHERE t.status='running'
+                    WHERE t.status IN ('running', 'cancel_requested', 'cancelling')
                       AND (a.agent_id IS NULL OR a.last_heartbeat < ?)
                     """,
                     (cutoff,),
@@ -1993,7 +2065,17 @@ class ControlService:
                         "agent_id": row["assigned_agent_id"],
                         "actions": [{"type": "check_agent", "label": "Check or restart the assigned agent"}],
                     }
-                    if bool(row["cancel_requested"]) or bool(row["job_cancel_requested"]):
+                    # A cancellation can be represented either by the
+                    # persisted flag (the normal path) or by an intermediate
+                    # status written by an older Connector.  Both must become
+                    # terminal when the assigned agent is stale; otherwise a
+                    # disconnected Windows process can leave the Job in
+                    # cancel_requested/cancelling forever.
+                    if (
+                        bool(row["cancel_requested"])
+                        or bool(row["job_cancel_requested"])
+                        or str(row["status"] or "") in {"cancel_requested", "cancelling"}
+                    ):
                         final = "cancelled"
                         conn.execute(
                             """

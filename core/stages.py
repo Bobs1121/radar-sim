@@ -12,6 +12,7 @@ from typing import Any
 from core.environment_contract import plan_environment_requirements
 from core.spec import SimulationSpec
 from core.user_config import UserRunConfig
+from core.datasets import classify_data_path
 
 STAGE_TYPES: tuple[str, ...] = (
     "resolve_spec",
@@ -57,6 +58,51 @@ _CAPABILITY_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
 }
 
 _EXISTING_SELENA_SKIP_REASON = "existing_selena_uses_registered_artifact"
+_CLUSTER_VISIBLE_EXISTING_SKIP_REASON = "existing_selena_is_cluster_visible"
+
+
+def _cluster_visible_path(value: object) -> bool:
+    """Return whether a public path can be referenced without a Connector.
+
+    The planner deliberately performs syntax classification only.  Whether a
+    shared/central path is actually mounted is a Linux/Cluster preflight
+    concern; this helper only decides if the Windows source-side stages are
+    unnecessary for the route requested by the user.
+    """
+
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.casefold().startswith(("dataset://", "config-asset://", "config-asset:")):
+        return True
+    return classify_data_path(text) in {"shared", "central"}
+
+
+def cluster_visible_existing_selena(config: UserRunConfig, *, target: str = "") -> bool:
+    """Whether an existing Selena run can execute without a Windows node.
+
+    This is intentionally independent of product names, profiles, or catalog
+    adapters.  Every required public input must be a shared/central reference;
+    an optional Adapter/MatFilter is included when supplied.  A local drive
+    path therefore keeps the existing Connector direct-transfer route.
+    """
+
+    selected_target = str(target or config.simulation.target or "").strip().casefold()
+    if selected_target != "cluster" or config.selena.source != "existing":
+        return False
+    required = (
+        config.selena.existing_path,
+        config.selena.runtime_xml,
+        config.data.path,
+    )
+    optional = (
+        config.simulation.adapter_file,
+        config.simulation.mat_filter,
+    )
+    return all(_cluster_visible_path(value) for value in required) and all(
+        not str(value or "").strip() or _cluster_visible_path(value)
+        for value in optional
+    )
 
 
 @dataclass(frozen=True)
@@ -145,8 +191,16 @@ def plan_user_run_stages(config: UserRunConfig) -> StagePlan:
         if config.selena.source == "existing" and stage_type in {"prepare_source", "build_selena"}:
             status = "skipped"
             reason = _EXISTING_SELENA_SKIP_REASON
-        # An existing folder still needs an internal registration/upload for
-        # Cluster. ApiV1 skips this Stage only after selecting local execution.
+        if cluster_visible_existing_selena(config) and stage_type in {
+            "resolve_spec",
+            "register_artifact",
+        }:
+            status = "skipped"
+            reason = _CLUSTER_VISIBLE_EXISTING_SKIP_REASON
+        # A source-side existing folder normally needs registration/upload for
+        # Cluster.  The project-free shared/central route below is the one
+        # exception: it keeps the worker-visible folder in place and skips the
+        # Windows resolver/registration stages entirely.
         capabilities = _CAPABILITY_PLACEHOLDERS[stage_type]
         if stage_type == "resolve_spec":
             capabilities = (
@@ -249,4 +303,5 @@ __all__ = [
     "plan_simulation_stages",
     "plan_user_environment_requirements",
     "plan_user_run_stages",
+    "cluster_visible_existing_selena",
 ]

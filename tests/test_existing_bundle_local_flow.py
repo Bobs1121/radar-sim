@@ -116,6 +116,7 @@ def test_existing_bundle_local_cache_and_data_are_bound_to_same_full_agent(tmp_p
         capabilities=list(DEFAULT_LIGHT_CAPABILITIES),
         metadata={
             "node_kind": "windows_agent",
+            "user": "bob",
             "windows_mode": "light",
             "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "data_bindings": [data_binding.public_dict],
@@ -127,6 +128,7 @@ def test_existing_bundle_local_cache_and_data_are_bound_to_same_full_agent(tmp_p
         capabilities=list(DEFAULT_FULL_CAPABILITIES),
         metadata={
             "node_kind": "windows_full",
+            "user": "bob",
             "windows_mode": "full",
             "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "data_bindings": [data_binding.public_dict],

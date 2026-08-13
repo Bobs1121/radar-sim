@@ -204,6 +204,55 @@ def test_same_connector_reregistration_preserves_running_assignment(tmp_path):
     assert service.get_job(job["job_id"])["status"] == "running"
 
 
+def test_windows_connector_owner_binding_is_atomic_at_the_shared_store(tmp_path):
+    service = make_service(tmp_path)
+    base = {
+        "node_kind": "windows_full",
+        "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+    }
+    service.register_agent(
+        "alice-pc",
+        agent_id="stable-device-id",
+        node_kind="windows_full",
+        metadata={**base, "user": "user-alice"},
+    )
+
+    with pytest.raises(ValueError, match="connector_owner_mismatch"):
+        service.register_agent(
+            "bob-pc",
+            agent_id="stable-device-id",
+            node_kind="windows_full",
+            metadata={**base, "user": "user-bob"},
+        )
+
+    stored = next(
+        item for item in service.list_agents() if item["agent_id"] == "stable-device-id"
+    )
+    assert stored["metadata"]["user"] == "user-alice"
+
+
+def test_windows_connector_store_allows_one_v8_double_namespace_repair(tmp_path):
+    service = make_service(tmp_path)
+    base = {
+        "node_kind": "windows_full",
+        "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+    }
+    service.register_agent(
+        "legacy-pc",
+        agent_id="legacy-device-id",
+        node_kind="windows_full",
+        metadata={**base, "user": "user-web-0123456789abcdef01234567"},
+    )
+    repaired = service.register_agent(
+        "legacy-pc",
+        agent_id="legacy-device-id",
+        node_kind="windows_full",
+        metadata={**base, "user": "web-0123456789abcdef01234567"},
+    )
+
+    assert repaired["metadata"]["user"] == "web-0123456789abcdef01234567"
+
+
 def test_claim_repairs_legacy_orphan_before_claiming_new_work(tmp_path):
     service = make_service(tmp_path)
     metadata = {

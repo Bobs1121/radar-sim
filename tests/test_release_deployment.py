@@ -134,8 +134,9 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "foreach ($attempt in 1..$Attempts)" in connector
     assert "Get-RemoteHealth" in bootstrap
     assert "unreachable after $Attempts attempts" in bootstrap
-    assert "/api/v1/capabilities" in bootstrap
-    assert "$snapshot.capabilities.windows.available" in bootstrap
+    assert "/api/v1/windows-connector/status?agent_id=$encodedAgentId" in bootstrap
+    assert "$snapshot.available" in bootstrap
+    assert "$snapshot.contract_current" in bootstrap
     assert "$capabilityName" not in bootstrap
     launcher = (ROOT / "scripts" / "connect_windows.cmd.in").read_text(encoding="utf-8")
     assert "Python.Python.3.12" in connector
@@ -216,3 +217,12 @@ def test_windows_installer_checks_capability_in_paired_owner_scope():
     installer = (ROOT / "scripts" / "bootstrap.ps1").read_text(encoding="utf-8")
     assert '$capabilityHeaders["X-Rsim-User"] = $Owner' in installer
     assert "-Headers $capabilityHeaders -TimeoutSec 5" in installer
+
+
+def test_windows_installer_verifies_exact_device_and_never_silently_rebinds():
+    installer = (ROOT / "scripts" / "bootstrap.ps1").read_text(encoding="utf-8")
+    assert "/api/v1/windows-connector/status?agent_id=$encodedAgentId" in installer
+    assert "Linux confirmed this exact PC and user binding" in installer
+    assert "An update never changes the bound user" in installer
+    assert "Updating cannot silently change the server" in installer
+    assert "ForceRebind" in installer

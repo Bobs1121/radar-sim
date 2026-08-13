@@ -97,6 +97,41 @@ def test_local_preflight_injects_private_environment_without_project_adapter(
     ]
 
 
+def test_local_runtime_environment_never_calls_legacy_project_derivation(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """V2 local PATH reconstruction stays independent of product heuristics."""
+    workspace = tmp_path / "workspace"
+    build = workspace / "build" / "variant"
+    selena = build / "dc_tools" / "selena" / "core" / "RelWithDebInfo"
+    dependency = tmp_path / "dependency" / "bin" / "win64"
+    selena.mkdir(parents=True)
+    dependency.mkdir(parents=True)
+    (build / "CMakeCache.txt").write_text(
+        f"Matlab_ROOT_DIR:PATH={dependency.parent.parent.as_posix()}\n",
+        encoding="utf-8",
+    )
+
+    def legacy_derivation_must_not_run(*_args, **_kwargs):
+        raise AssertionError("legacy project derivation must be unreachable for V2")
+
+    monkeypatch.setattr(
+        "core.config.derive_project_context_from_selena_script",
+        legacy_derivation_must_not_run,
+    )
+    config = {"environment": {"path_prefix": []}}
+    _apply_project_independent_runtime_environment(
+        config,
+        {
+            "existing_path": str(selena),
+            "selena_build_script": str(workspace / "legacy-product-script.bat"),
+        },
+        {"code_path": str(workspace)},
+    )
+
+    assert config["environment"]["path_prefix"] == [str(dependency)]
+
+
 def test_project_independent_selena_contract_is_tolerant_by_default() -> None:
     config = load_local_execution_config("workspace-0123456789abcdef01234567")
 

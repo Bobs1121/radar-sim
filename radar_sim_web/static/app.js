@@ -28,6 +28,12 @@ const state = {
   authenticationRequired: false,
   importedSelection: null,
   validatedTarget: "",
+  // Keep an in-flight submission key across a page refresh. If the server
+  // committed the Job just before the tab disconnected, the next click can
+  // safely retrieve it instead of creating a duplicate task.
+  submitIdempotencyKey: sessionStorage.getItem("rsimSubmitIdempotencyKey") || "",
+  submitConfigSignature: sessionStorage.getItem("rsimSubmitConfigSignature") || "",
+  resultDownloadsInFlight: new Map(),
 };
 
 const byId = (id) => document.getElementById(id);
@@ -47,6 +53,42 @@ function requestHeaders(initial = {}) {
   if (state.userId) headers.set("X-Rsim-User", state.userId);
   if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
   return headers;
+}
+
+async function fetchBinary(path, options = {}) {
+  if (state.identityRequired && !state.authenticationRequired && path !== "/health") {
+    throw new Error("请先输入用户标识；它仅用于可信内网的任务隔离，不是登录认证");
+  }
+  const headers = requestHeaders(options.headers);
+  const controller = new AbortController();
+  // Connector packages are small; result archives can be large and should
+  // get a longer header/body deadline while still failing instead of hanging
+  // a browser tab forever after a service restart.
+  const timeoutMs = Math.max(1000, Number(options.timeoutMs || 20000));
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(`${API}${path}`, {
+      method: options.method || "GET",
+      headers,
+      body: options.body,
+      signal: options.signal || controller.signal,
+    });
+    if (!response.ok) {
+      const type = response.headers.get("content-type") || "";
+      const payload = type.includes("json") ? await response.json().catch(() => ({})) : {};
+      if (response.status === 401) showAuthenticationEntry("访问令牌无效或已失效");
+      throw new ApiError(response.status, payload);
+    }
+    return await response.blob();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("文件下载超时，请检查 Linux 服务状态后重试");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function triggerBlobDownload(blob, filename) {
@@ -214,6 +256,23 @@ function hasConfiguredWindows(_mode, capabilities = state.capabilities) {
   return Number(snapshot.windows?.configured_count || 0) > 0;
 }
 
+function configuredWindowsCount(capabilities = state.capabilities) {
+  const snapshot = capabilities?.capabilities || capabilities || {};
+  return Math.max(0, Number(snapshot.windows?.configured_count || 0));
+}
+
+function connectedWindowsCount(capabilities = state.capabilities) {
+  const snapshot = capabilities?.capabilities || capabilities || {};
+  return Math.max(0, Number(snapshot.windows?.count || 0));
+}
+
+function multiWindowsHint(capabilities = state.capabilities) {
+  const count = Math.max(configuredWindowsCount(capabilities), connectedWindowsCount(capabilities));
+  return count > 1
+    ? "当前账号已配置多台 Windows 电脑，请在存放本任务路径的电脑上运行连接程序。"
+    : "";
+}
+
 function windowsConnectorNeedsUpdate(capabilities = state.capabilities) {
   const snapshot = capabilities?.capabilities || capabilities || {};
   return snapshot.windows_connector?.update_required === true;
@@ -238,12 +297,16 @@ function updateConnectionStates(capabilities = state.capabilities) {
   const snapshot = capabilities?.capabilities || capabilities || {};
   const connected = Boolean(snapshot.windows?.available);
   const configured = Number(snapshot.windows?.configured_count || 0) > 0;
+  const count = Math.max(0, Number(snapshot.windows?.count || 0));
+  const configuredCount = Math.max(0, Number(snapshot.windows?.configured_count || 0));
   const updateRequired = windowsConnectorNeedsUpdate(capabilities);
   updateConnectorUpdateBanner(capabilities);
   local.textContent = connected
-    ? "本机已连接"
+    ? count > 1 ? `${count} 台 Windows 电脑已连接` : "本机已连接"
     : updateRequired ? "本机组件需更新"
-      : configured ? "本机正在自动重连" : "本机未连接";
+      : configured
+        ? configuredCount > 1 ? `${configuredCount} 台 Windows 电脑正在自动重连` : "本机正在自动重连"
+        : "本机未连接";
   local.className = connected
     ? "api-state ok"
     : configured || updateRequired ? "api-state local-reconnecting" : "api-state local-offline";
@@ -286,7 +349,7 @@ function createFormWindowsRequirement() {
       mode: "unified",
       title: "本地仿真需要连接这台电脑",
       capability: "需要连接本机",
-      reason: "运行 Selena、准备本地输入和收集结果需要由这台 Windows 电脑完成。只需安装一次连接程序。",
+      reason: `运行 Selena、准备本地输入和收集结果需要由这台 Windows 电脑完成。只需安装一次连接程序。${multiWindowsHint() ? ` ${multiWindowsHint()}` : ""}`,
     };
   }
   if (source === "build" && !hasWindowsCapability("light")) {
@@ -294,7 +357,7 @@ function createFormWindowsRequirement() {
       mode: "unified",
       title: "任务需要连接这台电脑",
       capability: "需要连接本机",
-      reason: "代码仓和编译脚本只在 Windows 电脑上可访问；完成一次连接后，Linux 会自动调度编译、文件准备和后续仿真。",
+      reason: `代码仓和编译脚本只在 Windows 电脑上可访问；完成一次连接后，Linux 会自动调度编译、文件准备和后续仿真。${multiWindowsHint() ? ` ${multiWindowsHint()}` : ""}`,
     };
   }
   if (usesWindowsPath && !hasWindowsCapability("light")) {
@@ -302,7 +365,7 @@ function createFormWindowsRequirement() {
       mode: "unified",
       title: "任务需要连接这台电脑",
       capability: "需要连接本机",
-      reason: "配置包含本地路径，需要这台电脑读取 Selena、Runtime、MatFilter 或数据并交给执行端。已有 Selena 不需要重新编译。",
+      reason: `配置包含本地路径，需要这台电脑读取 Selena、Runtime、MatFilter 或数据并交给执行端。已有 Selena 不需要重新编译。${multiWindowsHint() ? ` ${multiWindowsHint()}` : ""}`,
     };
   }
   return null;
@@ -591,11 +654,28 @@ async function submitCurrentSpec(event) {
       showToast("已取消提交，配置保持不变");
       return;
     }
+    // Keep the key tied to the exact YAML. If the POST response is lost after
+    // the server commits, clicking submit again returns the original Job
+    // instead of creating a duplicate. Editing any field automatically starts
+    // a new submission identity.
+    const configSignature = JSON.stringify(config);
+    if (state.submitConfigSignature !== configSignature || !state.submitIdempotencyKey) {
+      state.submitConfigSignature = configSignature;
+      state.submitIdempotencyKey = globalThis.crypto?.randomUUID
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+      sessionStorage.setItem("rsimSubmitConfigSignature", state.submitConfigSignature);
+      sessionStorage.setItem("rsimSubmitIdempotencyKey", state.submitIdempotencyKey);
+    }
     const job = await api("/run-jobs", {
       method: "POST",
-      headers: { "Idempotency-Key": crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}` },
+      headers: { "Idempotency-Key": state.submitIdempotencyKey },
       json: { config, dry_run: false },
     });
+    state.submitIdempotencyKey = "";
+    state.submitConfigSignature = "";
+    sessionStorage.removeItem("rsimSubmitConfigSignature");
+    sessionStorage.removeItem("rsimSubmitIdempotencyKey");
     state.selectedJobId = job.id;
     showToast("任务已提交");
     switchView("tasks");
@@ -637,12 +717,7 @@ async function exportYaml() {
     const config = runConfigFromForm();
     const result = await api("/run-configs/export", { method: "POST", json: { config } });
     const blob = new Blob([result.yaml_content], { type: "text/yaml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "radar-sim.simulation.yaml";
-    link.click();
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(blob, "radar-sim.simulation.yaml");
   } catch (error) {
     showFormError(error);
   }
@@ -662,7 +737,19 @@ async function loadJobs() {
     const page = await api(`/jobs?limit=${TASK_CENTER_PAGE_SIZE}${filter ? `&status=${encodeURIComponent(filter)}` : ""}`);
     await capabilitiesRequest;
     const jobs = page.jobs || [];
-    const signature = JSON.stringify(jobs.map((job) => [job.id, job.status, job.progress, job.current_stage]));
+    const capabilitySignature = JSON.stringify(state.capabilities?.capabilities?.windows || {});
+    const signature = JSON.stringify([
+      capabilitySignature,
+      ...jobs.map((job) => [
+        job.id,
+        job.status,
+        job.progress,
+        job.current_stage,
+        job.waiting?.reason || "",
+        job.waiting?.connection_state || "",
+        job.waiting?.message || "",
+      ]),
+    ]);
     state.jobs = jobs;
     if (signature !== state.jobsSignature) {
       state.jobsSignature = signature;
@@ -781,8 +868,8 @@ function windowsWaitState(job, candidateStage = null) {
         title: "当前在线电脑无法访问这些路径",
         capability: "需要连接存放配置和数据的电脑",
         shortCapability: "本机连接",
-        reason: serverWaiting.message
-          || "当前在线的 Windows 电脑无法确认能访问本任务的本地路径。请在文件所在电脑一键连接，或改用 Cluster 可访问的共享路径。",
+        reason: `${serverWaiting.message
+          || "当前在线的 Windows 电脑无法确认能访问本任务的本地路径。请在文件所在电脑一键连接，或改用 Cluster 可访问的共享路径。"}${multiWindowsHint() ? ` ${multiWindowsHint()}` : ""}`,
       };
     }
     return {
@@ -791,11 +878,11 @@ function windowsWaitState(job, candidateStage = null) {
       title: reconnecting ? "本机连接暂时中断，正在自动重连" : "任务正在等待连接本机",
       capability: "需要连接本机",
       shortCapability: "本机连接",
-      reason: localTarget
+      reason: `${localTarget
         ? "本地仿真需要这台 Windows 电脑执行 Selena 并收集结果。"
         : build
           ? "任务会在这台 Windows 电脑执行编译和文件准备，之后由 Linux/Cluster 继续调度。"
-          : "任务需要这台电脑读取本地 Selena、Runtime、MatFilter 或数据；安装一次连接程序即可长期复用。",
+          : "任务需要这台电脑读取本地 Selena、Runtime、MatFilter 或数据；安装一次连接程序即可长期复用。"}${multiWindowsHint() ? ` ${multiWindowsHint()}` : ""}`,
     };
   }
   const paths = [
@@ -1070,13 +1157,7 @@ async function downloadWindowsConnector(jobId, mode, button, status) {
   status.textContent = "正在生成与当前服务匹配的安装程序…";
   try {
     const headers = requestHeaders();
-    const response = await fetch(`${API}/windows-connector/connect.cmd?mode=unified`, { headers });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      if (response.status === 404) throw new Error("一键连接包暂未就绪，请刷新页面后重试");
-      throw new ApiError(response.status, payload);
-    }
-    const blob = await response.blob();
+    const blob = await fetchBinary("/windows-connector/connect.cmd?mode=unified", { headers, timeoutMs: 60000 });
     triggerBlobDownload(blob, "RadarSim-连接本机.cmd");
     state.connectorAwait = { jobId, mode };
     button.textContent = "重新下载";
@@ -1084,28 +1165,50 @@ async function downloadWindowsConnector(jobId, mode, button, status) {
     showToast("连接程序已下载，双击运行后无需重新提交任务", 5000);
   } catch (error) {
     button.textContent = original;
-    status.textContent = error.message || "连接程序准备失败，请稍后重试";
+    status.textContent = error instanceof ApiError && error.status === 404
+      ? "一键连接包暂未就绪，请刷新页面后重试"
+      : error.message || "连接程序准备失败，请稍后重试";
   } finally {
     button.disabled = false;
   }
 }
 
 async function downloadResult(resultRef) {
+  const key = String(resultRef || "").trim();
+  if (!key) {
+    showToast("结果引用为空，暂时无法下载");
+    return;
+  }
+  const inFlight = state.resultDownloadsInFlight.get(key);
+  if (inFlight) {
+    showToast("结果正在下载，请勿重复点击");
+    return inFlight;
+  }
+  const download = (async () => {
   try {
     // ResultCatalog is owner-scoped. Binary fetches share the same identity
     // builder as JSON API and Connector downloads so a valid result can never
     // be looked up under the Linux service account by accident.
     const headers = requestHeaders();
-    const response = await fetch(`${API}/results/${encodeURIComponent(resultRef)}/download`, { headers });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new ApiError(response.status, payload);
-    }
-    const blob = await response.blob();
+    const blob = await fetchBinary(
+      `/results/${encodeURIComponent(key)}/download`,
+      { headers, timeoutMs: 10 * 60 * 1000 },
+    );
     triggerBlobDownload(blob, "radar-sim-result.zip");
     showToast("结果 ZIP 已开始下载");
   } catch (error) {
-    showToast(error.message || "结果下载失败");
+    if (error instanceof ApiError && error.status === 404) {
+      showToast("结果不存在、尚未登记或已过期；请先确认任务已完成");
+    } else {
+      showToast(error.message || "结果下载失败");
+    }
+  }
+  })();
+  state.resultDownloadsInFlight.set(key, download);
+  try {
+    return await download;
+  } finally {
+    state.resultDownloadsInFlight.delete(key);
   }
 }
 
@@ -1333,8 +1436,8 @@ async function initialize() {
           await refreshCapabilities();
           if (state.legacyIdentity) {
             showStableIdentityEntry(
-              "当前浏览器仍使用旧临时身份；输入公司 NTID 可升级，更新 Connector 后任务将使用稳定 owner。",
-              { required: false },
+              "当前浏览器仍使用已停用的临时身份。请输入公司 NTID 后继续并更新 Connector；任务与电脑将永久绑定到该稳定身份。",
+              { required: true },
             );
           }
         }

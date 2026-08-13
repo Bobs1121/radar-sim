@@ -515,6 +515,13 @@ def create_app(
             headers={"X-Content-SHA256": checksum, "X-Rsim-Connector-Version": "1"},
         )
 
+    @app.get("/api/v1/windows-connector/status", include_in_schema=False)
+    def windows_connector_status(
+        request: Request,
+        agent_id: str = Query(min_length=1, max_length=200),
+    ):
+        return service.windows_connector_status(owner(request), agent_id)
+
     # Windows Connector endpoints share this process and ControlService with
     # /api/v1, so Stage handoffs cannot drift across two SQLite databases.
     @app.post("/api/agents/register", status_code=201, include_in_schema=False)

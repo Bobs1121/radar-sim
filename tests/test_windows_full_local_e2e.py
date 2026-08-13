@@ -23,7 +23,7 @@ def test_partial_local_result_is_collectible_stage_outcome():
         },
         "diagnostics": {
             "items": [
-                {"index": 1, "status": "failed"},
+                {"index": 1, "status": "failed", "error_code": "selena_failed"},
                 {"index": 2, "status": "succeeded"},
             ]
         },
@@ -33,6 +33,26 @@ def test_partial_local_result_is_collectible_stage_outcome():
     stage_result, returncode = _local_stage_result("lease", result)
     assert returncode == 0
     assert stage_result["status"] == "partial"
+
+
+def test_connector_failure_is_not_disguised_as_partial_engine_result():
+    result = {
+        "status": "failed",
+        "files": [{"relative_path": "outputs/good.MF4"}],
+        "summary": {
+            "error_count": 1,
+            "failed_input_count": 1,
+            "succeeded_input_count": 1,
+        },
+        "diagnostics": {
+            "items": [
+                {"index": 1, "status": "failed", "error_code": "runner_contract_failed"},
+                {"index": 2, "status": "succeeded"},
+            ]
+        },
+    }
+
+    assert _is_partial_local_result(result) is False
 
 
 def test_partial_local_result_collects_and_finalizes_input_results(tmp_path, monkeypatch):

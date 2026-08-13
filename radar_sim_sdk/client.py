@@ -359,8 +359,16 @@ class RadarSimClient:
             # or a Windows Agent.  This is a successful no-op, not an upload.
             return job
 
+        resolved_roles = _resolved_direct_transfer_roles(job)
         fingerprints = {"config_fingerprint": config.fingerprint()}
         for source_role, source_path in sources:
+            # A prior call may have completed some roles before a different
+            # role lost its target or connection.  Never issue a second plan
+            # for an already-resolved role: each plan has an isolated target
+            # root, so blindly retrying would duplicate MF4s in the Cluster
+            # worker directory and could run the same input twice.
+            if source_role in resolved_roles:
+                continue
             try:
                 source_root, items = _scan_sdk_transfer_items(source_path, source_role=source_role)
                 plan_fingerprints = dict(fingerprints)
@@ -386,6 +394,15 @@ class RadarSimClient:
                     cancel_check=cancel_check,
                     allow_local_test=allow_local_test,
                 )
+                resolved_roles.add(source_role)
+                # Refresh the path-free job projection when possible so a
+                # caller can pass the returned waiting Job back into
+                # ``resume_direct_transfers`` without replaying completed
+                # roles after a later role fails.
+                try:
+                    job = self.get_job(job.id)
+                except (RadarSimApiError, RadarSimTransportError):
+                    pass
             except Exception as exc:
                 # Keep the server-side Stage queued/running.  The control
                 # plane remains the source of truth and a later Connector can
@@ -688,7 +705,7 @@ class RadarSimClient:
         )
 
     def get_job(self, job_id: str) -> Job:
-        return Job.from_dict(self._request("GET", f"/api/v1/jobs/{job_id}"))
+        return Job.from_dict(self._request("GET", f"/api/v1/jobs/{_quote_path_token(job_id)}"))
 
     def get_job_transfer_status(self, job_id: str) -> dict[str, Any]:
         """Return aggregate direct-transfer status and plan summaries for a Job."""
@@ -709,14 +726,14 @@ class RadarSimClient:
 
     def events(self, job_id: str, *, since: int = 0, limit: int = 200) -> EventsPage:
         return EventsPage.from_dict(
-            self._request("GET", f"/api/v1/jobs/{job_id}/events", params={"since": since, "limit": limit})
+            self._request("GET", f"/api/v1/jobs/{_quote_path_token(job_id)}/events", params={"since": since, "limit": limit})
         )
 
     def stream_events(self, job_id: str, *, since: int = 0, limit: int = 200) -> Iterator[Event]:
         headers = {"Last-Event-ID": str(int(since or 0))} if since else None
         params = {"since": int(since or 0), "limit": int(limit or 200), "stream": "true"}
         try:
-            with self._client.stream("GET", f"/api/v1/jobs/{job_id}/events", params=params, headers=headers) as response:
+            with self._client.stream("GET", f"/api/v1/jobs/{_quote_path_token(job_id)}/events", params=params, headers=headers) as response:
                 self._raise_for_status(response)
                 for message in parse_sse_lines(response.iter_lines()):
                     yield event_from_sse(message)
@@ -784,13 +801,13 @@ class RadarSimClient:
         return self.get_job(job_id)
 
     def cancel(self, job_id: str) -> Job:
-        return Job.from_dict(self._request("POST", f"/api/v1/jobs/{job_id}/cancel"))
+        return Job.from_dict(self._request("POST", f"/api/v1/jobs/{_quote_path_token(job_id)}/cancel"))
 
     def retry_stage(self, job_id: str, stage_id: str) -> Job:
-        return Job.from_dict(self._request("POST", f"/api/v1/jobs/{job_id}/stages/{stage_id}/retry"))
+        return Job.from_dict(self._request("POST", f"/api/v1/jobs/{_quote_path_token(job_id)}/stages/{_quote_path_token(stage_id)}/retry"))
 
     def manifest(self, job_id: str) -> ManifestResponse:
-        return ManifestResponse.from_dict(self._request("GET", f"/api/v1/jobs/{job_id}/manifest"))
+        return ManifestResponse.from_dict(self._request("GET", f"/api/v1/jobs/{_quote_path_token(job_id)}/manifest"))
 
     @staticmethod
     def default_result_directory(job_id: str) -> Path:
@@ -832,7 +849,16 @@ class RadarSimClient:
         manifest = response.manifest if response.available else None
         result_ref = str((manifest or {}).get("result_ref") or "").strip()
         if not result_ref:
-            raise ValueError("job manifest does not contain a downloadable result_ref")
+            # A terminal job can legitimately have no archive (for example a
+            # failed/preflight-only run).  Keep this distinct from a malformed
+            # SDK call so integrations can decide whether to wait, diagnose,
+            # or report a missing result without parsing prose.
+            status = str(current.status or "unknown").strip().lower()
+            if status in {"queued", "running", "needs_input", "blocked", "cancel_requested", "cancelling"}:
+                message = f"job result is not ready (job status: {status})"
+            else:
+                message = f"job result is unavailable (job status: {status})"
+            raise ValueError(f"result_unavailable: {message}")
 
         raw_destination = str(destination or "").strip()
         if raw_destination:
@@ -858,7 +884,7 @@ class RadarSimClient:
     def diagnosis(self, job_id: str) -> JobDiagnosis:
         """Return the shared path-free diagnosis used by Web and AI adapters."""
         return JobDiagnosis.from_dict(
-            self._request("GET", f"/api/v1/jobs/{job_id}/diagnosis")
+            self._request("GET", f"/api/v1/jobs/{_quote_path_token(job_id)}/diagnosis")
         )
 
     def list_results(self) -> list[dict[str, Any]]:
@@ -879,12 +905,19 @@ class RadarSimClient:
         temporary = target.with_name(target.name + f".part.{uuid.uuid4().hex}")
         digest = hashlib.sha256()
         try:
-            with self._client.stream("GET", f"/api/v1/results/{result_ref}/download") as response:
-                self._raise_for_status(response)
-                with temporary.open("wb") as handle:
-                    for chunk in response.iter_bytes():
-                        handle.write(chunk)
-                        digest.update(chunk)
+            try:
+                with self._client.stream("GET", f"/api/v1/results/{result_ref}/download") as response:
+                    self._raise_for_status(response)
+                    with temporary.open("wb") as handle:
+                        for chunk in response.iter_bytes():
+                            handle.write(chunk)
+                            digest.update(chunk)
+            except httpx.TransportError as exc:
+                # Binary downloads are deliberately not retried here: a
+                # multi-GB archive must not be silently fetched repeatedly.
+                # The caller receives the same stable transport error as JSON
+                # reads and can retry explicitly with a fresh temp file.
+                raise RadarSimTransportError(str(exc)) from exc
             checksum = "sha256:" + digest.hexdigest()
             if checksum != str(metadata.get("archive_checksum") or ""):
                 raise ValueError("downloaded result checksum does not match catalog")
@@ -1250,6 +1283,26 @@ def _find_sdk_prepare_data_stage(job: Job) -> dict[str, Any] | None:
         if str(item.get("stage_type") or item.get("task_type") or "") == "prepare_data":
             return item
     return None
+
+
+def _resolved_direct_transfer_roles(job: Job) -> set[str]:
+    """Return roles with at least one durable completed transfer manifest."""
+
+    decisions = dict((job.resolved_spec or {}).get("decisions") or {})
+    transfers = dict(decisions.get("transfers") or {})
+    resources = transfers.get("resources")
+    if not isinstance(resources, dict):
+        return set()
+    resolved: set[str] = set()
+    for role, value in resources.items():
+        values = value if isinstance(value, list) else [value]
+        if any(
+            isinstance(item, dict)
+            and str(item.get("status") or "").strip().lower() == "resolved"
+            for item in values
+        ):
+            resolved.add(str(role))
+    return resolved
 
 
 def _default_sdk_user() -> str:

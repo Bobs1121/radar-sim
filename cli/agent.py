@@ -168,8 +168,8 @@ def register(subparsers):
 
 def run(args, config):
     import os
-    from core.user import current_user, stable_user_identity
-    user = stable_user_identity(current_user())
+    from core.user import connector_owner_identity
+    user = connector_owner_identity()
     mode, node_kind, capabilities = _capabilities_for_mode(
         getattr(args, "windows_mode", MODE_UNIFIED),
         getattr(args, "capability", None),
@@ -279,6 +279,56 @@ def _poll_failure_is_reportable(
     if count == 3 or float(last_reported_at) <= 0:
         return True
     return float(now) - float(last_reported_at) >= 60.0
+
+
+def _build_timeout_seconds(payload: dict) -> int:
+    """Return the framework-owned build safety limit.
+
+    This is deliberately not a public project/YAML setting.  Deployments may
+    tune it globally, while every new user gets a finite default so a broken
+    batch wrapper cannot occupy a Connector forever.
+    """
+
+    raw = payload.get("build_timeout_seconds") or os.environ.get(
+        "RSIM_BUILD_TIMEOUT_SECONDS", "14400"
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 14400
+    return max(60, min(value, 86400))
+
+
+def _terminate_process_tree(process: subprocess.Popen, exit_code: int) -> None:
+    """Best-effort termination of a build wrapper and its descendants."""
+
+    if process.poll() is not None:
+        return
+    process_id = int(getattr(process, "pid", 0) or 0)
+    if os.name == "nt" and process_id > 0:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process_id), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if process.poll() is None:
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            if process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=5)
+                except (OSError, subprocess.SubprocessError):
+                    pass
 
 
 def _run_task(
@@ -575,6 +625,9 @@ def _run_task(
     execution_error = ""
     lines: list[str] = []
     diagnostic_lines: list[str] = []
+    build_timed_out = False
+    build_started_at = time.monotonic()
+    build_timeout = _build_timeout_seconds(dict(task.get("payload") or {})) if is_v5_build else 0
     last_reported_progress = 0.0
     last_progress_report_at = 0.0
     try:
@@ -663,7 +716,15 @@ def _run_task(
                     client.append_logs(task_id, lines)
                     lines = []
             if cancel_event.is_set():
-                proc.terminate()
+                _terminate_process_tree(proc, 130)
+                break
+            if is_v5_build and time.monotonic() - build_started_at >= build_timeout:
+                build_timed_out = True
+                execution_error = (
+                    f"Selena build exceeded the {build_timeout}-second framework safety timeout"
+                )
+                client.append_logs(task_id, [f"[agent] {execution_error}"])
+                _terminate_process_tree(proc, 124)
                 break
             if proc.poll() is not None:
                 # Main child exited. Drain whatever the reader has already
@@ -691,12 +752,10 @@ def _run_task(
         except Exception:
             pass
         if cancel_event.is_set():
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
             status = "cancelled"
+        elif build_timed_out:
+            returncode = 124
+            status = "failed"
         else:
             # poll() already returned the exit code; wait() returns it again
             # immediately. Guard with a timeout so a lingering descendant
@@ -709,7 +768,7 @@ def _run_task(
             status = "succeeded" if returncode == 0 else "failed"
     except Exception as exc:
         if "proc" in locals() and proc.poll() is None:
-            proc.terminate()
+            _terminate_process_tree(proc, 1)
         execution_error = "v5 Selena build execution failed" if is_v5_build else str(exc)
         client.append_logs(task_id, [f"[agent] execution error: {execution_error}"])
         status = "failed"
@@ -750,16 +809,26 @@ def _run_task(
             from core.build_diagnostics import classify_build_failure
 
             diagnostic = classify_build_failure(diagnostic_lines)
+            if build_timed_out:
+                diagnostic_payload = {
+                    "code": "BUILD_TIMEOUT",
+                    "category": "framework",
+                    "summary": "The Selena build script exceeded the service safety timeout",
+                    "action": "Inspect the build wrapper for an interactive prompt or stalled child process, then retry",
+                    "detail": execution_error,
+                }
+            else:
+                diagnostic_payload = diagnostic.to_dict()
             result = {
                 "error": execution_error or diagnostic.summary,
-                "code": diagnostic.code,
-                "diagnostic": diagnostic.to_dict(),
+                "code": "BUILD_TIMEOUT" if build_timed_out else diagnostic.code,
+                "diagnostic": diagnostic_payload,
             }
             client.append_logs(
                 task_id,
                 [
-                    f"[diagnostic] {diagnostic.summary}",
-                    f"[action] {diagnostic.action}",
+                    f"[diagnostic] {diagnostic_payload['summary']}",
+                    f"[action] {diagnostic_payload['action']}",
                 ],
             )
     else:
@@ -1945,24 +2014,14 @@ def _apply_project_independent_runtime_environment(
         discovery.get("existing_path") or payload.get("existing_path") or ""
     )
     code_path = str(discovery.get("code_path") or payload.get("code_path") or "")
-    build_script = str(
-        discovery.get("selena_build_script")
-        or payload.get("selena_build_script")
-        or ""
-    )
-    hints: list[str] = [existing_path]
-    if build_script:
-        try:
-            from core.config import derive_project_context_from_selena_script
-
-            derived = derive_project_context_from_selena_script(
-                build_script,
-                project_root_hint=code_path,
-            )
-            hints.append(str(derived.get("build_output") or ""))
-        except (OSError, TypeError, ValueError):
-            pass
-    hints.append(code_path)
+    # Runtime DLL discovery is deliberately generic.  The selected Selena
+    # output and the user's workspace are the only authoritative hints; do
+    # not route a V2 local run through the legacy project/script heuristic
+    # (which contains product-specific ``/apl/byd``/R2D2 assumptions).  The
+    # build stage has already resolved the script and output under the
+    # authorized workspace; this helper only reconstructs PATH from generic
+    # CMake evidence after that build.
+    hints: list[str] = [existing_path, code_path]
     resolved = infer_selena_runtime_environment(hints)
     environment = config.setdefault("environment", {})
     current = list(environment.get("path_prefix") or [])
@@ -2119,7 +2178,10 @@ def _is_partial_local_result(result: dict) -> bool:
     """True when at least one input succeeded and another failed.
 
     A runner-unavailable or all-input failure remains a hard Stage failure;
-    only a real mixed outcome is allowed to continue to result collection.
+    only a real mixed *Selena-engine* outcome is allowed to continue to result
+    collection.  Connector/paramconfig/dependency failures must never be
+    disguised as a successful partial simulation merely because another input
+    happened to produce an output.
     """
     if str(result.get("status") or "") != "failed":
         return False
@@ -2129,7 +2191,22 @@ def _is_partial_local_result(result: dict) -> bool:
         failed = int(summary.get("failed_input_count") or summary.get("error_count") or 0)
     except (TypeError, ValueError):
         return False
-    return successful > 0 and failed > 0 and bool(result.get("files"))
+    if successful <= 0 or failed <= 0 or not result.get("files"):
+        return False
+    raw_items = dict(result.get("diagnostics") or {}).get("items") or []
+    if not isinstance(raw_items, list):
+        return False
+    failed_items = [
+        item for item in raw_items
+        if isinstance(item, dict) and str(item.get("status") or "").lower() == "failed"
+    ]
+    # ``run_local_selena`` maps an unknown non-zero Selena exit to this code;
+    # loader/timeout/paramconfig/lease errors use distinct codes and are
+    # framework-owned failures that must fail the Stage.
+    return bool(failed_items) and all(
+        str(item.get("error_code") or "").strip().lower() == "selena_failed"
+        for item in failed_items
+    )
 
 
 def _local_stage_result(lease_ref: str, result: dict) -> tuple[dict, int]:
@@ -3081,12 +3158,12 @@ class _ControlClient:
     ) -> dict:
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for artifact upload")
-        from core.user import current_user, stable_user_identity
+        from core.user import connector_owner_identity
         from radar_sim_sdk import RadarSimClient
 
         with RadarSimClient(
             self._api_url,
-            user=str(owner or stable_user_identity(current_user())),
+            user=str(owner or connector_owner_identity()),
             token=self._api_token,
             trust_env=False,
         ) as sdk:
@@ -3111,12 +3188,12 @@ class _ControlClient:
     ) -> dict:
         if not self._api_url:
             raise ValueError("Agent v1 api-url is required for Runtime Bundle upload")
-        from core.user import current_user, stable_user_identity
+        from core.user import connector_owner_identity
         from radar_sim_sdk import RadarSimClient
 
         with RadarSimClient(
             self._api_url,
-            user=str(owner or stable_user_identity(current_user())),
+            user=str(owner or connector_owner_identity()),
             token=self._api_token,
             trust_env=False,
         ) as sdk:
@@ -3379,7 +3456,7 @@ class _ControlClient:
         # now executes a metadata-only TransferPlan; it never opens a Linux
         # dataset upload session or sends a file body over HTTP.
         from core.datasets import DatasetDiscoveryCancelled
-        from core.user import current_user, stable_user_identity
+        from core.user import connector_owner_identity
 
         cancelled = cancel_requested or (lambda: False)
         if cancelled():
@@ -3396,7 +3473,7 @@ class _ControlClient:
         ]
         source = lease.source_path
         root = source if source.is_dir() else source.parent
-        transfer_owner = str(owner or stable_user_identity(current_user()))
+        transfer_owner = str(owner or connector_owner_identity())
         plan = self.issue_transfer_plan(
             owner=transfer_owner,
             job_id=task_id.split(":", 1)[0] or task_id,
@@ -3494,11 +3571,11 @@ class _ControlClient:
         payload: dict | None = None,
     ) -> dict:
         """Call metadata-only transfer endpoints with the Agent identity."""
-        from core.user import current_user, stable_user_identity
+        from core.user import connector_owner_identity
 
         headers = {
             "Accept": "application/json",
-            "X-Rsim-User": str(owner or stable_user_identity(current_user())),
+            "X-Rsim-User": str(owner or connector_owner_identity()),
         }
         auth_token = self._api_token or self._token
         if auth_token:
@@ -3543,11 +3620,11 @@ class _ControlClient:
         headers: dict[str, str] | None = None,
     ) -> dict:
         """Call a v1 upload endpoint without importing the optional SDK stack."""
-        from core.user import current_user, stable_user_identity
+        from core.user import connector_owner_identity
 
         request_headers = {
             "Accept": "application/json",
-            "X-Rsim-User": str(owner or stable_user_identity(current_user())),
+            "X-Rsim-User": str(owner or connector_owner_identity()),
         }
         if self._api_token:
             request_headers["Authorization"] = f"Bearer {self._api_token}"
@@ -3585,11 +3662,11 @@ class _ControlClient:
         requests use the v1 API URL and the user's owner scope, while the
         control poll uses the Agent identity and legacy endpoints.
         """
-        from core.user import current_user, stable_user_identity
+        from core.user import connector_owner_identity
 
         request_headers = {
             "Accept": "application/json",
-            "X-Rsim-User": str(owner or stable_user_identity(current_user())),
+            "X-Rsim-User": str(owner or connector_owner_identity()),
         }
         if self._api_token:
             request_headers["Authorization"] = f"Bearer {self._api_token}"
@@ -3617,11 +3694,11 @@ class _ControlClient:
             raise _agent_transport_error(method, path, exc) from exc
 
     def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
-        from core.user import USER_HEADER, current_user, stable_user_identity
+        from core.user import USER_HEADER, connector_owner_identity
         data = None
         headers = {
             "Accept": "application/json",
-            USER_HEADER: stable_user_identity(current_user()),
+            USER_HEADER: connector_owner_identity(),
         }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"

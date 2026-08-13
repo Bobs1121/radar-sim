@@ -1,11 +1,12 @@
 import inspect
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from cli import server as server_cli
 from core.spec import SimulationSpec
-from core.api_v1 import ApiV1Service
+from core.api_v1 import ApiV1Error, ApiV1Service
 from core.api_v1_fastapi import create_app
 from core.control_service import ControlService
 from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION
@@ -370,6 +371,205 @@ def test_capability_route_is_path_free_and_owner_scoped(tmp_path):
     assert "windows_light" not in body["capabilities"]
     assert "full-a" not in str(body)
     assert "private" not in str(body).lower()
+
+
+def test_connector_install_status_is_exact_device_and_owner_scoped(tmp_path):
+    control = ControlService(tmp_path / "shared.db")
+    client = TestClient(create_app(api_service=ApiV1Service(control_service_factory=lambda _owner: control)))
+    body = {
+        "name": "pc-a",
+        "agent_id": "agent-alice-pc-a",
+        "hostname": "pc-a",
+        "platform": "Windows",
+        "capabilities": ["local.check"],
+        "metadata": {
+            "node_kind": "windows_full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
+    }
+    assert client.post(
+        "/api/agents/register", json=body, headers={"X-Rsim-User": "user-alice"}
+    ).status_code == 201
+
+    exact = client.get(
+        "/api/v1/windows-connector/status",
+        params={"agent_id": body["agent_id"]},
+        headers={"X-Rsim-User": "user-alice"},
+    ).json()
+    assert exact == {
+        "agent_id": "agent-alice-pc-a",
+        "configured": True,
+        "available": True,
+        "contract_current": True,
+        "reason": "",
+    }
+    missing = client.get(
+        "/api/v1/windows-connector/status",
+        params={"agent_id": "agent-alice-other-pc"},
+        headers={"X-Rsim-User": "user-alice"},
+    ).json()
+    assert missing["reason"] == "not_registered"
+    other_owner = client.get(
+        "/api/v1/windows-connector/status",
+        params={"agent_id": body["agent_id"]},
+        headers={"X-Rsim-User": "user-bob"},
+    ).json()
+    assert other_owner["reason"] == "connector_owner_mismatch"
+
+
+def test_connector_agent_id_cannot_be_silently_rebound_to_another_owner(tmp_path):
+    control = ControlService(tmp_path / "shared.db")
+    client = TestClient(create_app(api_service=ApiV1Service(control_service_factory=lambda _owner: control)))
+    body = {
+        "name": "pc-a",
+        "agent_id": "agent-shared-id",
+        "hostname": "pc-a",
+        "platform": "Windows",
+        "capabilities": ["local.check"],
+        "metadata": {
+            "node_kind": "windows_full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
+    }
+    assert client.post(
+        "/api/agents/register", json=body, headers={"X-Rsim-User": "user-alice"}
+    ).status_code == 201
+    conflict = client.post(
+        "/api/agents/register", json=body, headers={"X-Rsim-User": "user-bob"}
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["code"] == "connector_owner_mismatch"
+
+
+def test_connector_poll_heartbeat_and_task_callbacks_are_owner_scoped(tmp_path):
+    control = ControlService(tmp_path / "shared.db")
+    client = TestClient(
+        create_app(api_service=ApiV1Service(control_service_factory=lambda _owner: control))
+    )
+    register = {
+        "name": "alice-pc",
+        "agent_id": "agent-alice-pc",
+        "hostname": "alice-pc",
+        "platform": "Windows",
+        "capabilities": ["local.check"],
+        "metadata": {
+            "node_kind": "windows_full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
+    }
+    assert client.post(
+        "/api/agents/register",
+        json=register,
+        headers={"X-Rsim-User": "user-alice"},
+    ).status_code == 201
+
+    for path, body in (
+        ("/api/agents/poll", {"agent_id": "agent-alice-pc"}),
+        (
+            "/api/agents/heartbeat",
+            {"agent_id": "agent-alice-pc", "status": "idle", "current_task_id": "", "metadata": {}},
+        ),
+    ):
+        response = client.post(path, json=body, headers={"X-Rsim-User": "user-bob"})
+        assert response.status_code == 409
+        assert response.json()["code"] == "connector_owner_mismatch"
+
+    job = control.create_job(
+        "simulation.run_config.v2",
+        owner="user-alice",
+        tasks=[
+            {
+                "task_type": "local.check",
+                "stage_type": "environment_check",
+                "assigned_agent_id": "agent-alice-pc",
+            }
+        ],
+    )
+    task_id = job["tasks"][0]["task_id"]
+    hidden = client.post(
+        "/api/tasks/logs",
+        json={"task_id": task_id, "lines": ["should-not-append"], "stream": "stdout"},
+        headers={"X-Rsim-User": "user-bob"},
+    )
+    assert hidden.status_code == 404
+    assert hidden.json()["code"] == "task_not_found"
+    assert control.get_logs(job_id=job["job_id"])["entries"] == []
+
+
+def test_v8_double_namespaced_legacy_owner_can_repair_in_place(tmp_path):
+    control = ControlService(tmp_path / "shared.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    api.register_agent(
+        "user-web-0123456789abcdef01234567",
+        name="legacy-pc",
+        agent_id="agent-legacy-pc",
+        hostname="legacy-pc",
+        platform="Windows",
+        capabilities=["local.check"],
+        metadata={
+            "node_kind": "windows_full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION - 1,
+        },
+    )
+    repaired = api.register_agent(
+        "web-0123456789abcdef01234567",
+        name="legacy-pc",
+        agent_id="agent-legacy-pc",
+        hostname="legacy-pc",
+        platform="Windows",
+        capabilities=["local.check"],
+        metadata={
+            "node_kind": "windows_full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
+    )
+    assert repaired["metadata"]["user"] == "web-0123456789abcdef01234567"
+
+
+def test_pre_v9_generated_owner_can_migrate_once_to_stable_human_owner(tmp_path):
+    control = ControlService(tmp_path / "shared.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    api.register_agent(
+        "user-web-0123456789abcdef01234567",
+        name="legacy-pc",
+        agent_id="agent-legacy-stable-migration",
+        hostname="legacy-pc",
+        platform="Windows",
+        capabilities=["local.check"],
+        metadata={
+            "node_kind": "windows_full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION - 1,
+        },
+    )
+
+    migrated = api.register_agent(
+        "user-hjn3wx",
+        name="legacy-pc",
+        agent_id="agent-legacy-stable-migration",
+        hostname="legacy-pc",
+        platform="Windows",
+        capabilities=["local.check"],
+        metadata={
+            "node_kind": "windows_full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
+    )
+    assert migrated["metadata"]["user"] == "user-hjn3wx"
+
+    with pytest.raises(ApiV1Error) as conflict:
+        api.register_agent(
+            "user-bob",
+            name="legacy-pc",
+            agent_id="agent-legacy-stable-migration",
+            hostname="legacy-pc",
+            platform="Windows",
+            capabilities=["local.check"],
+            metadata={
+                "node_kind": "windows_full",
+                "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+            },
+        )
+    assert conflict.value.code == "connector_owner_mismatch"
 
 
 def test_v2_removes_project_catalog_and_legacy_spec_routes(tmp_path):
