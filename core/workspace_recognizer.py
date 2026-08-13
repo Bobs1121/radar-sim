@@ -186,11 +186,18 @@ class WorkspaceRecognizer:
                 evidence=("configured_build_script_outside_workspace",),
             )
         # The user-selected Selena script is the source of truth for its build
-        # directory.  Project config paths are only a fallback and may point at
-        # another checkout.  This is especially important for ovrs25, whose
-        # adapter intentionally has no static build_output.
-        derived_output = ""
-        if script:
+        # directory. V2 never selects an output root from a business project.
+        # V2 must not enter the legacy project-context parser here.  That
+        # parser contains historical /apl/byd/R2D2/hex conventions and can
+        # silently turn an arbitrary customer checkout into a product-shaped
+        # output root.  Generic V2 output discovery is limited to the selected
+        # Selena script itself; legacy callers retain the old path below.
+        derived_output = (
+            _derive_generic_output_from_script(script, root)
+            if generic_only and script
+            else ""
+        )
+        if not generic_only and script:
             try:
                 from core.config import derive_project_context_from_selena_script
 
@@ -198,9 +205,7 @@ class WorkspaceRecognizer:
                     str(
                         derive_project_context_from_selena_script(
                             script, project_root_hint=raw_root
-                        ).get(
-                            "build_output"
-                        )
+                        ).get("build_output")
                         or ""
                     )
                 )
@@ -274,6 +279,66 @@ def _generic_build_search_root(workspace_root: str) -> str:
     if ip_dc.is_dir():
         return _normalize_path(str(ip_dc / "build"))
     return _normalize_path(str(root / "build"))
+
+
+def _derive_generic_output_from_script(script_path: str, workspace_root: str) -> str:
+    """Read a build root from the user-selected Selena script only.
+
+    This deliberately understands no product directory, recipe or binding
+    convention. It recognizes common build/output switches and the
+    small set of variables normally defined by a batch wrapper.  If the
+    script does not expose a usable path, the caller falls back to the bounded
+    generic ``ip_dc/build``/``build`` root and post-build Selena.exe search.
+    """
+    try:
+        text = Path(script_path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+    config_name = ""
+    match = re.search(r"^\s*set\s+selena_config\s*=\s*([^\r\n]+)", text, re.IGNORECASE | re.MULTILINE)
+    if match:
+        config_name = match.group(1).strip().strip('"')
+
+    for line in text.splitlines():
+        # Avoid treating arbitrary command arguments as paths.  These switches
+        # are intentionally generic and are parsed only from the selected
+        # script; no project name participates in the result.
+        match = re.search(
+            r"(?:^|\s)(?:-B|--build(?:[-_]dir)?|--output(?:[-_]dir)?|/B)\s+(\"[^\"]+\"|\S+)",
+            line,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        value = match.group(1).strip().strip('"')
+        variables = {
+            "root_path": workspace_root,
+            "workspace": workspace_root,
+            "project_root": workspace_root,
+            "cd": workspace_root,
+            "selena_config": config_name,
+        }
+        value = re.sub(
+            r"[%!]([A-Za-z_][A-Za-z0-9_]*)[%!]",
+            lambda variable: variables.get(variable.group(1).casefold(), variable.group(0)),
+            value,
+        )
+        # Unknown environment variables are not safe to guess.  A relative
+        # path is, however, unambiguously relative to the selected workspace.
+        if re.search(r"[%!]\w+[%!]", value):
+            continue
+        normalized = _normalize_path(value)
+        if not _is_absolute(normalized):
+            normalized = _normalize_path(posixpath.join(workspace_root, normalized))
+        if not _is_within(workspace_root, normalized):
+            continue
+        # A Selena wrapper commonly passes a base root and a config variable;
+        # retain that explicit script relationship without knowing its product.
+        if config_name and ("selena_config" in match.group(1).casefold() or "!selena_config!" in line.casefold()):
+            normalized = _normalize_path(posixpath.join(normalized, config_name))
+        return normalized
+    return ""
 
 
 def recognize_workspace(

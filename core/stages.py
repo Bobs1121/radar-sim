@@ -195,12 +195,12 @@ def plan_user_environment_requirements(config: UserRunConfig) -> dict[str, Any]:
                 {
                     "id": "workspace_recognition",
                     "stage_type": "resolve_spec",
-                    "description": "Recognize the internal adapter from the Windows code workspace and both user-selected build scripts.",
+                    "description": "Inspect the selected build scripts and validate the current Windows workspace.",
                 },
                 {
                     "id": "selena_build",
                     "stage_type": "build_selena",
-                    "description": "Build Selena on a Windows full or light Agent and create a Runtime Bundle.",
+                    "description": "Run the selected Selena build script on the connected Windows computer and verify Selena.exe with its DLLs.",
                 },
             ]
         )
@@ -209,7 +209,7 @@ def plan_user_environment_requirements(config: UserRunConfig) -> dict[str, Any]:
             {
                 "id": "runtime_bundle",
                 "stage_type": "resolve_spec",
-                "description": "Resolve or import one Runtime Bundle containing Selena, DLLs, and its Runtime XML.",
+                "description": "Verify the selected existing Selena folder, its DLLs, and Runtime XML.",
             }
         )
     requirements.append(

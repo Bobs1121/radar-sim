@@ -1,33 +1,14 @@
-# 发布部署：Linux 统一入口与 Windows 统一连接组件
+# radar-sim V2 发布与部署
 
-发布入口已经收敛为同一个 `serve-v1` 进程。它同时提供 Web、REST/SDK、Job/Stage 调度、Windows Agent 接口和平台 Cluster executor。legacy `server serve`、单独的 `rsim web` 和 `rsim_server.pyz` 只保留兼容用途，不再作为 Linux 发布默认入口。
+> 当前公共版本只有 project-free V2。历史 `light/full`、V1、project/profile/recipe 和独立 Web/Agent 部署方式不再是发布入口；需要追溯时使用 Git 历史。
 
-## 当前用户部署矩阵
+## 1. 唯一 Linux 入口
 
-| 用户环境 | 安装 | Selena | 仿真 |
-|---|---|---|---|
-| 没有 Windows | 不安装客户端，直接打开 Linux Web 或调用 SDK | 填写 Cluster 可访问的已有 Selena 文件夹、Runtime 和配置 | Cluster |
-| Windows 有本地路径、编译或仿真环境 | 一键安装一个 `unified` 连接组件 | 按任务读取已有 Selena，或执行用户提供的编译脚本 | 本地或 Cluster；Cluster 准备完成后不依赖用户电脑在线 |
-| Selena、Runtime、配置和数据都在 Cluster 可达共享位置 | 不安装客户端 | 直接填写这些路径 | Cluster |
+Linux 只运行一个 `serve-v1` 控制面进程，同时提供 Web、REST/SDK、Job/Stage 调度、统一 Windows Connector 接口和 Cluster executor。Linux 不编译 Selena、不执行 Windows 本地仿真，也不接收大文件正文。
 
-`已有 Selena + Cluster` 不需要 Visual Studio 或编译脚本依赖。如果所有 Selena、Runtime、MatFilter 和数据路径都能被 Cluster 访问，用户不安装 Windows 组件；如果路径只在 Windows 本地，则统一连接组件只做文件访问和点对点准备，不会强行要求编译依赖。
+当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-3cd10ae`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。
 
-用户不选择 `light/full`。这两个名称只保留为内部节点兼容字段；统一连接组件按任务动态领取本地阶段，Linux/Gateway 负责 Cluster 运行期。Linux 永不声明 Selena build capability。
-
-## 当前 Windows 连接方式
-
-1. 在 Linux Web 的“连接这台电脑”提示中下载并双击一次连接脚本；SDK 集成也可调用 `download_windows_connector_for_run()` 得到同一脚本。
-2. 安装器自动绑定当前 Web/SDK owner 和 Linux 地址，注册登录自启、异常重连和单实例监督；用户不填写 Agent ID、模式、令牌或内部项目名。
-3. 之后 Web 与 SDK 共用这一条持久连接。任务若是本地仿真，由连接组件读取本机环境；任务若是 Cluster，连接组件只把本地 Selena/Runtime/Adapter/MatFilter/数据直接准备到 Cluster，Linux 只传递计划、进度和 Manifest。
-4. 无 Windows 用户直接在 Linux Web/SDK 中填写 Cluster 可访问路径；浏览器不能读取另一台电脑的本地路径，这是浏览器边界，不是 Linux 数据中转方案。
-
-连接器脚手架依赖的处理顺序是：复用用户 Python 中符合版本的 `PyYAML/httpx/pydantic`；缺少时使用发布包内的 Windows wheel；最后才使用用户已有的 pip 配置、企业包源和代理。Selena、Visual Studio、runtime/DLL、Cluster 仿真引擎不在 Agent 安装范围内，由用户或 Cluster 环境负责。
-
-当前验收服务为 `http://10.190.171.44:8877`，生产部署请以部署方提供的 `serve-v1` 地址为准。当前 Sprint 运行在受信内网的无认证模式；不应暴露到公网。
-
-## Linux 一键部署
-
-要求 Python 3.10+、git、curl。脚本首次运行创建 venv、安装 `.[v5-server]`、生成仅当前 Linux 用户可读的 Bearer 认证文件，然后启动一个统一进程：
+普通部署：
 
 ```bash
 bash scripts/linux_deploy.sh --yes
@@ -35,94 +16,60 @@ bash scripts/linux_deploy.sh status
 bash scripts/linux_deploy.sh test
 ```
 
-首次为 Windows Agent 配置时，由管理员在受信终端显式查看 owner/user token 和 Agent token：
+部署参数通过 `RSIM_INSTALL_DIR`、`RSIM_HOME`、`RSIM_PORT`、`RSIM_PUBLIC_URL`、`RSIM_DEPLOYMENT_CONFIG` 和认证环境变量外置。不可变生产发布应创建新 release 目录，候选测试通过且无活动任务后切换用户级 systemd unit；保留上一目录回滚，不在运行目录原地覆盖。
 
-```bash
-bash scripts/linux_deploy.sh credentials
-```
+## 2. project-free 硬约束
 
-凭证不能放进仿真 YAML、工单或普通任务日志。多用户/多 Agent 场景由管理员扩展 `RSIM_HOME/http-auth.json`，每个 Agent 使用唯一 `agent_id + token`。
+- Web、YAML、SDK、REST、Job、Stage、TransferPlan 和仿真指令中都没有业务项目选择。
+- 不读取 `config/projects/*`，不按路径猜出项目后套用 adapter、recipe 或专用参数。
+- 只从用户提供的 Selena 文件夹、编译脚本、Runtime、数据、MatFilter/Adapter 和文件元数据做通用推导。
+- 推导不足时只请求缺失的具体输入，不请求项目名。
+- 新 Selena 工程接入不允许增加项目注册表或项目专用 DAG。
 
-Docker 使用同一个 `serve-v1` 入口，必须挂载认证文件；不提供认证文件时容器不会以未认证的公网服务降级启动：
+## 3. 用户设备矩阵
 
-```bash
-docker build -t radar-sim-control .
-docker run --rm -p 8878:8878 \
-  -v rsim-data:/var/lib/rsim \
-  -v "$PWD/http-auth.json:/run/secrets/rsim-auth.json:ro" \
-  radar-sim-control
-```
+| 输入与目标 | 用户设备要求 | 行为 |
+|---|---|---|
+| 全部输入为 Cluster 可读路径，目标 Cluster | 无需 Connector | Linux 登记引用并调度 Cluster |
+| Windows 本地输入，目标 Cluster | 一次安装统一 Connector | 源电脑直写 Cluster 数据面，Linux 只下发计划 |
+| Linux SDK 调用机本地输入，目标 Cluster | 安装 SDK，无需 Windows | SDK 调用机直写 Cluster 数据面 |
+| Windows 本地输入，目标本地 | 一次安装统一 Connector | 数据不上传，Connector 准备外围参数并下发 Selena 指令 |
+| 选择本地编译 | Windows + 用户自己的编译环境 | Connector 执行用户给定脚本、确认 Selena.exe 与 DLL，再按目标路由 |
 
-### Linux 共享盘映射
+用户只安装一个统一 Connector，不选择能力档位。Web 下载“连接这台电脑”，或 SDK 调用 `download_windows_connector_for_run()`；安装一次后保存稳定 owner、服务地址、登录自启、单实例和断线重连。普通服务端补丁不要求用户重复安装。
 
-用户任务 YAML 只填写原始数据路径，例如 Windows 可访问的 UNC 路径；不要让用户填写 Linux 挂载点或选择“本地/公盘”。Linux 管理员在每台控制服务器配置一次部署级映射：
+Connector 包端点：
 
-```bash
-mkdir -p "$RSIM_HOME/config"
-cp config/deployment.example.yaml "$RSIM_HOME/config/deployment.yaml"
-```
+- `/api/v1/windows-connector/connect.cmd?mode=unified`
+- `/api/v1/windows-connector/package.zip`
 
-`deployment.yaml` 中的 `cluster.linux_mount_map` 把 worker 使用的 UNC 前缀映射到 Linux 已挂载的 CIFS 目录。该覆盖层对所有内部项目识别结果生效，并在项目配置之后合并；它不属于 Web/SDK 导入导出的用户配置。也可用 `RSIM_DEPLOYMENT_CONFIG=/run/secrets/rsim-deployment.yaml` 指向外部只读文件。
+发布必须验证包 SHA-256 和 Range `206`，避免企业网络中断后整包重下。
 
-部署前应同时验证挂载和目标数据目录，而不只是检查 Windows 可访问性：
+## 4. 共享路径与点对点传输
 
-```bash
-mountpoint /mnt/cluster
-find /mnt/cluster/loc/szh/Isilon2/OverseaData -maxdepth 1 -type d
-```
+用户 YAML 始终填写原始路径，不选择“本地/共享盘”。Linux 管理员只在部署配置中维护 Cluster 客户端目标命名空间与 Linux 探测命名空间，例如 UNC 目标根和已挂载 CIFS 探测根。
 
-## 历史 full/light 安装参数（仅兼容旧部署，不作为普通用户入口）
+TransferPlan 只保存 owner、Job/Stage、资源角色、相对路径、大小、校验和、目标引用和进度；正文不经过 Web/API。相同逻辑请求幂等复用同一计划，失败、取消、过期或输入变化才签发新计划。
 
-light 连接 Linux，需管理员分配的 `ServerUrl`、`AgentId`、Agent token 和同 owner 的 API token：
+## 5. 环境依赖边界
 
-```powershell
-.\scripts\bootstrap.ps1 -Mode light `
-  -ServerUrl http://linux-rsim:8878 `
-  -AgentId alice-laptop `
-  -AgentToken <agent-token> `
-  -ApiToken <user-token> `
-  -Start
-```
+- Visual Studio、Selena、Runtime/DLL 和实际仿真环境由用户或 Cluster 提供。
+- Connector 安装器优先复用用户现有 Python/包，再使用发布包内 wheel，最后使用用户企业包源/代理。
+- Connector 只解决连接、路径、传输、外围配置、指令下发和结果收集；不把仿真工具链做成框架依赖。
+- 编译失败时展示用户脚本输出与可操作诊断，不按项目修改脚本。
 
-安装器会先读取 Linux `/api/v1/health` 的 `authentication_required`。当前可信内网测试服务关闭认证时，只需 `ServerUrl + AgentId`，安装器不会生成或保存无意义令牌：
+## 6. 发布门禁
 
-```powershell
-.\scripts\bootstrap.ps1 -Mode light `
-  -ServerUrl http://10.190.171.44:8877 `
-  -AgentId alice-laptop `
-  -Start
-```
+1. 工作区无未提交修改，提交已推送到发布分支。
+2. 全仓测试零失败；平台特异测试必须在对应平台解释并单独留证。
+3. 候选 Linux release 运行 TransferPlan/API/Cluster Stage 门禁。
+4. 切换前确认无 queued/running/waiting Job。
+5. 切换用户级 systemd unit，确认 health、Web/API、executor/gateway、`active/running`、`NRestarts=0`。
+6. 验证 Connector ZIP SHA-256、Range `206` 和现有 Connector 自动恢复轮询。
+7. 真实任务必须分别记录外围框架、Cluster 基础设施和 Selena 内部逐输入结果，不互相伪装。
 
-full 有两种控制面，Agent 能力相同：
+## 7. 安全和未发布边界
 
-- `ControlPlane=linux`（日常推荐）：full Agent 连接 Linux 统一入口，同一 Web/YAML 可选择本地或 Cluster 仿真。
-- `ControlPlane=local`（默认离线模式）：本机启动 loopback `serve-v1`，支持本地编译和仿真，但不伪装 Linux Cluster executor。
+当前 `--insecure-no-auth` 仅限受信内网；`X-Rsim-User` 是可伪造的 owner 路由标签，不是认证。对不受信用户开放前必须启用 Bearer/SSO 并验证跨 owner 拒绝。
 
-离线本地 full：
-
-```powershell
-.\scripts\bootstrap.ps1 -Mode full -Start
-```
-
-连接 Linux 的 full：
-
-```powershell
-.\scripts\bootstrap.ps1 -Mode full -ControlPlane linux `
-  -ServerUrl http://linux-rsim:8878 `
-  -AgentId alice-full -AgentToken <agent-token> -ApiToken <user-token> -Start
-```
-
-当前 Sprint 的 `full + local` 仅监听 loopback，不启用登录或访问令牌，打开 Web 即可测试。`full + linux` 和 `light + linux` 是否需要令牌由 Linux 健康接口返回的认证模式决定；当前 `10.190.171.44:8877` 可信内网测试入口无需令牌，正式部署默认需要管理员分配的用户/Agent token。
-
-安装器持久化的是部署模式、服务地址和 Agent 标识；连接 Linux 时另行持久化受限凭证。它不会创建或要求用户理解内部 project。代码路径、Selena 分支/编译脚本、数据路径、Runtime Bundle、Adapter 和 MatFilter 仍通过统一 Web/YAML 配置。远端凭证单独保存在 `%LOCALAPPDATA%\radar-sim` 且 ACL 收紧，不写入用户 YAML。
-
-Visual Studio 由用户自行安装，Windows Agent 不下载或安装 VS。安装阶段检查是否存在受支持的 C++ compiler；具体任务的 `environment_check` 再根据用户选择的 Selena 脚本和本机 VS 做精确校验，并且只对 R2D2 的 `-vs`/`VS_POSTFIX` 做可见、幂等的脚本适配。其余 TCC、CMake、MinGW、Python、Qt、Boost 等依赖从软件包编译脚本及其 workspace-local batch 调用链解析，并在安全的非交互安装入口存在时自动修复。若软件包脚本旁存在可识别的 `GEN_PAD_PARAMS.bat` 且生成头缺失，Agent 使用已安装的 TCC Perl 在任务子进程内补齐 PATH 并执行 workspace-local PAD generator；不运行交互式整包编译，也不修改全局 PATH。
-
-后续启动：
-
-```powershell
-.\scripts\start_windows.ps1             # 前台 Agent
-.\scripts\start_windows.ps1 -Background # 后台 Agent
-```
-
-`full + local` 的本机服务不伪装 Linux Cluster executor；需要同入口同时选择本地和 Cluster 时，安装为 `full + linux`。完全没有 Windows 的用户不运行这些脚本，直接使用 Linux Web/SDK 和已有 Runtime Bundle。
+首版未发布：远端输入到本地的 `source_to_local`、Cluster 结果反向直传并解压到任意用户设备、独立 MCP/Skill 包、关机或睡眠设备远程唤醒。当前 SDK 和 owner-scoped ZIP 是后续 AI 接入的稳定底座。

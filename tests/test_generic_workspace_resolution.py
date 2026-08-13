@@ -72,6 +72,33 @@ def test_unknown_workspace_derives_stable_internal_identity_and_output(tmp_path)
     ).replace("\\", "/").casefold()
 
 
+def test_v2_generic_output_does_not_call_legacy_project_derivation(tmp_path, monkeypatch):
+    """An arbitrary checkout must stay on script/generic-root discovery only."""
+    workspace, selena_script, package_script = _make_unknown_workspace(tmp_path)
+    projects = tmp_path / "no-project-registry"
+    projects.mkdir()
+
+    def fail_legacy_derivation(*_args, **_kwargs):
+        raise AssertionError("V2 must not call legacy project-context derivation")
+
+    monkeypatch.setattr(
+        "core.config.derive_project_context_from_selena_script",
+        fail_legacy_derivation,
+    )
+    result = WorkspaceRecognizer(projects).recognize(
+        str(workspace),
+        selena_build_script=str(selena_script),
+        package_build_script=str(package_script),
+        generic_only=True,
+    )
+
+    assert result.status == "resolved"
+    assert result.adapter_key == "generic:selena-script"
+    assert result.output_dir.casefold() == str(
+        workspace / "ip_dc" / "build" / "CUSTOM_OD25"
+    ).replace("\\", "/").casefold()
+
+
 def test_unknown_workspace_identity_never_falls_back_to_legacy_project_config(tmp_path):
     workspace, selena_script, package_script = _make_unknown_workspace(tmp_path)
     recognizer = WorkspaceRecognizer(tmp_path / "no-projects")

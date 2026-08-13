@@ -91,6 +91,6 @@ with RadarSimClient("http://linux-rsim:8877") as client:
     job = client.submit_yaml("run.yaml", idempotency_key="issue-123-run-1")
 ```
 
-SDK 未传 `user` 时会自动生成同一 OS 用户和机器稳定的 `sdk-...` 身份，连接程序与后续任务使用同一 scope；不会退回 Linux 服务器进程账号，也不会与其他默认 SDK 调用者混用任务和 Agent。
+SDK 未传 `user` 时使用稳定的 `user-<小写 OS 登录名>`；Web 请输入同一 NTID，连接程序与后续任务即可使用同一 owner scope。旧 `web-*`/`sdk-*` 只用于一次性迁移提示，不再生成新的临时身份。
 
 认证开启的正式部署不把长期 Token 写进 YAML；应使用管理员提供的短期配对入口。当前 Sprint 的无认证内网入口已验证上述 SDK/脚本路径，认证配对协议仍是后续发布项。
