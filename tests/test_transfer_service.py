@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,100 @@ def test_service_signs_only_the_injected_trusted_root(tmp_path: Path) -> None:
     assert plan.relative_root == build_isolated_relative_root(
         plan.owner_scope, plan.job_id, plan.transfer_id
     )
+
+
+def test_issue_plan_reuses_non_expired_active_and_completed_request(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    first = _issue(service)
+    retry = _issue(service)
+
+    assert retry.transfer_id == first.transfer_id
+    assert retry.relative_root == first.relative_root
+    assert len(service.get_plans_for_job("alice", "job_001")) == 1
+
+    service.receive_manifest(_manifest(first), owner="alice")
+    after_completion = _issue(service)
+    assert after_completion.transfer_id == first.transfer_id
+    assert after_completion.status == "completed"
+
+
+def test_issue_plan_reissues_for_failed_cancelled_expired_or_changed_metadata(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    failed = _issue(service)
+    service._store.update_status(failed.transfer_id, "failed")
+    assert _issue(service).transfer_id != failed.transfer_id
+
+    cancelled = _issue(service, stage_id="stage_cancelled")
+    service.cancel_transfer(cancelled.transfer_id, owner="alice")
+    assert _issue(service, stage_id="stage_cancelled").transfer_id != cancelled.transfer_id
+
+    clock = [NOW]
+    expiring = TransferService(
+        TransferStore(tmp_path / "expiry.sqlite3"),
+        trusted_root=tmp_path / "trusted-expiry",
+        allow_local_test_root=True,
+        now_fn=lambda: clock[0],
+    )
+    expired = expiring.issue_plan(
+        owner="alice",
+        job_id="job_expiry",
+        stage_id="stage_prepare",
+        mode="shared_copy",
+        source_role="dataset",
+        items=[_item()],
+        ttl_seconds=1,
+    )
+    clock[0] = NOW + 2
+    assert expiring.issue_plan(
+        owner="alice",
+        job_id="job_expiry",
+        stage_id="stage_prepare",
+        mode="shared_copy",
+        source_role="dataset",
+        items=[_item()],
+        ttl_seconds=1,
+    ).transfer_id != expired.transfer_id
+
+    changed = _issue(service, stage_id="stage_metadata", items=(_item(),))
+    changed_retry = service.issue_plan(
+        owner="alice",
+        job_id="job_001",
+        stage_id="stage_metadata",
+        mode="shared_copy",
+        source_role="dataset",
+        items=[_item()],
+        source_fingerprints={"scan_id": "new-scan"},
+        ttl_seconds=600,
+    )
+    assert changed_retry.transfer_id != changed.transfer_id
+
+
+def test_issue_plan_is_sqlite_serialized_across_concurrent_retries(tmp_path: Path) -> None:
+    db = tmp_path / "concurrent.sqlite3"
+
+    def issue_once() -> str:
+        service = TransferService(
+            TransferStore(db),
+            trusted_root=tmp_path / "trusted-concurrent",
+            allow_local_test_root=True,
+            now_fn=lambda: NOW,
+        )
+        return service.issue_plan(
+            owner="alice",
+            job_id="job_concurrent",
+            stage_id="stage_prepare",
+            mode="shared_copy",
+            source_role="dataset",
+            items=[_item()],
+            ttl_seconds=600,
+        ).transfer_id
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        transfer_ids = list(executor.map(lambda _: issue_once(), range(6)))
+
+    assert len(set(transfer_ids)) == 1
+    assert len(TransferStore(db).get_plans_for_job("alice", "job_concurrent")) == 1
 
 
 def test_dual_namespace_plan_dispatches_client_root_and_resolves_probe_root(

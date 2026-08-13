@@ -10,6 +10,7 @@ when resolving a completed logical reference).
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 import time
@@ -202,6 +203,43 @@ def _same_root(left: str, right: str) -> bool:
     return os.path.normcase(os.path.realpath(str(left))) == os.path.normcase(os.path.realpath(str(right)))
 
 
+def _transfer_request_key(
+    *,
+    owner: str,
+    job_id: str,
+    stage_id: str,
+    mode: str,
+    source_role: str,
+    client_target_root: str,
+    items: Sequence[TransferPlanItem],
+    source_fingerprints: Mapping[str, str],
+) -> str:
+    """Return a stable key for one logical transfer request.
+
+    The key deliberately contains only transfer semantics: owner/job/stage,
+    role, normalized item metadata and source fingerprints.  It is not a
+    project or product identifier.  Sorting items makes retries insensitive
+    to filesystem enumeration order while preserving the first plan's item
+    order for the actual copy.
+    """
+
+    payload = {
+        "owner": str(owner),
+        "job_id": str(job_id),
+        "stage_id": str(stage_id),
+        "mode": str(mode),
+        "source_role": str(source_role),
+        "client_target_root": str(client_target_root),
+        "items": [
+            item.to_dict()
+            for item in sorted(items, key=lambda candidate: candidate.relative_path)
+        ],
+        "source_fingerprints": dict(sorted(source_fingerprints.items())),
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class TransferStore:
     """Small SQLite metadata store; no file content or physical target data."""
 
@@ -213,7 +251,10 @@ class TransferStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        # A plan issue is a short metadata transaction.  Give concurrent SDK
+        # retries enough time to wait for the writer instead of creating a
+        # second plan after a transient SQLITE_BUSY.
+        connection = sqlite3.connect(self.db_path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -228,16 +269,89 @@ class TransferStore:
                     plan_json TEXT NOT NULL,
                     progress_json TEXT,
                     manifest_json TEXT,
-                    completed_at REAL
+                    completed_at REAL,
+                    request_key TEXT,
+                    expires_at REAL
                 )"""
             )
+            # Keep existing development/deployment databases readable while
+            # adding the idempotency metadata introduced by V2.  Old rows are
+            # intentionally left without a request key; they can never
+            # collide with a newly issued plan.
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(transfer_plans)").fetchall()
+            }
+            if "request_key" not in columns:
+                connection.execute("ALTER TABLE transfer_plans ADD COLUMN request_key TEXT")
+            if "expires_at" not in columns:
+                connection.execute("ALTER TABLE transfer_plans ADD COLUMN expires_at REAL")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transfer_plans_request_key "
+                "ON transfer_plans(request_key)"
+            )
 
-    def save_plan(self, plan: TransferPlan) -> None:
+    def save_plan(self, plan: TransferPlan, *, request_key: str = "") -> None:
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO transfer_plans(transfer_id,owner,job_id,status,plan_json) VALUES(?,?,?,?,?)",
-                (plan.transfer_id, plan.owner, plan.job_id, plan.status, json.dumps(plan.to_dict(), sort_keys=True)),
+                "INSERT INTO transfer_plans(transfer_id,owner,job_id,status,plan_json,request_key,expires_at) VALUES(?,?,?,?,?,?,?)",
+                (
+                    plan.transfer_id,
+                    plan.owner,
+                    plan.job_id,
+                    plan.status,
+                    json.dumps(plan.to_dict(), sort_keys=True),
+                    str(request_key or "") or None,
+                    float(plan.expires_at),
+                ),
             )
+
+    def save_or_reuse_plan(self, plan: TransferPlan, *, request_key: str, now: float) -> TransferPlan:
+        """Persist *plan* once, reusing a non-expired active equivalent.
+
+        ``BEGIN IMMEDIATE`` serializes the lookup and insert across service
+        processes sharing the SQLite database.  Failed/cancelled plans and
+        plans whose expiry has passed are deliberately not reusable, so a
+        retry receives a fresh isolated transfer root.
+        """
+
+        key = str(request_key or "").strip()
+        if not key:
+            raise TransferError("invalid_transfer_request_key", "request_key is required", status_code=422)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT plan_json,status,expires_at FROM transfer_plans "
+                "WHERE request_key=? AND owner=? AND job_id=? "
+                "AND status IN ('pending','in_progress','completed') "
+                "AND expires_at>? ORDER BY rowid LIMIT 1",
+                (key, plan.owner, plan.job_id, float(now)),
+            ).fetchone()
+            if row is not None:
+                payload = json.loads(str(row["plan_json"]))
+                payload["status"] = str(row["status"])
+                connection.commit()
+                return TransferPlan.from_dict(payload)
+            connection.execute(
+                "INSERT INTO transfer_plans(transfer_id,owner,job_id,status,plan_json,request_key,expires_at) VALUES(?,?,?,?,?,?,?)",
+                (
+                    plan.transfer_id,
+                    plan.owner,
+                    plan.job_id,
+                    plan.status,
+                    json.dumps(plan.to_dict(), sort_keys=True),
+                    key,
+                    float(plan.expires_at),
+                ),
+            )
+            connection.commit()
+            return plan
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def get_plan(self, transfer_id: str) -> Optional[TransferPlan]:
         with self._connect() as connection:
@@ -380,6 +494,17 @@ class TransferService:
             trusted = self._whitelist.trusted_root
         except TransferError:
             raise
+        normalized_fingerprints = _validate_metadata_mapping(source_fingerprints)
+        request_key = _transfer_request_key(
+            owner=str(owner),
+            job_id=str(job_id),
+            stage_id=str(stage_id),
+            mode=mode,
+            source_role=source_role,
+            client_target_root=trusted,
+            items=plan_items,
+            source_fingerprints=normalized_fingerprints,
+        )
         now = float(self._now_fn())
         transfer_id = generate_opaque_id()
         owner_scope = generate_owner_scope(owner, job_id)
@@ -398,10 +523,9 @@ class TransferService:
             expires_at=now + ttl,
             created_at=now,
             status="pending",
-            source_fingerprints=_validate_metadata_mapping(source_fingerprints),
+            source_fingerprints=normalized_fingerprints,
         )
-        self._store.save_plan(plan)
-        return plan
+        return self._store.save_or_reuse_plan(plan, request_key=request_key, now=now)
 
     def report_progress(self, progress: TransferProgress, *, owner: str = "") -> None:
         plan = self._owned_plan(progress.transfer_id, owner=owner, owner_scope=progress.owner_scope)
