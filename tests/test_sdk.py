@@ -656,7 +656,7 @@ def test_sdk_lists_gets_and_downloads_owner_scoped_local_result(tmp_path):
         tmp_path / "result-store", tmp_path / "results.db", allowed_source_root=controlled
     )
     published = catalog.publish(
-        owner="alice", run_ref="local-run:one", source_root=source,
+        owner="user-alice", run_ref="local-run:one", source_root=source,
         files=["result.MF4"], retain_until=10_000_000_000,
     )
     api = ApiV1Service(
@@ -670,7 +670,7 @@ def test_sdk_lists_gets_and_downloads_owner_scoped_local_result(tmp_path):
     assert sdk.get_result(published.ref) == published.public_dict
     downloaded = sdk.download_result(published.ref, tmp_path / "downloads")
     assert downloaded.is_file()
-    assert downloaded.read_bytes() == catalog.resolve_archive(published.ref, owner="alice").read_bytes()
+    assert downloaded.read_bytes() == catalog.resolve_archive(published.ref, owner="user-alice").read_bytes()
 
     bob = RadarSimClient("http://testserver", client=test_client, user="bob")
     with pytest.raises(RadarSimApiError) as excinfo:
@@ -809,13 +809,13 @@ def test_sdk_stream_events_watch_wait_cancel_and_manifest(tmp_path):
     sdk, services = make_sdk(tmp_path)
     job = sdk.submit_run(run_config_dict())
     task_id = job.tasks[0]["task_id"]
-    services["alice"].append_logs(task_id, ["line-1"])
+    services["user-alice"].append_logs(task_id, ["line-1"])
 
     streamed = list(sdk.stream_events(job.id))
     assert [event.message for event in streamed if event.event == "log"] == ["line-1"]
     cursor = max(event.id for event in streamed if event.id is not None)
 
-    services["alice"].append_logs(task_id, ["line-2"])
+    services["user-alice"].append_logs(task_id, ["line-2"])
     cancelled = sdk.cancel(job.id)
     assert cancelled.status == "cancelled"
 
@@ -832,7 +832,7 @@ def test_sdk_structured_event_fields_and_retry_stage(tmp_path):
     sdk, services = make_sdk(tmp_path)
     job = sdk.submit_run(run_config_dict())
     stage_id = job.stages[0]["stage_id"]
-    services["alice"].report_stage_progress(stage_id, progress=0.5, message="half", code="P50")
+    services["user-alice"].report_stage_progress(stage_id, progress=0.5, message="half", code="P50")
     page = sdk.events(job.id)
     progress_event = next(event for event in page.events if event.event == "stage.progress")
     assert progress_event.stage_id == stage_id
@@ -840,9 +840,9 @@ def test_sdk_structured_event_fields_and_retry_stage(tmp_path):
     assert progress_event.progress == 0.5
     assert progress_event.code == "P50"
 
-    services["alice"].register_internal_agent("scheduler", agent_id="__v1_scheduler__", capabilities=["*"])
-    claimed = services["alice"].claim_next_task("__v1_scheduler__")
-    services["alice"].submit_task_result(claimed["stage_id"], agent_id="__v1_scheduler__", status="failed", returncode=1)
+    services["user-alice"].register_internal_agent("scheduler", agent_id="__v1_scheduler__", capabilities=["*"])
+    claimed = services["user-alice"].claim_next_task("__v1_scheduler__")
+    services["user-alice"].submit_task_result(claimed["stage_id"], agent_id="__v1_scheduler__", status="failed", returncode=1)
     retried = sdk.retry_stage(job.id, stage_id)
     assert retried.stages[0]["status"] == "queued"
 

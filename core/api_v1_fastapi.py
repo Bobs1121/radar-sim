@@ -247,6 +247,44 @@ def create_app(
     )
     app = FastAPI(title="radar-sim API", version="v1")
 
+    async def read_upload_chunk(
+        request: Request,
+        *,
+        max_bytes: int,
+        code: str,
+        message: str,
+    ) -> bytes:
+        """Read one resumable-upload chunk without unbounded body buffering."""
+        if max_bytes <= 0:
+            raise ApiV1Error(
+                "upload_chunk_limit_unavailable",
+                "Upload chunk limit is unavailable",
+                status_code=503,
+            )
+        content_length = request.headers.get("Content-Length", "").strip()
+        if content_length:
+            try:
+                if int(content_length) > max_bytes:
+                    raise ApiV1Error(
+                        code,
+                        message,
+                        status_code=413,
+                        detail={"max_bytes": max_bytes},
+                    )
+            except ValueError:
+                pass
+        data = bytearray()
+        async for chunk in request.stream():
+            if len(data) + len(chunk) > max_bytes:
+                raise ApiV1Error(
+                    code,
+                    message,
+                    status_code=413,
+                    detail={"max_bytes": max_bytes},
+                )
+            data.extend(chunk)
+        return bytes(data)
+
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
         request_id = request.headers.get("X-Request-ID", "").strip() or f"req_{uuid.uuid4().hex}"
@@ -714,11 +752,18 @@ def create_app(
         session_id: str,
         upload_offset: int = Header(alias="Upload-Offset", ge=0),
     ):
+        identity = owner(request)
+        session = service.get_artifact_upload(identity, session_id)
         return service.append_artifact_upload(
-            owner(request),
+            identity,
             session_id,
             offset=upload_offset,
-            data=await request.body(),
+            data=await read_upload_chunk(
+                request,
+                max_bytes=int(session.get("chunk_size") or 0),
+                code="artifact_upload_chunk_too_large",
+                message="Artifact upload chunk exceeds the server limit",
+            ),
         )
 
     @app.post("/api/v1/artifact-uploads/{session_id}/finalize", include_in_schema=False)
@@ -747,17 +792,14 @@ def create_app(
                 "Existing Selena upload metadata is invalid",
                 status_code=422,
             ) from exc
-        content = bytearray()
-        async for chunk in request.stream():
-            content.extend(chunk)
-            if len(content) > 512 * 1024 * 1024:
-                raise ApiV1Error(
-                    "existing_selena_too_large",
-                    "Existing Selena archive exceeds 512 MiB",
-                    status_code=413,
-                )
+        content = await read_upload_chunk(
+            request,
+            max_bytes=512 * 1024 * 1024,
+            code="existing_selena_too_large",
+            message="Existing Selena archive exceeds 512 MiB",
+        )
         return service.import_existing_selena(
-            owner(request), metadata=dict(metadata or {}), archive_bytes=bytes(content)
+            owner(request), metadata=dict(metadata or {}), archive_bytes=content
         )
 
     @app.post("/api/v1/config-assets", status_code=201, include_in_schema=False)
@@ -766,13 +808,14 @@ def create_app(
         asset_kind: str = Header(alias="X-Asset-Kind", pattern=r"^(adapter|mat_filter)$"),
         asset_filename: str = Header(alias="X-Asset-Filename", min_length=1, max_length=128),
     ):
-        data = bytearray()
-        async for chunk in request.stream():
-            data.extend(chunk)
-            if len(data) > 8 * 1024 * 1024:
-                raise ApiV1Error("config_asset_too_large", "Configuration asset exceeds 8 MiB", status_code=413)
+        data = await read_upload_chunk(
+            request,
+            max_bytes=8 * 1024 * 1024,
+            code="config_asset_too_large",
+            message="Configuration asset exceeds 8 MiB",
+        )
         return service.upload_config_asset(
-            owner(request), kind=asset_kind, filename=asset_filename, content=bytes(data)
+            owner(request), kind=asset_kind, filename=asset_filename, content=data
         )
 
     @app.get("/api/v1/config-assets", include_in_schema=False)
@@ -821,8 +864,18 @@ def create_app(
         session_id: str,
         upload_offset: int = Header(alias="Upload-Offset", ge=0),
     ):
+        identity = owner(request)
+        session = service.get_runtime_bundle_upload(identity, session_id)
         return service.append_runtime_bundle_upload(
-            owner(request), session_id, offset=upload_offset, data=await request.body()
+            identity,
+            session_id,
+            offset=upload_offset,
+            data=await read_upload_chunk(
+                request,
+                max_bytes=int(session.get("chunk_size") or 0),
+                code="runtime_bundle_upload_chunk_too_large",
+                message="Runtime Bundle upload chunk exceeds the server limit",
+            ),
         )
 
     @app.post("/api/v1/runtime-bundle-uploads/{session_id}/finalize", include_in_schema=False)
@@ -848,11 +901,18 @@ def create_app(
         session_id: str,
         upload_offset: int = Header(alias="Upload-Offset", ge=0),
     ):
+        identity = user_or_agent_owner(request)
+        session = service.get_result_upload(identity, session_id)
         return service.append_result_upload(
-            user_or_agent_owner(request),
+            identity,
             session_id,
             offset=upload_offset,
-            data=await request.body(),
+            data=await read_upload_chunk(
+                request,
+                max_bytes=int(session.get("chunk_size") or 0),
+                code="result_upload_chunk_too_large",
+                message="Result upload chunk exceeds the server limit",
+            ),
         )
 
     @app.post("/api/v1/result-uploads/{session_id}/finalize", include_in_schema=False)
@@ -899,22 +959,18 @@ def create_app(
         limit = int(session.get("chunk_size") or 0)
         if limit <= 0:
             raise ApiV1Error("dataset_upload_unavailable", "Dataset upload chunk limit is unavailable", status_code=503)
-        data = bytearray()
-        async for chunk in request.stream():
-            data.extend(chunk)
-            if len(data) > limit:
-                raise ApiV1Error(
-                    "dataset_upload_chunk_too_large",
-                    "Dataset upload chunk exceeds the server limit",
-                    status_code=413,
-                    detail={"max_bytes": limit},
-                )
+        data = await read_upload_chunk(
+            request,
+            max_bytes=limit,
+            code="dataset_upload_chunk_too_large",
+            message="Dataset upload chunk exceeds the server limit",
+        )
         return service.append_dataset_upload(
             identity,
             session_id,
             file_id,
             offset=upload_offset,
-            data=bytes(data),
+            data=data,
         )
 
     @app.post("/api/v1/dataset-uploads/{session_id}/finalize", include_in_schema=False)

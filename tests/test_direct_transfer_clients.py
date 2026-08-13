@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
+
 from cli import agent as agent_module
 from cli.agent import (
     _ControlClient,
@@ -23,6 +25,11 @@ from core.direct_transfer import (
     generate_owner_scope,
 )
 from core.transfer_service import TransferProgress
+from radar_sim_sdk.client import (
+    _DATASET_FINGERPRINT_MAX_INPUTS,
+    _dataset_transfer_fingerprints as _sdk_dataset_transfer_fingerprints,
+    _scan_sdk_transfer_items,
+)
 
 
 class _FakeTransferClient(_ControlClient):
@@ -108,6 +115,115 @@ def test_agent_dataset_transfer_fingerprints_project_rl_to_radar_rl(monkeypatch,
         [{"relative_path": "recording.MF4"}],
     )
 
+    assert fingerprints == {"radar_source": "RadarRL", "radar_mounting_position": "CRL"}
+
+
+def test_sdk_runtime_bundle_scan_matches_agent_contract_and_excludes_debug_products(tmp_path: Path):
+    runtime = tmp_path / "RelWithDebInfo"
+    plugins = runtime / "plugins"
+    plugins.mkdir(parents=True)
+    (runtime / "Selena.exe").write_bytes(b"exe")
+    (runtime / "core.dll").write_bytes(b"dll")
+    (plugins / "adapter.dll").write_bytes(b"dll")
+    for suffix in (".pdb", ".ilk", ".lib", ".exp"):
+        (runtime / ("Selena" + suffix)).write_bytes(b"debug")
+
+    _root, items = _scan_sdk_transfer_items(runtime, source_role="runtime_bundle")
+
+    assert [item["relative_path"] for item in items] == [
+        "core.dll",
+        "plugins/adapter.dll",
+        "Selena.exe",
+    ]
+
+
+def test_sdk_runtime_bundle_scan_requires_selena_entrypoint(tmp_path: Path):
+    runtime = tmp_path / "RelWithDebInfo"
+    runtime.mkdir()
+    (runtime / "core.dll").write_bytes(b"dll")
+
+    with pytest.raises(ValueError, match="does not contain selena.exe"):
+        _scan_sdk_transfer_items(runtime, source_role="runtime_bundle")
+
+
+def test_sdk_dataset_fingerprint_explicit_source_skips_mf4_reads(monkeypatch, tmp_path: Path):
+    source = tmp_path / "dataset"
+    source.mkdir()
+    (source / "one.MF4").write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.simulation._discover_mf4_acquisition_sources_stdlib",
+        lambda _path: pytest.fail("explicit source must skip MDF4 metadata reads"),
+    )
+    monkeypatch.setattr(
+        "core.simulation.detect_radar_transfer_metadata_safe",
+        lambda _path: pytest.fail("explicit source must skip parser fallback"),
+    )
+
+    fingerprints = _sdk_dataset_transfer_fingerprints(
+        source,
+        [{"relative_path": "one.MF4"}],
+        configured_source="RadarFR",
+    )
+
+    assert fingerprints == {
+        "radar_source": "RadarFR",
+        "radar_mounting_position": "CFR",
+    }
+
+
+def test_sdk_dataset_fingerprint_marks_mixed_sources_without_silent_first(monkeypatch, tmp_path: Path):
+    source = tmp_path / "dataset"
+    source.mkdir()
+    for name in ("01.MF4", "02.MF4"):
+        (source / name).write_bytes(b"mf4")
+    seen: list[str] = []
+
+    def read_metadata(path: str) -> list[str]:
+        seen.append(Path(path).name)
+        return ["RadarRL"] if Path(path).name == "01.MF4" else ["RadarRR"]
+
+    monkeypatch.setattr("core.simulation._discover_mf4_acquisition_sources_stdlib", read_metadata)
+    monkeypatch.setattr(
+        "core.simulation.detect_radar_transfer_metadata_safe",
+        lambda _path: pytest.fail("multi-file metadata path must not use heavy parser fallback"),
+    )
+
+    fingerprints = _sdk_dataset_transfer_fingerprints(
+        source,
+        [
+            {"relative_path": "01.MF4"},
+            {"relative_path": "02.MF4"},
+        ],
+    )
+
+    assert seen == ["01.MF4", "02.MF4"]
+    assert fingerprints == {
+        "radar_source": "RadarRL",
+        "radar_mounting_position": "CRL",
+        "radar_sources": "RadarRL,RadarRR",
+        "radar_source_status": "mixed",
+        "radar_source_selection": "metadata_order",
+    }
+
+
+def test_sdk_dataset_fingerprint_reads_only_bounded_input_prefix(monkeypatch, tmp_path: Path):
+    source = tmp_path / "dataset"
+    source.mkdir()
+    items = []
+    for index in range(_DATASET_FINGERPRINT_MAX_INPUTS + 4):
+        name = f"{index:02d}.MF4"
+        (source / name).write_bytes(b"mf4")
+        items.append({"relative_path": name})
+    seen: list[str] = []
+
+    def read_metadata(path: str) -> list[str]:
+        seen.append(Path(path).name)
+        return ["RadarRL"]
+
+    monkeypatch.setattr("core.simulation._discover_mf4_acquisition_sources_stdlib", read_metadata)
+    fingerprints = _sdk_dataset_transfer_fingerprints(source, items)
+
+    assert len(seen) == _DATASET_FINGERPRINT_MAX_INPUTS
     assert fingerprints == {"radar_source": "RadarRL", "radar_mounting_position": "CRL"}
 
 

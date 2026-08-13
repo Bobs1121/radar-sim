@@ -1,8 +1,8 @@
 # radar-sim V2 产品需求文档
 
 > 版本：2.0 单轨
-> 状态：首版发布基线
-> 日期：2026-08-11
+> 状态：V2 发布验收基线（尚未替代真实验收）
+> 日期：2026-08-13
 
 ## 1. 产品目标
 
@@ -116,7 +116,7 @@ Web 与 SDK 必须使用同一 `UserRunConfig 2.0`、同一 `/api/v1` 调度核�
 - 本地/共享/Cluster 可读路径路由；
 - 单文件与批量部分成功；
 - 结果目录与 ZIP；
-- 一个未登记的新项目仅靠路径、脚本、Runtime 和数据完成编译/仿真，不增加项目配置。
+- 任意未登记的代码仓路径组合仅靠路径、脚本、Runtime 和数据完成编译/仿真，不增加项目配置。
 
 ## 9. 权威文档顺序
 
@@ -124,4 +124,5 @@ Web 与 SDK 必须使用同一 `UserRunConfig 2.0`、同一 `/api/v1` 调度核�
 2. `PRD.md`：产品需求；
 3. `docs/V2_ARCHITECTURE.md`：V2 架构、删除清单和验收；
 4. `docs/DETAILED_DESIGN.md`：代码级设计；
-5. `docs/handoffs/2026-08-11-business-convergence-master.md`：当前实施证据和缺口。
+5. `DEVELOPMENT_PLAN.md`：当前实施顺序和发布门禁；
+6. `HANDOFF.md` 与 `docs/handoffs/*.md`：按日期记录的实施证据、外部阻断和未验收项。

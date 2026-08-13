@@ -188,15 +188,15 @@ TransferPlan 具备 owner/job/stage/role、隔离相对路径、checksum、进�
 
 ## 12. Connector
 
-- 公共 mode 固定 `unified`；HTTP query 和 SDK 拒绝 light/full；
-- capability API 只返回统一 `windows`，不返回 light/full；
+- 公共 mode 固定 `unified`；HTTP query、SDK 和 YAML 均拒绝旧能力档位参数；
+- capability API 只返回统一 `windows` 能力，不返回内部历史档位；
 - 一次安装，保存 server/owner/agent identity 和 bindings；
 - 用户登录自启、监督重启、指数退避、单实例；
 - 使用隐藏窗口/`CREATE_NO_WINDOW`，不周期弹终端；
 - contract version 不匹配时旧实例不领任务，Web 提供一键更新；
 - 更新保留 identity、bindings 和自启配置。
 
-内部数据库的 `windows_agent/windows_full` node kind 可在迁移清理前存在，但不能进入用户 API、安装选项或 YAML。
+内部数据库中可能暂存旧 node kind，迁移清理前仅供兼容和清理使用，不能进入用户 API、安装选项或 YAML。
 
 ## 13. 批量与结果
 

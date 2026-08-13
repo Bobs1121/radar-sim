@@ -1,5 +1,7 @@
 # radar-sim V2
 
+> 当前文档基线：2026-08-13。V2 仍处于发布验收阶段；真实 Cluster、Connector 和多用户证据以最新 handoff 为准。
+
 radar-sim 是 Selena 编译与雷达数据仿真的轻量自动化脚手架。它通过 Linux 控制面统一调度 Windows 本地编译、本地仿真和 Cluster 仿真；大文件由源设备直接进入执行目标，不经过 Linux Web/API 端口。
 
 ## 用户入口
@@ -89,4 +91,4 @@ node --check radar_sim_web/static/app.js
 - [详细设计](docs/DETAILED_DESIGN.md)
 - [用户指南](docs/OD25_USER_GUIDE.md)
 - [统一 Connector](docs/windows-one-click-connector.md)
-- [当前 handoff](docs/handoffs/2026-08-11-business-convergence-master.md)
+- [当前状态与 handoff](HANDOFF.md)

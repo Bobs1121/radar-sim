@@ -111,7 +111,7 @@ def test_default_publish_path_is_stable_and_server_managed(tmp_path):
 
 def test_http_and_sdk_resumable_upload_and_finalize(tmp_path):
     data = b"abcdef"
-    upload_service, _store, catalog = service_for(tmp_path, evidence(data))
+    upload_service, _store, catalog = service_for(tmp_path, evidence(data, owner="user-alice"))
     api = ApiV1Service(artifact_upload_service_factory=lambda _owner: upload_service)
     test_client = TestClient(create_app(api_service=api))
     sdk = RadarSimClient("http://testserver", client=test_client, user="alice")
@@ -132,7 +132,7 @@ def test_sdk_file_convenience_uses_server_chunk_size(tmp_path):
     data = b"abcdefgh"
     source = tmp_path / "selena.exe"
     source.write_bytes(data)
-    upload_service, _store, _catalog = service_for(tmp_path, evidence(data))
+    upload_service, _store, _catalog = service_for(tmp_path, evidence(data, owner="user-alice"))
     test_client = TestClient(create_app(api_service=ApiV1Service(
         artifact_upload_service_factory=lambda _owner: upload_service
     )))
@@ -160,6 +160,14 @@ def test_http_rejects_offset_gap_and_unconfigured_service(tmp_path):
     )
     assert gap.status_code == 409
     assert gap.json()["code"] == "artifact_upload_offset_conflict"
+
+    oversized = client.patch(
+        f"/api/v1/artifact-uploads/{session['session_id']}",
+        headers={"X-Rsim-User": "alice", "Upload-Offset": "0"},
+        content=b"x" * (int(session["chunk_size"]) + 1),
+    )
+    assert oversized.status_code == 413
+    assert oversized.json()["code"] == "artifact_upload_chunk_too_large"
 
     unavailable = TestClient(create_app()).post(
         "/api/v1/artifact-uploads",

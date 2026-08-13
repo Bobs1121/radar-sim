@@ -60,7 +60,7 @@ def bind_run_config_environment(
     agent_id = str(resolution.get("required_agent_id") or resolution.get("assigned_agent_id") or "")
     result = dict((resolution.get("result") or {}).get("recognition") or {})
     internal_project = str(result.get("internal_project") or "").strip()
-    binding_id = str(result.get("workspace_binding_id") or "").strip()
+    workspace_binding_id = str(result.get("workspace_binding_id") or "").strip()
     adapter_key = str(result.get("adapter_key") or "").strip()
     asset_bindings = dict(result.get("asset_bindings") or {})
     config_assets = dict(result.get("config_assets") or {})
@@ -79,7 +79,7 @@ def bind_run_config_environment(
         or result.get("status") != "resolved"
         or not internal_project
         or not adapter_key
-        or not binding_id.startswith("workspace:sha256:")
+        or not workspace_binding_id.startswith("workspace:sha256:")
     ):
         raise StageBindingError("resolve_spec result is not trusted")
     if str((job.get("metadata") or {}).get("contract") or "") == "user-run-config/2.0":
@@ -131,8 +131,8 @@ def bind_run_config_environment(
         for item in dict((agent or {}).get("metadata") or {}).get("data_bindings") or []:
             if not isinstance(item, dict) or item.get("healthy") is not True:
                 continue
-            binding_id = str(item.get("id") or "").strip()
-            if not binding_id.startswith("data-root:sha256:"):
+            advertised_binding_id = str(item.get("id") or "").strip()
+            if not advertised_binding_id.startswith("data-root:sha256:"):
                 continue
             # New bindings are authorized by owner + device + normalized root;
             # the Selena recognizer's internal project is intentionally ignored.
@@ -143,12 +143,12 @@ def bind_run_config_environment(
                     continue
                 if binding_device and binding_device != agent_id:
                     continue
-                advertised.add(binding_id)
+                advertised.add(advertised_binding_id)
                 continue
             # Legacy connector projection: keep the historical project check
             # only when owner/device evidence is absent.
             if str(item.get("project") or "") == internal_project:
-                advertised.add(binding_id)
+                advertised.add(advertised_binding_id)
         binding = (
             selected_data_binding_id
             if selected_data_binding_id.startswith("data-root:sha256:")
@@ -192,7 +192,7 @@ def bind_run_config_environment(
             "dispatch_scope": "selena_build",
             "contract": "user-run-config/2.0",
             "project": internal_project,
-            "workspace_binding_id": binding_id,
+            "workspace_binding_id": workspace_binding_id,
             "build_mode": str(selena.get("build_mode") or "RelWithDebInfo"),
             "clean": False,
             "adapter_key": adapter_key,

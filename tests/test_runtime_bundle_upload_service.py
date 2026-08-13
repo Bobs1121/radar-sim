@@ -7,6 +7,7 @@ from core.runtime_bundle_catalog import RuntimeBundleCatalog
 from core.runtime_bundle_upload_service import RuntimeBundleUploadService, TrustedRuntimeBundleEvidence
 from core.runtime_bundle_upload_service import trusted_runtime_bundle_evidence_from_control
 from core.control_service import ControlService
+from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION
 from core.api_v1 import ApiV1Service
 from core.api_v1_fastapi import create_app
 from fastapi.testclient import TestClient
@@ -68,13 +69,16 @@ def test_runtime_bundle_http_sdk_and_trusted_control_evidence(tmp_path):
     archive = stage_runtime_bundle_archive(bundle, tmp_path / "staging")
     control = ControlService(tmp_path / "control.db")
     job = control.create_job(
-        "simulation.run_config.v2", owner="alice",
+        "simulation.run_config.v2", owner="user-alice",
         spec={"schema_version": "2.0", "selena": {"source": "build", "build_mode": "Release"}},
         tasks=[{"task_type": "build_selena", "stage_type": "build_selena"}],
     )
     control.register_agent(
         "agent", agent_id="agent-1", node_kind="windows_agent", capabilities=["build.selena"],
-        metadata={"user": "alice", "connector_contract_version": 3},
+        metadata={
+            "user": "user-alice",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
     )
     claimed = control.claim_next_task("agent-1")
     control.submit_task_result(
@@ -88,7 +92,7 @@ def test_runtime_bundle_http_sdk_and_trusted_control_evidence(tmp_path):
         },
     )
     evidence_ref = f"{claimed['stage_id']}:1"
-    trusted = trusted_runtime_bundle_evidence_from_control(control, "alice", evidence_ref)
+    trusted = trusted_runtime_bundle_evidence_from_control(control, "user-alice", evidence_ref)
     assert trusted.manifest.source.adapter_key == "recipe:demo"
     store = ArtifactStore(
         tmp_path / "store", object_filename="runtime-bundle.zip",
@@ -116,7 +120,7 @@ def test_runtime_bundle_http_sdk_and_trusted_control_evidence(tmp_path):
         runtime_bundle_upload_service_factory=lambda _owner: service,
     )
     selected = run_api.submit_user_run(
-        "alice",
+        "user-alice",
         config_payload=config,
         prepared_runtime_bundle_id=bundle.manifest.id,
     )

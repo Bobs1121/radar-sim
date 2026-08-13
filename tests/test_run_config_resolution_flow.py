@@ -1,11 +1,18 @@
 from core.agent_bindings import make_workspace_binding_id, make_workspace_path_id
 from core.agent_asset_bindings import make_asset_binding_id
-from core.agent_policy import DEFAULT_LIGHT_CAPABILITIES, WINDOWS_CONNECTOR_CONTRACT_VERSION
+from core.agent_policy import (
+    DEFAULT_FULL_CAPABILITIES,
+    DEFAULT_LIGHT_CAPABILITIES,
+    WINDOWS_CONNECTOR_CONTRACT_VERSION,
+)
 from core.api_v1 import ApiV1Service
 from core.control_service import ControlService
 from core.environment_snapshot import EnvironmentCheckResult, EnvironmentSnapshot
 from core.stage_binder import advance_after_stage_result
 from tests.test_api_v1_service import run_config_dict
+
+
+DATA_BINDING_ID = "data-root:sha256:" + "d" * 24
 
 
 def test_project_free_job_binds_only_matching_workspace_agent_and_hides_internal_identity(tmp_path):
@@ -16,9 +23,9 @@ def test_project_free_job_binds_only_matching_workspace_agent_and_hides_internal
     control.register_agent(
         "light",
         agent_id="light-1",
-        capabilities=list(DEFAULT_LIGHT_CAPABILITIES),
+        capabilities=list(DEFAULT_FULL_CAPABILITIES),
         metadata={
-            "node_kind": "windows_agent",
+            "node_kind": "windows_full",
             "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
             "workspace_bindings": [
                 {
@@ -29,9 +36,19 @@ def test_project_free_job_binds_only_matching_workspace_agent_and_hides_internal
                 }
             ],
             "asset_bindings": [{"id": make_asset_binding_id("D:/data"), "healthy": True}],
+            "data_bindings": [
+                {
+                    "id": DATA_BINDING_ID,
+                    "owner": "alice",
+                    "device_id": "light-1",
+                    "healthy": True,
+                }
+            ],
         },
     )
-    job = api.submit_user_run("alice", config_payload=run_config_dict())
+    config = run_config_dict()
+    config["simulation"]["target"] = "local"
+    job = api.submit_user_run("alice", config_payload=config)
 
     bound = control.bind_pending_run_config_resolution("light-1")
     assert bound is not None
@@ -48,6 +65,7 @@ def test_project_free_job_binds_only_matching_workspace_agent_and_hides_internal
                 "adapter_key": "recipe:g3n_fvg3_od25",
                 "internal_project": "bydod25",
                 "workspace_binding_id": binding_id,
+                "data_binding_id": DATA_BINDING_ID,
                 "confidence": 0.9,
                 "evidence": ["workspace_exact_match"],
                 "asset_bindings": {
@@ -61,7 +79,14 @@ def test_project_free_job_binds_only_matching_workspace_agent_and_hides_internal
     assert handoff["stage_type"] == "environment_check"
     assert handoff["required_agent_id"] == "light-1"
     assert handoff["payload"]["project"] == "bydod25"
+    assert handoff["payload"]["workspace_binding_id"] == binding_id
     assert handoff["payload"]["asset_bindings"]["runtime_xml"].startswith("asset-root:sha256:")
+    data_stage = next(
+        item for item in control.get_job(job["id"])["stages"]
+        if item["stage_type"] == "prepare_data"
+    )
+    assert data_stage["required_agent_id"] == "light-1"
+    assert data_stage["payload"]["data_binding_id"] == DATA_BINDING_ID
 
     environment = control.claim_next_task("light-1")
     assert environment["stage_type"] == "environment_check"

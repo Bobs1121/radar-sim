@@ -1,8 +1,6 @@
 """Public existing-Selena evidence stays optional and never triggers a build."""
 
 from pathlib import Path
-from types import SimpleNamespace
-
 from core.stages import plan_user_run_stages
 from core.user_config import UserRunConfig
 from radar_sim_sdk import RadarSimClient
@@ -64,7 +62,7 @@ def test_web_keeps_optional_existing_workspace_evidence():
     assert "selena_build_script: selenaBuildScript" in app
     assert "buildFields\").hidden = false" in app
     assert "以下代码仓和脚本为可选识别证据" in app
-    assert "使用已有 Selena 时可选" in html
+    assert "使用已有 Selena 时不需要代码仓" in html
     assert "Selena 产物文件夹（必填）" in html
     assert "Runtime XML（必填）" in html
     assert 'byId("existingFields").hidden = !usingExisting' in app
@@ -83,7 +81,7 @@ def test_web_does_not_require_optional_package_build_script():
     assert '["codePath", "selenaBuildScript", "packageBuildScript"]' not in app
     assert 'byId("packageBuildScript").required = false' in app
     assert "本地编译需要代码仓和两个脚本" not in app
-    assert "可选；用于补充产品识别和环境依赖线索。" in html
+    assert "可选；只用于环境依赖诊断，不参与项目识别" in html
 
 
 def test_web_requires_final_target_and_source_confirmation_after_yaml_import():
@@ -164,19 +162,6 @@ def test_sdk_does_not_block_user_inputs_on_signal_contract(tmp_path, monkeypatch
             AssertionError("SDK must not pre-judge user-selected simulation inputs")
         ),
     )
-    monkeypatch.setattr(
-        client,
-        "_upload_existing_selena",
-        lambda *_args, **_kwargs: "selena-bundle:sha256:" + "a" * 64,
-    )
-    monkeypatch.setattr(
-        client,
-        "upload_run_data",
-        lambda source: SimpleNamespace(
-            data_path="dataset://sha256/" + "b" * 64,
-        ),
-    )
-
     payload, bundle_id = client._prepare_user_run(config, dry_run=False)
 
     assert bundle_id == ""

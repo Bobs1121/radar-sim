@@ -23,13 +23,13 @@ def test_windows_result_archive_is_uploaded_and_downloadable(tmp_path):
         allowed_source_root=source,
     )
     local = local_catalog.publish(
-        owner="alice",
+        owner="user-alice",
         run_ref="local-run-lease:sha256:" + "a" * 64,
         source_root=source,
         files=["output.MF4"],
         retain_until=time.time() + 3600,
     )
-    archive = local_catalog.resolve_archive(local.ref, owner="alice")
+    archive = local_catalog.resolve_archive(local.ref, owner="user-alice")
 
     central_catalog = ResultCatalog(
         tmp_path / "central-archives",

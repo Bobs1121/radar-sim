@@ -3,14 +3,14 @@ schema_version: '2.0'
 # 本地编译示例：在 Windows 节点编译 Selena；产物定位和传输由系统处理。
 # 软件始终编译当前工作区（包含未提交修改），不会自动 checkout/reset/clean。
 # branch 是可选的期望分支；与实际分支不同时系统警告，但仍允许执行。
-# 两个脚本都必填：前者编译 Selena；后者是代码仓的软件包编译入口，
-# 软件用它识别内部适配并检查/修复所需构建依赖。
+# Selena 编译脚本必填；软件包编译入口可选，只用于环境依赖诊断，
+# 不参与项目识别，也不改变 Selena 编译命令。
 selena:
   source: build
   code_path: D:/path/to/code
   branch: ''                                                     # 可选，仅用于与实际分支比对提醒
   selena_build_script: D:/path/to/code/jenkins_selena_build.bat   # 编译 Selena 主产物，必填
-  package_build_script: D:/path/to/code/software_package_build.bat # 软件包编译入口，必填
+  package_build_script: ''                                         # 可选的软件包编译入口
   runtime_xml: D:/path/to/Runtime.xml                              # 与编译产物绑定的 Runtime XML，必填
 
 # 只填写一个数据路径；软件递归发现 MF4。Cluster 无法直接访问本地路径时自动上传。

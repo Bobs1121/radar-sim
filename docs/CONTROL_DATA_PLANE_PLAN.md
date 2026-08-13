@@ -1,10 +1,10 @@
 # radar-sim 控制面与数据面分离实施计划
 
-> 状态：P0 Cluster `shared_copy` 已实施；本地目标 `source_to_local` 与 `gateway_upload` 待实施
-> 日期：2026-08-05
+> 状态：V2 P0 数据面基线；Cluster `shared_copy` 已实施，`source_to_local`/`gateway_upload`/Cluster 结果反向交付未开放
+> 日期：2026-08-13
 > 权威上位合同：`docs/PRODUCT_CONTRACT.md`
 >
-> **V2 单轨收敛声明（2026-08-11）**：本文件是控制/数据面实施合同，继续有效。V2 单轨收敛索引见 `docs/V2_ARCHITECTURE.md`，该文件在其之上收敛源到源传输、统一 Connector 与 Web/SDK 同能力，并给出明确删除清单（用户可见 project/profile/recipe/light/full/legacy 概念全部移除）与 V2 验收矩阵。本文件下文 `Windows light/full` 表述仅作内部能力兼容标签，V2 用户面不暴露该选择。`source_to_local`（输入反向传输）与 Cluster 结果反向交付均为明确缺口，未实现，详见 `docs/V2_ARCHITECTURE.md` §10；不得声称已完成。
+> **V2 单轨收敛声明（2026-08-13）**：本文件是控制/数据面实施合同。用户只看到一套配置和一个统一 Connector；旧运行档位、业务项目和旧入口不得回到用户合同。`source_to_local`（输入反向传输）、非 SMB `gateway_upload` 与 Cluster 结果反向交付均未开放，详见 `docs/V2_ARCHITECTURE.md` §10；不得声称已完成。
 
 ## 1. 目标
 
@@ -129,7 +129,7 @@ Web 和 SDK 展示相同状态、进度、重试/取消动作。传输失败只�
 - 不运行第二套 Scheduler、Catalog、Web 或数据库服务；只保留连接身份、受控路径绑定、极小的续传状态和最近诊断日志；
 - 编译能力只是调用用户给定脚本、发现输出并验证 Selena.exe/DLL，不复制项目规则；
 - 传输能力只是从授权源流式复制到授权目标、计算/校验摘要和上报进度，不解析完整 MF4；
-- full 仅在 light 基础上增加本地仿真执行器和本地结果收集；不能因此改变 Web/SDK 合同；
+- 同一个统一 Connector 按任务能力执行本地编译、本地仿真或 Cluster 直传；不提供能力档位选择，也不能因此改变 Web/SDK 合同；
 - 一次安装、登录自启、断线重连、自动升级和任务续跑属于基础能力，用户不理解 Agent ID、服务 URL 或内部模式。
 
 ## 8. 分阶段实施

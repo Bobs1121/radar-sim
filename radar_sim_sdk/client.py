@@ -1,4 +1,4 @@
-"""HTTPX-based radar-sim v5 client."""
+"""HTTPX-based radar-sim V2 client."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from core.direct_transfer import (
 from core.transfer_service import TransferProgress
 from core.user_config import UserRunConfig
 from core.datasets import classify_data_path
-from core.user import USER_HEADER, normalize_user, stable_user_identity
+from core.user import USER_HEADER, stable_user_identity
 from radar_sim_sdk.errors import RadarSimApiError, RadarSimTransportError
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
 from radar_sim_sdk.models import (
@@ -71,18 +71,17 @@ class RadarSimClient:
             None,
         )
         if user_header_key is None:
-            # Keep explicit legacy labels backwards compatible, but normalize
-            # their case so ``HOZ2WX`` and ``hoz2wx`` cannot create two local
-            # owner DBs.  The no-config path uses the shared ``user-*``
-            # namespace understood by the Web identity prompt.
+            # Public V2 has one owner namespace across Web, SDK and Connector.
+            # Explicit ``user="alice"`` and the no-config OS-login path must
+            # therefore both resolve to ``user-alice``.
             merged_headers[USER_HEADER] = (
-                normalize_user(str(user).strip().casefold())
+                stable_user_identity(str(user).strip())
                 if str(user or "").strip()
                 else _default_sdk_user()
             )
-        elif str(merged_headers[user_header_key]).casefold().startswith("user-"):
-            # Caller-supplied stable labels are case-insensitive too; leave
-            # legacy arbitrary grouping labels byte-compatible.
+        else:
+            # Header injection follows the same public contract; accepting a
+            # second legacy namespace made one human appear as two users.
             merged_headers[user_header_key] = stable_user_identity(merged_headers[user_header_key])
         if token:
             merged_headers.setdefault("Authorization", f"Bearer {token}")
@@ -367,7 +366,11 @@ class RadarSimClient:
                 plan_fingerprints = dict(fingerprints)
                 if source_role == "dataset":
                     plan_fingerprints.update(
-                        _dataset_transfer_fingerprints(source_root, items)
+                        _dataset_transfer_fingerprints(
+                            source_root,
+                            items,
+                            configured_source=config.simulation.source,
+                        )
                     )
                 plan = self.issue_transfer_plan(
                     job_id=job.id,
@@ -583,31 +586,6 @@ class RadarSimClient:
         )
         self.report_transfer_manifest(manifest)
         return manifest
-
-    def submit_cluster_yaml(
-        self,
-        yaml_path: str | Path,
-        *,
-        idempotency_key: str | None = None,
-        auto_transfer: bool = True,
-        allow_local_test: bool = False,
-        progress_callback: Callable[[TransferProgress], None] | None = None,
-        cancel_check: Callable[[], bool] | None = None,
-    ) -> Job:
-        """Submit the V1 existing-Selena + Cluster flow from one YAML file."""
-        config = UserRunConfig.from_yaml(Path(yaml_path))
-        if config.selena.source != "existing" or config.simulation.target != "cluster":
-            raise ValueError(
-                "V1 submit_cluster_yaml requires selena.source=existing and simulation.target=cluster"
-            )
-        return self.submit_run(
-            config,
-            idempotency_key=idempotency_key,
-            auto_transfer=auto_transfer,
-            allow_local_test=allow_local_test,
-            progress_callback=progress_callback,
-            cancel_check=cancel_check,
-        )
 
     def submit_yaml(
         self,
@@ -1389,7 +1367,13 @@ def _scan_sdk_transfer_items(
         paths = [
             item
             for item in sorted(root.rglob("*"), key=lambda candidate: candidate.as_posix().casefold())
-            if item.is_file() and not item.is_symlink()
+            if item.is_file()
+            and not item.is_symlink()
+            and (
+                source_role != "runtime_bundle"
+                or item.name.casefold() == "selena.exe"
+                or item.suffix.casefold() == ".dll"
+            )
         ]
         if source_role == "dataset":
             paths = [item for item in paths if item.suffix.casefold() == ".mf4"]
@@ -1398,10 +1382,22 @@ def _scan_sdk_transfer_items(
         paths = [path]
         if source_role == "dataset" and path.suffix.casefold() != ".mf4":
             raise ValueError("dataset source does not contain an MF4 file")
+        if (
+            source_role == "runtime_bundle"
+            and path.name.casefold() != "selena.exe"
+            and path.suffix.casefold() != ".dll"
+        ):
+            raise ValueError("runtime bundle source must be Selena.exe or a DLL")
     else:
         raise ValueError("direct transfer source is unavailable")
     if not paths:
+        if source_role == "runtime_bundle":
+            raise ValueError("Selena runtime folder contains no selena.exe or DLL files")
         raise ValueError("direct transfer source is empty")
+    if source_role == "runtime_bundle" and not any(
+        item.name.casefold() == "selena.exe" for item in paths
+    ):
+        raise ValueError("Selena runtime folder does not contain selena.exe")
     items: list[dict[str, Any]] = []
     for item in paths:
         relative = item.relative_to(root).as_posix()
@@ -1421,25 +1417,94 @@ def _scan_sdk_transfer_items(
 def _dataset_transfer_fingerprints(
     source_root: Path,
     items: list[dict[str, Any]],
+    *,
+    configured_source: str = "",
 ) -> dict[str, str]:
-    """Add source-side radar metadata without making transfer mandatory."""
+    """Add bounded source-side radar metadata without blocking transfer.
 
-    first_mf4 = next(
-        (
-            source_root / str(item.get("relative_path") or "")
-            for item in items
-            if str(item.get("relative_path") or "").casefold().endswith(".mf4")
-        ),
-        None,
+    A user-selected ``simulation.source`` is authoritative and avoids opening
+    any MF4.  When it is empty, read only the linked MDF4 metadata for a
+    bounded, deterministic prefix of inputs.  A mixed set is still allowed to
+    transfer, but its selection is explicit in metadata instead of silently
+    looking like a single-source dataset.  The heavier optional parser is kept
+    as a one-file compatibility fallback only; it is never run once per file
+    in a large directory.
+    """
+
+    from core.simulation import (
+        _discover_mf4_acquisition_sources_stdlib,
+        canonical_radar_source,
+        detect_radar_transfer_metadata_safe,
+        normalize_radar_metadata,
     )
-    if first_mf4 is None:
-        return {}
-    try:
-        from core.simulation import detect_radar_transfer_metadata_safe
 
-        return dict(detect_radar_transfer_metadata_safe(str(first_mf4)))
-    except Exception:
+    configured = canonical_radar_source(configured_source)
+    if configured:
+        metadata = normalize_radar_metadata({"radar_source": configured})
+        return {
+            "radar_source": metadata["source"],
+            "radar_mounting_position": metadata["mounting_position"],
+        } if metadata else {}
+
+    mf4_paths: list[Path] = []
+    for item in items:
+        relative = str(item.get("relative_path") or "")
+        if not relative.casefold().endswith(".mf4"):
+            continue
+        candidate = source_root / relative
+        try:
+            if candidate.is_file() and not candidate.is_symlink():
+                mf4_paths.append(candidate)
+        except OSError:
+            continue
+        if len(mf4_paths) >= _DATASET_FINGERPRINT_MAX_INPUTS:
+            break
+    if not mf4_paths:
         return {}
+
+    sources: list[str] = []
+    for mf4_path in mf4_paths:
+        try:
+            discovered = list(_discover_mf4_acquisition_sources_stdlib(str(mf4_path)))
+        except Exception:
+            discovered = []
+        # Preserve the old optional-parser fallback for one-file SDK calls,
+        # while keeping a multi-file directory metadata-only and bounded.
+        if not discovered and len(mf4_paths) == 1:
+            try:
+                fallback = dict(detect_radar_transfer_metadata_safe(str(mf4_path)))
+            except Exception:
+                fallback = {}
+            candidate = canonical_radar_source(
+                fallback.get("radar_source") or fallback.get("source")
+            )
+            discovered = [candidate] if candidate else []
+        for value in discovered:
+            source = canonical_radar_source(value)
+            if source and source not in sources:
+                sources.append(source)
+    if not sources:
+        return {}
+
+    metadata = normalize_radar_metadata({"radar_source": sources[0]})
+    if not metadata:
+        return {}
+    result = {
+        "radar_source": metadata["source"],
+        "radar_mounting_position": metadata["mounting_position"],
+    }
+    if len(sources) > 1:
+        result.update(
+            {
+                "radar_sources": ",".join(sources),
+                "radar_source_status": "mixed",
+                "radar_source_selection": "metadata_order",
+            }
+        )
+    return result
+
+
+_DATASET_FINGERPRINT_MAX_INPUTS = 16
 
 
 def _quote_path_token(value: str) -> str:

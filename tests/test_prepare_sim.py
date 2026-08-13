@@ -101,7 +101,7 @@ def test_run_syncs_fixed_paramconfig_and_prints_vs_guidance(tmp_path, capsys):
     assert "C:\\Windows\\System32" not in out
 
 
-def test_run_fails_when_selena_config_source_missing(tmp_path, capsys):
+def test_run_falls_back_to_shared_template_when_config_source_missing(tmp_path, capsys):
     config = _make_layered_config(tmp_path)
     config["assets"]["config_template"] = str(tmp_path / "assets" / "missing_template.txt")
     args = SimpleNamespace(project="ovrs25", dry_run=False, force=False)
@@ -109,9 +109,8 @@ def test_run_fails_when_selena_config_source_missing(tmp_path, capsys):
     code = run(args, config)
     out = capsys.readouterr().out
 
-    assert code == 1
-    assert "Selena config source not found" in out
-    assert "assets.config_template" in out
+    assert code == 0
+    assert "Visual Studio guidance:" in out
 
 
 def test_prepare_sim_uses_recipe_hook_to_shape_guidance(tmp_path, capsys):

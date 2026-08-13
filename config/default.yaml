@@ -1,4 +1,5 @@
-# radar-sim global defaults
+# Legacy CLI global defaults. V2 Web/SDK/UserRunConfig does not read a project
+# default and must not route by this value.
 default_project: "ovrs25"
 
 analysis:

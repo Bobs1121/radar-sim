@@ -1,12 +1,12 @@
 # radar-sim 产品合同（开发不可偏移基线）
 
 > 状态：权威、强制
-> 最近确认：2026-08-05
+> 最近确认：2026-08-13
 > 适用范围：Web、Python SDK、REST API、Linux 控制面、统一 Windows Connector、Cluster 调度
 >
-> **V2 单轨收敛声明（2026-08-11）**：本文件是用户侧权威合同，继续有效。V2 单轨收敛索引见 `docs/V2_ARCHITECTURE.md`，该文件在其之上定义唯一 `user-run-config/2.0`、最少配置、源到源传输、统一 Connector、Web/SDK 同能力、内部 `execution_identity`（非业务项目）、明确删除清单（project/profile/recipe/light/full/legacy 用户可见概念全部移除）与 V2 验收矩阵。本文件下文出现的 `full/light` 仅作内部能力历史标签，不是用户选择；`project` 在用户面已移除，仅保留为内部授权/缓存/追踪身份。MCP/Skill 与 Cluster 结果反向交付为明确缺口，详见 `docs/V2_ARCHITECTURE.md` §10。
+> **V2 单轨收敛声明（2026-08-13）**：本文件是用户侧权威合同。公共配置只有 `user-run-config/2.0`，用户只安装一个统一 Connector；不存在用户可选的运行档位、项目注册、固定产品流程或旧配置迁移。内部数据库遗留字段只能承载匿名 `execution_identity`，不能影响业务路由。MCP/Skill、Cluster 结果反向交付和远端到本地 Windows 的 `source_to_local` 仍是明确缺口，详见 `docs/V2_ARCHITECTURE.md` §10。
 >
-> 当前 P0 实施边界（2026-08-11）：用户只安装一个统一 Connector；`full/light` 仅为历史内部能力标签，不是用户选择。Cluster 方向的 `shared_copy` 已实现。远端资源无法被本地仿真 Windows 原地读取时，真正的 `source_to_local` 仍缺少目标 Windows 受控缓存与目标 Agent 授权，因此当前必须返回稳定 `source_to_local_unavailable`，不得把 Cluster staging 冒充本地缓存。该限制不影响资源均可由同一 Windows 读取的本地仿真。
+> 当前 P0 实施边界（2026-08-13）：Cluster 方向的 `shared_copy` 已实现；远端资源无法被本地仿真 Windows 原地读取时，必须返回稳定 `source_to_local_unavailable`，不得把 Cluster staging 冒充本地缓存。Cluster 结果当前通过 owner 隔离的 ZIP/引用交付；是否已完成真实部署和外部 Cluster 验收，以最新 handoff 为准。
 
 本文件记录产品经理（用户）最终确认的用户侧合同。若 `PRD.md`、`docs/DETAILED_DESIGN.md`、历史测试或旧实现与本文件冲突，以本文件为准；开发必须修正旧实现，不能要求用户迁就内部对象。
 

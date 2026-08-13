@@ -44,6 +44,26 @@ def test_web_stable_owner_matches_sdk_default_without_merging_legacy_labels(tmp_
     assert len(services) == 2
 
 
+def test_sdk_explicit_user_and_header_share_web_connector_namespace(tmp_path):
+    seen: list[str] = []
+
+    def factory(owner: str) -> ControlService:
+        seen.append(owner)
+        return ControlService(tmp_path / f"{owner}.db")
+
+    client = TestClient(create_app(api_service=ApiV1Service(control_service_factory=factory)))
+    with RadarSimClient("http://testserver", client=client, user="Alice") as sdk:
+        sdk.capabilities()
+    with RadarSimClient(
+        "http://testserver",
+        client=client,
+        headers={"X-Rsim-User": "ALICE"},
+    ) as sdk:
+        sdk.capabilities()
+
+    assert seen == ["user-alice", "user-alice"]
+
+
 def test_connector_download_binds_stable_owner_from_request(tmp_path):
     services = {}
     app = create_app(

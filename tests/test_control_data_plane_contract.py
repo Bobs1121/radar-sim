@@ -317,7 +317,7 @@ def test_web_and_sdk_share_local_zero_transfer_scheduling(
         capabilities=["simulation.local"],
         metadata={
             "node_kind": "windows_full",
-            "user": "alice",
+            "user": "user-alice",
             "auto_configure": True,
         },
     )
@@ -330,7 +330,7 @@ def test_web_and_sdk_share_local_zero_transfer_scheduling(
     web_response = http.post(
         "/api/v1/run-jobs",
         json={"config": config},
-        headers={USER_HEADER: "alice"},
+        headers={USER_HEADER: "user-alice"},
     )
     assert web_response.status_code == 201
     web_job = web_response.json()

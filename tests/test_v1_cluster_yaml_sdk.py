@@ -121,7 +121,7 @@ def test_linux_run_keeps_unc_selena_zero_copy_while_transferring_local_data(tmp_
     assert "runtime_xml" not in stage["payload"]["source_roles"]
 
 
-def test_sdk_one_call_completes_direct_manifests_without_legacy_uploads(tmp_path: Path):
+def test_sdk_v2_one_call_completes_direct_manifests_without_linux_body_uploads(tmp_path: Path):
     selena, runtime, data, mat_filter, yaml_path = _inputs(tmp_path)
     target = tmp_path / "cluster-target"
     target.mkdir()
@@ -138,9 +138,9 @@ def test_sdk_one_call_completes_direct_manifests_without_legacy_uploads(tmp_path
     test_client = TestClient(create_app(api_service=api, transfer_service=transfer))
     sdk = RadarSimClient("http://testserver", client=test_client, user="alice")
 
-    submitted = sdk.submit_cluster_yaml(
+    submitted = sdk.submit_yaml(
         yaml_path,
-        idempotency_key="direct-v1",
+        idempotency_key="direct-v2",
         allow_local_test=True,
     )
     plans = sdk._request("GET", f"/api/v1/jobs/{submitted.id}/transfers")
