@@ -2023,6 +2023,7 @@ class ControlService:
         *,
         stale_after_seconds: float = 300.0,
         max_attempts: Optional[int] = 3,
+        assignment_grace_seconds: float = 30.0,
     ) -> list[dict[str, Any]]:
         """Requeue running tasks whose agent has gone silent (dead-agent recovery).
 
@@ -2033,11 +2034,17 @@ class ControlService:
         on them — don't loop forever). Returns the list of reclaimed tasks.
 
         This is the only recovery path for tasks orphaned by a crashed agent;
-        without it they stay ``running`` forever. Idempotent: safe to call
-        periodically (e.g. from the server's serve loop or an admin CLI).
+        without it they stay ``running`` forever. A fresh heartbeat alone is
+        not proof that the Agent still owns the Stage: the Agent must report
+        the task id, except for the legacy ``busy``/empty-task contract. A
+        short assignment grace protects the claim transaction's hand-off
+        window. Idempotent: safe to call periodically (e.g. from the server's
+        serve loop or an admin CLI).
         """
         now = self._now()
         cutoff = now - float(stale_after_seconds)
+        assignment_grace = max(0.0, float(assignment_grace_seconds))
+        assignment_cutoff = now - assignment_grace
         with self._lock:
             conn = self._conn()
             try:
@@ -2046,14 +2053,28 @@ class ControlService:
                 rows = conn.execute(
                     """
                     SELECT t.task_id, t.job_id, t.status, t.assigned_agent_id, t.attempt_count,
+                           t.claimed_at, t.started_at,
+                           a.status AS agent_status, a.current_task_id AS agent_current_task_id,
+                           a.last_heartbeat AS agent_last_heartbeat,
                            t.cancel_requested, t.result_json, t.error_json, j.cancel_requested AS job_cancel_requested
                     FROM tasks t
                     JOIN jobs j ON j.job_id = t.job_id
                     LEFT JOIN agents a ON a.agent_id = t.assigned_agent_id
                     WHERE t.status IN ('running', 'cancel_requested', 'cancelling')
-                      AND (a.agent_id IS NULL OR a.last_heartbeat < ?)
+                      AND (
+                          a.agent_id IS NULL
+                          OR a.last_heartbeat < ?
+                          OR (
+                              a.last_heartbeat >= ?
+                              AND NOT (
+                                  a.current_task_id = t.task_id
+                                  OR (a.current_task_id = '' AND LOWER(a.status) = 'busy')
+                              )
+                              AND MAX(t.claimed_at, t.started_at) <= ?
+                          )
+                      )
                     """,
-                    (cutoff,),
+                    (cutoff, cutoff, assignment_cutoff),
                 ).fetchall()
                 reclaimed: list[dict[str, Any]] = []
                 for row in rows:

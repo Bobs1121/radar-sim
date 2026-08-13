@@ -39,7 +39,7 @@ def _positive_env_float(name: str, default: float, *, minimum: float = 0.1) -> f
     return value
 
 
-def _maintenance_settings() -> tuple[float, float, Optional[int]]:
+def _maintenance_settings() -> tuple[float, float, Optional[int], float]:
     """Return server-owned stale-task maintenance settings.
 
     These are deployment controls, intentionally not part of the user YAML.
@@ -53,6 +53,11 @@ def _maintenance_settings() -> tuple[float, float, Optional[int]]:
     stale_after = _positive_env_float(
         "RSIM_MAINTENANCE_STALE_AFTER_SECONDS",
         _DEFAULT_MAINTENANCE_STALE_AFTER_SECONDS,
+    )
+    assignment_grace = _positive_env_float(
+        "RSIM_MAINTENANCE_ASSIGNMENT_GRACE_SECONDS",
+        30.0,
+        minimum=0.0,
     )
     raw_attempts = str(os.environ.get("RSIM_MAINTENANCE_MAX_ATTEMPTS", "") or "").strip()
     max_attempts = _DEFAULT_MAINTENANCE_MAX_ATTEMPTS
@@ -68,7 +73,7 @@ def _maintenance_settings() -> tuple[float, float, Optional[int]]:
                 raw_attempts,
                 _DEFAULT_MAINTENANCE_MAX_ATTEMPTS,
             )
-    return interval, stale_after, (max_attempts if max_attempts > 0 else None)
+    return interval, stale_after, (max_attempts if max_attempts > 0 else None), assignment_grace
 
 
 class _MaintenanceLoop:
@@ -594,11 +599,17 @@ def _run_serve_v1(args) -> int:
         )
         cluster_stage_executor = ClusterStageExecutor(service, cluster_stage_context)
         cluster_stage_executor.start()
-    maintenance_interval, maintenance_stale_after, maintenance_max_attempts = _maintenance_settings()
+    (
+        maintenance_interval,
+        maintenance_stale_after,
+        maintenance_max_attempts,
+        maintenance_assignment_grace,
+    ) = _maintenance_settings()
     maintenance_loop = _MaintenanceLoop(
         lambda: service.reclaim_stale_tasks(
             stale_after_seconds=maintenance_stale_after,
             max_attempts=maintenance_max_attempts,
+            assignment_grace_seconds=maintenance_assignment_grace,
         ),
         interval_seconds=maintenance_interval,
     )
@@ -609,6 +620,7 @@ def _run_serve_v1(args) -> int:
     print(
         "Stale-task maintenance: enabled "
         f"(interval={maintenance_interval:g}s, stale_after={maintenance_stale_after:g}s, "
+        f"assignment_grace={maintenance_assignment_grace:g}s, "
         f"max_attempts={maintenance_max_attempts if maintenance_max_attempts is not None else 'unlimited'})"
     )
     maintenance_loop.start()

@@ -43,7 +43,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 14. 编译增加框架内部安全超时（默认 4 小时，可由部署环境调整，非用户/项目配置），超时/取消终止 Windows 子进程树并返回 `BUILD_TIMEOUT`。本地仿真 Lease 增加执行 token/PID 锁：活进程存在时重启后的 Connector 只观察，不重复启动 Selena；旧进程已死时允许接管。
 15. 批量本地任务只有 `selena_failed` 这类 Selena 内部逐输入失败可以形成 partial；paramconfig、loader、依赖、timeout 和 runner contract 等外围失败必须使 Stage 失败。Cluster 状态网关中断可重试 collect 且不重复提交；非空 MF4 没有任何 `result.ini` 不再判成功；大批量扫描截断会有界复扫；共享路径不可达返回 `CLUSTER_SHARED_DATA_UNAVAILABLE`。
 16. 数据传输重试跳过已经持久化完成的 role，防止重复复制/重复仿真；多 MF4 mixed source 的候选和选择依据贯穿 Transfer/Cluster 证据，同时仍按用户合同自动选择一个继续运行。结果 ZIP/Manifest 缺失不能形成业务成功。
-17. `serve-v1` 增加服务端维护循环：启动即回收一次、之后默认每 30 秒检查失联任务。已请求取消的离线 Stage 会最终落为 `cancelled`；普通 stale Stage 仍按最多 3 次的既有策略重排/失败，避免任务永久停在 `running/cancelling`。周期、失联阈值和重试上限只由部署环境变量控制，不进入用户 YAML。
+17. `serve-v1` 增加服务端维护循环：启动即回收一次、之后默认每 30 秒检查失联或失去执行归属的任务。只有新鲜心跳明确报告 `current_task_id`（兼容旧 Connector 的 `busy + empty task`）才证明 Stage 仍在执行；在线但 idle/已切换其它任务的孤儿 Stage 在 30 秒交接保护后同样回收。已请求取消的 Stage 最终落为 `cancelled`；普通 Stage 仍按最多 3 次的既有策略重排/失败，避免任务永久停在 `running/cancelling`。周期、阈值、交接保护和重试上限只由部署环境变量控制，不进入用户 YAML。
 18. `existing + cluster` 在 Selena、runtime、数据和配置均位于 Cluster 可见共享/central namespace 时，完全跳过 Windows resolver/build/register，直接由 Linux/Cluster 环境检查、预检和提交；无需 Connector，也不加载项目规则。逻辑 `config-asset:*` 仍通过成熟的小配置复制链处理，不把 Linux 内部引用冒充 worker 可见路径。
 
 ### 自动化证据
@@ -57,7 +57,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 - v9 第一次全仓门禁：`1581 passed, 12 skipped, 1 warning`，仅 1 个旧测试夹具因直接注册 Windows Agent 未写 owner 被新的生产隔离合同拒绝；夹具已改为真实注册形态，相关隔离回归 `82 passed`。
 - Connector v9/全链收口最终全仓门禁：`1582 passed, 12 skipped, 1 warning`，零失败，耗时 `543.12 s`。唯一 warning 仍是 Starlette/httpx 弃用提示。
 - 最终复审补充本地 Lease 过期接管保护后再次全仓回归：`1583 passed, 12 skipped, 1 warning`，零失败，耗时 `534.36 s`。
-- 服务端自动维护、共享 existing Selena 无 Connector 闭环及全部叠加修改最终全仓门禁：`1591 passed, 12 skipped, 1 warning`，零失败，耗时 `405.28 s`；共享路径/逻辑资产扩大回归 `142 passed, 1 warning`，服务维护/回收回归 `62 passed`。
+- 服务端自动维护、共享 existing Selena 无 Connector 闭环及全部叠加修改最终全仓门禁：`1591 passed, 12 skipped, 1 warning`，零失败，耗时 `405.28 s`；共享路径/逻辑资产扩大回归 `142 passed, 1 warning`，在线孤儿 Stage 归属修复后的服务维护/回收回归 `67 passed`。
 - Linux 候选 release 平台无关门禁：`78 passed`；其中 TransferPlan 幂等、API、Cluster Stage 均通过。
 - 唯一 warning 是 Starlette/httpx 弃用提示，不是业务失败。
 

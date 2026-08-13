@@ -61,7 +61,7 @@ def test_maintenance_settings_are_deployment_controls(monkeypatch):
     monkeypatch.setenv("RSIM_MAINTENANCE_STALE_AFTER_SECONDS", "91")
     monkeypatch.setenv("RSIM_MAINTENANCE_MAX_ATTEMPTS", "0")
 
-    assert _maintenance_settings() == (7.0, 91.0, None)
+    assert _maintenance_settings() == (7.0, 91.0, None, 30.0)
 
 
 def test_invalid_maintenance_settings_fall_back_to_safe_defaults(monkeypatch):
@@ -69,11 +69,12 @@ def test_invalid_maintenance_settings_fall_back_to_safe_defaults(monkeypatch):
     monkeypatch.setenv("RSIM_MAINTENANCE_STALE_AFTER_SECONDS", "not-a-number")
     monkeypatch.setenv("RSIM_MAINTENANCE_MAX_ATTEMPTS", "-3")
 
-    interval, stale_after, max_attempts = _maintenance_settings()
+    interval, stale_after, max_attempts, assignment_grace = _maintenance_settings()
 
     assert interval == 30.0
     assert stale_after == 300.0
     assert max_attempts == 3
+    assert assignment_grace == 30.0
 
 
 def test_serve_v1_starts_and_stops_one_maintenance_loop(monkeypatch, tmp_path):

@@ -115,3 +115,103 @@ def test_reclaim_unlimited_attempts(tmp_path):
 
     final = service.get_job(task["job_id"])["tasks"][0]
     assert final["status"] == "queued"  # never failed despite many reclaims
+
+
+def test_reclaim_online_idle_orphan_after_assignment_grace(tmp_path):
+    clock = _Clock()
+    service = _service(tmp_path, clock)
+    agent = service.register_agent("idle-agent", capabilities=["local.*"])
+    service.create_job("local.check")
+    task = service.claim_next_task(agent["agent_id"])
+
+    # The machine still heartbeats, but explicitly reports no owned task.
+    service.heartbeat(agent["agent_id"], status="idle", current_task_id="")
+    clock.advance(31)
+    reclaimed = service.reclaim_stale_tasks(stale_after_seconds=300.0, max_attempts=3)
+
+    assert reclaimed[0]["task_id"] == task["task_id"]
+    assert reclaimed[0]["new_status"] == "queued"
+
+
+def test_reclaim_online_agent_running_another_task_orphans_old_task(tmp_path):
+    clock = _Clock()
+    service = _service(tmp_path, clock)
+    agent = service.register_agent("busy-agent", capabilities=["local.*"])
+    first_job = service.create_job("local.check")
+    second_job = service.create_job("local.check")
+    first = service.claim_next_task(agent["agent_id"])
+    # Jobs created against the deterministic test clock have identical
+    # timestamps, so claim_next_task is free to pick either one.  Select the
+    # other task by id instead of relying on FIFO ordering for a timestamp tie.
+    candidate_task_ids = [
+        service.get_job(job["job_id"])["tasks"][0]["task_id"]
+        for job in (first_job, second_job)
+    ]
+    second_task_id = next(
+        task_id for task_id in candidate_task_ids if task_id != first["task_id"]
+    )
+
+    # A fresh heartbeat naming another task no longer proves ownership of the
+    # first running Stage.
+    service.heartbeat(
+        agent["agent_id"], status="busy", current_task_id=second_task_id
+    )
+    clock.advance(31)
+    reclaimed = service.reclaim_stale_tasks(stale_after_seconds=300.0, max_attempts=3)
+
+    assert [item["task_id"] for item in reclaimed] == [first["task_id"]]
+    assert service.get_task(first["task_id"])["status"] == "queued"
+    assert service.get_task(second_task_id)["status"] == "queued"
+
+
+def test_reclaim_does_not_take_just_claimed_task_during_assignment_grace(tmp_path):
+    clock = _Clock()
+    service = _service(tmp_path, clock)
+    agent = service.register_agent("new-agent", capabilities=["local.*"])
+    service.create_job("local.check")
+    task = service.claim_next_task(agent["agent_id"])
+    service.heartbeat(agent["agent_id"], status="idle", current_task_id="")
+
+    # The assignment is recent, so a Connector status hand-off cannot be
+    # mistaken for a dead process.
+    assert service.reclaim_stale_tasks(stale_after_seconds=300.0, max_attempts=3) == []
+    assert service.get_task(task["task_id"])["status"] == "running"
+
+
+def test_reclaim_keeps_true_busy_task_with_matching_current_task(tmp_path):
+    clock = _Clock()
+    service = _service(tmp_path, clock)
+    agent = service.register_agent("healthy-agent", capabilities=["local.*"])
+    service.create_job("local.check")
+    task = service.claim_next_task(agent["agent_id"])
+    service.heartbeat(
+        agent["agent_id"], status="busy", current_task_id=task["task_id"]
+    )
+    # Keep the connector's heartbeat fresh even though the assignment has
+    # been running for longer than the stale threshold.  Reclaim must use the
+    # latest heartbeat and ownership, not the original claim timestamp.
+    clock.advance(400)
+    service.heartbeat(
+        agent["agent_id"], status="busy", current_task_id=task["task_id"]
+    )
+    clock.advance(100)
+
+    assert service.reclaim_stale_tasks(stale_after_seconds=300.0, max_attempts=3) == []
+    assert service.get_task(task["task_id"])["status"] == "running"
+
+
+def test_reclaim_accepts_legacy_busy_empty_task_contract(tmp_path):
+    clock = _Clock()
+    service = _service(tmp_path, clock)
+    agent = service.register_agent("legacy-busy-agent", capabilities=["local.*"])
+    service.create_job("local.check")
+    task = service.claim_next_task(agent["agent_id"])
+    service.heartbeat(agent["agent_id"], status="busy", current_task_id="")
+    # Legacy agents identify an active task only through ``status=busy`` and
+    # an empty current_task_id.  Their heartbeat must still remain fresh.
+    clock.advance(400)
+    service.heartbeat(agent["agent_id"], status="busy", current_task_id="")
+    clock.advance(100)
+
+    assert service.reclaim_stale_tasks(stale_after_seconds=300.0, max_attempts=3) == []
+    assert service.get_task(task["task_id"])["status"] == "running"
