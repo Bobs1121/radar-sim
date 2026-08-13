@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 > 当前状态：project-free V2 的已有 Selena + 本地/Cluster 主链真实通过
-> 当前 release：`3cd10ae` / `/home/hoz2wx/radar-sim-3cd10ae`
+> 当前 release：`8f8601c` / `/home/hoz2wx/radar-sim-8f8601c`
 
 ## 1. 不可回退的产品结论
 
@@ -47,11 +47,11 @@ V2 完全不识别、不登记、也不按业务项目分支。允许从文件�
 
 ## 4. 当前部署证据
 
-- Git：`3cd10ae Make transfer planning idempotent`，已推送 `origin/codex/new-branch`。
-- Linux：用户级 `radar-sim-v1.service`，WorkingDirectory `/home/hoz2wx/radar-sim-3cd10ae`，`active/running`，`NRestarts=0`。
-- 回滚目录：`/home/hoz2wx/radar-sim-f20df78`。
-- 候选平台无关门禁：`78 passed`。
-- Connector ZIP：`8,336,071` bytes，SHA-256 `c2e8e283898229029e2b6f04300d67b023a8fe58fe0617575d4fac71ca6aedb7`；Range 下载 `206`。
+- Git：`8f8601c Remove project inference from V2 build flow`，已推送 `origin/codex/new-branch`；包含此前 `3cd10ae` TransferPlan 幂等修复。
+- Linux：用户级 `radar-sim-v1.service`，WorkingDirectory `/home/hoz2wx/radar-sim-8f8601c`，`active/running`，`NRestarts=0`。
+- 回滚目录：`/home/hoz2wx/radar-sim-3cd10ae`。
+- 最终全仓：`1557 passed, 12 skipped, 1 warning`；Linux 候选门禁：`96 passed`。
+- Connector ZIP：`8,336,982` bytes，SHA-256 `1e1daea6bcb8f0da1705b4377329959e94b704b7411747d2619e2d686207cf3f`；Range 下载 `206`。
 - Connector 合同未提升；当前用户无需因服务端幂等修复重新安装，重启后现有 Connector 自动恢复轮询。
 
 ## 5. 明确未发布能力

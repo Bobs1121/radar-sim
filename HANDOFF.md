@@ -3,8 +3,8 @@
 > 更新时间：2026-08-13
 > 状态：V2 project-free 单轨首版已发布；本地与 Cluster 真实验收已通过
 > 分支：`codex/new-branch`
-> 当前生产基线：`3cd10ae`，Linux release `/home/hoz2wx/radar-sim-3cd10ae`
-> 回滚基线：`f20df78`，Linux release `/home/hoz2wx/radar-sim-f20df78`
+> 当前生产基线：`8f8601c`，Linux release `/home/hoz2wx/radar-sim-8f8601c`
+> 回滚基线：`3cd10ae`，Linux release `/home/hoz2wx/radar-sim-3cd10ae`
 
 本文是下一位开发者的唯一实时入口。历史长篇实施日志已从根 handoff 删除；需要追溯时使用 Git 历史和 `docs/handoffs/` 中带日期的证据文件。产品和架构决策依次以 `docs/PRODUCT_CONTRACT.md`、`PRD.md`、`docs/V2_ARCHITECTURE.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md` 为准。
 
@@ -36,6 +36,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 7. 全仓回归发现并清除 4 个过时断言：旧 Web 产品识别文案、已删除的 SDK `upload_run_data` monkeypatch、项目模板缺失必须失败。它们与当前 project-free、源到源传输和公共模板回退合同冲突，不是运行代码回归。
 8. README、PRD、开发计划、产品合同、V2 架构和详细设计已统一到 2026-08-13 V2 单轨口径；根 handoff 已精简，旧 V1/项目化部署、配置、环境和实战文档只保留归档跳转，不再暴露冲突步骤。
 9. TransferPlan 已实现通用幂等：同一 owner/job/stage/role、同一输入元数据与目标根的并发或网络重试复用同一计划；失败、取消、过期或输入改变才签发新计划。SQLite 使用短事务串行签发，避免一个 Job 因 SDK 超时重试产生多个大文件传输。
+10. V2 编译输出推导已彻底断开历史项目上下文解析。只读取用户 Selena 脚本中的通用 build/output 开关；无法静态解析时回退工作区内受限 `ip_dc/build`/`build` 并在编译后查找实际 Selena.exe。`/apl/`、`byd`、R2D2、hex 或产品名不再影响 V2 输出路径。
 
 ### 自动化证据
 
@@ -43,6 +44,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 - identity/API/SDK/control-data 合同复验：`112 passed, 1 warning`。
 - 全仓最终回归：`1553 passed, 12 skipped, 1 warning`，零失败，耗时 `384.27 s`。
 - 幂等修复后全仓最终回归：`1556 passed, 12 skipped, 1 warning`，零失败，耗时 `429.94 s`。
+- project-free 输出推导修复后全仓回归：`1557 passed, 12 skipped, 1 warning`，零失败，耗时 `502.79 s`。
 - Linux 候选 release 平台无关门禁：`78 passed`；其中 TransferPlan 幂等、API、Cluster Stage 均通过。
 - 唯一 warning 是 Starlette/httpx 弃用提示，不是业务失败。
 
@@ -70,9 +72,9 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 
 ### 当前线上事实
 
-1. `3cd10ae` 已推送至 `origin/codex/new-branch` 并部署为不可变 release `/home/hoz2wx/radar-sim-3cd10ae`。
+1. `8f8601c` 已推送至 `origin/codex/new-branch` 并部署为不可变 release `/home/hoz2wx/radar-sim-8f8601c`。
 2. 正确的用户级 `radar-sim-v1.service` 为 `active/running`，`NRestarts=0`；健康接口返回 `ok=true`。系统级同名 unit 未启用，排查时不要查错作用域。
-3. Windows Connector 包为 `8,336,071` bytes，SHA-256 `c2e8e283898229029e2b6f04300d67b023a8fe58fe0617575d4fac71ca6aedb7`；Range 下载返回 `206`，现有 Connector 在服务重启后自动恢复轮询。
+3. Windows Connector 包为 `8,336,982` bytes，SHA-256 `1e1daea6bcb8f0da1705b4377329959e94b704b7411747d2619e2d686207cf3f`；Range 下载返回 `206`，现有 Connector 在服务重启后自动恢复轮询。
 4. 本次 Connector 执行合同未升级，普通用户不需要为了 TransferPlan 服务端幂等修复重新安装；Web 的一键连接/更新入口继续使用同一统一安装包。
 
 ### 明确边界，不得伪装成已完成
