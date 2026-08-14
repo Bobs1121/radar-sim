@@ -66,7 +66,9 @@ def test_sdk_validate_and_submit_run_share_v2_hash_with_web_json(tmp_path):
     assert len(job.stages) == 10
     assert job.resolved_spec["status"] == "planned"
     assert job.spec == config.to_dict()
-    assert sdk.submit_run(config, dry_run=True, idempotency_key="sdk-key").id == job.id
+    submitted = sdk.submit_run(config, dry_run=True, idempotency_key="sdk-key")
+    assert submitted.id == job.id
+    assert submitted.job_id == job.id
 
 
 def test_sdk_downloads_one_time_windows_connector_for_current_scope(tmp_path):

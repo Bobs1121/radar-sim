@@ -32,6 +32,12 @@ class Job:
     tasks: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def job_id(self) -> str:
+        """Expose the REST/Web name while preserving the historic ``id``."""
+
+        return self.id
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Job":
         return cls(

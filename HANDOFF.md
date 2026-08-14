@@ -1,10 +1,10 @@
 # radar-sim V2 当前交接
 
 > 更新时间：2026-08-13
-> 状态：V2 project-free、Connector v9 与全链异常收口已部署；等待一台全新/升级 Windows 电脑完成真实安装验收
+> 状态：V2 project-free、Connector v9 与全链异常收口已部署；真实旧版原地升级与升级后本地仿真已通过
 > 分支：`codex/new-branch`
-> 当前生产基线：`7020321`，Linux release `/home/hoz2wx/radar-sim-7020321`
-> 回滚基线：`8f8601c`，Linux release `/home/hoz2wx/radar-sim-8f8601c`
+> 当前生产基线：`2bff0ec`，Linux release `/home/hoz2wx/radar-sim-2bff0ec`
+> 回滚基线：`7020321`，Linux release `/home/hoz2wx/radar-sim-7020321`
 
 本文是下一位开发者的唯一实时入口。历史长篇实施日志已从根 handoff 删除；需要追溯时使用 Git 历史和 `docs/handoffs/` 中带日期的证据文件。产品和架构决策依次以 `docs/PRODUCT_CONTRACT.md`、`PRD.md`、`docs/V2_ARCHITECTURE.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md` 为准。
 
@@ -86,12 +86,13 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 
 ### 当前线上事实
 
-1. `7020321` 已推送至 `origin/codex/new-branch` 并部署为不可变 release `/home/hoz2wx/radar-sim-7020321`；前一不可变 release `8f8601c` 保留用于回滚。
+1. `2bff0ec` 已推送至 `origin/codex/new-branch` 并部署为不可变 release `/home/hoz2wx/radar-sim-2bff0ec`；前一不可变 release `7020321` 保留用于回滚。
 2. 正确的用户级 `radar-sim-v1.service` 为 `active/running`，`NRestarts=0`；健康接口返回 `ok=true`。系统级同名 unit 未启用，排查时不要查错作用域。
-3. Windows Connector v9 包为 `8,350,502` bytes，SHA-256 `0f9e299c8e8a5f98bd582dfe79f436708037b660f6aab1759e391950bd4bcf12`；Range 下载实测返回 `206` 与 `bytes 0-1023/8350502`。候选 release Linux 门禁 `77 passed, 1 skipped`；服务切换后 `active`、`NRestarts=0`、health `ok=true`，Cluster 四个角色 worker 均在线。
+3. Windows Connector v9 包为 `8,351,204` bytes，SHA-256 `ec1112274e2ef43a85d44f1d117d09298ebd59bb9bca8620074ecc2d4e3014a4`；包接口同时返回 `X-Rsim-Connector-Version: 9`。候选 release Linux 门禁 `52 passed, 1 skipped`；服务切换后 `active`、`NRestarts=0`、health `ok=true`，Cluster 四个角色 worker 均在线。
 4. Connector 执行合同已升级为 9。旧 Connector 会被服务端阻止领取任务；用户再次运行 Web 的“一键连接/更新本机”会保留 Agent ID、路径绑定和自启方式，并把旧 `web-*` 随机 owner 一次性迁移到稳定 `user-<NTID>`。代码和自动化已通过，真实新用户电脑仍需再运行一次安装包作为最终外部验收，不能在此之前写成真实安装已通过。
 5. 历史孤儿任务 `job_81f44ccae6c4` 曾因旧 Connector 在线但已不持有该 task 而永久停在 cancelling；`7020321` 上线后维护循环按精确 `current_task_id` 识别并自动收口为 `cancelled`，未手改数据库。
-6. **2026-08-14 当前发布阻断**：`7020321` 的首次真实本机升级暴露旧 `.pyc` 被误加载，表现为“源码 v9、运行合同 v8”。修复正在部署；在新的全新安装/旧版升级黑盒均通过前，不得再次宣称 Connector v9 的真实 Windows 安装已验收。
+6. 2026-08-14 原地升级修复已发布为 `2bff0ec`：保留合同 8 的运行中 Connector，仅通过 Web 生成的一键更新文件完成停止旧树、替换应用、实际 Python 导入合同 9、恢复 Agent ID/owner/计划任务/watchdog 与服务端精确设备确认。升级前 `update_required=true`；升级后 `available=true`、`contract_current=true`、`update_required=false`。没有手工删除目录或修改本机配置。
+7. 升级后由公开 SDK 使用同一 UserRunConfig 提交真实本地任务 `job_cfb70d31e83e`：已有 Selena + 单条 MF4 + runtime + MatFilter，1/1 成功；输出 `239,051,624` bytes，SHA-256 `52581ccea9d70ce4ac4a04d14abca570eb6762e48f5ca147e4d153d7840a14e0`；本地物化目录 `D:\RadarSim\v2-results\job_cfb70d31e83e`，Manifest 与 SDK ZIP（`12,163,709` bytes）均可用。全过程无内部绑定或手工本机准备。
 
 ### 明确边界，不得伪装成已完成
 
