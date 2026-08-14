@@ -1,10 +1,10 @@
 # radar-sim V2 当前交接
 
 > 更新时间：2026-08-14
-> 状态：V2 project-free、Connector v9 与全链异常收口已部署；真实本地与 Cluster 仿真均通过
+> 状态：V2 project-free、Connector v11 与控制状态自愈已部署；真实本地与 Cluster 仿真均通过
 > 分支：`codex/new-branch`
-> 当前生产基线：`77ff032`，Linux release `/home/hoz2wx/radar-sim-77ff032`
-> 回滚基线：`7020321`，Linux release `/home/hoz2wx/radar-sim-7020321`
+> 当前生产基线：`538945e`，Linux release `/home/hoz2wx/radar-sim-538945e`
+> 回滚基线：`19068e9`，Linux release `/home/hoz2wx/radar-sim-19068e9`
 
 本文是下一位开发者的唯一实时入口。历史长篇实施日志已从根 handoff 删除；需要追溯时使用 Git 历史和 `docs/handoffs/` 中带日期的证据文件。产品和架构决策依次以 `docs/PRODUCT_CONTRACT.md`、`PRD.md`、`docs/V2_ARCHITECTURE.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md` 为准。
 
@@ -47,6 +47,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 18. `existing + cluster` 在 Selena、runtime、数据和配置均位于 Cluster 可见共享/central namespace 时，完全跳过 Windows resolver/build/register，直接由 Linux/Cluster 环境检查、预检和提交；无需 Connector，也不加载项目规则。逻辑 `config-asset:*` 仍通过成熟的小配置复制链处理，不把 Linux 内部引用冒充 worker 可见路径。
 19. 2026-08-14 真实升级复验发现：磁盘源码已是合同 9，但确定性归档时间戳、相同文件大小和遗留 `__pycache__` 使新 Python 进程继续加载合同 8。修复后升级会先停止本安装目录的计划任务、watchdog、supervisor 和 Agent 进程树；保留 `.venv`，原子式清除其余旧应用文件后复制新包；bootstrap 再清理应用 bytecode cache，并用实际 Connector Python 导入合同版本，与新源码声明比对成功后才允许注册/启动。服务端包头同时发布真实合同版本，不再写固定 `1`。
 20. Cluster 结果收集不再把官方状态网页当作唯一完成依据。每轮先检查本 Job 的受控共享输出目录；预期数量的 `result.ini` 已齐全时，直接按逐输入证据收口，即使状态网页短暂超时或已移除任务行也不会把真实成功仿真判失败。共享结果尚未完成时才使用状态网页继续观测或返回可重试的基础设施错误。
+21. Connector v11 覆盖用户误删本机控制状态：安装器原子同步 `%LOCALAPPDATA%\radar-sim\install.json` 与受限的 `data\install.backup.json`；启动器/独立 watchdog 自动恢复主配置并根据真实 supervisor 重建缺失或陈旧 `connector.pid`。如果主配置和备份都丢失，Web 明确要求重新运行一键连接，不会伪装在线。恢复后若必须生成新 Agent ID，同 owner 的可读数据根授权会迁移到新 ID；控制面按 `owner + hostname` 折叠旧注册，优先当前合同/在线/最新记录，不再显示虚假的第二台电脑或永久升级提示。安装器停止旧进程树时把“子进程已随父进程退出”视为成功，重复更新不再因 `taskkill` 返回 not found 中断。
 
 ### 自动化证据
 
@@ -60,6 +61,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 - Connector v9/全链收口最终全仓门禁：`1582 passed, 12 skipped, 1 warning`，零失败，耗时 `543.12 s`。唯一 warning 仍是 Starlette/httpx 弃用提示。
 - 最终复审补充本地 Lease 过期接管保护后再次全仓回归：`1583 passed, 12 skipped, 1 warning`，零失败，耗时 `534.36 s`。
 - 服务端自动维护、共享 existing Selena 无 Connector 闭环及全部叠加修改最终全仓门禁：`1591 passed, 12 skipped, 1 warning`，零失败，耗时 `405.28 s`；共享路径/逻辑资产扩大回归 `142 passed, 1 warning`，在线孤儿 Stage 归属修复后的服务维护/回收回归 `67 passed`。
+- Connector v11 身份恢复、物理设备去重、数据 binding 迁移与安装/发布聚焦回归：`142 passed, 1 warning`、合同升级复验 `98 passed`，均零失败。
 - Linux 候选 release 平台无关门禁：`78 passed`；其中 TransferPlan 幂等、API、Cluster Stage 均通过。
 - 唯一 warning 是 Starlette/httpx 弃用提示，不是业务失败。
 
@@ -88,13 +90,14 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 
 ### 当前线上事实
 
-1. `77ff032` 已推送至 `origin/codex/new-branch` 并部署为不可变 release `/home/hoz2wx/radar-sim-77ff032`；前一 release `/home/hoz2wx/radar-sim-45d9249` 与回滚基线 `7020321` 均保留。
+1. `538945e` 已推送至 `origin/codex/new-branch` 并部署为不可变 release `/home/hoz2wx/radar-sim-538945e`；回滚基线 `/home/hoz2wx/radar-sim-19068e9` 保留。
 2. 正确的用户级 `radar-sim-v1.service` 为 `active/running`，`NRestarts=0`；健康接口返回 `ok=true`。系统级同名 unit 未启用，排查时不要查错作用域。
-3. Windows Connector v9 包为 `8,351,204` bytes，SHA-256 `ec1112274e2ef43a85d44f1d117d09298ebd59bb9bca8620074ecc2d4e3014a4`；包接口同时返回 `X-Rsim-Connector-Version: 9`。候选 release Linux 门禁 `52 passed, 1 skipped`；服务切换后 `active`、`NRestarts=0`、health `ok=true`，Cluster 四个角色 worker 均在线。
-4. Connector 执行合同已升级为 9。旧 Connector 会被服务端阻止领取任务；用户再次运行 Web 的“一键连接/更新本机”会保留 Agent ID、路径绑定和自启方式，并把旧 `web-*` 随机 owner 一次性迁移到稳定 `user-<NTID>`。代码和自动化已通过，真实新用户电脑仍需再运行一次安装包作为最终外部验收，不能在此之前写成真实安装已通过。
+3. Windows Connector v11 包为 `8,353,446` bytes，SHA-256 `62e5810714f88b4ffdefbe20d8f27054e174f3c2759dae3cb98224d074dfd240`；服务切换后 `active`、`NRestarts=0`、health `ok=true`，Cluster 两组 executor/gateway worker 均在线。
+4. Connector 执行合同已升级为 11。2026-08-14 已使用 Web 公开 `.cmd` 在当前 Windows 电脑完成真实 v10→v11 原地更新：复用 Python 包、保留 owner/Agent 配置和自启方式，实际 Python 导入合同 11，服务端精确设备确认通过。更新后能力为 `available=true, count=1, configured_count=1, update_required=false`。
 5. 历史孤儿任务 `job_81f44ccae6c4` 曾因旧 Connector 在线但已不持有该 task 而永久停在 cancelling；`7020321` 上线后维护循环按精确 `current_task_id` 识别并自动收口为 `cancelled`，未手改数据库。
 6. 2026-08-14 原地升级修复已发布为 `2bff0ec`：保留合同 8 的运行中 Connector，仅通过 Web 生成的一键更新文件完成停止旧树、替换应用、实际 Python 导入合同 9、恢复 Agent ID/owner/计划任务/watchdog 与服务端精确设备确认。升级前 `update_required=true`；升级后 `available=true`、`contract_current=true`、`update_required=false`。没有手工删除目录或修改本机配置。
 7. 升级后由公开 SDK 使用同一 UserRunConfig 提交真实本地任务 `job_cfb70d31e83e`：已有 Selena + 单条 MF4 + runtime + MatFilter，1/1 成功；输出 `239,051,624` bytes，SHA-256 `52581ccea9d70ce4ac4a04d14abca570eb6762e48f5ca147e4d153d7840a14e0`；本地物化目录 `D:\RadarSim\v2-results\job_cfb70d31e83e`，Manifest 与 SDK ZIP（`12,163,709` bytes）均可用。全过程无内部绑定或手工本机准备。
+8. v11 真实删除故障注入：可逆移走 `install.json` 与 `connector.pid` 后运行正式 watchdog，两者均自动恢复；恢复前后配置 SHA-256 均为 `DF259EFDA1C783C6E4A080818E4E1ED3649EE084EE770F513E721DD6D8B87641`，supervisor PID 始终为 `65356`，未创建重复进程。服务端确认新 v11 记录已广告 3 条迁移到当前 Agent ID 的现代 data binding，旧 v9 记录保留审计但公共能力只统计一台物理电脑。
 
 ### 明确边界，不得伪装成已完成
 
