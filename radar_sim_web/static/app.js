@@ -302,11 +302,11 @@ function updateConnectionStates(capabilities = state.capabilities) {
   const updateRequired = windowsConnectorNeedsUpdate(capabilities);
   updateConnectorUpdateBanner(capabilities);
   local.textContent = connected
-    ? count > 1 ? `${count} 台 Windows 电脑已连接` : "本机已连接"
-    : updateRequired ? "本机组件需更新"
+    ? `当前账号有 ${count} 台 Windows 电脑已连接`
+    : updateRequired ? "当前账号的 Windows 连接组件需更新"
       : configured
-        ? configuredCount > 1 ? `${configuredCount} 台 Windows 电脑正在自动重连` : "本机正在自动重连"
-        : "本机未连接";
+        ? `当前账号有 ${configuredCount} 台 Windows 电脑正在自动重连`
+        : "当前账号尚未连接 Windows 电脑";
   local.className = connected
     ? "api-state ok"
     : configured || updateRequired ? "api-state local-reconnecting" : "api-state local-offline";
@@ -324,11 +324,11 @@ async function refreshCapabilities() {
     const waiting = state.connectorAwait;
     if (waiting && !hasWindowsCapability(waiting.mode, previous) && hasWindowsCapability(waiting.mode, current)) {
       state.connectorAwait = null;
-      showToast("本机已连接，等待中的任务将自动继续", 5000);
+      showToast("当前账号已有 Windows 电脑上线，等待中的任务将自动继续", 5000);
     }
     if (windowsConnectorNeedsUpdate(previous) && !windowsConnectorNeedsUpdate(current)) {
-      byId("connectorUpdateStatus").textContent = "更新完成，本机已经重新连接";
-      showToast("本机连接组件已更新并重新上线", 5000);
+      byId("connectorUpdateStatus").textContent = "更新完成，Windows 连接组件已经重新上线";
+      showToast("Windows 连接组件已更新并重新上线", 5000);
     }
     return current;
   } finally {
