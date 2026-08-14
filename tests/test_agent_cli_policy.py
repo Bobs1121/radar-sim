@@ -29,6 +29,35 @@ def test_agent_parser_defaults_to_unified_mode():
     assert args.api_token == ""
 
 
+def test_public_data_bindings_migrate_to_reinstalled_connector_id(monkeypatch, tmp_path):
+    from core.agent_data_bindings import AgentDataBindingStore
+
+    monkeypatch.setenv("RSIM_HOME", str(tmp_path / "home"))
+    root = tmp_path / "measurements"
+    root.mkdir()
+    store = AgentDataBindingStore()
+    old = store.register(
+        owner="user-alice",
+        device_id="agent-user-alice-pc-old",
+        root_path=root,
+    )
+
+    advertised = agent_module._public_data_bindings(
+        owner="user-alice",
+        device_id="agent-user-alice-pc-new",
+    )
+
+    assert len(advertised) == 1
+    assert advertised[0]["owner"] == "user-alice"
+    assert advertised[0]["device_id"] == "agent-user-alice-pc-new"
+    assert advertised[0]["id"] != old.binding_id
+    stored_devices = {binding.device_id for binding in store.list(owner="user-alice")}
+    assert stored_devices == {
+        "agent-user-alice-pc-old",
+        "agent-user-alice-pc-new",
+    }
+
+
 def test_direct_transfer_runtime_bundle_excludes_build_debug_files(tmp_path):
     runtime = tmp_path / "RelWithDebInfo"
     plugins = runtime / "plugins"

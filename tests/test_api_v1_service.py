@@ -263,6 +263,68 @@ def test_outdated_windows_connector_is_owner_scoped_and_requires_update(tmp_path
     assert charlie["windows_connector"]["update_required"] is False
 
 
+def test_reinstalled_connector_supersedes_stale_record_for_same_physical_pc(tmp_path):
+    control = ControlService(tmp_path / "capabilities.db", now_fn=lambda: 100)
+    api = ApiV1Service(control_service_factory=lambda _owner: control, now_fn=lambda: 100)
+    control.register_agent(
+        "old-install",
+        agent_id="agent-user-alice-pc-old",
+        hostname="ALICE-PC",
+        capabilities=["simulation.local"],
+        metadata={
+            "node_kind": "windows_full",
+            "user": "user-alice",
+            "connector_contract_version": max(1, WINDOWS_CONNECTOR_CONTRACT_VERSION - 1),
+        },
+    )
+    control.register_agent(
+        "reinstalled",
+        agent_id="agent-user-alice-pc-new",
+        hostname="alice-pc",
+        capabilities=["simulation.local"],
+        metadata={
+            "node_kind": "windows_full",
+            "user": "user-alice",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
+    )
+
+    capabilities = api.execution_capabilities("user-alice")["capabilities"]
+
+    assert capabilities["windows"] == {
+        "available": True,
+        "count": 1,
+        "configured_count": 1,
+        "reconnecting": False,
+    }
+    assert capabilities["windows_connector"] == {
+        "update_required": False,
+        "outdated_count": 0,
+        "required_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+    }
+
+
+def test_connector_capabilities_keep_different_physical_pcs_separate(tmp_path):
+    control = ControlService(tmp_path / "capabilities.db", now_fn=lambda: 100)
+    api = ApiV1Service(control_service_factory=lambda _owner: control, now_fn=lambda: 100)
+    for suffix in ("a", "b"):
+        control.register_agent(
+            f"pc-{suffix}",
+            agent_id=f"agent-user-alice-pc-{suffix}",
+            hostname=f"alice-pc-{suffix}",
+            capabilities=["simulation.local"],
+            metadata={
+                "node_kind": "windows_full",
+                "user": "user-alice",
+                "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+            },
+        )
+
+    windows = api.execution_capabilities("user-alice")["capabilities"]["windows"]
+    assert windows["count"] == 2
+    assert windows["configured_count"] == 2
+
+
 def test_v1_task_center_lists_only_owner_v1_jobs_with_progress_and_filter(tmp_path):
     shared = ControlService(tmp_path / "shared.db")
     api = ApiV1Service(control_service_factory=lambda owner: shared)

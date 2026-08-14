@@ -1279,7 +1279,44 @@ class ApiV1Service:
             },
         }
         owner_token = str(owner or "").strip().casefold()
-        for agent in self._control(owner).list_agents():
+        agents = self._control(owner).list_agents()
+
+        # A one-click reinstall can legitimately obtain a new Agent id when
+        # the user deleted the local install metadata.  The old registration
+        # remains useful audit history, but it must not make one physical PC
+        # look like two Connectors or keep an obsolete-contract warning alive.
+        # Collapse only owner-scoped Windows rows for the same hostname; shared
+        # Cluster workers and different PCs remain independent.
+        preferred_windows: dict[str, dict[str, Any]] = {}
+        for agent in agents:
+            metadata = dict(agent.get("metadata") or {})
+            node_kind = str(metadata.get("node_kind") or metadata.get("node.kind") or "")
+            if node_kind not in {"windows_full", "windows_agent"}:
+                continue
+            registered_user = str(metadata.get("user") or "").strip().casefold()
+            if (
+                registered_user
+                and owner_token
+                and not _same_owner_or_legacy_double_namespace(registered_user, owner_token)
+            ):
+                continue
+            hostname = str(agent.get("hostname") or metadata.get("hostname") or "").strip().casefold()
+            device_key = hostname or str(agent.get("agent_id") or "").strip().casefold()
+            last = float(agent.get("last_heartbeat") or 0.0)
+            online = last > 0 and now - last <= 120 and str(agent.get("status") or "") != "offline"
+            rank = (
+                int(windows_connector_contract_is_current(metadata)),
+                int(online),
+                last,
+            )
+            previous = preferred_windows.get(device_key)
+            if previous is None or rank > previous["rank"]:
+                preferred_windows[device_key] = {"agent": agent, "rank": rank}
+        preferred_windows_ids = {
+            str(item["agent"].get("agent_id") or "") for item in preferred_windows.values()
+        }
+
+        for agent in agents:
             metadata = dict(agent.get("metadata") or {})
             node_kind = str(metadata.get("node_kind") or metadata.get("node.kind") or "")
             key = ""
@@ -1300,6 +1337,8 @@ class ApiV1Service:
                         registered_user, owner_token
                     )
                 ):
+                    continue
+                if str(agent.get("agent_id") or "") not in preferred_windows_ids:
                     continue
             if key:
                 summary[key]["configured_count"] += 1

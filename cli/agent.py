@@ -185,12 +185,13 @@ def run(args, config):
     name = getattr(args, "name", "") or f"{hostname}-agent"
     # Default agent_id embeds user+hostname so two users on one machine don't collide.
     default_agent_id = f"agent-{user}-{hostname}"
+    requested_agent_id = getattr(args, "agent_id", "") or default_agent_id
     workspace_bindings = _public_workspace_bindings()
-    data_bindings = _public_data_bindings()
+    data_bindings = _public_data_bindings(owner=user, device_id=requested_agent_id)
     asset_bindings = _public_asset_bindings()
     agent = client.register_agent(
         name=name,
-        agent_id=getattr(args, "agent_id", "") or default_agent_id,
+        agent_id=requested_agent_id,
         hostname=hostname,
         platform=getattr(args, "platform_name", "") or platform_mod.platform(),
         capabilities=capabilities,
@@ -416,7 +417,7 @@ def _run_task(
                 current_task_id=task_id,
                 metadata={
                     "workspace_bindings": _public_workspace_bindings(),
-                    "data_bindings": _public_data_bindings(),
+                    "data_bindings": _public_data_bindings(owner=task_owner, device_id=agent_id),
                     "asset_bindings": _public_asset_bindings(),
                 },
             )
@@ -470,7 +471,9 @@ def _run_task(
                             current_task_id=task_id,
                             metadata={
                                 "workspace_bindings": _public_workspace_bindings(),
-                                "data_bindings": _public_data_bindings(),
+                                "data_bindings": _public_data_bindings(
+                                    owner=str(task.get("owner") or ""), device_id=agent_id
+                                ),
                                 "asset_bindings": _public_asset_bindings(),
                             },
                         )
@@ -894,11 +897,43 @@ def _public_workspace_bindings() -> list[dict]:
         return []
 
 
-def _public_data_bindings() -> list[dict]:
-    """Advertise path-free authorized MF4 roots for central Stage matching."""
+def _public_data_bindings(*, owner: str = "", device_id: str = "") -> list[dict]:
+    """Advertise path-free authorized MF4 roots for this Connector.
+
+    Reinstalling after local control-state loss may create a new Agent id.
+    Existing readable roots are durable user intent, so migrate same-owner
+    bindings to the current device id instead of making the next task fail at
+    Stage binding.  Legacy project-scoped rows remain advertised for rolling
+    compatibility and no root path ever leaves the Connector.
+    """
     try:
         from core.agent_data_bindings import AgentDataBindingError, AgentDataBindingStore
-        return [binding.public_dict for binding in AgentDataBindingStore().list()]
+        store = AgentDataBindingStore()
+        bindings = store.list()
+        owner_token = str(owner or "").strip()
+        device_token = str(device_id or "").strip()
+        if owner_token and device_token:
+            for binding in bindings:
+                if binding.owner == owner_token and binding.device_id != device_token:
+                    try:
+                        store.register(
+                            owner=owner_token,
+                            device_id=device_token,
+                            root_path=binding.root_path,
+                        )
+                    except (AgentDataBindingError, OSError):
+                        # A removed/unreadable root is deliberately omitted by
+                        # store.list(); a race during migration must not prevent
+                        # the Connector from registering and explaining repair.
+                        continue
+            bindings = store.list()
+            bindings = [
+                binding
+                for binding in bindings
+                if (not binding.owner and not binding.device_id)
+                or (binding.owner == owner_token and binding.device_id == device_token)
+            ]
+        return [binding.public_dict for binding in bindings]
     except (ModuleNotFoundError, OSError, ValueError):
         return []
 
@@ -1451,7 +1486,12 @@ def _run_v5_prepare_data(
                 agent_id,
                 status="busy",
                 current_task_id=task_id,
-                metadata={"data_bindings": _public_data_bindings()},
+                metadata={
+                    "data_bindings": _public_data_bindings(
+                        owner=str(payload.get("owner") or task.get("owner") or ""),
+                        device_id=agent_id,
+                    )
+                },
             )
             client.append_logs(task_id, ["[agent] submitted local data path authorized for this Windows computer"])
         leases = AgentDataLeaseStore() if needs_dataset_lease else None
