@@ -236,6 +236,57 @@ def test_collect_gateway_outage_is_retryable_without_waiting_for_timeout(
     assert store.get(run.ref, owner="alice").state == "running"
 
 
+def test_collect_uses_complete_shared_results_when_status_gateway_is_unreachable(
+    tmp_path: Path, monkeypatch
+):
+    """Completed result.ini evidence must outrank the optional status page."""
+
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="run-config-v2",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/direct/runtime-bundle.zip",
+        profile="default", job_dir=str(tmp_path / "private-job"),
+        config_path=r"\\cluster\jobs\job-demo\Config.cfg",
+        output_location=str(tmp_path / "private-output"),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="1", submit_mode="xmlrpc")
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
+        now_fn=lambda: 10.0,
+        result_catalog=None,
+    )
+    inspected = {
+        "state": "finished-success",
+        "file_count": 2,
+        "success_count": 1,
+        "fail_count": 0,
+        "error_summary": [],
+        "files": [
+            {"relative_path": "OUT/inputout.MF4", "size": 12},
+            {"relative_path": "OUT/result.ini", "size": 20},
+        ],
+        "output_mf4": [{"relative_path": "OUT/inputout.MF4", "size": 12}],
+        "result_files": [{"relative_path": "OUT/result.ini", "size": 20}],
+        "task_results": [{"relative_path": "OUT/result.ini", "successfull": "1"}],
+    }
+    monkeypatch.setattr("core.cluster.inspect_cluster_job", lambda *_args, **_kwargs: inspected)
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: pytest.fail("completed shared results must avoid the status page"),
+    )
+
+    output = execute_cluster_collect(
+        context, _job(), run.ref,
+        sleep_fn=lambda _seconds: pytest.fail("completed shared results must not poll"),
+    )
+
+    assert output["result"]["state"] == "succeeded"
+    assert output["result"]["summary"]["finished_count"] == 1
+
+
 def test_collect_missing_result_ini_never_reports_success(tmp_path: Path, monkeypatch):
     """A non-empty MF4 alone is not a complete Cluster result."""
 
@@ -668,8 +719,10 @@ def test_collect_queries_by_generated_job_directory_and_waits_for_every_dataset_
     )
 
     expected_query = str(PureWindowsPath(r"\\cluster\jobs\job-demo\Config.cfg").parent)
-    assert queries == [expected_query, expected_query]
-    assert sleeps == [15.0]
+    # Once the second local probe sees every result.ini, collection no longer
+    # depends on another status-page request.
+    assert queries == [expected_query]
+    assert sleeps == []
     assert output["result"]["state"] == "succeeded"
     assert output["result"]["summary"]["success_count"] == 2
     assert len(published_files) == len({item.casefold() for item in published_files})

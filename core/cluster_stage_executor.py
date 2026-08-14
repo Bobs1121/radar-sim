@@ -1130,6 +1130,30 @@ def execute_cluster_collect(
                 summary={"status": "cancelled"}, physical_root=lease.output_location,
             )
             return {"cluster_run_ref": run_ref, "result": result.to_dict(), "result_ref": result.ref}
+
+        # The controlled shared output directory is the authoritative source
+        # for simulation completion.  Inspect it before consulting the
+        # Cluster status Web page so a temporary monitoring-page outage cannot
+        # turn an already completed simulation into a failed control-plane
+        # Job.  This also covers deployments where the jobs page removes a
+        # short-lived task before the collector observes its durable job id.
+        inspected_probe = _inspect_cluster_job_for_collection(
+            lease.job_dir, expected_count=expected_count
+        )
+        inspected_state = str(inspected_probe.get("state") or "")
+        finished_probe = int(inspected_probe.get("success_count") or 0) + int(
+            inspected_probe.get("fail_count") or 0
+        )
+        complete_probe = not expected_count or finished_probe >= expected_count
+        if complete_probe and inspected_state in {"finished-success", "finished-failed"}:
+            state = "succeeded" if inspected_state == "finished-success" else "failed"
+            summary = {
+                "task_count": finished_probe,
+                "finished_count": int(inspected_probe.get("success_count") or 0),
+                "failed_count": int(inspected_probe.get("fail_count") or 0),
+            }
+            break
+
         info = get_cluster_web_status(config, query)
         status_error = str(info.get("error") or "").strip()
         if status_error and _is_transient_cluster_gateway_error(status_error):
