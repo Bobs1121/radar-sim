@@ -81,6 +81,66 @@ function Refresh-ProcessPath {
     $env:Path = @($knownPython, (Join-Path $knownPython "Scripts"), $machinePath, $userPath) -join ';'
 }
 
+function Stop-PreviousConnector {
+    # An upgrade must stop the old supervisor before replacing its source.
+    # Otherwise its watchdog can restart the old runtime while files are being
+    # copied, or the new supervisor can lose the single-instance mutex race.
+    $configPath = Join-Path $InstallRoot "install.json"
+    $existing = $null
+    if (Test-Path $configPath) {
+        try { $existing = Get-Content -Raw -Encoding UTF8 $configPath | ConvertFrom-Json } catch { }
+    }
+    if ($existing -and $existing.startup_name) {
+        Stop-ScheduledTask -TaskName ([string]$existing.startup_name) -ErrorAction SilentlyContinue
+    }
+    if ($existing -and $existing.watchdog_name) {
+        Stop-ScheduledTask -TaskName ([string]$existing.watchdog_name) -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName ([string]$existing.watchdog_name) -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    $pidPath = Join-Path $InstallRoot "connector.pid"
+    if (Test-Path $pidPath) {
+        try {
+            $connectorPid = [int](Get-Content -Raw -Encoding ASCII $pidPath)
+            if ($connectorPid -gt 0 -and (Get-Process -Id $connectorPid -ErrorAction SilentlyContinue)) {
+                & taskkill.exe /PID $connectorPid /T /F 2>$null | Out-Null
+                Wait-Process -Id $connectorPid -Timeout 15 -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+    }
+    # Recover installations whose pid file was lost while the supervisor or
+    # Python child survived.  Match only this user's exact AppRoot so another
+    # checkout or another Windows profile is never terminated.
+    $normalizedAppRoot = ([IO.Path]::GetFullPath($AppRoot)).Replace('/', '\').ToLowerInvariant()
+    $remainingPids = @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $line = ([string]$_.CommandLine).Replace('/', '\').ToLowerInvariant()
+                $line.Contains($normalizedAppRoot) -and (
+                    $line.Contains('start_windows.ps1') -or
+                    ($line.Contains('rsim.py') -and $line -match '\sagent(?:\s|$)')
+                )
+            } |
+            Select-Object -ExpandProperty ProcessId -Unique
+    )
+    foreach ($processId in $remainingPids) {
+        & taskkill.exe /PID ([int]$processId) /T /F 2>$null | Out-Null
+        Wait-Process -Id ([int]$processId) -Timeout 15 -ErrorAction SilentlyContinue
+    }
+}
+
+function Reset-InstalledApplication {
+    # Keep the isolated Python environment, but replace every source/runtime
+    # file.  Copying over an old tree leaves removed modules and timestamp-
+    # valid ``.pyc`` files behind; a one-character contract bump can then run
+    # old bytecode even though the visible .py file is current.
+    New-Item -ItemType Directory -Force -Path $AppRoot | Out-Null
+    foreach ($entry in @(Get-ChildItem -LiteralPath $AppRoot -Force -ErrorAction SilentlyContinue)) {
+        if ($entry.Name -ieq ".venv") { continue }
+        Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
+    }
+}
+
 if ($env:OS -ne "Windows_NT") { Fail "Run this file on the Windows PC that needs to be connected." }
 
 try {
@@ -137,7 +197,8 @@ try {
     }
 
     Step "Install and connect this PC"
-    New-Item -ItemType Directory -Force -Path $AppRoot | Out-Null
+    Stop-PreviousConnector
+    Reset-InstalledApplication
     Copy-Item -Path (Join-Path $Expanded '*') -Destination $AppRoot -Recurse -Force
     & (Join-Path $AppRoot "scripts\bootstrap.ps1") -Mode $Mode -ControlPlane linux `
         -ServerUrl $ServerUrl -Owner $Owner -InstallRoot $InstallRoot -RegisterStartup -Start

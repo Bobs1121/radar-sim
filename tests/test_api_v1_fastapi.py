@@ -283,6 +283,9 @@ def test_one_click_windows_connector_is_bound_to_current_linux_service(tmp_path)
     assert package.content == bundle.read_bytes()
     assert package.headers["X-Content-SHA256"].startswith("sha256:")
     assert len(package.headers["X-Content-SHA256"]) == 71
+    assert package.headers["X-Rsim-Connector-Version"] == str(
+        WINDOWS_CONNECTOR_CONTRACT_VERSION
+    )
 
 
 def test_one_click_windows_connector_never_embeds_long_lived_auth_tokens(tmp_path):

@@ -229,6 +229,7 @@ TransferPlan 具备 owner/job/stage/role、隔离相对路径、checksum、进�
 | control plane | Linux/DB/调度组件不可用 | 不搬大文件，稳定错误码，允许恢复/重试 |
 | connector | 未安装、离线、版本旧、路径不在该设备 | 引导一次连接/自动重连/更新或连接正确设备 |
 | routing | shared 未挂载、source_to_local 不可用 | needs-input/unavailable，不伪造成功 |
+| Connector upgrade | 旧 supervisor/watchdog、遗留模块或时间戳有效的 `.pyc` | 先停止本安装进程树并清除旧应用树；保留 `.venv`；实际 Python 导入合同版本与新源码一致后才启动和向服务端确认 |
 | build | 脚本缺失、返回非零、无 Selena.exe、脚本永久阻塞 | 保留编译日志和依赖提示；内部安全超时终止子进程树并返回 `BUILD_TIMEOUT` |
 | simulation internal | Selena 返回非零、单条结果失败 | 不由框架修复；保留日志/Manifest，继续批量 |
 | result | Manifest 矛盾、缺 `result.ini`、归档/下载不可用 | Job 不标成功；下载断流清理半包并允许重试 |

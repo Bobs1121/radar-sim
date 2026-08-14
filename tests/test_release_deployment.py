@@ -132,6 +132,16 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "Get-FileHash" not in connector
     assert "Invoke-WithRetry" in connector
     assert "foreach ($attempt in 1..$Attempts)" in connector
+    assert "Stop-PreviousConnector" in connector
+    assert "Reset-InstalledApplication" in connector
+    assert '& taskkill.exe /PID $connectorPid /T /F' in connector
+    assert "$normalizedAppRoot" in connector
+    assert "Get-CimInstance Win32_Process" in connector
+    assert 'if ($entry.Name -ieq ".venv") { continue }' in connector
+    assert "Clear-ConnectorPythonCache" in bootstrap
+    assert "Get-ConnectorRuntimeContract" in bootstrap
+    assert "Old Python cache was not replaced" in bootstrap
+    assert "connector_contract_version = $ConnectorRuntimeContract" in bootstrap
     assert "Get-RemoteHealth" in bootstrap
     assert "unreachable after $Attempts attempts" in bootstrap
     assert "/api/v1/windows-connector/status?agent_id=$encodedAgentId" in bootstrap

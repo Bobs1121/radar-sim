@@ -25,6 +25,7 @@ from starlette.staticfiles import StaticFiles
 
 from core.api_v1 import ApiV1Error, ApiV1Service, format_error_envelope, iter_sse, make_json_safe
 from core.control_service import ControlService
+from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION
 from core.http_auth import AuthPrincipal, HttpAuthError, HttpTokenAuthenticator
 from core.user_config import UserRunConfig
 from core.user import USER_HEADER, current_user, normalize_user, stable_user_identity
@@ -512,7 +513,10 @@ def create_app(
             bundle,
             media_type="application/zip",
             filename="rsim-windows-connector.zip",
-            headers={"X-Content-SHA256": checksum, "X-Rsim-Connector-Version": "1"},
+            headers={
+                "X-Content-SHA256": checksum,
+                "X-Rsim-Connector-Version": str(WINDOWS_CONNECTOR_CONTRACT_VERSION),
+            },
         )
 
     @app.get("/api/v1/windows-connector/status", include_in_schema=False)

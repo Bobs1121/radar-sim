@@ -45,6 +45,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 16. 数据传输重试跳过已经持久化完成的 role，防止重复复制/重复仿真；多 MF4 mixed source 的候选和选择依据贯穿 Transfer/Cluster 证据，同时仍按用户合同自动选择一个继续运行。结果 ZIP/Manifest 缺失不能形成业务成功。
 17. `serve-v1` 增加服务端维护循环：启动即回收一次、之后默认每 30 秒检查失联或失去执行归属的任务。只有新鲜心跳明确报告 `current_task_id`（兼容旧 Connector 的 `busy + empty task`）才证明 Stage 仍在执行；在线但 idle/已切换其它任务的孤儿 Stage 在 30 秒交接保护后同样回收。已请求取消的 Stage 最终落为 `cancelled`；普通 Stage 仍按最多 3 次的既有策略重排/失败，避免任务永久停在 `running/cancelling`。周期、阈值、交接保护和重试上限只由部署环境变量控制，不进入用户 YAML。
 18. `existing + cluster` 在 Selena、runtime、数据和配置均位于 Cluster 可见共享/central namespace 时，完全跳过 Windows resolver/build/register，直接由 Linux/Cluster 环境检查、预检和提交；无需 Connector，也不加载项目规则。逻辑 `config-asset:*` 仍通过成熟的小配置复制链处理，不把 Linux 内部引用冒充 worker 可见路径。
+19. 2026-08-14 真实升级复验发现：磁盘源码已是合同 9，但确定性归档时间戳、相同文件大小和遗留 `__pycache__` 使新 Python 进程继续加载合同 8。修复后升级会先停止本安装目录的计划任务、watchdog、supervisor 和 Agent 进程树；保留 `.venv`，原子式清除其余旧应用文件后复制新包；bootstrap 再清理应用 bytecode cache，并用实际 Connector Python 导入合同版本，与新源码声明比对成功后才允许注册/启动。服务端包头同时发布真实合同版本，不再写固定 `1`。
 
 ### 自动化证据
 
@@ -90,6 +91,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 3. Windows Connector v9 包为 `8,350,502` bytes，SHA-256 `0f9e299c8e8a5f98bd582dfe79f436708037b660f6aab1759e391950bd4bcf12`；Range 下载实测返回 `206` 与 `bytes 0-1023/8350502`。候选 release Linux 门禁 `77 passed, 1 skipped`；服务切换后 `active`、`NRestarts=0`、health `ok=true`，Cluster 四个角色 worker 均在线。
 4. Connector 执行合同已升级为 9。旧 Connector 会被服务端阻止领取任务；用户再次运行 Web 的“一键连接/更新本机”会保留 Agent ID、路径绑定和自启方式，并把旧 `web-*` 随机 owner 一次性迁移到稳定 `user-<NTID>`。代码和自动化已通过，真实新用户电脑仍需再运行一次安装包作为最终外部验收，不能在此之前写成真实安装已通过。
 5. 历史孤儿任务 `job_81f44ccae6c4` 曾因旧 Connector 在线但已不持有该 task 而永久停在 cancelling；`7020321` 上线后维护循环按精确 `current_task_id` 识别并自动收口为 `cancelled`，未手改数据库。
+6. **2026-08-14 当前发布阻断**：`7020321` 的首次真实本机升级暴露旧 `.pyc` 被误加载，表现为“源码 v9、运行合同 v8”。修复正在部署；在新的全新安装/旧版升级黑盒均通过前，不得再次宣称 Connector v9 的真实 Windows 安装已验收。
 
 ### 明确边界，不得伪装成已完成
 

@@ -150,6 +150,32 @@ function Get-ConnectorProcessId {
     return 0
 }
 
+function Clear-ConnectorPythonCache {
+    # Release archives use deterministic timestamps.  An in-place upgrade can
+    # therefore leave an old timestamp/size-valid .pyc beside new source.  The
+    # Connector must never start until all application bytecode caches are
+    # rebuilt from the just-downloaded package.  The reusable .venv is outside
+    # these source roots and is intentionally preserved.
+    foreach ($sourceRootName in @("cli", "core", "radar_sim_sdk", "radar_sim_web", "platforms", "plugins")) {
+        $sourceRoot = Join-Path $RepoRoot $sourceRootName
+        if (-not (Test-Path $sourceRoot)) { continue }
+        Get-ChildItem -LiteralPath $sourceRoot -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Filter "*.pyc" -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-ConnectorRuntimeContract {
+    $result = Invoke-CapturedNative -Executable $VenvPy -Arguments @(
+        "-c", "from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION as v; print(v)"
+    )
+    if ($result.ExitCode -ne 0 -or [string]$result.Output -notmatch '^\d+$') {
+        Fail "The installed Connector runtime could not report its task contract. Reconnect this PC from Web."
+    }
+    return [int]([string]$result.Output).Trim()
+}
+
 Set-Location $RepoRoot
 Write-Step "1/5 Check Windows and Python"
 if (-not $IsWindows -and $env:OS -ne "Windows_NT") {
@@ -591,6 +617,18 @@ if ($Mode -eq "light") {
 
 Write-Step "5/5 Basic verification"
 if (-not $SkipCheck) {
+    Clear-ConnectorPythonCache
+    $ConnectorRuntimeContract = Get-ConnectorRuntimeContract
+    $policySource = Get-Content -Raw -Encoding UTF8 (Join-Path $RepoRoot "core\agent_policy.py")
+    $policyMatch = [regex]::Match($policySource, '(?m)^WINDOWS_CONNECTOR_CONTRACT_VERSION\s*=\s*(\d+)\s*$')
+    if (-not $policyMatch.Success) {
+        Fail "The downloaded Connector package does not declare a task contract."
+    }
+    $ExpectedConnectorContract = [int]$policyMatch.Groups[1].Value
+    if ($ConnectorRuntimeContract -ne $ExpectedConnectorContract) {
+        Fail "The Connector runtime loaded contract $ConnectorRuntimeContract but the downloaded source requires $ExpectedConnectorContract. Old Python cache was not replaced."
+    }
+    Write-Ok "Connector task contract $ConnectorRuntimeContract was loaded from the downloaded runtime."
     $env:RSIM_AGENT_TOKEN = $AgentToken
     $env:RSIM_API_TOKEN = $ApiToken
     $checkSucceeded = $true
@@ -615,6 +653,7 @@ if (-not $SkipCheck) {
                 metadata = @{
                     node_kind = if ($Mode -eq "full") { "windows_full" } else { "windows_agent" }
                     windows_mode = $Mode
+                    connector_contract_version = $ConnectorRuntimeContract
                     installer_check = $true
                 }
             } | ConvertTo-Json -Depth 4
