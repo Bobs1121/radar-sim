@@ -195,10 +195,10 @@ def test_submit_transport_failure_is_retryable_without_rebuilding(tmp_path: Path
     assert store.get(run.ref, owner="alice").state == "prepared"
 
 
-def test_collect_gateway_outage_is_retryable_without_waiting_for_timeout(
+def test_collect_gateway_outage_keeps_observing_until_shared_result(
     tmp_path: Path, monkeypatch
 ):
-    """A status-page outage must not leave collection polling for hours."""
+    """A status-page outage must not terminate a long-running Cluster Run."""
 
     store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
     run = store.create_run(
@@ -211,11 +211,42 @@ def test_collect_gateway_outage_is_retryable_without_waiting_for_timeout(
         output_location=str(tmp_path / "private-output"),
     )
     store.mark_submitted(run.ref, owner="alice", external_job_id="10321", submit_mode="xmlrpc")
+    clock = [10.0]
     context = SimpleNamespace(
         run_store=store,
         config_loader=lambda _project: {"cluster": {"timeout_min": 120}},
-        now_fn=lambda: 10.0,
+        now_fn=lambda: clock[0],
         result_catalog=None,
+    )
+    running = {
+        "state": "running-or-started",
+        "file_count": 0,
+        "success_count": 0,
+        "fail_count": 0,
+        "error_summary": [],
+        "files": [],
+        "output_mf4": [],
+        "result_files": [],
+        "task_results": [],
+    }
+    finished = {
+        "state": "finished-success",
+        "file_count": 2,
+        "success_count": 1,
+        "fail_count": 0,
+        "error_summary": [],
+        "files": [
+            {"relative_path": "OUT/inputout.MF4", "size": 12},
+            {"relative_path": "OUT/result.ini", "size": 20},
+        ],
+        "output_mf4": [{"relative_path": "OUT/inputout.MF4", "size": 12}],
+        "result_files": [{"relative_path": "OUT/result.ini", "size": 20}],
+        "task_results": [{"relative_path": "OUT/result.ini", "successfull": "1"}],
+    }
+    inspections = iter((running, finished, finished))
+    monkeypatch.setattr(
+        "core.cluster.inspect_cluster_job",
+        lambda *_args, **_kwargs: next(inspections),
     )
     monkeypatch.setattr(
         "core.cluster.get_cluster_web_status",
@@ -226,14 +257,16 @@ def test_collect_gateway_outage_is_retryable_without_waiting_for_timeout(
         },
     )
 
-    with pytest.raises(ClusterStageExecutionError) as excinfo:
-        execute_cluster_collect(context, _job(), run.ref, sleep_fn=lambda _seconds: pytest.fail("must not poll"))
+    def advance_clock(seconds: float) -> None:
+        # Jump past the old one-minute test timeout to prove collection is not
+        # governed by a fixed wall-clock deadline.
+        clock[0] += 7200.0
 
-    assert excinfo.value.code == "CLUSTER_GATEWAY_UNREACHABLE"
-    assert excinfo.value.actions == (
-        {"type": "retry_stage", "label": "Retry Cluster result collection"},
-    )
-    assert store.get(run.ref, owner="alice").state == "running"
+    output = execute_cluster_collect(context, _job(), run.ref, sleep_fn=advance_clock)
+
+    assert output["result"]["state"] == "succeeded"
+    assert output["result"]["summary"]["finished_count"] == 1
+    assert store.get(run.ref, owner="alice").state == "succeeded"
 
 
 def test_collect_uses_complete_shared_results_when_status_gateway_is_unreachable(
@@ -287,8 +320,8 @@ def test_collect_uses_complete_shared_results_when_status_gateway_is_unreachable
     assert output["result"]["summary"]["finished_count"] == 1
 
 
-def test_collect_missing_result_ini_never_reports_success(tmp_path: Path, monkeypatch):
-    """A non-empty MF4 alone is not a complete Cluster result."""
+def test_collect_waits_for_result_ini_after_official_completion(tmp_path: Path, monkeypatch):
+    """A copied MF4 alone must not fail collection before result.ini arrives."""
 
     store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
     run = store.create_run(
@@ -307,6 +340,27 @@ def test_collect_missing_result_ini_never_reports_success(tmp_path: Path, monkey
         now_fn=lambda: 10.0,
         result_catalog=None,
     )
+    clock = [10.0]
+    incomplete = {
+        "state": "output-present",
+        "file_count": 1,
+        "success_count": 0,
+        "fail_count": 0,
+        "error_summary": [],
+        "output_mf4": [{"relative_path": "output/inputout.MF4", "size": 12}],
+        "result_files": [],
+    }
+    complete = {
+        "state": "finished-success",
+        "file_count": 2,
+        "success_count": 1,
+        "fail_count": 0,
+        "error_summary": [],
+        "output_mf4": [{"relative_path": "output/inputout.MF4", "size": 12}],
+        "result_files": [{"relative_path": "output/result.ini", "size": 20}],
+        "task_results": [{"relative_path": "output/result.ini", "successfull": "1"}],
+    }
+    inspections = iter((incomplete, complete, complete))
     monkeypatch.setattr(
         "core.cluster.get_cluster_web_status",
         lambda *_args, **_kwargs: {
@@ -317,23 +371,18 @@ def test_collect_missing_result_ini_never_reports_success(tmp_path: Path, monkey
     )
     monkeypatch.setattr(
         "core.cluster.inspect_cluster_job",
-        lambda *_args, **_kwargs: {
-            "state": "output-present",
-            "file_count": 1,
-            "success_count": 0,
-            "fail_count": 0,
-            "error_summary": [],
-            "output_mf4": [{"relative_path": "output/inputout.MF4", "size": 12}],
-            "result_files": [],
-        },
+        lambda *_args, **_kwargs: next(inspections),
     )
 
-    output = execute_cluster_collect(context, _job(), run.ref, sleep_fn=lambda _seconds: pytest.fail("must not poll"))
+    def advance_clock(seconds: float) -> None:
+        # Prove that a delayed result copy remains retryable after the old
+        # fixed observation window would have expired.
+        clock[0] += 7200.0
 
-    assert output["result"]["state"] == "failed"
-    assert output["result"]["summary"]["errors"] == [
-        "Cluster worker produced no result.ini for any simulation input"
-    ]
+    output = execute_cluster_collect(context, _job(), run.ref, sleep_fn=advance_clock)
+
+    assert output["result"]["state"] == "succeeded"
+    assert output["result"]["summary"]["finished_count"] == 1
 
 
 def test_collect_rechecks_truncated_directory_before_declaring_result_ini_missing(

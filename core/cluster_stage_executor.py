@@ -1106,10 +1106,6 @@ def execute_cluster_collect(
     owner = _owner(job)
     lease = context.run_store.resolve_private(run_ref, owner=owner)
     config = context.config_loader(lease.public.project)
-    timeout = int(((job.get("spec") or {}).get("simulation") or {}).get("timeout_minutes") or 0)
-    if timeout <= 0:
-        timeout = int((config.get("cluster") or {}).get("timeout_min") or 120)
-    deadline = context.now_fn() + max(timeout + 10, 15) * 60
     # XML-RPC addSimulation returns the number of created tasks on this
     # deployment (for example ``12``), not the durable Cluster job id.  The
     # generated Config path is unique and lets the official status page resolve
@@ -1119,10 +1115,20 @@ def execute_cluster_collect(
     expected_count = _expected_cluster_task_count(job)
     state = "running"
     summary: dict[str, Any] = {}
+    gateway_error_streak = 0
+    terminal_status_without_result_streak = 0
     from core.cluster import get_cluster_web_status, inspect_cluster_job
 
     context.run_store.update_state(run_ref, owner=owner, state="running")
-    while context.now_fn() < deadline:
+    # Collection is intentionally open-ended.  The Cluster's own Config.cfg
+    # timeout (if any) governs Selena/Cluster execution; this control-plane
+    # observer must not impose a second wall-clock deadline.  Long batches can
+    # finish after hours, and a temporary status-page outage must not turn a
+    # still-running external job into a terminal control failure.  Explicit
+    # cancellation, a terminal Cluster failure, and authoritative result
+    # evidence remain the terminal exits; a dead observer is recovered by the
+    # normal Agent lease reclaim.
+    while True:
         if cancelled():
             context.run_store.update_state(run_ref, owner=owner, state="cancelled")
             result = context.run_store.finalize_result(
@@ -1144,9 +1150,16 @@ def execute_cluster_collect(
         finished_probe = int(inspected_probe.get("success_count") or 0) + int(
             inspected_probe.get("fail_count") or 0
         )
-        complete_probe = not expected_count or finished_probe >= expected_count
-        if complete_probe and inspected_state in {"finished-success", "finished-failed"}:
-            state = "succeeded" if inspected_state == "finished-success" else "failed"
+        complete_probe = _collection_probe_is_complete(
+            inspected_probe, expected_count=expected_count
+        )
+        if complete_probe:
+            state = (
+                "failed"
+                if inspected_state == "finished-failed"
+                or int(inspected_probe.get("fail_count") or 0) > 0
+                else "succeeded"
+            )
             summary = {
                 "task_count": finished_probe,
                 "finished_count": int(inspected_probe.get("success_count") or 0),
@@ -1158,16 +1171,23 @@ def execute_cluster_collect(
         status_error = str(info.get("error") or "").strip()
         if status_error and _is_transient_cluster_gateway_error(status_error):
             # ``get_cluster_web_status`` intentionally returns a path-free
-            # observation object instead of raising transport exceptions.
-            # Do not let a refused/timed-out gateway turn into a two-hour
-            # polling stall or a generic non-retryable Stage failure.  The
-            # prepared run remains ``running`` and the scheduler can retry
-            # collection without resubmitting the remote simulation.
-            raise ClusterStageExecutionError(
-                "Cluster gateway is temporarily unavailable; retry collection without rerunning simulation",
-                code="CLUSTER_GATEWAY_UNREACHABLE",
-                actions=({"type": "retry_stage", "label": "Retry Cluster result collection"},),
-            )
+            # observation object instead of raising transport exceptions.  A
+            # status-page outage is an observation degradation, not a Cluster
+            # execution result.  Keep the prepared run ``running`` and let the
+            # shared output probe at the top of the next iteration decide when
+            # result.ini/MF4 evidence makes the Run terminal.  Backoff is not
+            # a total timeout: it only avoids hammering an unavailable page.
+            gateway_error_streak += 1
+            if gateway_error_streak == 1 or gateway_error_streak % 10 == 0:
+                _LOG.warning(
+                    "Cluster status observation unavailable; continuing output polling "
+                    "(consecutive_failures=%s, error=%s)",
+                    gateway_error_streak,
+                    status_error,
+                )
+            sleep_fn(min(15.0 * (2 ** min(gateway_error_streak - 1, 3)), 120.0))
+            continue
+        gateway_error_streak = 0
         state = _terminal_state(info)
         # Some Cluster V2.0 deployments return a submission success flag
         # (commonly ``1``) instead of the durable job id, and the official
@@ -1189,14 +1209,37 @@ def execute_cluster_collect(
             finished_probe = int(inspected_probe.get("success_count") or 0) + int(
                 inspected_probe.get("fail_count") or 0
             )
-            complete_probe = not expected_count or finished_probe >= expected_count
-            if inspected_state == "finished-success" and complete_probe:
-                state = "succeeded"
-            elif inspected_state == "finished-failed" and complete_probe:
-                state = "failed"
-            elif state == "succeeded" and inspected_state == "finished-failed":
-                # Web status said succeeded but result.ini says failed.
-                state = "failed"
+            complete_probe = _collection_probe_is_complete(
+                inspected_probe, expected_count=expected_count
+            )
+            if complete_probe:
+                # result.ini-based inspection outranks the coarse web status.
+                state = (
+                    "failed"
+                    if inspected_state == "finished-failed"
+                    or int(inspected_probe.get("fail_count") or 0) > 0
+                    else "succeeded"
+                )
+                terminal_status_without_result_streak = 0
+            elif state == "succeeded":
+                # A terminal Web status is only an execution observation.  The
+                # result directory may still be copying a large MF4/result.ini
+                # set from the worker.  Do not turn that gap into a missing
+                # result failure; keep observing until the shared directory
+                # supplies the authoritative per-input evidence.
+                state = "running"
+                terminal_status_without_result_streak += 1
+                if (
+                    terminal_status_without_result_streak == 1
+                    or terminal_status_without_result_streak % 10 == 0
+                ):
+                    _LOG.warning(
+                        "Cluster reports success but shared results are not complete; "
+                        "continuing collection (observations=%s)",
+                        terminal_status_without_result_streak,
+                    )
+            else:
+                terminal_status_without_result_streak = 0
             if state in {"succeeded", "failed"}:
                 summary = {
                     "task_count": int(inspected_probe.get("success_count") or 0)
@@ -1209,9 +1252,6 @@ def execute_cluster_collect(
                 summary = _public_cluster_summary(info)
             break
         sleep_fn(15.0)
-    else:
-        # A local polling deadline must never lie that the remote job failed.
-        raise ClusterStageExecutionError("Cluster job is still running after the observation window")
 
     inspected = _inspect_cluster_job_for_collection(
         lease.job_dir, expected_count=expected_count
@@ -1344,6 +1384,31 @@ def _inspect_cluster_job_for_collection(job_dir: str, *, expected_count: int = 0
         # original one-argument helper; their bounded result is authoritative.
         return inspected
     return expanded if isinstance(expanded, dict) else inspected
+
+
+def _collection_probe_is_complete(probe: dict[str, Any], *, expected_count: int) -> bool:
+    """Return whether a shared-directory probe has terminal result evidence.
+
+    The production inspector supplies an explicit terminal state.  Keep the
+    metadata/file evidence fallback as well because older Cluster adapters and
+    deployment doubles may omit that field while still returning all
+    ``result.ini`` records.  A non-empty MF4 without result.ini is deliberately
+    incomplete: the worker may still be copying or finalizing the result set.
+    """
+    try:
+        finished_count = int(probe.get("success_count") or 0) + int(
+            probe.get("fail_count") or 0
+        )
+    except (TypeError, ValueError):
+        finished_count = 0
+    if expected_count and finished_count < expected_count:
+        return False
+    state = str(probe.get("state") or "").strip().lower()
+    if state in {"finished-success", "finished-failed"}:
+        return True
+    return bool(probe.get("result_files")) and bool(
+        probe.get("output_mf4") or probe.get("task_results") or probe.get("files")
+    )
 
 
 def _dedupe_relative_paths(values: list[str]) -> list[str]:
