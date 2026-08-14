@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -95,6 +96,8 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert 'watchdogTaskName = "$taskName-Watchdog"' in bootstrap
     assert "RepetitionInterval (New-TimeSpan -Minutes 2)" in bootstrap
     assert "watch_windows_connector.ps1" in bootstrap
+    assert 'RecoveryConfigPath = Join-Path $DataRoot "install.backup.json"' in bootstrap
+    assert "function Save-InstallConfig" in bootstrap
     assert 'RunHiddenScript = Join-Path $PSScriptRoot "run_hidden.vbs"' in bootstrap
     assert 'New-ScheduledTaskAction -Execute "wscript.exe"' in bootstrap
     assert "-StartWhenAvailable" in bootstrap
@@ -109,6 +112,10 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "connector.log" in starter
     watchdog = (ROOT / "scripts" / "watch_windows_connector.ps1").read_text(encoding="utf-8")
     assert "Test-ConnectorSupervisor" in watchdog
+    assert "Find-ConnectorSupervisor" in watchdog
+    assert "Repair-ConnectorControlFiles" in watchdog
+    assert "Recovered deleted install metadata" in watchdog
+    assert "Recovered deleted or stale supervisor PID metadata" in watchdog
     assert "Start-ScheduledTask -TaskName $ConnectorTaskName" in watchdog
     assert "watchdog.log" in watchdog
     hidden_launcher = (ROOT / "scripts" / "run_hidden.vbs").read_text(encoding="utf-8")
@@ -199,6 +206,47 @@ def test_connector_supervisor_does_not_treat_native_stderr_as_child_crash():
     assert '& $venvPy @agentArgs *>> $agentLog' in source
     assert '$exitCode = $LASTEXITCODE' in source
     assert '$ErrorActionPreference = $savedErrorActionPreference' in source
+
+
+def test_connector_start_restores_deleted_install_metadata_from_backup(tmp_path: Path):
+    if sys.platform != "win32":
+        pytest.skip("Connector recovery is a Windows-only behavior")
+    install_root = tmp_path / "radar-sim"
+    data_root = install_root / "data"
+    scripts_root = install_root / "app" / "scripts"
+    data_root.mkdir(parents=True)
+    scripts_root.mkdir(parents=True)
+    starter = ROOT / "scripts" / "start_windows.ps1"
+    installed_starter = scripts_root / "start_windows.ps1"
+    installed_starter.write_bytes(starter.read_bytes())
+    recovery = data_root / "install.backup.json"
+    recovery.write_text(
+        json.dumps({
+            "mode": "unified",
+            "control_plane": "linux",
+            "server_url": "http://127.0.0.1:1",
+            "agent_id": "agent-recovery-test",
+            "owner": "user-recovery-test",
+            "data_root": str(data_root),
+        }),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(installed_starter), "-InstallRoot", str(install_root),
+            "-NoBrowser",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode != 0  # the fixture intentionally has no venv
+    restored = json.loads((install_root / "install.json").read_text(encoding="utf-8-sig"))
+    assert restored["agent_id"] == "agent-recovery-test"
 
 
 def test_windows_connector_bundle_contains_hidden_launcher(tmp_path: Path):

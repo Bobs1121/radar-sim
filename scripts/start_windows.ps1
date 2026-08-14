@@ -14,11 +14,24 @@ if (-not $InstallRoot) {
     $InstallRoot = Join-Path $base "radar-sim"
 }
 $configPath = Join-Path $InstallRoot "install.json"
+$recoveryConfigPath = Join-Path $InstallRoot "data\install.backup.json"
 $secretsPath = Join-Path $InstallRoot "credentials.json"
+if (-not (Test-Path -LiteralPath $configPath) -and (Test-Path -LiteralPath $recoveryConfigPath)) {
+    $repairTemp = "$configPath.repairing"
+    Copy-Item -LiteralPath $recoveryConfigPath -Destination $repairTemp -Force
+    Move-Item -LiteralPath $repairTemp -Destination $configPath -Force
+}
 if (-not (Test-Path $configPath)) {
-    throw "Not installed. Run .\scripts\bootstrap.ps1 once to connect this PC."
+    throw "The Connector install metadata is missing and no recovery copy exists. Reconnect this PC from Web."
 }
 $config = Get-Content -Raw -Encoding UTF8 $configPath | ConvertFrom-Json
+if (-not (Test-Path -LiteralPath $recoveryConfigPath)) {
+    $recoveryParent = Split-Path -Parent $recoveryConfigPath
+    New-Item -ItemType Directory -Force -Path $recoveryParent | Out-Null
+    $recoveryTemp = "$recoveryConfigPath.tmp"
+    Copy-Item -LiteralPath $configPath -Destination $recoveryTemp -Force
+    Move-Item -LiteralPath $recoveryTemp -Destination $recoveryConfigPath -Force
+}
 $secrets = if (Test-Path $secretsPath) {
     Get-Content -Raw -Encoding UTF8 $secretsPath | ConvertFrom-Json
 } else {
@@ -30,6 +43,7 @@ $RsimEntry = Join-Path $RepoRoot "rsim.py"
 if (-not (Test-Path $RsimEntry)) { throw "radar-sim entry point is missing; reconnect this PC from Web." }
 
 $env:RSIM_HOME = [string]$config.data_root
+$env:RSIM_CONNECTOR_INSTALL_ROOT = $InstallRoot
 $env:RSIM_USER = [string]$config.owner
 $env:RSIM_OWNER_BOUND = "1"
 $env:RSIM_AGENT_TOKEN = [string]$secrets.agent_token

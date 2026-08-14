@@ -492,7 +492,17 @@ $installConfig = [ordered]@{
     optional_dependency_error = [string]$ConnectorOptionalDependencyError
 }
 $secrets = [ordered]@{ version = 1; agent_token = $AgentToken; api_token = $ApiToken }
-$installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
+$RecoveryConfigPath = Join-Path $DataRoot "install.backup.json"
+function Save-InstallConfig {
+    $json = $installConfig | ConvertTo-Json
+    $primaryTemp = "$ConfigPath.tmp"
+    $recoveryTemp = "$RecoveryConfigPath.tmp"
+    $json | Set-Content -Encoding UTF8 $primaryTemp
+    Move-Item -LiteralPath $primaryTemp -Destination $ConfigPath -Force
+    $json | Set-Content -Encoding UTF8 $recoveryTemp
+    Move-Item -LiteralPath $recoveryTemp -Destination $RecoveryConfigPath -Force
+}
+Save-InstallConfig
 $secrets | ConvertTo-Json | Set-Content -Encoding UTF8 $SecretsPath
 
 # Remote token persistence is required for unattended reconnect.  Local mode
@@ -523,7 +533,7 @@ if ($vsCompilers.Count -eq 0) {
     Write-Ok "User-managed Visual Studio detected: $($vsCompilers -join ', ')"
 }
 $installConfig["visual_studio_detected"] = ($vsCompilers.Count -gt 0)
-$installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
+Save-InstallConfig
 
 if ($RegisterStartup) {
     Write-Step "Register automatic startup and reconnect"
@@ -584,7 +594,7 @@ if ($RegisterStartup) {
         $installConfig["watchdog_name"] = ""
         Write-Warn "Scheduled Task is blocked; registered the current-user Startup fallback."
     }
-    $installConfig | ConvertTo-Json | Set-Content -Encoding UTF8 $ConfigPath
+    Save-InstallConfig
 }
 
 $policyCheck = @'

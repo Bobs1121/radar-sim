@@ -637,7 +637,7 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert "/windows-connector/connect.cmd?mode=" in app_js.text
     assert "RadarSim-连接本机.cmd" in app_js.text
     assert "请双击运行已下载的文件" in app_js.text
-    assert "本机已连接，等待中的任务将自动继续" in app_js.text
+    assert "当前账号已有 Windows 电脑上线，等待中的任务将自动继续" in app_js.text
     request_headers_block = app_js.text.split("function requestHeaders", 1)[1].split(
         "async function", 1
     )[0]
@@ -659,7 +659,7 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert "document.body.append(link)" in blob_download_block
     assert "window.setTimeout" in blob_download_block
     assert "Linux 服务已连接" in app_js.text
-    assert "本机未连接" in app_js.text
+    assert "当前账号尚未连接 Windows 电脑" in app_js.text
     assert "createFormWindowsRequirement" in app_js.text
     assert "createWindowsCallout" in index.text
     assert "首次使用准备" in index.text

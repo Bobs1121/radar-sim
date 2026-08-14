@@ -70,7 +70,12 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # Connectors can accept the Stage shape but fail to load Selena's external DLLs,
 # so the control plane must require a one-click update instead of silently
 # scheduling work to stale code.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 9
+# v10 adds persisted-install self-repair.  The Connector keeps a restricted
+# backup of its non-secret install metadata and the watchdog reconstructs a
+# deleted PID marker from the real supervisor process.  Older Connectors can
+# remain online after those files are deleted but cannot survive a restart, so
+# they must update before the Web may describe them as production-ready.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 10
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

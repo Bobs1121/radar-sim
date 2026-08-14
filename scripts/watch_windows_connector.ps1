@@ -12,6 +12,8 @@ if (-not $InstallRoot) {
 }
 if (-not $ConnectorTaskName) { $ConnectorTaskName = "RadarSimConnector-$env:USERNAME" }
 $PidPath = Join-Path $InstallRoot "connector.pid"
+$ConfigPath = Join-Path $InstallRoot "install.json"
+$RecoveryConfigPath = Join-Path $InstallRoot "data\install.backup.json"
 $StartScript = Join-Path $InstallRoot "app\scripts\start_windows.ps1"
 $LogRoot = Join-Path $InstallRoot "logs"
 $LogPath = Join-Path $LogRoot "watchdog.log"
@@ -25,7 +27,43 @@ function Write-WatchdogLog([string]$Message) {
         -Value ("{0:o} {1}" -f (Get-Date), $Message)
 }
 
+function Find-ConnectorSupervisor {
+    if (-not (Test-Path -LiteralPath $StartScript)) { return $null }
+    $expected = ([IO.Path]::GetFullPath($StartScript)).Replace('/', '\').ToLowerInvariant()
+    return @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $line = ([string]$_.CommandLine).Replace('/', '\').ToLowerInvariant()
+                $line.Contains($expected) -and $line.Contains('-supervise')
+            } |
+            Sort-Object ProcessId
+    ) | Select-Object -First 1
+}
+
+function Repair-ConnectorControlFiles {
+    if (-not (Test-Path -LiteralPath $ConfigPath) -and (Test-Path -LiteralPath $RecoveryConfigPath)) {
+        try {
+            $repairTemp = "$ConfigPath.repairing"
+            Copy-Item -LiteralPath $RecoveryConfigPath -Destination $repairTemp -Force
+            Move-Item -LiteralPath $repairTemp -Destination $ConfigPath -Force
+            Write-WatchdogLog "Recovered deleted install metadata from the restricted backup."
+        } catch {
+            Write-WatchdogLog ("Install metadata recovery failed: " + $_.Exception.Message)
+        }
+    }
+    $supervisor = Find-ConnectorSupervisor
+    if ($supervisor) {
+        $recordedPid = 0
+        try { $recordedPid = [int](Get-Content -Raw -Encoding ASCII $PidPath -ErrorAction SilentlyContinue) } catch { }
+        if ($recordedPid -ne [int]$supervisor.ProcessId) {
+            Set-Content -LiteralPath $PidPath -Value ([string]$supervisor.ProcessId) -Encoding ASCII
+            Write-WatchdogLog "Recovered deleted or stale supervisor PID metadata."
+        }
+    }
+}
+
 function Test-ConnectorSupervisor {
+    Repair-ConnectorControlFiles
     if (-not (Test-Path $PidPath)) { return $false }
     try {
         $connectorPid = [int](Get-Content -Raw -Encoding ASCII $PidPath)
@@ -43,7 +81,12 @@ function Test-ConnectorSupervisor {
 }
 
 try {
+    Repair-ConnectorControlFiles
     if (Test-ConnectorSupervisor) { exit 0 }
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        Write-WatchdogLog "Connector install metadata and its recovery copy are missing; Web one-click repair is required."
+        exit 2
+    }
     Write-WatchdogLog "Connector supervisor is absent; requesting restart."
     Remove-Item -LiteralPath $PidPath -Force -ErrorAction SilentlyContinue
     $task = Get-ScheduledTask -TaskName $ConnectorTaskName -ErrorAction Stop
