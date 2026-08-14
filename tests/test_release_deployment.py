@@ -140,8 +140,10 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "Invoke-WithRetry" in connector
     assert "foreach ($attempt in 1..$Attempts)" in connector
     assert "Stop-PreviousConnector" in connector
+    assert "Stop-ProcessTreeIfPresent" in connector
+    assert '"not found" means the requested end state was reached' in connector
     assert "Reset-InstalledApplication" in connector
-    assert '& taskkill.exe /PID $connectorPid /T /F' in connector
+    assert '& taskkill.exe /PID $ProcessId /T /F' in connector
     assert "$normalizedAppRoot" in connector
     assert "Get-CimInstance Win32_Process" in connector
     assert 'if ($entry.Name -ieq ".venv") { continue }' in connector
