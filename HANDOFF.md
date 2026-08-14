@@ -1,9 +1,9 @@
 # radar-sim V2 当前交接
 
-> 更新时间：2026-08-13
-> 状态：V2 project-free、Connector v9 与全链异常收口已部署；真实旧版原地升级与升级后本地仿真已通过
+> 更新时间：2026-08-14
+> 状态：V2 project-free、Connector v9 与全链异常收口已部署；真实本地与 Cluster 仿真均通过
 > 分支：`codex/new-branch`
-> 当前生产基线：`2bff0ec`，Linux release `/home/hoz2wx/radar-sim-2bff0ec`
+> 当前生产基线：`77ff032`，Linux release `/home/hoz2wx/radar-sim-77ff032`
 > 回滚基线：`7020321`，Linux release `/home/hoz2wx/radar-sim-7020321`
 
 本文是下一位开发者的唯一实时入口。历史长篇实施日志已从根 handoff 删除；需要追溯时使用 Git 历史和 `docs/handoffs/` 中带日期的证据文件。产品和架构决策依次以 `docs/PRODUCT_CONTRACT.md`、`PRD.md`、`docs/V2_ARCHITECTURE.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md` 为准。
@@ -46,6 +46,7 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 17. `serve-v1` 增加服务端维护循环：启动即回收一次、之后默认每 30 秒检查失联或失去执行归属的任务。只有新鲜心跳明确报告 `current_task_id`（兼容旧 Connector 的 `busy + empty task`）才证明 Stage 仍在执行；在线但 idle/已切换其它任务的孤儿 Stage 在 30 秒交接保护后同样回收。已请求取消的 Stage 最终落为 `cancelled`；普通 Stage 仍按最多 3 次的既有策略重排/失败，避免任务永久停在 `running/cancelling`。周期、阈值、交接保护和重试上限只由部署环境变量控制，不进入用户 YAML。
 18. `existing + cluster` 在 Selena、runtime、数据和配置均位于 Cluster 可见共享/central namespace 时，完全跳过 Windows resolver/build/register，直接由 Linux/Cluster 环境检查、预检和提交；无需 Connector，也不加载项目规则。逻辑 `config-asset:*` 仍通过成熟的小配置复制链处理，不把 Linux 内部引用冒充 worker 可见路径。
 19. 2026-08-14 真实升级复验发现：磁盘源码已是合同 9，但确定性归档时间戳、相同文件大小和遗留 `__pycache__` 使新 Python 进程继续加载合同 8。修复后升级会先停止本安装目录的计划任务、watchdog、supervisor 和 Agent 进程树；保留 `.venv`，原子式清除其余旧应用文件后复制新包；bootstrap 再清理应用 bytecode cache，并用实际 Connector Python 导入合同版本，与新源码声明比对成功后才允许注册/启动。服务端包头同时发布真实合同版本，不再写固定 `1`。
+20. Cluster 结果收集不再把官方状态网页当作唯一完成依据。每轮先检查本 Job 的受控共享输出目录；预期数量的 `result.ini` 已齐全时，直接按逐输入证据收口，即使状态网页短暂超时或已移除任务行也不会把真实成功仿真判失败。共享结果尚未完成时才使用状态网页继续观测或返回可重试的基础设施错误。
 
 ### 自动化证据
 
@@ -81,12 +82,13 @@ radar-sim 是外围自动化脚手架，不实现 Selena 内部仿真，也不�
 - 数据集由 Windows Connector 直接写 Cluster 数据面：`443,266,984` bytes，SHA-256 `1c7bbbe1703da67e16ee7299181613333df4abbcba8337e6c81eb3462f86d23b`；Runtime bundle、Runtime XML、MatFilter 也分别完成直传。Linux 只保存计划、进度和引用，没有接收大文件正文。
 - ResultCatalog 引用 `result:sha256:87db2f82a54b3811411b212725984065134d988e8a9653192c7ef93e17467fb1`；SDK 下载 ZIP `12,173,015` bytes，SHA-256 `4f59686ad2e767d918d4635768ea7ce57df1a787491561f3251efe68b7ba9e8e`。
 - 验收中发现 SDK 请求被中止后会为同一 Job 创建重复 TransferPlan；未影响成功任务，两个孤立计划已取消。通用修复已在 `3cd10ae` 发布并由 6 线程并发测试验证，不是针对本 Job 的点修。
+- 鲁棒性复验 Job `job_80496048831f`：用户删除旧目录 `C:\Users\HOZ2WX\.rsim` 后，统一 Connector 仍从 `%LOCALAPPDATA%\radar-sim` 正常运行；本机 MF4、Selena.exe/DLL、Runtime XML 和自动推导 MatFilter 均直传成功，Cluster 外部任务真实产生 `239,051,624` bytes 输出 MF4 与 `result.ini`。旧收集逻辑因官方状态网页短暂不可达把 `collect_results` 误判为 `CLUSTER_GATEWAY_UNREACHABLE`；`77ff032` 改为共享结果优先后，只重试 collect、不重传也不重新仿真，最终 Job/Manifest `succeeded`、1/1 输入成功，ResultCatalog `result:sha256:f0c078e8332014433526f0de70544ccb1cc7e3094dea1c6e89918ce12de0e546`。
 
 ## 4. 当前发布状态与边界
 
 ### 当前线上事实
 
-1. `2bff0ec` 已推送至 `origin/codex/new-branch` 并部署为不可变 release `/home/hoz2wx/radar-sim-2bff0ec`；前一不可变 release `7020321` 保留用于回滚。
+1. `77ff032` 已推送至 `origin/codex/new-branch` 并部署为不可变 release `/home/hoz2wx/radar-sim-77ff032`；前一 release `/home/hoz2wx/radar-sim-45d9249` 与回滚基线 `7020321` 均保留。
 2. 正确的用户级 `radar-sim-v1.service` 为 `active/running`，`NRestarts=0`；健康接口返回 `ok=true`。系统级同名 unit 未启用，排查时不要查错作用域。
 3. Windows Connector v9 包为 `8,351,204` bytes，SHA-256 `ec1112274e2ef43a85d44f1d117d09298ebd59bb9bca8620074ecc2d4e3014a4`；包接口同时返回 `X-Rsim-Connector-Version: 9`。候选 release Linux 门禁 `52 passed, 1 skipped`；服务切换后 `active`、`NRestarts=0`、health `ok=true`，Cluster 四个角色 worker 均在线。
 4. Connector 执行合同已升级为 9。旧 Connector 会被服务端阻止领取任务；用户再次运行 Web 的“一键连接/更新本机”会保留 Agent ID、路径绑定和自启方式，并把旧 `web-*` 随机 owner 一次性迁移到稳定 `user-<NTID>`。代码和自动化已通过，真实新用户电脑仍需再运行一次安装包作为最终外部验收，不能在此之前写成真实安装已通过。
