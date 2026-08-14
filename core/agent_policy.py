@@ -75,7 +75,10 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # deleted PID marker from the real supervisor process.  Older Connectors can
 # remain online after those files are deleted but cannot survive a restart, so
 # they must update before the Web may describe them as production-ready.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 10
+# v11 migrates durable same-owner data-root authorizations when recovery has
+# to issue a replacement Agent id, while the control plane collapses the stale
+# registration for the same physical hostname.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 11
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,
