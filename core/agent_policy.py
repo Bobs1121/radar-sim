@@ -78,7 +78,12 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # v11 migrates durable same-owner data-root authorizations when recovery has
 # to issue a replacement Agent id, while the control plane collapses the stale
 # registration for the same physical hostname.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 11
+# v12 makes register_artifact target-aware: local jobs validate the
+# Agent-local Runtime Bundle lease, while Cluster jobs use a signed direct
+# transfer plan.  Older Connectors unconditionally attempted the Cluster
+# transfer path and could fail a valid local build, so they must not claim
+# tasks under the v12 control plane.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 12
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,
