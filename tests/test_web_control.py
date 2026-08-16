@@ -43,6 +43,9 @@ def test_tail_status_succeeded_maps_to_success(service):
     job_id = wc.start_build_via_control("ovrs25")
     job = service.get_job(job_id)
     task_id = job["tasks"][0]["task_id"]
+    service.register_agent("builder", agent_id="agent_1", capabilities=["local.build_selena"])
+    claimed = service.claim_next_task("agent_1")
+    assert claimed and claimed["task_id"] == task_id
 
     _advance(5.0)
     service.append_logs(task_id, ["compiling...", "done"])
@@ -78,6 +81,9 @@ def test_tail_failed_extracts_error(service):
     job_id = wc.start_tcc_via_control("ovrs25", "auto_repair_all")
     job = service.get_job(job_id)
     task_id = job["tasks"][0]["task_id"]
+    service.register_agent("tcc", agent_id="a1", capabilities=["tcc.auto_repair_all"])
+    claimed = service.claim_next_task("a1")
+    assert claimed and claimed["task_id"] == task_id
 
     service.submit_task_result(task_id, agent_id="a1", status="failed", returncode=1,
                                result={"error": "ITO unreachable"})
@@ -194,4 +200,3 @@ def test_per_user_db_isolation_via_http(tmp_path, monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
-

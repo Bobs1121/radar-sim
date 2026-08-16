@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 from types import SimpleNamespace
 
 from core.agent_policy import NODE_KIND_WINDOWS_AGENT
@@ -207,6 +208,44 @@ def test_environment_adapts_visual_studio_before_capturing_final_workspace_snaps
     check = next(item for item in snapshot.checks if item.requirement_id == "visual_studio_toolchain")
     assert check.code == "selena_build_script_vs_adapted"
     assert "Visual Studio 2015" in check.message
+
+
+def test_environment_disables_embedded_clean_before_build_handoff(tmp_path: Path):
+    script = tmp_path / "product" / "compile.bat"
+    output = tmp_path / "product" / "out"
+    script.parent.mkdir(parents=True)
+    output.mkdir()
+    script.write_text(
+        "python3 tools/R2D2.py -m config -clean\n"
+        "python3 tools/R2D2.py -bm Release\n",
+        encoding="utf-8",
+    )
+    (output / "selena.exe").write_bytes(b"previous build")
+    before = SimpleNamespace(
+        to_dict=lambda: {"branch": "main", "commit": "a" * 40, "dirty": False, "sha256": "b" * 64}
+    )
+    prepared = SimpleNamespace(
+        before=before,
+        build_script_path=script,
+        artifact_path=output / "selena.exe",
+        authorized=SimpleNamespace(output_roots=(output,)),
+        package_build_script_path=None,
+        clean=False,
+    )
+
+    snapshot = inspect_selena_build_environment(
+        {"project": "demo", "workspace_binding_id": BINDING_ID},
+        object(),
+        agent_id="agent-a",
+        node_kind=NODE_KIND_WINDOWS_AGENT,
+        prepare_fn=lambda *_args: prepared,
+        vs_adapter=lambda _path: SimpleNamespace(changed=False),
+    )
+
+    assert script.read_text(encoding="utf-8").splitlines()[0].startswith("rem radar-sim:")
+    check = next(item for item in snapshot.checks if item.requirement_id == "incremental_build_policy")
+    assert check.code == "selena_clean_commands_suppressed"
+    assert "incrementally" in check.message
 
 
 def test_environment_only_confirms_package_script_without_running_generators():

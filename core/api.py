@@ -148,7 +148,7 @@ def run_local(
     prepared: PreparedRun,
     *,
     dry_run: bool = False,
-    timeout: int = 3600,
+    timeout: int = 0,
     output_mf4: str = "",
     input_mf4: str = "",
 ) -> RunResult:

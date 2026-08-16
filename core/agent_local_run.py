@@ -302,6 +302,7 @@ class AgentLocalRunLeaseStore:
             "evidence": json.loads(row["evidence_json"]),
             "run_root": run_root,
             "timeout_seconds": int(row["timeout_seconds"]),
+            "execution_pid": int(row["execution_pid"] or 0),
             "outputs": json.loads(row["outputs_json"]),
             "error_count": int(row["error_count"]),
             "error_code": str(row["error_code"]),
@@ -334,7 +335,17 @@ class AgentLocalRunLeaseStore:
                 input_count = len(json.loads(row["inputs_json"] or "[]"))
             except (TypeError, ValueError, json.JSONDecodeError):
                 input_count = 1
-            max_running_age = max(int(row["timeout_seconds"]), 1) * max(input_count, 1) + 300
+            configured_timeout = int(row["timeout_seconds"])
+            # ``timeout_seconds=0`` is the public unlimited-runtime contract.
+            # Do not turn it into a hidden stale/restart deadline: if the old
+            # process is alive, a second Connector must observe it no matter
+            # how long the batch has been running.  A dead PID is still
+            # recoverable immediately through the liveness check below.
+            max_running_age = (
+                float("inf")
+                if configured_timeout == 0
+                else max(configured_timeout, 1) * max(input_count, 1) + 300
+            )
             running_age = max(0.0, now - float(row["running_since"] or 0.0))
             if (
                 status == "running"
@@ -381,6 +392,34 @@ class AgentLocalRunLeaseStore:
         return self._update(
             lease_id,
             status=status,
+            outputs=outputs,
+            error_count=max(0, int(error_count)),
+            error_code=_safe_error_code(error_code),
+            diagnostics=diagnostics,
+            expected_execution_token=execution_token,
+        )
+
+    def checkpoint(
+        self,
+        lease_id: str,
+        *,
+        outputs: list[dict[str, Any]],
+        error_count: int,
+        error_code: str = "",
+        diagnostics: dict[str, Any] | None = None,
+        execution_token: str,
+    ) -> dict[str, Any]:
+        """Persist per-input progress while a batch is still running.
+
+        A Connector can be terminated after Selena has completed several
+        files but before the final callback is sent.  Keeping this checkpoint
+        in the Agent-local SQLite lease lets the next process resume only the
+        unprocessed inputs; it never treats a partial checkpoint as a public
+        success.
+        """
+        return self._update(
+            lease_id,
+            status="running",
             outputs=outputs,
             error_count=max(0, int(error_count)),
             error_code=_safe_error_code(error_code),
@@ -516,8 +555,13 @@ def execute_local_run(
         # is still completing this immutable lease.  Observe the existing
         # owner instead of launching a duplicate Selena process or overwriting
         # its deterministic outputs.
-        wait_deadline = time.monotonic() + max(int(lease["timeout_seconds"]), 1) + 120
-        while time.monotonic() < wait_deadline:
+        configured_timeout = int(lease["timeout_seconds"])
+        wait_deadline = (
+            None
+            if configured_timeout == 0
+            else time.monotonic() + max(configured_timeout, 1) + 120
+        )
+        while wait_deadline is None or time.monotonic() < wait_deadline:
             if cancel():
                 return 130
             observed = store.get_private(lease_id)
@@ -525,15 +569,84 @@ def execute_local_run(
                 return 0 if observed["status"] == "succeeded" else (
                     130 if observed["status"] == "cancelled" else 1
                 )
+            # If the previous Connector died without committing a terminal
+            # state, reclaim the immutable lease instead of waiting forever.
+            # This is process-liveness recovery, not a simulation wall-clock
+            # timeout.  A live owner remains the single executor.
+            if observed["status"] == "running" and not _pid_alive(int(observed.get("execution_pid") or 0)):
+                try:
+                    store.mark_running(
+                        lease_id,
+                        execution_token=execution_token,
+                        execution_pid=os.getpid(),
+                    )
+                    lease = store.get_private(lease_id)
+                    break
+                except LocalRunAlreadyExecuting:
+                    pass
             time.sleep(0.25)
-        raise AgentLocalRunError("local run execution owner did not finish before timeout")
+        else:
+            raise AgentLocalRunError("local run execution owner did not finish before timeout")
+    # Reload after acquiring the execution token.  If a previous Connector
+    # died after checkpointing part of a batch, resume only inputs without a
+    # valid terminal checkpoint; do not rerun completed Selena files.
+    lease = store.get_private(lease_id)
+    output_by_relative = {
+        str(item.get("relative_path") or ""): dict(item)
+        for item in lease.get("outputs") or ()
+        if isinstance(item, Mapping)
+    }
     outputs: list[dict[str, Any]] = []
     failures = 0
     terminal_error = ""
     execution_items: list[dict[str, Any]] = []
-    engine_log_tail: list[str] = []
+    completed_indices: set[int] = set()
+    for raw_item in (lease.get("diagnostics") or {}).get("items") or ():
+        if not isinstance(raw_item, Mapping):
+            continue
+        try:
+            item_index = int(raw_item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        item_status = str(raw_item.get("status") or "").strip().lower()
+        if item_status not in {"succeeded", "failed"}:
+            continue
+        if item_status == "succeeded":
+            relative = str(raw_item.get("output_relative_path") or "")
+            checkpointed_output = output_by_relative.get(relative)
+            if checkpointed_output is None or not _checkpoint_output_is_valid(
+                lease["run_root"], checkpointed_output
+            ):
+                # The checkpoint is not authoritative if its output was
+                # removed or modified; rerun that one item and discard the
+                # stale success marker.
+                continue
+            outputs.append(checkpointed_output)
+        else:
+            failures += 1
+            terminal_error = str(raw_item.get("error_code") or "runner_failed")
+        execution_items.append(dict(raw_item))
+        completed_indices.add(item_index)
+    engine_log_tail = list(
+        (lease.get("diagnostics") or {}).get("engine_log_tail") or ()
+    )
+
+    def checkpoint_progress() -> None:
+        store.checkpoint(
+            lease_id,
+            outputs=outputs,
+            error_count=failures,
+            error_code=terminal_error,
+            diagnostics={
+                "items": execution_items,
+                "engine_log_tail": _bounded_lines(engine_log_tail),
+            },
+            execution_token=execution_token,
+        )
 
     for index, item in enumerate(lease["inputs"], start=1):
+        if index in completed_indices:
+            continue
         if cancel():
             store.finish(
                 lease_id, status="cancelled", outputs=outputs,
@@ -545,6 +658,49 @@ def execute_local_run(
         output_relative = str(item.get("output_relative_path") or "")
         try:
             output_relative = _safe_output_relative(item["output_relative_path"])
+        except Exception:
+            failures += 1
+            terminal_error = "runner_contract_failed"
+            execution_items.append(
+                {
+                    "index": index,
+                    "input_relative_path": _relative_input_path(item),
+                    "output_relative_path": output_relative,
+                    "status": "failed",
+                    "returncode": 1,
+                    "error_code": terminal_error,
+                }
+            )
+            checkpoint_progress()
+            continue
+        try:
+            # ``prepare_data`` and ``preflight`` validate the complete batch,
+            # but a large batch may wait in the Agent queue before Selena
+            # reaches a particular file.  Revalidate each input immediately
+            # before launching that item so a same-size/same-mtime replacement
+            # cannot be simulated under stale evidence.  A file can still be
+            # modified after this check (Windows cannot lock arbitrary user
+            # recordings without blocking legitimate producers); the result
+            # contract and final checksums remain authoritative.
+            _verify_stored_input(item)
+        except AgentLocalRunError:
+            failures += 1
+            terminal_error = "input_changed_after_preflight"
+            execution_items.append(
+                {
+                    "index": index,
+                    "input_relative_path": _relative_input_path(item),
+                    "output_relative_path": output_relative,
+                    "status": "failed",
+                    "returncode": 1,
+                    "error_code": terminal_error,
+                }
+            )
+            # Do not start Selena for this input.  Other files in a batch may
+            # still be immutable and can be processed independently.
+            checkpoint_progress()
+            continue
+        try:
             output = _safe_child(lease["run_root"], *PurePosixPath(output_relative).parts)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.unlink(missing_ok=True)
@@ -583,8 +739,14 @@ def execute_local_run(
                 )
                 return 130
             if outcome.exit_code == 0:
-                _sha256_regular_file(output)
-                outputs.append({"relative_path": output_relative})
+                output_checksum = _sha256_regular_file(output)
+                outputs.append(
+                    {
+                        "relative_path": output_relative,
+                        "size": int(output.stat().st_size),
+                        "checksum": output_checksum,
+                    }
+                )
                 execution_items.append(
                     {
                         "index": index,
@@ -623,7 +785,22 @@ def execute_local_run(
                     "error_code": terminal_error,
                 }
             )
+            checkpoint_progress()
             break
+        except AgentLocalRunError:
+            failures += 1
+            terminal_error = "runner_contract_failed"
+            execution_items.append(
+                {
+                    "index": index,
+                    "input_relative_path": _relative_input_path(item),
+                    "output_relative_path": output_relative,
+                    "status": "failed",
+                    "returncode": 1,
+                    "error_code": terminal_error,
+                }
+            )
+
         except Exception:
             # Runner exceptions are untrusted implementation details and may
             # include local paths.  Persist only a stable public error code.
@@ -639,6 +816,8 @@ def execute_local_run(
                     "error_code": terminal_error,
                 }
             )
+
+        checkpoint_progress()
 
     status = "succeeded" if failures == 0 and len(outputs) == len(lease["inputs"]) else "failed"
     diagnostics_payload: dict[str, Any] = {"items": execution_items}
@@ -794,10 +973,52 @@ def _verify_data_lease(
             checksum = _sha256_regular_file(path)
             if ref.checksum and checksum != ref.checksum:
                 raise AgentLocalRunError("leased data file changed after discovery")
-        result.append({"relative_path": ref.relative_path, "path": path, "checksum": checksum})
+        result.append(
+            {
+                "relative_path": ref.relative_path,
+                "path": path,
+                "size": int(ref.size),
+                "mtime_ns": int(ref.mtime_ns),
+                "checksum": checksum,
+            }
+        )
     if not result:
         raise AgentLocalRunError("data lease contains no simulation input")
     return result
+
+
+def _verify_stored_input(item: Mapping[str, Any]) -> None:
+    """Verify one private lease input immediately before execution."""
+    path = Path(str(item.get("path") or ""))
+    try:
+        stat_result = path.stat()
+    except OSError as exc:
+        raise AgentLocalRunError("leased data file changed after preflight") from exc
+    expected_size = int(item.get("size") or 0)
+    expected_mtime = int(item.get("mtime_ns") or 0)
+    if stat_result.st_size != expected_size or (
+        expected_mtime and stat_result.st_mtime_ns != expected_mtime
+    ):
+        raise AgentLocalRunError("leased data file changed after preflight")
+    expected_checksum = str(item.get("checksum") or "")
+    if expected_checksum.startswith("sha256:"):
+        if _sha256_regular_file(path) != expected_checksum:
+            raise AgentLocalRunError("leased data file changed after preflight")
+
+
+def _checkpoint_output_is_valid(run_root: str | Path, item: Mapping[str, Any]) -> bool:
+    """Check one persisted output before treating it as completed work."""
+    try:
+        relative = _safe_output_relative(str(item.get("relative_path") or ""))
+        path = _safe_child(Path(run_root), *PurePosixPath(relative).parts)
+        checksum = _sha256_regular_file(path)
+        expected_checksum = str(item.get("checksum") or "")
+        if expected_checksum and checksum != expected_checksum:
+            return False
+        expected_size = item.get("size")
+        return expected_size in (None, "") or int(expected_size) == path.stat().st_size
+    except (AgentLocalRunError, OSError, TypeError, ValueError):
+        return False
 
 
 def _controlled_runs_root(value: str | Path | None) -> Path:
@@ -877,7 +1098,10 @@ def _positive_timeout(value: int) -> int:
     if isinstance(value, bool):
         raise AgentLocalRunError("local run timeout is invalid")
     timeout = int(value)
-    if timeout <= 0 or timeout > 7 * 24 * 60 * 60:
+    # Zero is intentional: it means no framework wall-clock limit.  Positive
+    # values remain opt-in and bounded so an accidental YAML value cannot make
+    # a Connector lease unbounded by surprise.
+    if timeout < 0 or timeout > 7 * 24 * 60 * 60:
         raise AgentLocalRunError("local run timeout is invalid")
     return timeout
 

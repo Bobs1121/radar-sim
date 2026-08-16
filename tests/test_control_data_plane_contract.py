@@ -17,6 +17,8 @@ from fastapi.testclient import TestClient
 from cli import agent as agent_cli
 from core.api_v1 import ApiV1Error, ApiV1Service
 from core.api_v1_fastapi import create_app
+from core.agent_policy import LINUX_EXECUTOR_CAPABILITIES
+from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID
 from core.control_service import ControlService
 from core.transfer_service import (
     ClusterWorkspaceWhitelist,
@@ -427,8 +429,22 @@ def test_existing_cluster_direct_transfer_uses_prepare_data_barrier_without_agen
     assert stages["environment_check"]["required_agent_id"] == "linux-v2-stage-executor"
     assert stages["prepare_data"]["dependencies"] == [stages["environment_check"]["task_id"]]
 
+    control.register_cluster_worker(
+        "linux executor",
+        role_id=LINUX_STAGE_AGENT_ID,
+        worker_id=LINUX_STAGE_AGENT_ID,
+        worker_index=0,
+        worker_count=1,
+        platform="Linux",
+        capabilities=list(LINUX_EXECUTOR_CAPABILITIES),
+        node_kind="linux_executor",
+    )
+    claimed = control.claim_next_task(LINUX_STAGE_AGENT_ID)
+    assert claimed is not None
+    assert claimed["task_id"] == stages["environment_check"]["task_id"]
     control.submit_task_result(
-        stages["environment_check"]["task_id"],
+        claimed["task_id"],
+        agent_id=LINUX_STAGE_AGENT_ID,
         status="succeeded",
         returncode=0,
         result={"status": "ready"},

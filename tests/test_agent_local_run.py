@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -153,6 +154,44 @@ def test_create_and_execute_without_optional_adapter(tmp_path):
     assert store.result(lease["lease_id"])["status"] == "succeeded"
 
 
+def test_zero_timeout_means_unlimited_local_batch_runtime(tmp_path):
+    store, kwargs = _fixture(tmp_path)
+    kwargs["timeout_seconds"] = 0
+    lease = store.create_from_authorized_inputs(**kwargs)
+    seen = []
+
+    def runner(request, _cancel_requested):
+        seen.append(request.timeout_seconds)
+        request.output_mf4.write_bytes(b"output")
+        return LocalRunOutcome(0)
+
+    assert execute_local_run(lease["lease_id"], store, runner=runner) == 0
+    assert seen == [0, 0]
+
+
+def test_execution_rejects_same_size_same_mtime_input_replacement(tmp_path):
+    store, kwargs = _fixture(tmp_path)
+    lease = store.create_from_authorized_inputs(**kwargs)
+    first = kwargs["data_lease"].source_path / "one.MF4"
+    original_mtime = first.stat().st_mtime_ns
+    first.write_bytes(b"mf4-ONE")
+    os.utime(first, ns=(original_mtime, original_mtime))
+    executed: list[int] = []
+
+    def runner(request, _cancel_requested):
+        executed.append(request.item_index)
+        request.output_mf4.write_bytes(b"output")
+        return LocalRunOutcome(0)
+
+    assert execute_local_run(lease["lease_id"], store, runner=runner) == 1
+    result = store.result(lease["lease_id"])
+    assert executed == [2]
+    assert result["summary"]["error_code"] == "input_changed_after_preflight"
+    assert result["summary"]["failed_input_count"] == 1
+    assert result["summary"]["succeeded_input_count"] == 1
+    assert result["diagnostics"]["items"][0]["error_code"] == "input_changed_after_preflight"
+
+
 def test_create_rejects_changed_runtime_and_unauthorized_assets(tmp_path):
     store, kwargs = _fixture(tmp_path)
     kwargs["runtime_locations"]["bin/runtime.dll"].write_bytes(b"changed")
@@ -237,6 +276,56 @@ def test_dead_connector_execution_lock_is_recoverable(tmp_path, monkeypatch):
 
     assert execute_local_run(lease["lease_id"], store, runner=runner) == 0
     assert store.result(lease["lease_id"])["status"] == "succeeded"
+
+
+def test_recovery_resumes_after_durable_batch_checkpoint(tmp_path, monkeypatch):
+    store, kwargs = _fixture(tmp_path)
+    lease = store.create_from_authorized_inputs(**kwargs)
+    private = store.get_private(lease["lease_id"])
+    token = "a" * 32
+    store.mark_running(lease["lease_id"], execution_token=token, execution_pid=999999)
+    first = private["inputs"][0]
+    first_output = private["run_root"] / first["output_relative_path"]
+    first_output.write_bytes(b"checkpointed-output")
+    first_checksum = _checksum(first_output)
+    store.checkpoint(
+        lease["lease_id"],
+        outputs=[
+            {
+                "relative_path": first["output_relative_path"],
+                "size": first_output.stat().st_size,
+                "checksum": first_checksum,
+            }
+        ],
+        error_count=0,
+        diagnostics={
+            "items": [
+                {
+                    "index": 1,
+                    "input_relative_path": "one.MF4",
+                    "output_relative_path": first["output_relative_path"],
+                    "status": "succeeded",
+                    "returncode": 0,
+                }
+            ]
+        },
+        execution_token=token,
+    )
+    monkeypatch.setattr("core.agent_local_run._pid_alive", lambda _pid: False)
+    executed: list[int] = []
+
+    def runner(request, _cancel_requested):
+        executed.append(request.item_index)
+        request.output_mf4.write_bytes(b"resumed-output")
+        return LocalRunOutcome(0)
+
+    assert execute_local_run(lease["lease_id"], store, runner=runner) == 0
+    assert executed == [2]
+    assert store.result(lease["lease_id"])["summary"] == {
+        "file_count": 2,
+        "error_count": 0,
+        "error_code": "",
+    }
 
 
 def test_expired_execution_lock_recovers_even_if_pid_was_reused(tmp_path, monkeypatch):

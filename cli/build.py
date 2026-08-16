@@ -189,8 +189,13 @@ def _build_selena(config: dict, clean: bool, mode: str) -> "BuildResult":
     build_label = "R2D2"
     config_path = ""
 
-    if script and os.path.exists(script):
-        cmd, cwd = _build_selena_script_command(config, mode)
+    script_available = bool(script and os.path.exists(script))
+    if script_available:
+        # The wrapper is adapted only after the workspace lock is held below.
+        # This branch performs path selection only; it must not mutate a script
+        # that another build may currently be executing.
+        cmd = []
+        cwd = None
         build_label = "Selena build script"
     else:
         if not r2d2 or not os.path.exists(r2d2):
@@ -222,7 +227,9 @@ def _build_selena(config: dict, clean: bool, mode: str) -> "BuildResult":
 
     try:
         from core.build_lock import WorkspaceBuildLock, build_workspace_from_config
-        build_lock = WorkspaceBuildLock(build_workspace_from_config(config)).acquire()
+        build_lock = WorkspaceBuildLock(build_workspace_from_config(config)).acquire(
+            wait=True
+        )
     except Exception as exc:
         return BuildResult(
             success=False,
@@ -232,14 +239,22 @@ def _build_selena(config: dict, clean: bool, mode: str) -> "BuildResult":
         )
     try:
         print(f"  Build entry: {build_label}")
-        if script and os.path.exists(script):
+        if script_available:
+            from core.build_script_policy import adapt_configured_selena_build_script
+
+            adapt_configured_selena_build_script(
+                config,
+                mode=mode,
+                allow_clean=bool(clean),
+            )
+            cmd, cwd = _build_selena_script_command(config, mode)
             print(f"  Script: {script}")
         else:
             print(f"  R2D2: {r2d2}")
             print(f"  Config: {config_path}")
             print(f"  Python3: {python3}")
         print(f"  Mode: {mode}")
-        if not script and (config.get("vs_postfix", "") or _detect_vs_postfix()):
+        if not script_available and (config.get("vs_postfix", "") or _detect_vs_postfix()):
             vs_postfix = config.get("vs_postfix", "") or _detect_vs_postfix()
             print(f"  VS postfix: {vs_postfix}")
         print()

@@ -27,11 +27,12 @@ def test_selena_build_progress_output_is_normalized():
     assert _build_progress_from_output("ordinary compiler warning") == (None, "")
 
 
-def test_build_timeout_is_framework_owned_bounded_and_deployment_tunable(monkeypatch):
+def test_build_timeout_is_unlimited_by_default_but_deployment_tunable(monkeypatch):
     monkeypatch.delenv("RSIM_BUILD_TIMEOUT_SECONDS", raising=False)
-    assert _build_timeout_seconds({}) == 14400
+    assert _build_timeout_seconds({}) == 0
     monkeypatch.setenv("RSIM_BUILD_TIMEOUT_SECONDS", "7200")
     assert _build_timeout_seconds({}) == 7200
+    assert _build_timeout_seconds({"build_timeout_seconds": 0}) == 0
     assert _build_timeout_seconds({"build_timeout_seconds": 1}) == 60
     assert _build_timeout_seconds({"build_timeout_seconds": 999999}) == 86400
 
@@ -244,7 +245,7 @@ def test_run_v5_build_stage_uses_adapter_and_returns_redacted_evidence(monkeypat
         heartbeat_interval=1,
         node_kind="windows_agent",
     ) == 0
-    assert [item[0] for item in calls] == ["prepare", "verify", "finish"]
+    assert [item[0] for item in calls] == ["prepare", "prepare", "verify", "finish"]
     assert client.results[-1]["status"] == "succeeded"
     assert client.results[-1]["result"] == evidence
     assert evidence["artifact_lease_ref"].startswith("artifact-lease:sha256:")

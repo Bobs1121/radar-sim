@@ -361,6 +361,9 @@ def test_api_build_status_reads_control_plane(web_server, tmp_path, monkeypatch)
     job = svc.create_job("local.build_selena", payload={"project": "test"})
     job_id = job["job_id"]
     task_id = job["tasks"][0]["task_id"]
+    svc.register_agent("builder", agent_id="a1", capabilities=["local.build_selena"])
+    claimed = svc.claim_next_task("a1")
+    assert claimed and claimed["task_id"] == task_id
     svc.append_logs(task_id, ["building...", "done"])
     svc.submit_task_result(task_id, agent_id="a1", status="succeeded", returncode=0,
                            result={"exe_path": "C:/selena.exe"})

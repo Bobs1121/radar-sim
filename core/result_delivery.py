@@ -15,7 +15,7 @@ import stat
 import tempfile
 import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 
 class ResultDeliveryError(ValueError):
@@ -51,8 +51,17 @@ def resolve_result_destination(requested_path: str | os.PathLike[str] | None, jo
     return target
 
 
-def materialize_result_directory(source_root: str | os.PathLike[str], destination: str | os.PathLike[str], *, files: Iterable[str | Mapping[str, Any]] | None = None, input_results: Iterable[Mapping[str, Any]] | None = None, manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def materialize_result_directory(
+    source_root: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    files: Iterable[str | Mapping[str, Any]] | None = None,
+    input_results: Iterable[Mapping[str, Any]] | None = None,
+    manifest: Mapping[str, Any] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     """Copy result files into an atomic, idempotent directory and write a manifest."""
+    _check_cancel(cancel_callback)
     source = _source(source_root)
     target = _destination(destination)
     if _inside(target, source):
@@ -75,12 +84,18 @@ def materialize_result_directory(source_root: str | os.PathLike[str], destinatio
     temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.radar-sim-{uuid.uuid4().hex}.", dir=str(target.parent)))
     try:
         for item in evidence:
+            _check_cancel(cancel_callback)
             source_file = _file(source, item["relative_path"])
             target_file = _child(temporary, item["relative_path"])
             target_file.parent.mkdir(parents=True, exist_ok=True)
             try:
                 with source_file.open("rb") as reader, target_file.open("xb") as writer:
-                    shutil.copyfileobj(reader, writer, 1024 * 1024)
+                    while True:
+                        _check_cancel(cancel_callback)
+                        chunk = reader.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        writer.write(chunk)
             except OSError as exc:
                 raise ResultDeliveryError("result file copy failed") from exc
         (temporary / _MANIFEST).write_bytes(manifest_bytes)
@@ -100,6 +115,11 @@ def materialize_result_directory(source_root: str | os.PathLike[str], destinatio
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
     return {"status": "delivered", "file_count": len(evidence), "checksum": checksum}
+
+
+def _check_cancel(cancel_callback: Callable[[], bool] | None) -> None:
+    if cancel_callback is not None and cancel_callback():
+        raise ResultDeliveryError("result delivery cancelled", code="cancelled")
 
 
 def _job(value: object) -> str:

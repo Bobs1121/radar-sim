@@ -35,7 +35,10 @@ def register(subparsers):
     p.add_argument("--select", action="store_true", help="Scan a directory/dataset and pick MF4 files interactively")
     p.add_argument("--limit", type=int, default=0, help="With --select, cap how many MF4 files to list (0=all)")
     p.add_argument("--required-signal", action="append", default=[], help="Signal name that should exist in each input MF4 (scan-time check)")
-    p.add_argument("--timeout", type=int, default=3600, help="Simulation timeout in seconds (default: 3600)")
+    p.add_argument(
+        "--timeout", type=int, default=0,
+        help="Framework wall-clock limit in seconds (default: 0, unlimited; use --max-duration for an explicit per-file limit)",
+    )
     p.add_argument("--max-duration", type=int, help="Per-file hard runtime limit in seconds")
     p.add_argument("--stall-timeout", type=int, help="Abort one file after this many seconds without log/output activity")
     p.add_argument("--no-retry", action="store_true", help="Disable end-of-batch retry for failed files")
@@ -469,8 +472,9 @@ def _run_single(project, config, sim, selena_exe, input_mf4, output_mf4,
     detection = sim.get("radar_detection")
     if detection:
         print(f"  Radar detect: {detection.get('position')} via {detection.get('method')} (conf={detection.get('confidence')})")
-    print(f"  Timeout:      {timeout}s")
-    print(f"  File limit:   {_get_effective_runtime_limit(timeout, sim)}s")
+    effective_limit = _get_effective_runtime_limit(timeout, sim)
+    print(f"  Timeout:      {'unlimited' if timeout <= 0 else str(timeout) + 's'}")
+    print(f"  File limit:   {'unlimited' if effective_limit <= 0 else str(effective_limit) + 's'}")
     print(f"  Batch item:   {file_index}/{file_total}")
     print(f"  Working dir:  {cwd}")
     print()
@@ -514,7 +518,9 @@ def _run_single(project, config, sim, selena_exe, input_mf4, output_mf4,
 
         output_lines = []
         last_activity = time.time()
-        stall_timeout = int(sim.get("stall_timeout_sec", 180))
+        # Inactivity is advisory only when explicitly configured.  A quiet
+        # Selena computation is not proof of a dead process.
+        stall_timeout = int(sim.get("stall_timeout_sec", 0) or 0)
         poll_interval = max(1, int(sim.get("poll_interval_sec", 1)))
         last_heartbeat = 0.0
         heartbeat_interval = int(sim.get("heartbeat_interval_sec", 15) or 15)
@@ -523,7 +529,7 @@ def _run_single(project, config, sim, selena_exe, input_mf4, output_mf4,
         while True:
             try:
                 elapsed = time.time() - start
-                if elapsed > runtime_limit:
+                if runtime_limit > 0 and elapsed > runtime_limit:
                     print()
                     print(f"[ERROR] Simulation exceeded per-file runtime limit after {runtime_limit}s")
                     proc.terminate()
@@ -575,7 +581,7 @@ def _run_single(project, config, sim, selena_exe, input_mf4, output_mf4,
                     bar = _render_runtime_bar(elapsed, runtime_limit)
                     print(
                         f"  [PROGRESS] item {file_index}/{file_total} {bar} "
-                        f"{int(elapsed)}s/{runtime_limit}s | output {current_size} "
+                        f"{int(elapsed)}s/{runtime_limit if runtime_limit > 0 else 'unlimited'} | output {current_size} "
                         f"| +{last_rate_mb_min:.1f} MB/min | idle {idle_for}s"
                     )
                     last_heartbeat = time.time()

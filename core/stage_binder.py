@@ -15,6 +15,10 @@ from typing import Callable
 from core.control_service import ControlService, INTERNAL_V1_SCHEDULER_AGENT_ID
 from core.datasets import classify_data_path
 from core.environment_snapshot import EnvironmentSnapshot, EnvironmentSnapshotError
+from core.stage_routing import (
+    register_artifact_dispatch_scope,
+    selected_execution_target,
+)
 
 
 class StageBindingError(ValueError):
@@ -30,15 +34,7 @@ _BUILD_REQUIREMENTS = (
 
 def _selected_execution_target(job: dict) -> str:
     """Return the scheduler-selected route without changing the public YAML."""
-    selected = str(
-        (((job.get("resolved_spec") or {}).get("decisions") or {}).get("execution") or {})
-        .get("selected_target")
-        or ""
-    ).strip()
-    if selected in {"local", "cluster"}:
-        return selected
-    requested = str(((job.get("spec") or {}).get("simulation") or {}).get("target") or "auto")
-    return requested
+    return selected_execution_target(job)
 
 
 def bind_run_config_environment(
@@ -621,7 +617,7 @@ def bind_register_artifact(
     job_id: str,
     build_stage_id: str,
 ) -> dict:
-    """Bind upload/registration to the same Agent as one successful build."""
+    """Bind target-specific registration to the Agent that built the bundle."""
     job = control.get_job(job_id)
     stages = {str(item.get("stage_type") or ""): item for item in job.get("stages") or []}
     build = stages.get("build_selena")
@@ -650,6 +646,15 @@ def bind_register_artifact(
         raise StageBindingError("build_selena attempt is invalid")
     spec = dict(job.get("spec") or {})
     publish_path = str((spec.get("selena") or {}).get("publish_path") or "")
+    try:
+        dispatch_scope = register_artifact_dispatch_scope(job)
+    except ValueError as exc:
+        raise StageBindingError(str(exc)) from exc
+    registration_mode = (
+        "local_runtime_lease"
+        if dispatch_scope == "local_runtime_registration"
+        else "cluster_direct_transfer"
+    )
     return control.bind_stage_to_agent(
         str(register["stage_id"]),
         agent_id=agent_id,
@@ -659,8 +664,11 @@ def bind_register_artifact(
             "workspace_binding_id": str(result.get("workspace_binding_id") or ""),
             "artifact_lease_ref": lease_ref,
             "runtime_bundle_lease_ref": runtime_bundle_lease_ref,
+            "runtime_bundle": dict(result.get("runtime_bundle") or {}),
             "build_evidence_ref": f"{build_stage_id}:{attempt}",
             "publish_path": publish_path,
+            "dispatch_scope": dispatch_scope,
+            "registration_mode": registration_mode,
         },
     )
 

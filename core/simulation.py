@@ -220,8 +220,11 @@ def get_simulation_config(config: dict[str, Any]) -> dict[str, Any]:
     sim.setdefault("continue_on_failure", True)
     sim.setdefault("retry_failed_at_end", True)
     sim.setdefault("max_retries_per_file", 1)
-    sim.setdefault("stall_timeout_sec", 180)
-    sim.setdefault("max_duration_per_file_sec", 900)
+    # Long batch simulations are allowed to run until Selena exits or the user
+    # explicitly supplies a safety limit.  A framework default of 180s/900s
+    # incorrectly classified quiet but healthy computation as a failure.
+    sim.setdefault("stall_timeout_sec", 0)
+    sim.setdefault("max_duration_per_file_sec", 0)
     sim.setdefault("poll_interval_sec", 1)
     sim.setdefault("heartbeat_interval_sec", 15)
 

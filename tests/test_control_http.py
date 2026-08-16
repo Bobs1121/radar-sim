@@ -288,7 +288,7 @@ def test_control_http_rejects_result_from_wrong_agent(control_server):
     )
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         urllib.request.urlopen(request, timeout=15)
-    assert excinfo.value.code == 400
+    assert excinfo.value.code == 403
     body = _read_http_error(excinfo)
     assert "assigned to" in body["error"]
 

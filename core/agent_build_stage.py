@@ -34,6 +34,11 @@ from core.repo import (
     inspect_workspace_identity,
 )
 from core.agent_asset_bindings import AgentAssetBindingStore, AgentAssetBindingError
+from core.build_script_policy import (
+    BuildScriptPolicyError,
+    adapt_build_script_for_incremental,
+    has_existing_build_artifact,
+)
 from core.build_runner import _build_selena_command
 from core.config import load_config, resolve_selena_executable
 from core.spec.legacy_adapter import LegacyConfigAdapterError, adapt_legacy_config
@@ -467,6 +472,7 @@ def prepare_selena_build(
     artifact_resolver: Callable[[dict[str, Any], str | None], str] = resolve_selena_executable,
     asset_binding_store: AgentAssetBindingStore | None = None,
     source_lease: Any = None,
+    enforce_incremental_policy: bool = True,
 ) -> PreparedSelenaBuild:
     """Prepare an authorized, immutable Selena build stage.
 
@@ -724,6 +730,23 @@ def prepare_selena_build(
         raise AgentBuildStageError("artifact resolution failed") from exc
 
     artifact_path = _resolve_artifact_path(exe_path, authorized)
+
+    # This is the last local-only point before the immutable script checksum is
+    # captured.  Enforce incremental mode here as well as in the environment
+    # inspection path so a caller cannot bypass the safety policy by submitting
+    # a build Stage directly or by using a legacy command builder.
+    if enforce_incremental_policy:
+        try:
+            adapt_build_script_for_incremental(
+                resolved_script,
+                existing_build=has_existing_build_artifact(
+                    artifact_path,
+                    getattr(authorized, "output_roots", ()) or (),
+                ),
+                allow_clean=clean,
+            )
+        except BuildScriptPolicyError as exc:
+            raise AgentBuildStageError("incremental build policy failed") from exc
 
     # Capture before snapshot only after all authorization checks.  The v1
     # user-facing flow deliberately avoids ``git diff``/``git status`` on the

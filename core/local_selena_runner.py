@@ -85,7 +85,7 @@ def run_local_selena(
         diagnostic = f"Paramconfig preparation failed: {type(exc).__name__}: {exc}"
         return LocalRunOutcome(1, "paramconfig_failed", (diagnostic,))
 
-    timeout = max(1, int(request.timeout_seconds))
+    timeout = max(0, int(request.timeout_seconds))
     started = time.monotonic()
     process = None
     job = None
@@ -106,7 +106,7 @@ def run_local_selena(
                     job.terminate(130)
                     outcome = LocalRunOutcome(130, "cancelled")
                     break
-                if time.monotonic() - started >= timeout:
+                if timeout > 0 and time.monotonic() - started >= timeout:
                     job.terminate(124)
                     outcome = LocalRunOutcome(124, "runtime_timeout")
                     break

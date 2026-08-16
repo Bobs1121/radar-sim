@@ -167,6 +167,7 @@ class AgentResultRequest(BaseModel):
     agent_id: str = Field(min_length=1, max_length=200)
     status: str = Field(min_length=1, max_length=32)
     returncode: int
+    attempt: int | None = Field(default=None, ge=1)
     result: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -576,7 +577,8 @@ def create_app(
         identity, agent_id = agent_identity(request, body.agent_id)
         return service.submit_agent_result(
             identity, body.task_id, agent_id=agent_id,
-            status=body.status, returncode=body.returncode, result=body.result,
+            status=body.status, returncode=body.returncode, attempt=body.attempt,
+            result=body.result,
         )
 
     @app.get("/api/agents/config-assets/{asset_id:path}/download", include_in_schema=False)

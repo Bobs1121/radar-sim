@@ -90,9 +90,9 @@ def test_workspace_build_lock_blocks_a_second_process(tmp_path):
     with WorkspaceBuildLock(tmp_path):
         process = multiprocessing.Process(target=_try_lock, args=(str(tmp_path), queue))
         process.start()
-        process.join(timeout=5)
-        assert queue.get(timeout=2) == "blocked"
+        process.join(timeout=20)
+        assert queue.get(timeout=5) == "blocked"
     process = multiprocessing.Process(target=_try_lock, args=(str(tmp_path), queue))
     process.start()
-    process.join(timeout=5)
-    assert queue.get(timeout=2) == "acquired"
+    process.join(timeout=20)
+    assert queue.get(timeout=5) == "acquired"

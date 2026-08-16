@@ -14,11 +14,17 @@ import math
 import re
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from core.agent_bindings import AgentBindingStore
 from core.agent_build_stage import AgentBuildStageError, prepare_selena_build
 from core.agent_policy import NODE_KIND_WINDOWS_AGENT, NODE_KIND_WINDOWS_FULL
+from core.build_script_policy import (
+    BuildScriptPolicyError,
+    adapt_build_script_for_incremental,
+    has_existing_build_artifact,
+)
 from core.windows_toolchain import (
     WindowsToolchainError,
     adapt_selena_script_visual_studio,
@@ -48,6 +54,12 @@ def _report_progress(callback: Callable[[str], None] | None, message: str) -> No
 def _build_environment_failure(exc: Exception) -> tuple[str, str, str]:
     """Translate stable local failures into a Chinese, actionable diagnosis."""
     raw = str(exc or "").strip()
+    if isinstance(exc, BuildScriptPolicyError) or "incremental build policy failed" in raw:
+        return (
+            "selena_incremental_build_policy_failed",
+            "无法安全改写所选 Selena 编译脚本中的清理命令，系统已阻止启动编译。",
+            "确认编译脚本可写且未被其他进程锁定；修复后重新执行环境检查。",
+        )
     if raw == "binding not found":
         return (
             "workspace_binding_missing",
@@ -273,6 +285,7 @@ def inspect_selena_build_environment(
     ttl_seconds: float = 300.0,
     prepare_fn: Callable[..., Any] = prepare_selena_build,
     vs_adapter: Callable[..., Any] = adapt_selena_script_visual_studio,
+    incremental_adapter: Callable[..., Any] = adapt_build_script_for_incremental,
     generated_dependency_preparer: Callable[..., Any] | None = None,
     progress_fn: Callable[[str], None] | None = None,
 ) -> EnvironmentSnapshot:
@@ -288,21 +301,73 @@ def inspect_selena_build_environment(
     binding_id = str(payload.get("workspace_binding_id") or "").strip()
     created_at = float(now_fn())
     adaptation = None
+    incremental_adaptation = None
+    incremental_existing_build = False
+
+    def prepare_without_script_mutation() -> Any:
+        # The default v5 preparer supports an explicit lock-safe mode.  Keep
+        # injected legacy/test preparers on their historical two-argument
+        # contract; the generic policy below still runs while the workspace
+        # lock is held.
+        if prepare_fn is prepare_selena_build:
+            return prepare_fn(
+                payload,
+                binding_store,
+                enforce_incremental_policy=False,
+            )
+        return prepare_fn(payload, binding_store)
+
     try:
         _report_progress(progress_fn, "正在确认代码仓、编译脚本和 Selena 输出位置")
-        prepared = prepare_fn(payload, binding_store)
+        prepared = prepare_without_script_mutation()
         _report_progress(progress_fn, "已确认所选 Selena 子仓的分支与提交")
         build_script = getattr(prepared, "build_script_path", None)
         if build_script is not None:
             _report_progress(progress_fn, "正在检查 Visual Studio 与 Selena 编译脚本")
-            adaptation = vs_adapter(build_script)
-            if bool(getattr(adaptation, "changed", False)):
-                # The adaptation is an intentional current-workspace change.
-                # Re-prepare so the script checksum reflects the supported VS
-                # adaptation.  No Git diff/status scan is performed.
-                _report_progress(progress_fn, "正在确认适配后的 Selena 编译脚本")
-                prepared = prepare_fn(payload, binding_store)
-                _report_progress(progress_fn, "已确认适配后的 Selena 子仓分支与提交")
+            build_script_path = Path(str(build_script))
+            # VS argument adaptation and generic clean-command suppression
+            # both edit the selected wrapper.  Serialize that small mutation
+            # window with the same per-workspace OS lock used by the build
+            # executor; otherwise two users can restore/suppress the same
+            # line concurrently and capture mismatched checksums.
+            from core.build_lock import WorkspaceBuildLock
+
+            authorized = getattr(prepared, "authorized", None)
+            lock_root = getattr(authorized, "workspace_root", None) or build_script_path.parent
+            script_lock = WorkspaceBuildLock(lock_root).acquire(wait=True)
+            try:
+                adaptation = vs_adapter(build_script)
+                if bool(getattr(adaptation, "changed", False)):
+                    _report_progress(progress_fn, "已适配 Visual Studio 编译参数")
+                # A project may use a completely different build wrapper.  The
+                # policy is script-semantic, not project/path based: detect and
+                # disable active clean commands before the immutable build-stage
+                # checksum is captured for the final handoff.
+                if build_script_path.is_file():
+                    output_roots = getattr(authorized, "output_roots", ()) or ()
+                    incremental_existing_build = has_existing_build_artifact(
+                        getattr(prepared, "artifact_path", None),
+                        output_roots,
+                    )
+                    incremental_adaptation = incremental_adapter(
+                        build_script,
+                        existing_build=incremental_existing_build,
+                        allow_clean=bool(getattr(prepared, "clean", False)),
+                    )
+                    if bool(getattr(incremental_adaptation, "changed", False)):
+                        _report_progress(progress_fn, "已禁用编译脚本中的清理命令，后续使用增量编译")
+                if bool(getattr(adaptation, "changed", False)) or bool(
+                    getattr(incremental_adaptation, "changed", False)
+                ):
+                    # Both adaptations are intentional current-workspace
+                    # changes. Re-prepare while holding the lock so the
+                    # returned checksum and command evidence match the exact
+                    # script that the next handoff sees.
+                    _report_progress(progress_fn, "正在确认适配后的 Selena 编译脚本")
+                    prepared = prepare_without_script_mutation()
+                    _report_progress(progress_fn, "已确认适配后的 Selena 子仓分支与提交")
+            finally:
+                script_lock.release()
     except WindowsToolchainError as exc:
         checks = (
             EnvironmentCheckResult(
@@ -366,6 +431,47 @@ def inspect_selena_build_environment(
                         if changed
                         else f"Visual Studio {year} ({tag}, {toolset}) matches the Selena build script."
                     ),
+                )
+            )
+        if incremental_adaptation is not None:
+            clean_lines = tuple(
+                int(item)
+                for item in getattr(incremental_adaptation, "clean_command_lines", ()) or ()
+            )
+            suppressed = bool(getattr(incremental_adaptation, "changed", False))
+            explicitly_allowed = bool(
+                getattr(incremental_adaptation, "explicit_clean_requested", False)
+            )
+            if suppressed:
+                policy_code = "selena_clean_commands_suppressed"
+                policy_message = (
+                    "Detected active clean commands in the selected build script and disabled them; "
+                    "the build will reuse the local workspace incrementally."
+                )
+            elif explicitly_allowed and clean_lines:
+                policy_code = "selena_clean_explicitly_allowed"
+                policy_message = (
+                    "An explicit clean build was requested; detected clean commands remain enabled."
+                )
+            elif clean_lines:
+                policy_code = "selena_clean_commands_present"
+                policy_message = (
+                    "Clean commands were detected but were not changed by the current policy."
+                )
+            elif incremental_existing_build:
+                policy_code = "selena_incremental_build"
+                policy_message = "An existing Selena artifact was found; the next build will be incremental."
+            else:
+                policy_code = "selena_incremental_build"
+                policy_message = "The selected build uses incremental mode unless clean=true is explicitly requested."
+            checks_list.append(
+                EnvironmentCheckResult(
+                    "incremental_build_policy",
+                    "build.selena",
+                    "passed",
+                    code=policy_code,
+                    message=policy_message
+                    + (f" Detected script lines: {', '.join(str(item) for item in clean_lines)}." if clean_lines else ""),
                 )
             )
         if getattr(prepared, "package_build_script_path", None) is not None:

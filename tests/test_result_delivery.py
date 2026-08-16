@@ -115,3 +115,19 @@ def test_materialize_rejects_source_destination_overlap(tmp_path: Path) -> None:
     source = _source(tmp_path)
     with pytest.raises(ResultDeliveryError, match="overlaps"):
         materialize_result_directory(source, source / "outputs", files=["outputs/one.MF4"])
+
+
+def test_materialize_honors_cancellation_before_copy(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    destination = resolve_result_destination("", "job-123", home=tmp_path)
+
+    with pytest.raises(ResultDeliveryError) as error:
+        materialize_result_directory(
+            source,
+            destination,
+            files=["outputs/one.MF4"],
+            cancel_callback=lambda: True,
+        )
+
+    assert error.value.code == "cancelled"
+    assert not destination.exists()

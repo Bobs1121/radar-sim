@@ -191,6 +191,9 @@ def test_existing_bundle_local_cache_and_data_are_bound_to_same_full_agent(tmp_p
         attempt=1,
     )
     dataset_id = "dataset:sha256:" + "d" * 64
+    claimed_data = control.claim_next_task("full-1")
+    assert claimed_data is not None
+    assert claimed_data["stage_id"] == prepared["stage_id"]
     after_data = control.submit_task_result(
         prepared["stage_id"],
         agent_id="full-1",

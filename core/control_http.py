@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from core.control_service import ControlService
+from core.control_service import ControlService, TaskResultRejected
 
 
 class RequestError(ValueError):
@@ -184,6 +184,8 @@ def make_control_handler(service, allowed_task_types=None):
                 write_error_json(self, 400, f"invalid JSON: {exc}")
             except RequestError as exc:
                 write_error_json(self, exc.status, str(exc))
+            except TaskResultRejected as exc:
+                write_error_json(self, exc.status_code, str(exc))
             except KeyError as exc:
                 write_error_json(self, 404, str(exc))
             except (TypeError, ValueError) as exc:
@@ -257,6 +259,13 @@ def make_control_handler(service, allowed_task_types=None):
                 return
             if parts == ["api", "agents", "poll"]:
                 agent_id = require_string(payload, "agent_id")
+                for summary in self._svc.list_jobs(limit=100):
+                    if str(summary.get("status") or "") in {"succeeded", "failed", "cancelled"}:
+                        continue
+                    try:
+                        self._svc.reconcile_stage_handoffs(str(summary.get("job_id") or ""))
+                    except (KeyError, ValueError):
+                        continue
                 self._svc.bind_pending_run_config_resolution(agent_id)
                 self._svc.bind_pending_runtime_bundle_cache(agent_id)
                 self._svc.bind_pending_environment_stage(agent_id)
@@ -292,6 +301,7 @@ def make_control_handler(service, allowed_task_types=None):
                         agent_id=require_string(payload, "agent_id"),
                         status=require_string(payload, "status"),
                         returncode=require_int(payload.get("returncode"), "returncode"),
+                        attempt=require_int(payload.get("attempt"), "attempt"),
                         result=require_object(payload, "result"),
                         error=require_string(payload, "error"),
                     )

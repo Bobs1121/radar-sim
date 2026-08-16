@@ -184,6 +184,9 @@ def test_web_control_remote_tail_status_mapping(remote_server, monkeypatch):
         # Simulate agent completing the task.
         task_id = cache["alice"].get_job(job_id)["tasks"][0]["task_id"]
         cache["alice"].append_logs(task_id, ["done"])
+        cache["alice"].register_agent("builder", agent_id="a1", capabilities=["local.build_selena"])
+        claimed = cache["alice"].claim_next_task("a1")
+        assert claimed and claimed["task_id"] == task_id
         cache["alice"].submit_task_result(task_id, agent_id="a1", status="succeeded",
                                           returncode=0, result={"exe_path": "C:/selena.exe"})
         snap = web_control.tail_via_control(job_id, since=0)

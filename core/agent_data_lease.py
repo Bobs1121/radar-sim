@@ -142,10 +142,11 @@ class AgentDataLeaseStore:
             raise AgentDataLeaseError("authorized data discovery failed") from exc
         lease_id = "data-lease:sha256:" + uuid.uuid4().hex
         now = float(self._now_fn())
+        existing_after_insert: AgentDataLease | None = None
         with self._lock, self._connect() as conn:
-            conn.execute(
+            inserted = conn.execute(
                 """
-                INSERT INTO agent_data_leases(
+                INSERT OR IGNORE INTO agent_data_leases(
                     lease_id,project,binding_id,source_path,files_json,evidence_ref,status,created_at,updated_at
                 ) VALUES (?,?,?,?,?,?,'ready',?,?)
                 """,
@@ -155,7 +156,32 @@ class AgentDataLeaseStore:
                     evidence_ref, now, now,
                 ),
             )
+            if inserted.rowcount == 0:
+                # Two Agent workers can discover the same evidence concurrently
+                # (for example after a reconnect).  The evidence key is the
+                # idempotency boundary; return the first immutable lease instead
+                # of leaking SQLite's UNIQUE constraint as a task failure.
+                row = conn.execute(
+                    "SELECT * FROM agent_data_leases WHERE evidence_ref=?",
+                    (evidence_ref,),
+                ).fetchone()
+                if row is None:
+                    raise AgentDataLeaseError("prepare_data lease could not be persisted")
+                existing_after_insert = _row_to_lease(row)
+                try:
+                    same_source = existing_after_insert.source_path.resolve(strict=False) == source.resolve(strict=False)
+                except OSError:
+                    same_source = str(existing_after_insert.source_path) == str(source)
+                if (
+                    existing_after_insert.project != project
+                    or existing_after_insert.binding_id != binding_id
+                    or not same_source
+                ):
+                    raise AgentDataLeaseError("prepare_data lease evidence conflicts with existing lease")
             conn.commit()
+        if existing_after_insert is not None:
+            self._revalidate(existing_after_insert)
+            return existing_after_insert
         return self.get(lease_id, evidence_ref=evidence_ref)
 
     def get(self, lease_id: str, *, evidence_ref: str = "") -> AgentDataLease:

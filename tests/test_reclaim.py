@@ -151,12 +151,18 @@ def test_reclaim_online_agent_running_another_task_orphans_old_task(tmp_path):
         task_id for task_id in candidate_task_ids if task_id != first["task_id"]
     )
 
-    # A fresh heartbeat naming another task no longer proves ownership of the
-    # first running Stage.
-    service.heartbeat(
-        agent["agent_id"], status="busy", current_task_id=second_task_id
-    )
-    clock.advance(31)
+    # A heartbeat naming another task is rejected instead of being allowed to
+    # refresh the wrong assignment.  Once the real heartbeat becomes stale,
+    # the first task can be reclaimed normally.
+    try:
+        service.heartbeat(
+            agent["agent_id"], status="busy", current_task_id=second_task_id
+        )
+    except ValueError as exc:
+        assert "heartbeat task" in str(exc)
+    else:
+        raise AssertionError("heartbeat must reject another task identity")
+    clock.advance(301)
     reclaimed = service.reclaim_stale_tasks(stale_after_seconds=300.0, max_attempts=3)
 
     assert [item["task_id"] for item in reclaimed] == [first["task_id"]]

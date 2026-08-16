@@ -400,6 +400,44 @@ def test_cancel_completed_job_is_noop(tmp_path):
     assert cancelled["completed_at"] == finished["completed_at"]
 
 
+@pytest.mark.parametrize(
+    ("target", "expected_scope"),
+    [
+        ("local", "local_runtime_registration"),
+        ("cluster", "direct_transfer"),
+    ],
+)
+def test_retry_repairs_legacy_register_artifact_route(tmp_path, target, expected_scope):
+    service = make_service(tmp_path)
+    job = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        spec={"simulation": {"target": target}},
+        tasks=[
+            {
+                "task_type": "register_artifact",
+                "stage_type": "register_artifact",
+                "payload": {"build_evidence_ref": "build:1"},
+            }
+        ],
+    )
+    service.register_agent("windows", agent_id="windows", capabilities=["register_artifact"])
+    claimed = service.claim_next_task("windows")
+    service.submit_task_result(
+        claimed["stage_id"],
+        agent_id="windows",
+        status="failed",
+        returncode=1,
+        result={"code": "old_route"},
+    )
+
+    retried = service.retry_stage(job["job_id"], claimed["stage_id"])
+    stage = next(item for item in retried["stages"] if item["stage_id"] == claimed["stage_id"])
+
+    assert stage["status"] == "queued"
+    assert stage["payload"]["dispatch_scope"] == expected_scope
+
+
 def test_submit_task_result_rejects_different_agent(tmp_path):
     service = make_service(tmp_path)
     job = service.create_job("local.check", payload={"project": "ovrs25"})
@@ -419,6 +457,54 @@ def test_submit_task_result_rejects_different_agent(tmp_path):
     current = service.get_job(job["job_id"])
     assert current["status"] == "running"
     assert current["tasks"][0]["status"] == "running"
+
+
+def test_late_result_from_reclaimed_attempt_cannot_complete_new_attempt(tmp_path):
+    service = make_service(tmp_path)
+    job = service.create_job("local.check")
+    first_agent = service.register_agent("first", agent_id="first", capabilities=["local.check"])
+    claimed = service.claim_next_task(first_agent["agent_id"])
+    old_attempt = int(claimed["attempt_count"])
+
+    reclaimed = service.reclaim_stale_tasks(stale_after_seconds=-1, max_attempts=3)
+    assert reclaimed and reclaimed[0]["new_status"] == "queued"
+
+    with pytest.raises(ValueError, match="stale"):
+        service.submit_task_result(
+            claimed["task_id"],
+            agent_id=first_agent["agent_id"],
+            attempt=old_attempt,
+            status="succeeded",
+            returncode=0,
+        )
+
+    second_agent = service.register_agent("second", agent_id="second", capabilities=["local.check"])
+    claimed_again = service.claim_next_task(second_agent["agent_id"])
+    assert claimed_again["attempt_count"] == old_attempt + 1
+    completed = service.submit_task_result(
+        claimed_again["task_id"],
+        agent_id=second_agent["agent_id"],
+        attempt=int(claimed_again["attempt_count"]),
+        status="succeeded",
+        returncode=0,
+    )
+    assert completed["status"] == "succeeded"
+
+
+def test_heartbeat_cannot_claim_another_agent_task_identity(tmp_path):
+    service = make_service(tmp_path)
+    first_job = service.create_job("local.check")
+    second_job = service.create_job("local.check")
+    agent = service.register_agent("runner", agent_id="runner", capabilities=["local.check"])
+    first = service.claim_next_task(agent["agent_id"])
+    second_id = service.get_job(second_job["job_id"])["stages"][0]["stage_id"]
+
+    with pytest.raises(ValueError, match="heartbeat task"):
+        service.heartbeat(agent["agent_id"], status="busy", current_task_id=second_id)
+
+    current = service.get_job(first_job["job_id"])["stages"][0]
+    assert current["status"] == "running"
+    assert service.list_agents()[0]["current_task_id"] == first["task_id"]
 
 
 def test_claim_respects_capabilities(tmp_path):

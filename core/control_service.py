@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional
 
 from core.simulation import normalize_radar_metadata
 from core.agent_policy import windows_connector_contract_is_current
+from core.stage_routing import register_artifact_dispatch_scope
 
 TERMINAL_TASK_STATUSES = {"succeeded", "failed", "cancelled", "skipped"}
 TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -21,6 +22,17 @@ SUCCESS_TASK_STATUSES = {"succeeded", "skipped"}
 INITIAL_TASK_STATUSES = {"queued", "skipped", "blocked"}
 INTERNAL_V1_SCHEDULER_AGENT_ID = "__v1_scheduler__"
 RESERVED_INTERNAL_AGENT_IDS = {INTERNAL_V1_SCHEDULER_AGENT_ID}
+
+
+class TaskResultRejected(ValueError):
+    """A terminal callback is stale or does not belong to its task attempt."""
+
+    def __init__(self, code: str, message: str, *, status_code: int = 409) -> None:
+        super().__init__(message)
+        self.code = str(code)
+        self.status_code = int(status_code)
+
+
 # A Cluster role may use several fixed worker identities.  The role root is
 # still the durable task affinity written by the API; only a worker whose ID
 # follows the role's ``-worker-N`` convention and whose registration metadata
@@ -783,6 +795,19 @@ class ControlService:
                 agent = self._get_agent_locked(conn, agent_id)
                 next_status = status or agent["status"]
                 next_task_id = current_task_id if current_task_id is not None else agent["current_task_id"]
+                task = None
+                if next_task_id:
+                    task = self._get_task_locked(conn, next_task_id)
+                    owners = {
+                        str(task.get("assigned_agent_id") or ""),
+                        str(task.get("required_agent_id") or ""),
+                    } - {""}
+                    if str(agent_id) not in owners or str(task.get("status") or "") != "running":
+                        raise TaskResultRejected(
+                            "agent_heartbeat_task_mismatch",
+                            "agent heartbeat task does not belong to a running task assigned to this Agent",
+                            status_code=409,
+                        )
                 next_metadata = dict(agent["metadata"])
                 if metadata:
                     # Keep server-owned Cluster worker identity immutable and
@@ -804,9 +829,10 @@ class ControlService:
                 conn.commit()
                 task_id = next_task_id or agent["current_task_id"]
                 cancel_requested = False
-                task = None
-                if task_id:
+                if task_id and task is None:
                     task = self._get_task_locked(conn, task_id)
+                    cancel_requested = bool(task["cancel_requested"])
+                elif task is not None:
                     cancel_requested = bool(task["cancel_requested"])
                 return {
                     "agent": self._get_agent_locked(conn, agent_id),
@@ -2293,6 +2319,7 @@ class ControlService:
         returncode: Optional[int] = None,
         result: Optional[dict[str, Any]] = None,
         error: str = "",
+        attempt: Optional[int] = None,
     ) -> dict[str, Any]:
         now = self._now()
         result = dict(result or {})
@@ -2305,9 +2332,37 @@ class ControlService:
                 task = self._get_task_locked(conn, task_id)
                 if task["status"] in TERMINAL_TASK_STATUSES:
                     raise ValueError(f"task already completed: {task_id}")
+                if str(task.get("status") or "") != "running":
+                    raise TaskResultRejected(
+                        "stale_task_result",
+                        f"task {task_id} is no longer running; result callback is stale",
+                    )
                 assigned_agent_id = str(task["assigned_agent_id"] or "")
-                if agent_id and assigned_agent_id and agent_id != assigned_agent_id:
-                    raise ValueError(f"task {task_id} is assigned to {assigned_agent_id}")
+                required_agent_id = str(task.get("required_agent_id") or "")
+                if agent_id:
+                    if str(agent_id) not in {assigned_agent_id, required_agent_id} - {""}:
+                        raise TaskResultRejected(
+                            "agent_task_mismatch",
+                            f"task {task_id} is assigned to {assigned_agent_id or required_agent_id}",
+                            status_code=403,
+                        )
+                elif not (assigned_agent_id or required_agent_id):
+                    raise TaskResultRejected(
+                        "task_assignment_missing",
+                        f"task {task_id} has no execution Agent assignment",
+                    )
+                if attempt is not None:
+                    if isinstance(attempt, bool) or int(attempt) <= 0:
+                        raise TaskResultRejected(
+                            "invalid_task_attempt",
+                            f"task {task_id} result attempt is invalid",
+                        )
+                    expected_attempt = int(task.get("attempt_count") or 0)
+                    if int(attempt) != expected_attempt:
+                        raise TaskResultRejected(
+                            "stale_task_result",
+                            f"task {task_id} result attempt is stale",
+                        )
                 effective_agent_id = agent_id or assigned_agent_id
                 attempt = self._ensure_attempt_locked(conn, task, agent_id=effective_agent_id, now=now)
                 task = self._get_task_locked(conn, task_id)
@@ -2760,6 +2815,28 @@ class ControlService:
                     raise ValueError(f"stage {stage_id} does not belong to job {job_id}")
                 if task["status"] not in {"failed", "cancelled"}:
                     raise ValueError(f"stage {stage_id} is {task['status']}; only failed/cancelled stages can be retried")
+                # Jobs created before the target-specific registration
+                # contract may have a failed register_artifact Stage with no
+                # dispatch_scope.  Repair that durable payload during retry so
+                # the already completed build can be resumed without falling
+                # back to the old "always direct-transfer" behavior.
+                if str(task.get("stage_type") or task.get("task_type") or "") == "register_artifact":
+                    try:
+                        registration_scope = register_artifact_dispatch_scope(job)
+                    except ValueError:
+                        registration_scope = ""
+                    if registration_scope:
+                        payload = dict(task.get("payload") or {})
+                        payload["dispatch_scope"] = registration_scope
+                        payload["registration_mode"] = (
+                            "local_runtime_lease"
+                            if registration_scope == "local_runtime_registration"
+                            else "cluster_direct_transfer"
+                        )
+                        conn.execute(
+                            "UPDATE tasks SET payload_json=?, updated_at=? WHERE task_id=?",
+                            (self._dumps(payload), now, stage_id),
+                        )
                 conn.execute(
                     """
                     UPDATE jobs
@@ -2835,6 +2912,64 @@ class ControlService:
                 raise
             finally:
                 conn.close()
+
+    def reconcile_stage_handoffs(self, job_id: str) -> dict[str, Any]:
+        """Repair a persisted-successful Stage whose successor was not bound.
+
+        A result callback commits the Stage before the successor binding.  A
+        process restart, transient handoff exception, or client disconnect in
+        that small window must not leave a Job permanently queued.  The
+        operation is intentionally idempotent: it only invokes the binder for
+        successful Stages with a still-queued successor and ignores the
+        expected "not ready" cases until the next poll/maintenance pass.
+        """
+
+        from core.stage_binder import StageBindingError, advance_after_stage_result
+
+        job = self.get_job(str(job_id or ""))
+        if str(job.get("status") or "") in TERMINAL_JOB_STATUSES:
+            return job
+        stages = list(job.get("stages") or [])
+        by_type = {
+            str(stage.get("stage_type") or ""): stage
+            for stage in stages
+            if str(stage.get("stage_type") or "")
+        }
+        candidate_types = {
+            "resolve_spec",
+            "environment_check",
+            "prepare_source",
+            "build_selena",
+            "register_artifact",
+            "prepare_data",
+            "preflight",
+            "run_simulation",
+            "collect_results",
+        }
+        for stage in stages:
+            stage_type = str(stage.get("stage_type") or "")
+            if stage_type not in candidate_types or str(stage.get("status") or "") != "succeeded":
+                continue
+            # Avoid repeatedly invoking the binder when no successor can be
+            # released yet.  ``prepare_data`` is included even when Cluster
+            # uses no local successor because its data decision may still need
+            # to be persisted after a server restart.
+            downstream = [
+                item
+                for item in stages
+                if stage.get("stage_id") in list(item.get("dependencies") or [])
+                and str(item.get("status") or "") == "queued"
+            ]
+            if not downstream and stage_type != "prepare_data":
+                continue
+            try:
+                advance_after_stage_result(self, stage)
+            except StageBindingError:
+                # Missing Agent affinity or a predecessor that is not yet
+                # ready is a normal poll-time condition.  The next Agent poll
+                # or maintenance pass will retry the idempotent handoff.
+                continue
+        return self.get_job(str(job_id or ""))
 
     def list_agents(self) -> list[dict[str, Any]]:
         """Return all registered agents, newest registration first.

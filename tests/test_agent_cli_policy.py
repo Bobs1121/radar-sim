@@ -518,7 +518,10 @@ def test_register_artifact_uses_direct_transfer_without_spawning(monkeypatch):
         "task_type": "register_artifact",
         "stage_type": "register_artifact",
         "owner": "alice",
-        "payload": {"build_evidence_ref": "stage-build:1"},
+        "payload": {
+            "dispatch_scope": "direct_transfer",
+            "build_evidence_ref": "stage-build:1",
+        },
     }
     assert agent_module._run_task(
         client,
@@ -530,6 +533,71 @@ def test_register_artifact_uses_direct_transfer_without_spawning(monkeypatch):
     assert client.results[0]["status"] == "succeeded"
     assert client.results[0]["result"]["transfer_status"] == "transfer_completed"
     assert client.results[0]["result"]["owner"] == "alice"
+
+
+def test_register_artifact_local_reuses_runtime_bundle_lease_without_transfer(monkeypatch):
+    import core.agent_runtime_bundle_lease as lease_module
+
+    class FakeManifest:
+        def to_dict(self):
+            return {"id": "selena-bundle:sha256:" + "b" * 64, "files": []}
+
+    class FakeLease:
+        lease_id = "runtime-bundle-lease:sha256:" + "a" * 64
+        manifest = FakeManifest()
+
+    class FakeStore:
+        def get(self, lease_id, *, build_evidence_ref=""):
+            assert lease_id == FakeLease.lease_id
+            assert build_evidence_ref == "stage-build:1"
+            return FakeLease()
+
+    class FakeClient:
+        def __init__(self):
+            self.results = []
+            self.logs = []
+
+        def append_logs(self, _task_id, lines):
+            self.logs.extend(lines)
+
+        def submit_result(self, _task_id, **kwargs):
+            self.results.append(kwargs)
+
+        def heartbeat(self, _agent_id, **_kwargs):
+            return {"cancel_requested": False}
+
+        def issue_transfer_plan(self, **_kwargs):
+            raise AssertionError("local registration must not create a transfer plan")
+
+    monkeypatch.setattr(lease_module, "AgentRuntimeBundleLeaseStore", FakeStore)
+    monkeypatch.setattr(
+        agent_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not spawn")),
+    )
+    client = FakeClient()
+    task = {
+        "task_id": "stage-register-local",
+        "task_type": "register_artifact",
+        "stage_type": "register_artifact",
+        "owner": "alice",
+        "payload": {
+            "dispatch_scope": "local_runtime_registration",
+            "build_evidence_ref": "stage-build:1",
+            "runtime_bundle_lease_ref": FakeLease.lease_id,
+        },
+    }
+
+    assert agent_module._run_task(
+        client,
+        "agent-a",
+        task,
+        heartbeat_interval=1,
+        node_kind="windows_full",
+    ) == 0
+    assert client.results[0]["status"] == "succeeded"
+    assert client.results[0]["result"]["transfer_status"] == "transfer_skipped_local"
+    assert any("no file transfer" in line for line in client.logs)
 
 
 def test_prepare_data_uses_authorized_lease_and_direct_transfer_without_spawning(monkeypatch):
@@ -776,13 +844,14 @@ def test_prepare_data_heartbeat_cancels_a_slow_discovery(monkeypatch):
         task,
         heartbeat_interval=0.01,
         node_kind="windows_agent",
-    ) == 1
+    ) == 130
+    assert client.results[-1]["status"] == "cancelled"
     assert client.heartbeats >= 2
     assert client.results[0]["status"] == "cancelled"
     assert client.results[0]["returncode"] == 130
 
 
-def test_local_prepare_data_uses_metadata_fingerprint_without_content_checksum(monkeypatch, tmp_path):
+def test_local_prepare_data_requires_content_checksum_for_local_execution(monkeypatch, tmp_path):
     import core.agent_data_bindings as binding_module
     import core.agent_data_lease as lease_module
     from core.datasets import DatasetFileRef
@@ -796,7 +865,7 @@ def test_local_prepare_data_uses_metadata_fingerprint_without_content_checksum(m
         ):
             assert stage_id == "stage-local-data"
             assert attempt == 1
-            assert checksum is False
+            assert checksum is True
             assert cancel_requested() is False
             return SimpleNamespace(
                 lease_id="data-lease:sha256:" + "a" * 32,
@@ -818,7 +887,7 @@ def test_local_prepare_data_uses_metadata_fingerprint_without_content_checksum(m
             return {"cancel_requested": False}
 
         def upload_data_lease(self, *_args, **_kwargs):
-            raise AssertionError("local simulation must not upload or hash dataset contents")
+            raise AssertionError("local simulation must not upload the dataset to Linux")
 
         def submit_result(self, _task_id, **kwargs):
             self.results.append(kwargs)

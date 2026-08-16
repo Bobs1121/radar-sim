@@ -18,7 +18,11 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from pydantic import ValidationError
 
-from core.control_service import ControlService, INTERNAL_V1_SCHEDULER_AGENT_ID
+from core.control_service import (
+    ControlService,
+    INTERNAL_V1_SCHEDULER_AGENT_ID,
+    TaskResultRejected,
+)
 from core.artifact_upload_service import ArtifactUploadService, ArtifactUploadServiceError
 from core.dataset_upload_service import DatasetUploadService, DatasetUploadServiceError
 from core.runtime_bundle_upload_service import RuntimeBundleUploadService, RuntimeBundleUploadServiceError
@@ -2349,6 +2353,18 @@ class ApiV1Service:
 
     def poll_agent(self, owner: str, agent_id: str) -> dict[str, Any]:
         control = self._require_connector_owner(owner, agent_id)
+        # Recover handoffs that were committed just before a server restart or
+        # a transient callback failure.  This keeps the Agent poll loop the
+        # single reconciliation trigger instead of requiring a user retry.
+        for summary in control.list_jobs(owner=self._owner(owner), limit=100):
+            if str(summary.get("status") or "") in {"succeeded", "failed", "cancelled"}:
+                continue
+            try:
+                control.reconcile_stage_handoffs(str(summary.get("job_id") or ""))
+            except (KeyError, ValueError):
+                # One malformed/legacy Job must not prevent this Agent from
+                # polling unrelated work.
+                continue
         control.bind_pending_run_config_resolution(agent_id)
         control.bind_pending_runtime_bundle_cache(agent_id)
         control.bind_pending_environment_stage(agent_id)
@@ -2420,14 +2436,20 @@ class ApiV1Service:
 
     def submit_agent_result(
         self, owner: str, task_id: str, *, agent_id: str, status: str,
-        returncode: int, result: dict[str, Any],
+        returncode: int, result: dict[str, Any], attempt: int | None = None,
     ) -> dict[str, Any]:
         control, task = self._task_for_owner(owner, task_id)
         try:
             completed = control.submit_task_result(
                 task_id, agent_id=agent_id, status=status,
-                returncode=returncode, result=result,
+                returncode=returncode, result=result, attempt=attempt,
             )
+        except TaskResultRejected as exc:
+            raise ApiV1Error(
+                exc.code,
+                str(exc),
+                status_code=exc.status_code,
+            ) from exc
         except ValueError as exc:
             # Direct-transfer manifests can complete a prepare_data Stage as
             # soon as the last resource is accepted.  The Windows Agent then

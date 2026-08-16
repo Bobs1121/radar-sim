@@ -203,12 +203,27 @@ class TaskRegistry:
                 task.finished_at = time.time()
                 return
 
+            env = _build_env(config)
+            from core.build_lock import WorkspaceBuildLock, build_workspace_from_config
+            build_lock = WorkspaceBuildLock(build_workspace_from_config(config)).acquire(
+                wait=True
+            )
+            # Apply any script mutation only after the single-flight lock is
+            # held.  The command is then built from the exact wrapper bytes
+            # that this process is about to execute.
+            build = config.get("build", {}) or {}
+            script = build.get("selena_build_script", "") or config.get("selena_build_script", "")
+            if script and os.path.exists(script):
+                from core.build_script_policy import adapt_configured_selena_build_script
+
+                adapt_configured_selena_build_script(
+                    config,
+                    mode=mode,
+                    allow_clean=bool(clean),
+                )
             cmd, cwd = _build_selena_command(config, mode, clean)
             task.stdout_lines.append(f"[INFO] Build command: {' '.join(cmd)}")
             task.stdout_lines.append(f"[INFO] Working dir: {cwd}")
-            env = _build_env(config)
-            from core.build_lock import WorkspaceBuildLock, build_workspace_from_config
-            build_lock = WorkspaceBuildLock(build_workspace_from_config(config)).acquire()
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, env=env, bufsize=1, cwd=cwd,
@@ -375,6 +390,10 @@ def _build_selena_command(config: dict, mode: str, clean: bool) -> tuple[list[st
     build = config.get("build", {}) or {}
     script = build.get("selena_build_script", "") or config.get("selena_build_script", "")
     if script and os.path.exists(script):
+        # The caller applies the generic incremental policy while holding the
+        # workspace build lock.  This helper only constructs a command so a
+        # lock-free preparation cannot mutate a wrapper currently in use by a
+        # different build.
         return _build_selena_script_command(config, mode)
     # Fallback: direct R2D2 invocation.
     r2d2 = config.get("paths", {}).get("r2d2_script", "")

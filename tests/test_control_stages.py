@@ -429,12 +429,21 @@ def test_cancel_request_does_not_hide_a_real_failed_stage(tmp_path):
     assert service.get_job(job["job_id"])["status"] == "failed"
 
 
-def test_direct_submit_queued_task_creates_synthetic_attempt(tmp_path):
+def test_result_callback_must_claim_task_before_submission(tmp_path):
     service = make_service(tmp_path)
     job = service.create_job("local.check")
     stage_id = job["stages"][0]["stage_id"]
+    agent = service.register_agent("direct-agent", agent_id="direct-agent", capabilities=["local.check"])
+    claimed = service.claim_next_task(agent["agent_id"])
+    assert claimed["stage_id"] == stage_id
 
-    finished = service.submit_task_result(stage_id, status="succeeded", returncode=0, result={"direct": True})
+    finished = service.submit_task_result(
+        stage_id,
+        agent_id=agent["agent_id"],
+        status="succeeded",
+        returncode=0,
+        result={"direct": True},
+    )
 
     assert finished["status"] == "succeeded"
     attempts = service.list_attempts(stage_id)

@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -81,6 +82,73 @@ def _agent_transport_error(method: str, path: str, exc: BaseException) -> Runtim
     error.cause_type = type(exc).__name__  # type: ignore[attr-defined]
     error.status_code = 0  # type: ignore[attr-defined]
     return error
+
+
+def _error_status_code(exc: BaseException) -> int:
+    status = int(getattr(exc, "status_code", 0) or 0)
+    if status:
+        return status
+    text = str(exc or "")
+    marker = " failed: "
+    if marker in text:
+        try:
+            return int(text.split(marker, 1)[1].split(" ", 1)[0])
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _is_retryable_control_error(exc: BaseException) -> bool:
+    status = _error_status_code(exc)
+    return bool(
+        status >= 500
+        or status in {408, 429}
+        or _is_retryable_agent_transport(exc)
+    )
+
+
+def _is_retryable_result_upload_error(
+    exc: BaseException, *, allow_offset_conflict: bool = False
+) -> bool:
+    """Return whether a resumable result-upload request can wait for recovery."""
+
+    status = _error_status_code(exc)
+    if status >= 500 or status in {408, 429} or _is_retryable_agent_transport(exc):
+        return True
+    if status != 409 or not allow_offset_conflict:
+        return False
+    code = str(getattr(exc, "code", "") or "").casefold()
+    return code in {"result_upload_offset_conflict", "result_upload_unavailable"}
+
+
+def _cancelled_operation(message: str) -> None:
+    error = RuntimeError(message)
+    error.code = "cancelled"  # type: ignore[attr-defined]
+    raise error
+
+
+def _result_upload_cancelled() -> None:
+    _cancelled_operation("result upload cancelled")
+
+
+def _is_permanent_result_error(exc: BaseException) -> bool:
+    """Return whether a callback rejection must be removed from the outbox."""
+
+    status = _error_status_code(exc)
+    if status in {400, 401, 403, 404, 409}:
+        return True
+    code = str(getattr(exc, "code", "") or "").casefold()
+    text = str(exc or "").casefold()
+    return bool(
+        code in {
+            "stale_task_result",
+            "agent_task_mismatch",
+            "task_assignment_missing",
+            "task_not_found",
+        }
+        or "task already completed" in text
+        or "result callback is stale" in text
+    )
 
 
 def _missing_connector_dependency(exc: BaseException) -> str:
@@ -189,29 +257,65 @@ def run(args, config):
     workspace_bindings = _public_workspace_bindings()
     data_bindings = _public_data_bindings(owner=user, device_id=requested_agent_id)
     asset_bindings = _public_asset_bindings()
-    agent = client.register_agent(
-        name=name,
-        agent_id=requested_agent_id,
-        hostname=hostname,
-        platform=getattr(args, "platform_name", "") or platform_mod.platform(),
-        capabilities=capabilities,
-        metadata={
-            "user": user,
-            "node_kind": node_kind,
-            "windows_mode": mode,
-            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
-            "auto_configure": True,
-            "workspace_bindings": workspace_bindings,
-            "data_bindings": data_bindings,
-            "asset_bindings": asset_bindings,
-        },
-    )
-    agent_id = agent["agent_id"]
     poll_interval = float(getattr(args, "poll_interval", 3.0) or 3.0)
     once = bool(getattr(args, "once", False))
+    if callable(getattr(client, "attach_result_outbox", None)):
+        try:
+            from core.agent_result_outbox import AgentResultOutbox
+
+            client.attach_result_outbox(AgentResultOutbox())
+        except Exception as exc:
+            # A terminal result must be durable before a long-running Agent
+            # starts accepting work.  Fail fast with a local repair signal
+            # instead of silently running without the outbox guarantee.
+            print(f"[ERROR] local result outbox is unavailable: {exc}", file=sys.stderr)
+            return 1
+    registration_failures = 0
+    while True:
+        try:
+            agent = client.register_agent(
+                name=name,
+                agent_id=requested_agent_id,
+                hostname=hostname,
+                platform=getattr(args, "platform_name", "") or platform_mod.platform(),
+                capabilities=capabilities,
+                metadata={
+                    "user": user,
+                    "node_kind": node_kind,
+                    "windows_mode": mode,
+                    "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+                    "auto_configure": True,
+                    "workspace_bindings": workspace_bindings,
+                    "data_bindings": data_bindings,
+                    "asset_bindings": asset_bindings,
+                },
+            )
+            break
+        except Exception as exc:
+            registration_failures += 1
+            if once or not _is_retryable_control_error(exc):
+                raise
+            if registration_failures == 3 or registration_failures % 10 == 0:
+                print(
+                    f"[WARN] Linux control plane is temporarily unreachable during Agent registration "
+                    f"(attempt {registration_failures}): {exc}; reconnecting automatically",
+                    file=sys.stderr,
+                )
+            time.sleep(_poll_retry_delay(registration_failures, poll_interval))
+    if callable(getattr(client, "flush_result_outbox", None)):
+        try:
+            client.flush_result_outbox()
+        except Exception as exc:
+            print(f"[WARN] pending task results could not be flushed: {exc}", file=sys.stderr)
+    agent_id = agent["agent_id"]
     poll_failure_count = 0
     last_poll_failure_log_at = 0.0
     while True:
+        if callable(getattr(client, "flush_result_outbox", None)):
+            try:
+                client.flush_result_outbox()
+            except Exception as exc:
+                print(f"[WARN] pending task results could not be flushed: {exc}", file=sys.stderr)
         try:
             claim = client.poll(agent_id)
         except Exception as exc:
@@ -283,20 +387,29 @@ def _poll_failure_is_reportable(
 
 
 def _build_timeout_seconds(payload: dict) -> int:
-    """Return the framework-owned build safety limit.
+    """Return an optional framework-owned build wall-clock limit.
 
-    This is deliberately not a public project/YAML setting.  Deployments may
-    tune it globally, while every new user gets a finite default so a broken
-    batch wrapper cannot occupy a Connector forever.
+    Zero means unlimited.  A build can legitimately spend many hours in a
+    compiler/linker without emitting output, so the Agent must not infer a
+    failure from elapsed time by default.  Deployments may still set an
+    explicit safety limit through the task payload or
+    ``RSIM_BUILD_TIMEOUT_SECONDS`` when their operational policy requires it;
+    cancellation, process liveness and the task heartbeat remain active in
+    either mode.
     """
 
-    raw = payload.get("build_timeout_seconds") or os.environ.get(
-        "RSIM_BUILD_TIMEOUT_SECONDS", "14400"
+    configured = payload.get("build_timeout_seconds")
+    raw = (
+        configured
+        if configured is not None and str(configured).strip() != ""
+        else os.environ.get("RSIM_BUILD_TIMEOUT_SECONDS", "0")
     )
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        value = 14400
+        value = 0
+    if value <= 0:
+        return 0
     return max(60, min(value, 86400))
 
 
@@ -332,6 +445,10 @@ def _terminate_process_tree(process: subprocess.Popen, exit_code: int) -> None:
                     pass
 
 
+class _TaskExecutionCancelled(RuntimeError):
+    """Internal control flow for cancellation before a child is started."""
+
+
 def _run_task(
     client: "_ControlClient",
     agent_id: str,
@@ -361,7 +478,53 @@ def _run_task(
     )
     prepared_build = None
     prepared_build_environment = None
+    build_lock = None
     command_cwd = ROOT
+    early_heartbeat_thread = None
+    early_stop_event = threading.Event()
+    early_cancel_event = threading.Event()
+    early_heartbeat_enabled = bool(
+        is_v2_resolution or is_v5_environment or is_v5_source or is_v5_build
+    )
+
+    def stop_early_heartbeat() -> None:
+        if early_heartbeat_thread is None:
+            return
+        early_stop_event.set()
+        early_heartbeat_thread.join(timeout=max(1.0, heartbeat_interval))
+
+    def submit_early_cancellation() -> bool:
+        if not early_cancel_event.is_set():
+            return False
+        stop_early_heartbeat()
+        client.submit_result(
+            task_id,
+            agent_id=agent_id,
+            status="cancelled",
+            returncode=130,
+            result={"status": "cancelled", "code": "cancelled"},
+        )
+        return True
+
+    if early_heartbeat_enabled:
+        def early_heartbeat_loop() -> None:
+            while not early_stop_event.wait(max(0.5, heartbeat_interval)):
+                try:
+                    response = client.heartbeat(
+                        agent_id, status="busy", current_task_id=task_id
+                    )
+                    if response.get("cancel_requested"):
+                        early_cancel_event.set()
+                except Exception:
+                    # The terminal result is durable in the Agent outbox; a
+                    # temporary control-plane outage must not abort local
+                    # preparation or compilation.
+                    pass
+
+        early_heartbeat_thread = threading.Thread(
+            target=early_heartbeat_loop, daemon=True
+        )
+        early_heartbeat_thread.start()
     try:
         if not may_claim_task(node_kind, task.get("task_type"), task.get("stage_type")):
             raise AgentPolicyError("agent node policy forbids this task type")
@@ -429,6 +592,17 @@ def _run_task(
                     else "[agent] workspace and dependencies configured"
                 ],
             )
+            if early_cancel_event.is_set():
+                stop_early_heartbeat()
+                client.submit_result(
+                    task_id,
+                    agent_id=agent_id,
+                    status="cancelled",
+                    returncode=130,
+                    result={"status": "cancelled", "code": "cancelled"},
+                )
+                return 130
+            stop_early_heartbeat()
             client.submit_result(
                 task_id,
                 agent_id=agent_id,
@@ -441,6 +615,9 @@ def _run_task(
             if is_existing_runtime:
                 existing = _execute_v5_existing_runtime(task)
                 client.append_logs(task_id, ["[agent] existing Runtime Bundle lease verified"])
+                if submit_early_cancellation():
+                    return 130
+                stop_early_heartbeat()
                 client.submit_result(
                     task_id,
                     agent_id=agent_id,
@@ -450,8 +627,15 @@ def _run_task(
                 )
                 return 0
             if is_runtime_bundle_cache:
-                cached = _execute_v5_runtime_bundle_cache(task, client=client)
+                cached = _execute_v5_runtime_bundle_cache(
+                    task,
+                    client=client,
+                    cancel_requested=early_cancel_event.is_set,
+                )
                 client.append_logs(task_id, ["[agent] existing Runtime Bundle cached and verified"])
+                if submit_early_cancellation():
+                    return 130
+                stop_early_heartbeat()
                 client.submit_result(
                     task_id,
                     agent_id=agent_id,
@@ -489,6 +673,9 @@ def _run_task(
                 progress_fn=report_environment_progress,
             )
             client.append_logs(task_id, ["[agent] node-local environment check completed"])
+            if submit_early_cancellation():
+                return 130
+            stop_early_heartbeat()
             client.submit_result(
                 task_id,
                 agent_id=agent_id,
@@ -500,6 +687,9 @@ def _run_task(
         if is_v5_source:
             source = _prepare_v5_branch_source(task)
             client.append_logs(task_id, ["[agent] isolated Selena branch source prepared"])
+            if submit_early_cancellation():
+                return 130
+            stop_early_heartbeat()
             client.submit_result(
                 task_id,
                 agent_id=agent_id,
@@ -530,7 +720,7 @@ def _run_task(
                 heartbeat_interval=heartbeat_interval,
             )
         if is_v5_build:
-            prepared_build = _prepare_v5_selena_build(dict(task.get("payload") or {}))
+            prepared_build = _prepare_v5_selena_build_unlocked(dict(task.get("payload") or {}))
             command = list(prepared_build.command)
             command_cwd = prepared_build.cwd
             authorized = getattr(prepared_build, "authorized", None)
@@ -543,6 +733,9 @@ def _run_task(
                     selena_build_script=getattr(prepared_build, "build_script_path", None),
                     package_build_script=getattr(prepared_build, "package_build_script_path", None),
                 )
+            # The long-lived execution loop below starts its own heartbeat;
+            # avoid sending duplicate heartbeats after preparation completes.
+            stop_early_heartbeat()
         else:
             command = _build_task_command(task)
     except Exception as exc:
@@ -562,6 +755,7 @@ def _run_task(
             )
         else:
             message = f"[agent] task setup error: {exc}"
+        stop_early_heartbeat()
         client.append_logs(task_id, [message])
         client.submit_result(
             task_id,
@@ -610,6 +804,8 @@ def _run_task(
         start_logs.append(f"[agent] command: {_quote_command(command)}")
     client.append_logs(task_id, start_logs)
     cancel_event = threading.Event()
+    if early_cancel_event.is_set():
+        cancel_event.set()
     stop_event = threading.Event()
 
     def heartbeat_loop() -> None:
@@ -634,6 +830,61 @@ def _run_task(
     last_reported_progress = 0.0
     last_progress_report_at = 0.0
     try:
+        if prepared_build is not None:
+            # A Connector may receive two jobs for the same checkout.  Queue
+            # the second one behind the OS lock instead of launching two
+            # wrappers that mutate the same build tree concurrently.  Rebuild
+            # the prepared command while holding the lock so clean-policy
+            # adaptation and the script checksum cannot race another job.
+            from core.build_lock import BuildLockError, WorkspaceBuildLock
+
+            wait_notice_at = [0.0]
+
+            def _report_build_lock_wait() -> None:
+                now = time.monotonic()
+                if now - wait_notice_at[0] >= 30.0:
+                    _safe_append_logs(
+                        client,
+                        task_id,
+                        ["[agent] another Selena build owns this workspace; waiting for the build lock"],
+                    )
+                    wait_notice_at[0] = now
+
+            try:
+                build_lock = WorkspaceBuildLock(
+                    getattr(
+                        getattr(prepared_build, "authorized", None),
+                        "workspace_root",
+                        command_cwd,
+                    )
+                ).acquire(
+                    wait=True,
+                    cancel_callback=lambda: cancel_event.is_set() or early_cancel_event.is_set(),
+                    wait_callback=_report_build_lock_wait,
+                )
+            except BuildLockError as exc:
+                if exc.cancelled:
+                    status = "cancelled"
+                    returncode = 130
+                    raise _TaskExecutionCancelled() from exc
+                raise
+            if cancel_event.is_set() or early_cancel_event.is_set():
+                status = "cancelled"
+                returncode = 130
+                raise _TaskExecutionCancelled()
+            prepared_build = _prepare_v5_selena_build(dict(task.get("payload") or {}))
+            command = list(prepared_build.command)
+            command_cwd = prepared_build.cwd
+            authorized = getattr(prepared_build, "authorized", None)
+            workspace_root = getattr(authorized, "workspace_root", None)
+            if workspace_root is not None:
+                from core.windows_build_environment import prepare_windows_build_environment
+
+                prepared_build_environment = prepare_windows_build_environment(
+                    workspace_root=workspace_root,
+                    selena_build_script=getattr(prepared_build, "build_script_path", None),
+                    package_build_script=getattr(prepared_build, "package_build_script_path", None),
+                )
         if prepared_build is not None:
             _verify_v5_selena_build(prepared_build)
         proc = subprocess.Popen(
@@ -721,7 +972,11 @@ def _run_task(
             if cancel_event.is_set():
                 _terminate_process_tree(proc, 130)
                 break
-            if is_v5_build and time.monotonic() - build_started_at >= build_timeout:
+            if (
+                is_v5_build
+                and build_timeout > 0
+                and time.monotonic() - build_started_at >= build_timeout
+            ):
                 build_timed_out = True
                 execution_error = (
                     f"Selena build exceeded the {build_timeout}-second framework safety timeout"
@@ -769,11 +1024,16 @@ def _run_task(
                 proc.kill()
                 returncode = proc.wait(timeout=10)
             status = "succeeded" if returncode == 0 else "failed"
+    except _TaskExecutionCancelled:
+        # Cancellation while waiting for the workspace lock is terminal for
+        # this attempt, but it is not a compiler failure and no child exists
+        # to terminate.
+        pass
     except Exception as exc:
         if "proc" in locals() and proc.poll() is None:
             _terminate_process_tree(proc, 1)
         execution_error = "v5 Selena build execution failed" if is_v5_build else str(exc)
-        client.append_logs(task_id, [f"[agent] execution error: {execution_error}"])
+        _safe_append_logs(client, task_id, [f"[agent] execution error: {execution_error}"])
         status = "failed"
         returncode = returncode if returncode is not None else -1
     finally:
@@ -806,7 +1066,7 @@ def _run_task(
                 status = "failed"
                 returncode = -1
                 execution_error = "v5 Selena build evidence finalization failed"
-                client.append_logs(task_id, [f"[agent] execution error: {execution_error}"])
+                _safe_append_logs(client, task_id, [f"[agent] execution error: {execution_error}"])
                 result = {"error": execution_error}
         else:
             from core.build_diagnostics import classify_build_failure
@@ -827,7 +1087,8 @@ def _run_task(
                 "code": "BUILD_TIMEOUT" if build_timed_out else diagnostic.code,
                 "diagnostic": diagnostic_payload,
             }
-            client.append_logs(
+            _safe_append_logs(
+                client,
                 task_id,
                 [
                     f"[diagnostic] {diagnostic_payload['summary']}",
@@ -843,11 +1104,19 @@ def _run_task(
     if source_lease_ref:
         try:
             _release_v5_source_lease(source_lease_ref)
-            client.append_logs(task_id, ["[agent] isolated Selena source worktree released"])
+            _safe_append_logs(client, task_id, ["[agent] isolated Selena source worktree released"])
         except Exception:
-            client.append_logs(task_id, ["[agent] isolated source cleanup is pending; bundle evidence is retained"])
-    client.submit_result(task_id, agent_id=agent_id, status=status, returncode=returncode, result=result)
-    return 0 if status == "succeeded" else 1
+            _safe_append_logs(
+                client,
+                task_id,
+                ["[agent] isolated source cleanup is pending; bundle evidence is retained"],
+            )
+    try:
+        client.submit_result(task_id, agent_id=agent_id, status=status, returncode=returncode, result=result)
+    finally:
+        if build_lock is not None:
+            build_lock.release()
+    return 0 if status == "succeeded" else (130 if status == "cancelled" else 1)
 
 
 def _build_progress_from_output(line: str) -> tuple[float | None, str]:
@@ -875,7 +1144,31 @@ def _prepare_v5_selena_build(payload: dict):
             source_lease_ref,
             source_evidence_ref=str(payload.get("source_evidence_ref") or ""),
         )
-    return prepare_selena_build(payload, AgentBindingStore(), source_lease=source_lease)
+    return prepare_selena_build(
+        payload,
+        AgentBindingStore(),
+        source_lease=source_lease,
+        enforce_incremental_policy=True,
+    )
+
+
+def _prepare_v5_selena_build_unlocked(payload: dict):
+    """Prepare v5 build evidence without mutating the wrapper before the lock.
+
+    Small embedded test/extension callers may still provide the historical
+    one-argument helper signature; keep that compatibility while production
+    code uses the explicit lock-safe mode.
+    """
+
+    try:
+        return _prepare_v5_selena_build(
+            payload,
+            enforce_incremental_policy=False,
+        )
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        return _prepare_v5_selena_build(payload)
 
 
 def _release_v5_source_lease(lease_ref: str) -> None:
@@ -1037,6 +1330,52 @@ def _upload_v5_artifact(client: "_ControlClient", payload: dict, *, owner: str =
     raise error
 
 
+def _reuse_v5_local_registration(task: dict) -> dict:
+    """Validate a node-local bundle lease without creating a transfer plan."""
+
+    payload = dict(task.get("payload") or {})
+    evidence_ref = str(payload.get("build_evidence_ref") or "").strip()
+    runtime_lease_ref = str(payload.get("runtime_bundle_lease_ref") or "").strip()
+    if runtime_lease_ref:
+        from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
+
+        lease = AgentRuntimeBundleLeaseStore().get(
+            runtime_lease_ref,
+            build_evidence_ref=evidence_ref,
+        )
+        bundle = lease.manifest.to_dict()
+        supplied_bundle = dict(payload.get("runtime_bundle") or {})
+        supplied_id = str(supplied_bundle.get("id") or "").strip()
+        if supplied_id and supplied_id != str(bundle.get("id") or ""):
+            raise ValueError("local Runtime Bundle lease identity does not match the build evidence")
+        return {
+            "runtime_bundle": bundle,
+            "runtime_bundle_lease_ref": lease.lease_id,
+            "build_evidence_ref": evidence_ref,
+            "registration_scope": "local_runtime_lease",
+            "transfer_status": "transfer_skipped_local",
+            "reused": True,
+        }
+
+    artifact_lease_ref = str(payload.get("artifact_lease_ref") or "").strip()
+    if artifact_lease_ref:
+        from core.agent_artifact_lease import AgentArtifactLeaseStore
+
+        lease = AgentArtifactLeaseStore().get(
+            artifact_lease_ref,
+            build_evidence_ref=evidence_ref,
+        )
+        return {
+            "artifact_lease_ref": lease.lease_id,
+            "artifact": lease.public_dict,
+            "build_evidence_ref": evidence_ref,
+            "registration_scope": "local_artifact_lease",
+            "transfer_status": "transfer_skipped_local",
+            "reused": True,
+        }
+    raise ValueError("local registration lease is unavailable")
+
+
 def _run_v5_register_artifact(
     client: "_ControlClient",
     agent_id: str,
@@ -1053,61 +1392,105 @@ def _run_v5_register_artifact(
     """
     task_id = str(task.get("task_id") or "")
     stop_event = threading.Event()
+    cancel_event = threading.Event()
 
     def heartbeat_loop() -> None:
         while not stop_event.wait(max(1.0, heartbeat_interval)):
             try:
-                client.heartbeat(agent_id, status="busy", current_task_id=task_id)
+                response = client.heartbeat(
+                    agent_id, status="busy", current_task_id=task_id
+                )
+                if response.get("cancel_requested"):
+                    cancel_event.set()
             except Exception:
                 pass
 
-    client.append_logs(task_id, ["[agent] starting trusted Selena artifact upload"])
+    payload = dict(task.get("payload") or {})
+    dispatch_scope = str(payload.get("dispatch_scope") or "").strip()
     thread = threading.Thread(target=heartbeat_loop, daemon=True)
     thread.start()
     status = "failed"
     returncode = -1
     result: dict = {"error": "artifact upload failed"}
     try:
-        client.heartbeat(agent_id, status="busy", current_task_id=task_id)
-        payload = dict(task.get("payload") or {})
-        if payload.get("already_registered") is True:
-            bundle = dict(payload.get("runtime_bundle") or {})
-            if (
-                not str(bundle.get("id") or "").startswith("selena-bundle:sha256:")
-                or not str(bundle.get("storage_ref") or "").startswith("shared://selena-bundles/")
-            ):
-                raise ValueError("registered Runtime Bundle evidence is invalid")
-            result = {
-                "runtime_bundle": bundle,
-                "storage_ref": str(bundle.get("storage_ref") or ""),
-                "runtime_bundle_lease_ref": str(payload.get("runtime_bundle_lease_ref") or ""),
-                "build_evidence_ref": str(payload.get("build_evidence_ref") or ""),
-                "reused": True,
-            }
-        else:
-            result = _direct_transfer_v5_artifact(
-                client,
-                agent_id,
-                task,
-                owner=str(task.get("owner") or ""),
-                cancel_check=lambda: False,
+        response = client.heartbeat(agent_id, status="busy", current_task_id=task_id)
+        if response.get("cancel_requested"):
+            cancel_event.set()
+        if cancel_event.is_set():
+            _cancelled_operation("Artifact transfer cancelled")
+        if dispatch_scope == "local_runtime_registration":
+            client.append_logs(
+                task_id,
+                ["[agent] validating local Runtime Bundle lease; Cluster transfer is not required"],
             )
+            result = _reuse_v5_local_registration(task)
+        elif dispatch_scope == "direct_transfer":
+            client.append_logs(task_id, ["[agent] starting trusted Selena artifact upload"])
+            if payload.get("already_registered") is True:
+                bundle = dict(payload.get("runtime_bundle") or {})
+                if (
+                    not str(bundle.get("id") or "").startswith("selena-bundle:sha256:")
+                    or not str(bundle.get("storage_ref") or "").startswith("shared://selena-bundles/")
+                ):
+                    raise ValueError("registered Runtime Bundle evidence is invalid")
+                result = {
+                    "runtime_bundle": bundle,
+                    "storage_ref": str(bundle.get("storage_ref") or ""),
+                    "runtime_bundle_lease_ref": str(payload.get("runtime_bundle_lease_ref") or ""),
+                    "build_evidence_ref": str(payload.get("build_evidence_ref") or ""),
+                    "reused": True,
+                }
+            else:
+                result = _direct_transfer_v5_artifact(
+                    client,
+                    agent_id,
+                    task,
+                    owner=str(task.get("owner") or ""),
+                    cancel_check=cancel_event.is_set,
+                )
+        else:
+            raise ValueError(
+                "register_artifact dispatch_scope is missing or unsupported; the scheduler must select local_runtime_registration or direct_transfer"
+            )
+        if cancel_event.is_set():
+            _cancelled_operation("Artifact transfer cancelled")
         status = "succeeded"
         returncode = 0
-        client.append_logs(task_id, ["[agent] complete Selena directory copied directly to Cluster data plane"])
-    except Exception as exc:
-        code = str(getattr(exc, "code", "") or "artifact_upload_failed")
-        api_message = str(getattr(exc, "message", "") or "").strip()
-        result = {
-            "code": code,
-            "error": api_message or "artifact upload failed",
-        }
         client.append_logs(
             task_id,
             [
-                f"[agent] direct Selena transfer failed ({code}"
-                + (f": {api_message}" if api_message else "")
-                + "); retry is safe and resumable"
+                "[agent] local Runtime Bundle lease accepted; no file transfer requested"
+                if dispatch_scope == "local_runtime_registration"
+                else "[agent] complete Selena directory copied directly to Cluster data plane"
+            ],
+        )
+    except Exception as exc:
+        code = str(getattr(exc, "code", "") or "artifact_upload_failed")
+        api_message = str(getattr(exc, "message", "") or "").strip()
+        if code in {"cancelled", "transfer_cancelled"}:
+            status = "cancelled"
+            returncode = 130
+            result = {"status": "cancelled", "code": "cancelled"}
+        else:
+            result = {
+                "code": code,
+                "error": api_message or "artifact upload failed",
+            }
+        failure_kind = (
+            "local Runtime Bundle registration"
+            if dispatch_scope == "local_runtime_registration"
+            else "direct Selena transfer"
+        )
+        client.append_logs(
+            task_id,
+            [
+                (
+                    f"[agent] {failure_kind} cancelled"
+                    if status == "cancelled"
+                    else f"[agent] {failure_kind} failed ({code}"
+                    + (f": {api_message}" if api_message else "")
+                    + "); retry is safe and resumable"
+                )
             ],
         )
     finally:
@@ -1120,7 +1503,25 @@ def _run_v5_register_artifact(
         returncode=returncode,
         result=result,
     )
-    return 0 if status == "succeeded" else 1
+    return 0 if status == "succeeded" else (130 if status == "cancelled" else 1)
+
+
+def _issue_transfer_plan_with_cancel(
+    client: "_ControlClient",
+    *,
+    cancel_requested: Callable[[], bool] | None,
+    **kwargs,
+):
+    """Call new cancellable clients while keeping embedded fakes compatible."""
+    method = getattr(client, "issue_transfer_plan")
+    if cancel_requested is None:
+        return method(**kwargs)
+    try:
+        return method(cancel_requested=cancel_requested, **kwargs)
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        return method(**kwargs)
 
 
 def _direct_transfer_v5_artifact(
@@ -1133,6 +1534,9 @@ def _direct_transfer_v5_artifact(
 ) -> dict:
     """Resolve a local bundle/artifact lease and execute one signed plan."""
     import tempfile
+
+    if cancel_check is not None and cancel_check():
+        _cancelled_operation("Artifact transfer cancelled")
 
     payload = dict(task.get("payload") or {})
     source_root: Path
@@ -1157,6 +1561,8 @@ def _direct_transfer_v5_artifact(
         )
         source_root = temporary_root / "bundle"
         runtime_manifest = lease.manifest.to_dict()
+        if cancel_check is not None and cancel_check():
+            _cancelled_operation("Artifact transfer cancelled")
     elif artifact_lease_ref:
         from core.agent_artifact_lease import AgentArtifactLeaseStore
 
@@ -1170,6 +1576,8 @@ def _direct_transfer_v5_artifact(
         source_root = Path(raw_source).expanduser()
         if source_root.is_file():
             source_root = source_root.parent
+    if cancel_check is not None and cancel_check():
+        _cancelled_operation("Artifact transfer cancelled")
 
     try:
         payload_plan = dict(payload.get("transfer_plan") or {})
@@ -1177,7 +1585,9 @@ def _direct_transfer_v5_artifact(
             plan = payload_plan
         else:
             items = _scan_direct_transfer_items(source_root, source_role=source_role)
-            plan = client.issue_transfer_plan(
+            plan = _issue_transfer_plan_with_cancel(
+                client,
+                cancel_requested=cancel_check,
                 owner=owner,
                 job_id=str(task.get("job_id") or ""),
                 stage_id=str(task.get("task_id") or task.get("stage_id") or ""),
@@ -1320,7 +1730,9 @@ def _direct_transfer_asset(
             if source_role == "dataset"
             else {}
         )
-        plan = client.issue_transfer_plan(
+        plan = _issue_transfer_plan_with_cancel(
+            client,
+            cancel_requested=cancel_check,
             owner=owner,
             job_id=str(task.get("job_id") or ""),
             stage_id=str(task.get("task_id") or task.get("stage_id") or ""),
@@ -1501,10 +1913,12 @@ def _run_v5_prepare_data(
                 bindings,
                 stage_id=task_id,
                 attempt=attempt,
-                # The direct-transfer kernel computes SHA-256 while copying
-                # each file. Discovery records only size/mtime so large MF4
-                # inputs are not read twice before transfer.
-                checksum=False,
+                # A local run has no later transfer checksum boundary.  Hash
+                # its inputs during discovery so a same-size/same-mtime file
+                # replacement cannot silently change the simulation.  The
+                # Cluster direct-transfer route still hashes while streaming
+                # and avoids a redundant pre-read here.
+                checksum=local_route,
                 cancel_requested=cancel_event.is_set,
             )
             if leases is not None
@@ -1593,7 +2007,9 @@ def _run_v5_prepare_data(
                 lease.source_path if lease.source_path.is_dir() else lease.source_path.parent,
                 items,
             )
-            plan = payload_plan or client.issue_transfer_plan(
+            plan = payload_plan or _issue_transfer_plan_with_cancel(
+                client,
+                cancel_requested=cancel_event.is_set,
                 owner=owner,
                 job_id=str(task.get("job_id") or ""),
                 stage_id=task_id,
@@ -1668,7 +2084,13 @@ def _run_v5_prepare_data(
     except Exception as exc:
         from core.preflight import RuntimeDataSignalContractError
 
-        if isinstance(exc, RuntimeDataSignalContractError):
+        transfer_code = str(getattr(exc, "code", "") or "").strip().casefold()
+        if transfer_code in {"cancelled", "transfer_cancelled"}:
+            status = "cancelled"
+            returncode = 130
+            result = {"status": "cancelled", "code": "cancelled"}
+            client.append_logs(task_id, ["[agent] local dataset preparation cancelled"])
+        elif isinstance(exc, RuntimeDataSignalContractError):
             status = "failed"
             returncode = 2
             result = {
@@ -1699,7 +2121,7 @@ def _run_v5_prepare_data(
         returncode=returncode,
         result=result,
     )
-    return 0 if status == "succeeded" else 1
+    return 0 if status == "succeeded" else (130 if status == "cancelled" else 1)
 
 
 def _run_v5_local_stage(
@@ -1740,7 +2162,9 @@ def _run_v5_local_stage(
         elif stage_type == "run_simulation":
             result, returncode = _execute_v5_local_simulation(task, cancel_event.is_set)
         elif stage_type == "collect_results":
-            result = _execute_v5_local_collect(task, client=client)
+            result = _execute_v5_local_collect(
+                task, client=client, cancel_requested=cancel_event.is_set
+            )
             returncode = 0
         elif stage_type == "finalize_manifest":
             result = _execute_v5_local_finalize(task)
@@ -1768,38 +2192,44 @@ def _run_v5_local_stage(
     except Exception as exc:
         # Local exceptions often carry paths.  Keep details in local diagnostics
         # and send one stable public code only.
-        missing_dependency = _missing_connector_dependency(exc)
-        code = (
-            "connector_dependency_missing"
-            if missing_dependency
-            else str(getattr(exc, "code", "") or "local_stage_failed").strip().lower()
-        )
-        if not code or not all(char.isalnum() or char == "_" for char in code):
-            code = "local_stage_failed"
-        result = {"error": code, "code": code}
-        if missing_dependency:
-            result["dependency"] = missing_dependency
-            result["repair_hint"] = "Install the connector optional dependencies and retry this Stage"
-        status = "failed"
-        returncode = 1
-        cause = str(getattr(exc, "cause_type", "") or "")
-        cause_status = int(getattr(exc, "cause_status", 0) or 0)
-        _safe_append_logs(
-            client,
-            task_id,
-            [
-                (
-                    f"[agent] Windows-full {stage_type} failed "
-                    f"(connector dependency missing: {missing_dependency})"
-                    if missing_dependency
-                    else f"[agent] Windows-full {stage_type} failed "
-                    f"({code}; {type(exc).__name__}"
-                    + (f" caused_by={cause}/status={cause_status or 'transport'}" if cause else "")
-                    + ")"
-                )
-            ],
-            stream="stderr",
-        )
+        if str(getattr(exc, "code", "") or "") == "cancelled":
+            status = "cancelled"
+            returncode = 130
+            result = {"status": "cancelled", "code": "cancelled"}
+            _safe_append_logs(client, task_id, [f"[agent] Windows-full {stage_type} cancelled"])
+        else:
+            missing_dependency = _missing_connector_dependency(exc)
+            code = (
+                "connector_dependency_missing"
+                if missing_dependency
+                else str(getattr(exc, "code", "") or "local_stage_failed").strip().lower()
+            )
+            if not code or not all(char.isalnum() or char == "_" for char in code):
+                code = "local_stage_failed"
+            result = {"error": code, "code": code}
+            if missing_dependency:
+                result["dependency"] = missing_dependency
+                result["repair_hint"] = "Install the connector optional dependencies and retry this Stage"
+            status = "failed"
+            returncode = 1
+            cause = str(getattr(exc, "cause_type", "") or "")
+            cause_status = int(getattr(exc, "cause_status", 0) or 0)
+            _safe_append_logs(
+                client,
+                task_id,
+                [
+                    (
+                        f"[agent] Windows-full {stage_type} failed "
+                        f"(connector dependency missing: {missing_dependency})"
+                        if missing_dependency
+                        else f"[agent] Windows-full {stage_type} failed "
+                        f"({code}; {type(exc).__name__}"
+                        + (f" caused_by={cause}/status={cause_status or 'transport'}" if cause else "")
+                        + ")"
+                    )
+                ],
+                stream="stderr",
+            )
     finally:
         stop_event.set()
         thread.join(timeout=max(1.0, heartbeat_interval))
@@ -1823,6 +2253,15 @@ def _safe_append_logs(
     """Treat task-log transport as advisory; terminal result remains authoritative."""
     try:
         client.append_logs(task_id, lines, stream=stream)
+    except TypeError as exc:
+        # Embedded test/older clients predate the stream keyword. Preserve
+        # compatibility without allowing an advisory log call to block the
+        # terminal result.
+        if "unexpected keyword argument" in str(exc):
+            try:
+                client.append_logs(task_id, lines)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -1967,6 +2406,8 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         adapter_binding, _ = authorize_user_asset(adapter_path, role="adapter")
     mat_binding, _ = authorize_user_asset(mat_filter_path, role="mat_filter")
     timeout_minutes = int(payload.get("timeout_minutes") or 0)
+    if timeout_minutes < 0:
+        raise ValueError("timeout_minutes must be non-negative")
     discovery = dict(payload.get("resource_discovery") or {})
     base_config = load_local_execution_config(
         project,
@@ -2000,11 +2441,14 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         adapter_path=adapter_path,
         mat_filter_binding_id=mat_binding.binding_id,
         mat_filter_path=mat_filter_path,
-        timeout_seconds=(timeout_minutes * 60 if timeout_minutes > 0 else 3600),
-        # prepare_data already established the local lease's size/mtime
-        # evidence.  Avoid hashing the complete local dataset again before
-        # Selena starts; Cluster/upload flows retain checksum verification.
-        verify_input_checksums=False,
+        # ``timeout_minutes=0`` means unlimited runtime.  Selena can process a
+        # large batch for many hours; cancellation and Agent/process liveness
+        # remain the control mechanisms instead of an accidental one-hour cap.
+        timeout_seconds=timeout_minutes * 60,
+        # Local input content is verified once more immediately before Selena
+        # starts.  This closes the gap between prepare_data and preflight when
+        # a producer rewrites a file without changing size/mtime.
+        verify_input_checksums=True,
     )
     private = store.get_private(lease["lease_id"])
     # The Runtime/Data port list is already captured during resolution.  Do
@@ -2069,7 +2513,12 @@ def _apply_project_independent_runtime_environment(
     environment["path_prefix"] = inferred + [item for item in current if item not in inferred]
 
 
-def _execute_v5_runtime_bundle_cache(task: dict, *, client: "_ControlClient") -> dict:
+def _execute_v5_runtime_bundle_cache(
+    task: dict,
+    *,
+    client: "_ControlClient",
+    cancel_requested: Callable[[], bool] | None = None,
+) -> dict:
     """Download and lease one shared Bundle under the Agent private cache."""
     from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
     from core.runtime_bundle import RuntimeBundleManifest, RuntimeFile, RuntimeSourceEvidence
@@ -2088,11 +2537,24 @@ def _execute_v5_runtime_bundle_cache(task: dict, *, client: "_ControlClient") ->
         raise ValueError("Runtime Bundle identity mismatch")
     checksum = str(payload.get("archive_checksum") or "").strip().lower()
     size = int(payload.get("archive_size") or 0)
-    archive_path = client.download_runtime_bundle(
-        manifest.id,
-        expected_checksum=checksum,
-        expected_size=size,
-    )
+    try:
+        archive_path = client.download_runtime_bundle(
+            manifest.id,
+            expected_checksum=checksum,
+            expected_size=size,
+            cancel_requested=cancel_requested,
+        )
+    except TypeError as exc:
+        # Embedded test/legacy clients may still expose the old three-argument
+        # download contract.  Only retry for that signature mismatch; a
+        # TypeError raised by the downloader itself remains a real failure.
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        archive_path = client.download_runtime_bundle(
+            manifest.id,
+            expected_checksum=checksum,
+            expected_size=size,
+        )
     lease = AgentRuntimeBundleLeaseStore().create_from_catalog_archive(
         project=str(payload.get("project") or ""),
         cache_stage_id=str(task.get("stage_id") or task.get("task_id") or ""),
@@ -2291,6 +2753,7 @@ def _materialize_local_result(
     source_root: Path,
     local_result: dict,
     result_ref: str,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> dict:
     """Deliver local outputs to the Connector device, keeping ZIP publication.
 
@@ -2328,8 +2791,11 @@ def _materialize_local_result(
             files=files,
             input_results=manifest["input_results"],
             manifest=manifest,
+            cancel_callback=cancel_requested or (lambda: False),
         )
     except ResultDeliveryError as exc:
+        if str(exc.code or "") == "cancelled":
+            _cancelled_operation("Result delivery cancelled")
         # The physical path is intentionally absent from the callback.  The
         # ZIP result remains available and a later local retry can re-run this
         # best-effort delivery using the same immutable source lease.
@@ -2341,7 +2807,12 @@ def _materialize_local_result(
         }
 
 
-def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = None) -> dict:
+def _execute_v5_local_collect(
+    task: dict,
+    *,
+    client: "_ControlClient | None" = None,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> dict:
     import time
 
     from core.agent_local_run import AgentLocalRunLeaseStore
@@ -2349,6 +2820,7 @@ def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = N
     from core.user import normalize_user
 
     payload = dict(task.get("payload") or {})
+    cancel = cancel_requested or (lambda: False)
     lease_ref = str(payload.get("local_run_lease_ref") or "")
     store = AgentLocalRunLeaseStore()
     private = store.get_private(lease_ref)
@@ -2382,6 +2854,7 @@ def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = N
         source_root=Path(private["run_root"]),
         local_result=local_result,
         result_ref=published.ref,
+        cancel_requested=cancel,
     )
     if client is not None and getattr(client, "_api_url", ""):
         archive = catalog.resolve_archive(
@@ -2398,10 +2871,16 @@ def _execute_v5_local_collect(task: dict, *, client: "_ControlClient | None" = N
                     files=[item.to_dict() for item in published.files],
                     retain_until=published.retain_until,
                     owner=str(payload.get("owner") or ""),
+                    cancel_requested=cancel,
                 )
                 break
             except Exception as exc:
                 last_error = exc
+                if str(getattr(exc, "code", "") or "") == "cancelled":
+                    # Cancellation is a user/control-plane decision, not an
+                    # upload failure. Preserve the stable code so the local
+                    # Stage reports ``cancelled`` and never retries forever.
+                    raise
                 status_code = int(getattr(exc, "status_code", 0) or 0)
                 if client is not None:
                     try:
@@ -2940,6 +3419,8 @@ class _ControlClient:
         self._token = str(token or "")
         self._api_token = str(api_token or "")
         self._agent_id = ""
+        self._task_attempts: dict[str, int] = {}
+        self._result_outbox = None
 
     def register_agent(self, *, name: str, agent_id: str, hostname: str, platform: str, capabilities: list[str], metadata: dict) -> dict:
         registered = self._request(
@@ -2958,7 +3439,47 @@ class _ControlClient:
         return registered
 
     def poll(self, agent_id: str) -> dict:
-        return self._request("POST", "/api/agents/poll", {"agent_id": agent_id})
+        response = self._request("POST", "/api/agents/poll", {"agent_id": agent_id})
+        task = response.get("task") if isinstance(response, dict) else None
+        if isinstance(task, dict):
+            task_id = str(task.get("task_id") or task.get("stage_id") or "").strip()
+            if task_id:
+                self._task_attempts[task_id] = int(task.get("attempt_count") or 0)
+        return response
+
+    def attach_result_outbox(self, outbox) -> None:
+        """Enable durable terminal-result delivery for the long-running Agent."""
+
+        self._result_outbox = outbox
+
+    def flush_result_outbox(self, *, limit: int = 32) -> int:
+        outbox = self._result_outbox
+        if outbox is None:
+            return 0
+        delivered = 0
+        for pending in outbox.pending(limit=limit):
+            try:
+                self.submit_result(
+                    pending.task_id,
+                    agent_id=pending.agent_id,
+                    status=pending.status,
+                    returncode=pending.returncode,
+                    result=pending.result,
+                    attempt=pending.attempt or None,
+                    _persist=False,
+                )
+            except Exception as exc:
+                if _is_permanent_result_error(exc):
+                    # The server has definitively rejected this old callback
+                    # (stale attempt, wrong Agent, or unknown task).  Retrying
+                    # it forever would block unrelated pending results.
+                    outbox.remove(pending.task_id, pending.attempt)
+                else:
+                    outbox.mark_failure(pending.task_id, pending.attempt, str(exc))
+                continue
+            outbox.remove(pending.task_id, pending.attempt)
+            delivered += 1
+        return delivered
 
     def heartbeat(
         self,
@@ -2968,27 +3489,39 @@ class _ControlClient:
         current_task_id: str = "",
         metadata: dict | None = None,
     ) -> dict:
-        return self._request(
-            "POST",
-            "/api/agents/heartbeat",
-            {
-                "agent_id": agent_id,
-                "status": status,
-                "current_task_id": current_task_id,
-                "metadata": dict(metadata or {}),
-            },
-        )
+        try:
+            return self._request(
+                "POST",
+                "/api/agents/heartbeat",
+                {
+                    "agent_id": agent_id,
+                    "status": status,
+                    "current_task_id": current_task_id,
+                    "metadata": dict(metadata or {}),
+                },
+            )
+        except Exception as exc:
+            if _is_retryable_control_error(exc):
+                return {"control_plane_unreachable": True, "cancel_requested": False}
+            raise
 
     def append_logs(self, task_id: str, lines: list[str], *, stream: str = "stdout") -> dict:
-        return self._request(
-            "POST", "/api/tasks/logs",
-            {
-                "task_id": task_id,
-                "agent_id": self._agent_id,
-                "lines": lines,
-                "stream": str(stream or "stdout"),
-            },
-        )
+        try:
+            return self._request(
+                "POST", "/api/tasks/logs",
+                {
+                    "task_id": task_id,
+                    "agent_id": self._agent_id,
+                    "lines": lines,
+                    "stream": str(stream or "stdout"),
+                },
+            )
+        except Exception as exc:
+            # Logs are advisory.  A transient outage must never prevent the
+            # terminal result from entering the durable outbox.
+            if _is_retryable_control_error(exc):
+                return {"control_plane_unreachable": True, "appended": 0}
+            raise
 
     def report_progress(self, task_id: str, progress: float, *, message: str = "") -> dict:
         return self._request(
@@ -3020,18 +3553,35 @@ class _ControlClient:
         items: list[dict],
         source_fingerprints: dict | None = None,
         ttl_seconds: float | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> dict:
         payload = {
             "source_role": str(source_role),
             "items": [dict(item) for item in items],
             "source_fingerprints": dict(source_fingerprints or {}),
         }
-        return self._transfer_request(
-            "POST",
-            f"/api/v1/jobs/{urllib.parse.quote(str(job_id), safe='')}/stages/{urllib.parse.quote(str(stage_id), safe='')}/transfers",
-            owner=owner,
-            payload=payload,
+        endpoint = (
+            f"/api/v1/jobs/{urllib.parse.quote(str(job_id), safe='')}/stages/"
+            f"{urllib.parse.quote(str(stage_id), safe='')}/transfers"
         )
+        # The server derives a deterministic request key from this exact
+        # metadata, so retrying after a lost response reuses the same active
+        # plan instead of creating a second transfer root.
+        retry_index = 0
+        while True:
+            if cancel_requested is not None and cancel_requested():
+                _cancelled_operation("Transfer plan request cancelled")
+            try:
+                return self._transfer_request(
+                    "POST", endpoint, owner=owner, payload=payload
+                )
+            except Exception as exc:
+                if not _is_retryable_control_error(exc):
+                    raise
+                if cancel_requested is not None and cancel_requested():
+                    _cancelled_operation("Transfer plan request cancelled")
+                time.sleep(min(30.0, float(2 ** min(retry_index, 5))))
+                retry_index += 1
 
     def get_transfer_plan(self, transfer_id: str, *, owner: str = "") -> dict:
         return self._transfer_request(
@@ -3109,7 +3659,14 @@ class _ControlClient:
         total = sum(item.size for item in signed.items)
 
         def publish(progress: TransferProgress) -> None:
-            self.report_transfer_progress(progress, owner=owner)
+            try:
+                self.report_transfer_progress(progress, owner=owner)
+            except Exception as exc:
+                # Progress is advisory.  A temporary control-plane outage must
+                # not abort bytes already being copied to the signed target;
+                # the verified manifest below is the authoritative boundary.
+                if not _is_retryable_control_error(exc):
+                    raise
 
         reporter = _TransferProgressReporter(publish, progress_callback)
 
@@ -3150,10 +3707,37 @@ class _ControlClient:
                 owner_scope=signed.owner_scope,
             )
         )
-        self.report_transfer_manifest(manifest, owner=owner)
+        manifest_retry = 0
+        while True:
+            if cancel_check is not None and cancel_check():
+                _cancelled_operation("Direct transfer manifest submission cancelled")
+            try:
+                self.report_transfer_manifest(manifest, owner=owner)
+                break
+            except Exception as exc:
+                if not _is_retryable_control_error(exc):
+                    raise
+                if cancel_check is not None and cancel_check():
+                    _cancelled_operation("Direct transfer manifest submission cancelled")
+                time.sleep(min(30.0, float(2 ** min(manifest_retry, 5))))
+                manifest_retry += 1
         return manifest
 
-    def submit_result(self, task_id: str, *, agent_id: str, status: str, returncode: int, result: dict) -> dict:
+    def submit_result(
+        self,
+        task_id: str,
+        *,
+        agent_id: str,
+        status: str,
+        returncode: int,
+        result: dict,
+        attempt: int | None = None,
+        _persist: bool = True,
+    ) -> dict:
+        outbox = self._result_outbox
+        effective_attempt = int(attempt or self._task_attempts.get(str(task_id), 0) or 0)
+        if outbox is not None and _persist and effective_attempt <= 0:
+            raise ValueError("task attempt is unavailable; refusing non-durable result identity")
         payload = {
             "task_id": task_id,
             "agent_id": agent_id,
@@ -3161,13 +3745,31 @@ class _ControlClient:
             "returncode": returncode,
             "result": result,
         }
+        if effective_attempt > 0:
+            payload["attempt"] = effective_attempt
+        if outbox is not None and _persist:
+            # Persist before the first HTTP attempt.  If the response is lost
+            # after the server commits, the retry is harmless/idempotent; if
+            # the network is down, the next Agent loop can deliver this exact
+            # attempt without rerunning Selena.
+            outbox.put(
+                task_id,
+                attempt=effective_attempt,
+                agent_id=agent_id,
+                status=status,
+                returncode=returncode,
+                result=dict(result),
+            )
         # The task body is immutable and the server callback is idempotent for
         # an assigned Agent. Retry only transport/transient HTTP failures; a
         # permanent validation/assignment error must remain visible instead of
         # creating an infinite duplicate-result loop.
-        for attempt in range(5):
+        for retry_index in range(5):
             try:
-                return self._request("POST", "/api/tasks/result", payload)
+                response = self._request("POST", "/api/tasks/result", payload)
+                if outbox is not None and _persist:
+                    outbox.remove(task_id, effective_attempt)
+                return response
             except Exception as exc:
                 status_code = int(getattr(exc, "status_code", 0) or 0)
                 if not status_code:
@@ -3183,9 +3785,24 @@ class _ControlClient:
                     or status_code in {408, 429}
                     or _is_retryable_agent_transport(exc)
                 )
-                if not retryable or attempt >= 4:
+                if not retryable or retry_index >= 4:
+                    if outbox is not None and _persist:
+                        if _is_permanent_result_error(exc):
+                            outbox.remove(task_id, effective_attempt)
+                            return {
+                                "task_id": task_id,
+                                "result_delivery": "rejected",
+                                "code": str(getattr(exc, "code", "result_callback_rejected") or "result_callback_rejected"),
+                            }
+                        outbox.mark_failure(task_id, effective_attempt, str(exc))
+                        if retryable:
+                            return {
+                                "task_id": task_id,
+                                "result_delivery": "pending",
+                                "code": "result_callback_pending",
+                            }
                     raise
-                time.sleep(float(2**attempt))
+                time.sleep(float(2**retry_index))
         raise RuntimeError("task result callback retry exhausted")
 
     def upload_artifact(
@@ -3324,6 +3941,7 @@ class _ControlClient:
         files: list[dict],
         retain_until: float = 0,
         owner: str = "",
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> dict:
         """Upload a completed Windows-local result ZIP to the Linux catalog."""
         if not self._api_url:
@@ -3343,16 +3961,31 @@ class _ControlClient:
                 digest.update(chunk)
         size = int(path.stat().st_size)
         checksum = "sha256:" + digest.hexdigest()
-        create = self._api_request(
-            "POST",
-            "/api/v1/result-uploads",
-            owner=owner,
-            payload={
-                "run_ref": str(run_ref),
-                "archive_size": size,
-                "archive_checksum": checksum,
-            },
-        )
+        cancel = cancel_requested or (lambda: False)
+
+        create_attempt = 0
+        while True:
+            if cancel():
+                _cancelled_operation("Runtime Bundle download cancelled")
+            try:
+                create = self._api_request(
+                    "POST",
+                    "/api/v1/result-uploads",
+                    owner=owner,
+                    payload={
+                        "run_ref": str(run_ref),
+                        "archive_size": size,
+                        "archive_checksum": checksum,
+                    },
+                )
+                break
+            except Exception as exc:
+                if not _is_retryable_result_upload_error(exc):
+                    raise
+                if cancel():
+                    _result_upload_cancelled()
+                time.sleep(min(30.0, float(2 ** min(create_attempt, 5))))
+                create_attempt += 1
         session_id = str(create.get("session_id") or "")
         if not session_id:
             raise ValueError("result upload session is unavailable")
@@ -3361,10 +3994,16 @@ class _ControlClient:
         with path.open("rb") as handle:
             handle.seek(received)
             while received < size:
+                if cancel():
+                    _result_upload_cancelled()
                 data = handle.read(min(chunk_size, size - received))
                 if not data:
                     raise ValueError("local result archive ended before the expected size")
-                for attempt in range(4):
+                patch_attempt = 0
+                resynced = False
+                while True:
+                    if cancel():
+                        _result_upload_cancelled()
                     try:
                         current = self._api_request(
                             "PATCH",
@@ -3374,8 +4013,10 @@ class _ControlClient:
                             headers={"Upload-Offset": str(received)},
                         )
                         break
-                    except Exception:
-                        if attempt >= 3:
+                    except Exception as exc:
+                        if not _is_retryable_result_upload_error(
+                            exc, allow_offset_conflict=True
+                        ):
                             raise
                         try:
                             current = self._api_request(
@@ -3385,15 +4026,22 @@ class _ControlClient:
                             )
                             if str(current.get("status") or "") == "finalized":
                                 received = size
+                                resynced = True
                                 break
                             server_received = int(current.get("received_bytes") or 0)
                             if server_received > received:
                                 received = server_received
                                 handle.seek(received)
+                                resynced = True
                                 break
                         except Exception:
                             pass
-                        time.sleep(float(2**attempt))
+                        if cancel():
+                            _result_upload_cancelled()
+                        time.sleep(min(30.0, float(2 ** min(patch_attempt, 5))))
+                        patch_attempt += 1
+                if resynced:
+                    continue
                 if received == size:
                     break
                 new_received = int(current.get("received_bytes") or 0)
@@ -3401,12 +4049,26 @@ class _ControlClient:
                     raise ValueError("result upload returned a backwards offset")
                 received = new_received
                 handle.seek(received)
-        return self._api_request(
-            "POST",
-            "/api/v1/result-uploads/" + urllib.parse.quote(session_id, safe="") + "/finalize",
-            owner=owner,
-            payload={"files": list(files), "retain_until": float(retain_until or 0)},
-        )
+        finalize_attempt = 0
+        while True:
+            if cancel():
+                _result_upload_cancelled()
+            try:
+                return self._api_request(
+                    "POST",
+                    "/api/v1/result-uploads/" + urllib.parse.quote(session_id, safe="") + "/finalize",
+                    owner=owner,
+                    payload={"files": list(files), "retain_until": float(retain_until or 0)},
+                )
+            except Exception as exc:
+                if not _is_retryable_result_upload_error(
+                    exc, allow_offset_conflict=True
+                ):
+                    raise
+                if cancel():
+                    _result_upload_cancelled()
+                time.sleep(min(30.0, float(2 ** min(finalize_attempt, 5))))
+                finalize_attempt += 1
 
     def download_runtime_bundle(
         self,
@@ -3414,6 +4076,7 @@ class _ControlClient:
         *,
         expected_checksum: str,
         expected_size: int,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Path:
         """Atomically cache an authenticated shared Bundle by immutable ID."""
         bundle_id = str(bundle_id or "").strip()
@@ -3456,31 +4119,47 @@ class _ControlClient:
         auth_token = self._api_token or self._token
         if auth_token:
             headers["Authorization"] = f"Bearer {auth_token}"
-        request = urllib.request.Request(base_url + endpoint, headers=headers, method="GET")
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response, temporary.open("xb") as writer:
-                total = 0
-                sha = hashlib.sha256()
-                while True:
-                    chunk = response.read(min(1024 * 1024, size - total + 1))
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > size:
-                        raise ValueError("Runtime Bundle download exceeds expected size")
-                    sha.update(chunk)
-                    writer.write(chunk)
-            if total != size or "sha256:" + sha.hexdigest() != checksum:
-                raise ValueError("Runtime Bundle download integrity check failed")
-            os.replace(temporary, target)
-            return target
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError("Runtime Bundle download request failed") from exc
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-            raise _agent_transport_error("GET", endpoint, exc) from exc
-        finally:
-            if temporary.exists():
-                temporary.unlink()
+        cancel = cancel_requested or (lambda: False)
+        attempt = 0
+        while True:
+            if cancel():
+                _result_upload_cancelled()
+            request = urllib.request.Request(base_url + endpoint, headers=headers, method="GET")
+            try:
+                with urllib.request.urlopen(request, timeout=self._timeout) as response, temporary.open("xb") as writer:
+                    total = 0
+                    sha = hashlib.sha256()
+                    while True:
+                        if cancel():
+                            _cancelled_operation("Runtime Bundle download cancelled")
+                        chunk = response.read(min(1024 * 1024, size - total + 1))
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > size:
+                            raise ValueError("Runtime Bundle download exceeds expected size")
+                        sha.update(chunk)
+                        writer.write(chunk)
+                if total != size or "sha256:" + sha.hexdigest() != checksum:
+                    raise ValueError("Runtime Bundle download integrity check failed")
+                os.replace(temporary, target)
+                return target
+            except urllib.error.HTTPError as exc:
+                error = RuntimeError("Runtime Bundle download request failed")
+                error.status_code = int(exc.code)  # type: ignore[attr-defined]
+                if not _is_retryable_control_error(error):
+                    raise error from exc
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                error = _agent_transport_error("GET", endpoint, exc)
+                if not _is_retryable_control_error(error):
+                    raise error from exc
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+            if cancel():
+                _cancelled_operation("Runtime Bundle download cancelled")
+            time.sleep(min(30.0, float(2 ** min(attempt, 5))))
+            attempt += 1
 
     def upload_data_lease(
         self,
@@ -3514,7 +4193,9 @@ class _ControlClient:
         source = lease.source_path
         root = source if source.is_dir() else source.parent
         transfer_owner = str(owner or connector_owner_identity())
-        plan = self.issue_transfer_plan(
+        plan = _issue_transfer_plan_with_cancel(
+            self,
+            cancel_requested=cancelled,
             owner=transfer_owner,
             job_id=task_id.split(":", 1)[0] or task_id,
             stage_id=task_id,
@@ -3680,8 +4361,15 @@ class _ControlClient:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace")
+            try:
+                envelope = json.loads(body_text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                envelope = {}
             error = RuntimeError(f"{method} {path} failed: {exc.code} {body_text}")
             error.status_code = int(exc.code)  # type: ignore[attr-defined]
+            if isinstance(envelope, dict):
+                error.code = str(envelope.get("code") or "")  # type: ignore[attr-defined]
+                error.message = str(envelope.get("message") or envelope.get("error") or body_text)  # type: ignore[attr-defined]
             raise error from exc
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             raise _agent_transport_error(method, path, exc) from exc
@@ -3727,8 +4415,15 @@ class _ControlClient:
                 return json.loads(raw.decode("utf-8")) if raw else {}
         except urllib.error.HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace")
+            try:
+                envelope = json.loads(body_text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                envelope = {}
             error = RuntimeError(f"{method} {path} failed: {exc.code} {body_text}")
             error.status_code = int(exc.code)  # type: ignore[attr-defined]
+            if isinstance(envelope, dict):
+                error.code = str(envelope.get("code") or "")  # type: ignore[attr-defined]
+                error.message = str(envelope.get("message") or envelope.get("error") or body_text)  # type: ignore[attr-defined]
             raise error from exc
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             raise _agent_transport_error(method, path, exc) from exc
@@ -3753,6 +4448,13 @@ class _ControlClient:
             body = exc.read().decode("utf-8", errors="replace")
             error = RuntimeError(f"{method} {path} failed: {exc.code} {body}")
             error.status_code = int(exc.code)  # type: ignore[attr-defined]
+            try:
+                envelope = json.loads(body)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                envelope = {}
+            if isinstance(envelope, dict):
+                error.code = str(envelope.get("code") or "")  # type: ignore[attr-defined]
+                error.message = str(envelope.get("message") or envelope.get("error") or body)  # type: ignore[attr-defined]
             raise error from exc
         except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             raise _agent_transport_error(method, path, exc) from exc

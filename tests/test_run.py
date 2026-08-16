@@ -296,6 +296,8 @@ def test_get_effective_runtime_limit_uses_smaller_configured_cap():
     assert _get_effective_runtime_limit(3600, {"max_duration_per_file_sec": 600}) == 600
     assert _get_effective_runtime_limit(300, {"max_duration_per_file_sec": 600}) == 300
     assert _get_effective_runtime_limit(300, {}) == 300
+    assert _get_effective_runtime_limit(0, {}) == 0
+    assert _get_effective_runtime_limit(0, {"max_duration_per_file_sec": 600}) == 600
 
 
 def test_extract_errors():

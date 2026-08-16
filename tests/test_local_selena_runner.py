@@ -88,6 +88,28 @@ def test_runner_renders_private_paramconfig_and_uses_controlled_output(tmp_path,
     assert observed["kwargs"]["cwd"] == str(request.working_directory)
 
 
+def test_runner_does_not_apply_a_hidden_timeout_when_timeout_is_zero(tmp_path, monkeypatch):
+    request = _request(tmp_path)
+    request = LocalRunRequest(**{**request.__dict__, "timeout_seconds": 0})
+    observed = {}
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, _command, **kwargs):
+            observed["started"] = True
+            del kwargs
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr("core.local_selena_runner.subprocess.Popen", Process)
+    outcome = run_local_selena(request, lambda: False)
+
+    assert observed["started"] is True
+    assert outcome.exit_code == 0
+
+
 def test_runner_uses_shared_template_when_project_template_is_missing(tmp_path, monkeypatch):
     request = _request(tmp_path)
     request.config["assets"]["config_template"] = str(tmp_path / "missing-project-template.txt")

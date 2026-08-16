@@ -34,13 +34,13 @@ def _snapshot(agent_id="agent-a", *, expires_at=400):
     ).to_dict()
 
 
-def _job(service: ControlService):
+def _job(service: ControlService, *, target: str = "cluster"):
     spec = {
         "schema_version": "1.0",
         "project": "ovrs25",
         "data": {"path": "shared://measurements/a"},
         "selena": {"mode": "current_workspace", "auto_build": True, "build_mode": "Release"},
-        "simulation": {"target": "cluster", "profile": "default"},
+        "simulation": {"target": target, "profile": "default"},
     }
     return service.create_job(
         "simulation.v1",
@@ -187,3 +187,36 @@ def test_successful_build_binds_register_to_same_agent_and_exact_attempt(tmp_pat
     assert register["payload"]["artifact_lease_ref"].startswith("artifact-lease:sha256:")
     assert service.claim_next_task("agent-b") is None
     assert service.claim_next_task("agent-a")["stage_type"] == "register_artifact"
+
+
+def test_local_register_artifact_is_bound_as_local_lease_reuse(tmp_path):
+    service = _service(tmp_path)
+    job = _job(service, target="local")
+    environment = service.claim_next_task("agent-a")
+    service.submit_task_result(
+        environment["stage_id"],
+        agent_id="agent-a",
+        status="succeeded",
+        returncode=0,
+        result={"environment_snapshot": _snapshot()},
+    )
+    bind_current_workspace_build(service, job["job_id"], environment["stage_id"], now_fn=lambda: 200)
+    build = service.claim_next_task("agent-a")
+    service.submit_task_result(
+        build["stage_id"],
+        agent_id="agent-a",
+        status="succeeded",
+        returncode=0,
+        result={
+            "workspace_binding_id": BINDING_ID,
+            "artifact_lease_ref": "artifact-lease:sha256:" + "d" * 64,
+            "runtime_bundle_lease_ref": "runtime-bundle-lease:sha256:" + "f" * 64,
+            "runtime_bundle": {"id": "selena-bundle:sha256:" + "e" * 64},
+        },
+    )
+
+    register = bind_register_artifact(service, job["job_id"], build["stage_id"])
+
+    assert register["payload"]["dispatch_scope"] == "local_runtime_registration"
+    assert register["payload"]["registration_mode"] == "local_runtime_lease"
+    assert register["payload"]["runtime_bundle"]["id"].startswith("selena-bundle:")

@@ -1,4 +1,4 @@
-from core.agent_policy import DEFAULT_FULL_CAPABILITIES
+from core.agent_policy import DEFAULT_FULL_CAPABILITIES, WINDOWS_CONNECTOR_CONTRACT_VERSION
 from core.control_service import ControlService, INTERNAL_V1_SCHEDULER_AGENT_ID
 from core.stage_binder import advance_after_stage_result
 
@@ -7,13 +7,24 @@ def _completed(job, stage_type):
     return next(item for item in job["stages"] if item["stage_type"] == stage_type)
 
 
+def _claim(control, stage_id):
+    claimed = control.claim_next_task("full-1")
+    assert claimed is not None
+    assert claimed["stage_id"] == stage_id
+    return claimed
+
+
 def test_local_four_stage_chain_stays_on_same_windows_full_agent(tmp_path):
     control = ControlService(tmp_path / "control.db")
     control.register_agent(
         "full",
         agent_id="full-1",
         capabilities=list(DEFAULT_FULL_CAPABILITIES),
-        metadata={"node_kind": "windows_full", "windows_mode": "full"},
+        metadata={
+            "node_kind": "windows_full",
+            "windows_mode": "full",
+            "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+        },
     )
     spec = {
         "schema_version": "2.0",
@@ -29,8 +40,9 @@ def test_local_four_stage_chain_stays_on_same_windows_full_agent(tmp_path):
     tasks = []
     dependencies = {
         "resolve_spec": [], "environment_check": ["resolve_spec"],
-        "prepare_source": ["environment_check"], "prepare_data": ["environment_check"],
+        "prepare_source": ["environment_check"],
         "build_selena": ["prepare_source"], "register_artifact": ["build_selena"],
+        "prepare_data": ["environment_check"],
         "preflight": ["environment_check", "register_artifact", "prepare_data"],
         "run_simulation": ["preflight"], "collect_results": ["run_simulation"],
         "finalize_manifest": ["collect_results"],
@@ -65,6 +77,7 @@ def test_local_four_stage_chain_stays_on_same_windows_full_agent(tmp_path):
     )
 
     register = next(item for item in job["stages"] if item["stage_type"] == "register_artifact")
+    register = _claim(control, register["stage_id"])
     registered_job = control.submit_task_result(
         register["stage_id"], agent_id="full-1", status="succeeded", returncode=0,
         result={
@@ -78,6 +91,7 @@ def test_local_four_stage_chain_stays_on_same_windows_full_agent(tmp_path):
     assert advance_after_stage_result(control, _completed(registered_job, "register_artifact")) is None
 
     data = _completed(control.get_job(job["job_id"]), "prepare_data")
+    data = _claim(control, data["stage_id"])
     data_job = control.submit_task_result(
         data["stage_id"], agent_id="full-1", status="succeeded", returncode=0,
         result={
@@ -98,6 +112,7 @@ def test_local_four_stage_chain_stays_on_same_windows_full_agent(tmp_path):
         ("run_simulation", "collect_results"),
     ):
         stage = _completed(control.get_job(job["job_id"]), current)
+        stage = _claim(control, stage["stage_id"])
         completed = control.submit_task_result(
             stage["stage_id"], agent_id="full-1", status="succeeded", returncode=0,
             result={"local_run_lease_ref": "local-run-lease:sha256:" + "5" * 64},
@@ -107,6 +122,7 @@ def test_local_four_stage_chain_stays_on_same_windows_full_agent(tmp_path):
         assert bound["required_agent_id"] == "full-1"
 
     collect = _completed(control.get_job(job["job_id"]), "collect_results")
+    collect = _claim(control, collect["stage_id"])
     collected = control.submit_task_result(
         collect["stage_id"], agent_id="full-1", status="succeeded", returncode=0,
         result={
