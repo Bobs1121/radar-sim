@@ -214,6 +214,36 @@ def _hash_regular_file(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _has_existing_build_state(
+    artifact_path: Path,
+    output_roots: tuple[Path, ...] | list[Path] | tuple[str, ...] | list[str],
+) -> bool:
+    """Detect any existing state below an authorized build output root.
+
+    Looking only for ``selena.exe`` is insufficient: a previous build can
+    have left CMake/MSBuild object files behind while the expected executable
+    is in a configuration-specific subdirectory or was removed by an aborted
+    wrapper.  The old bounded recursive scan could also miss a valid nested
+    executable after an arbitrary number of unrelated files.  Output roots
+    are already explicitly authorized, so an immediate non-empty check is a
+    deterministic and cheap conservative signal; provenance then decides
+    whether that state is safe to reuse incrementally.
+    """
+
+    if has_existing_build_artifact(artifact_path, output_roots, max_candidates=512):
+        return True
+    for raw_root in output_roots or ():
+        root = Path(raw_root)
+        try:
+            if not root.is_dir() or root.is_symlink():
+                continue
+            next(root.iterdir())
+            return True
+        except (OSError, StopIteration):
+            continue
+    return False
+
+
 def _requested_build_identity(payload: Mapping[str, Any], source_lease: Any) -> tuple[str, str]:
     """Return the branch/commit selected for this build without reading paths."""
 
@@ -253,7 +283,7 @@ def _branch_rebuild_policy(
     """
 
     requested_branch, requested_commit = _requested_build_identity(payload, source_lease)
-    existing = has_existing_build_artifact(artifact_path, authorized.output_roots)
+    existing = _has_existing_build_state(artifact_path, authorized.output_roots)
     result: dict[str, Any] = {
         "existing_build_detected": bool(existing),
         "full_rebuild_required": False,

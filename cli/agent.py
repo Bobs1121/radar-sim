@@ -784,6 +784,17 @@ def _run_task(
     start_logs = [f"[agent] starting {task['task_type']}"]
     if is_v5_build:
         start_logs.append("[agent] authorized Selena build command prepared")
+        build_policy_mode = (
+            "full"
+            if bool(getattr(prepared_build, "full_rebuild_required", False))
+            else "incremental"
+        )
+        build_policy_reason = str(
+            getattr(prepared_build, "full_rebuild_reason", "") or "default_incremental"
+        )
+        start_logs.append(
+            f"[agent] Selena build policy: {build_policy_mode} ({build_policy_reason})"
+        )
         if bool(getattr(prepared_build, "full_rebuild_required", False)):
             start_logs.append(
                 "[agent] full Selena rebuild required: "

@@ -143,6 +143,45 @@ def test_v2_branch_change_forces_full_rebuild_from_existing_artifact(local_bindi
     assert same["full_rebuild_required"] is False
 
 
+def test_v2_branch_change_forces_full_rebuild_when_exe_is_nested_in_output_tree(
+    local_binding, monkeypatch
+):
+    nested_output = local_binding.output / "configuration" / "RelWithDebInfo" / "bin"
+    nested_output.mkdir(parents=True)
+    (nested_output / "old.obj").write_bytes(b"old-branch-object")
+    authorized = local_binding.store.resolve_authorized_roots(
+        local_binding.binding.binding_id,
+        project="demo",
+    )
+
+    class FakeLeaseStore:
+        def latest_build_provenance(self, *, project, workspace_binding_id):
+            return {
+                "branch": "feature/old-selena",
+                "build_mode": "Release",
+                "entrypoint_checksum": "sha256:" + "a" * 64,
+            }
+
+    monkeypatch.setattr(
+        "core.agent_runtime_bundle_lease.AgentRuntimeBundleLeaseStore",
+        FakeLeaseStore,
+    )
+    policy = build_stage._branch_rebuild_policy(
+        {"actual_branch": "feature/new-selena"},
+        contract="user-run-config/2.0",
+        source_lease=None,
+        project="demo",
+        binding_id=local_binding.binding.binding_id,
+        build_mode="Release",
+        artifact_path=local_binding.output / "missing" / "selena.exe",
+        authorized=authorized,
+    )
+
+    assert policy["existing_build_detected"] is True
+    assert policy["full_rebuild_required"] is True
+    assert policy["full_rebuild_reason"] == "selena_branch_changed"
+
+
 def test_prepare_happy_path_is_frozen_and_local_only(local_binding, monkeypatch):
     prepared = prepare(local_binding, monkeypatch)
     assert prepared.project == "demo"
