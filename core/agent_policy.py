@@ -83,7 +83,11 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # transfer plan.  Older Connectors unconditionally attempted the Cluster
 # transfer path and could fail a valid local build, so they must not claim
 # tasks under the v12 control plane.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 12
+# v13 makes local source/artifact/runtime leases renewable after immutable
+# revalidation.  Their timestamps are idle-cache retention hints, not fixed
+# queue or simulation deadlines; older Connectors could still fail a valid
+# long-waiting job on an expired local lease.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 13
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

@@ -25,7 +25,8 @@ def test_source_lease_pins_branch_without_touching_dirty_workspace(tmp_path):
     output.mkdir()
     bindings = AgentBindingStore(tmp_path / "bindings.db")
     binding = bindings.register("demo", repo, (output,))
-    store = AgentSourceLeaseStore(tmp_path / "source.db", now_fn=lambda: 10.0)
+    now = [10.0]
+    store = AgentSourceLeaseStore(tmp_path / "source.db", now_fn=lambda: now[0])
 
     lease = store.create(
         project="demo", workspace_binding_id=binding.binding_id, requested_ref="feature/demo",
@@ -40,6 +41,9 @@ def test_source_lease_pins_branch_without_touching_dirty_workspace(tmp_path):
         prepare_stage_id="source-1", prepare_attempt=1, job_id="job-1", binding_store=bindings,
     )
     assert same.lease_id == lease.lease_id
+    now[0] = lease.expires_at + 1
+    renewed = store.get(lease.lease_id, source_evidence_ref="source-1:1")
+    assert renewed.expires_at > now[0]
     worktree = lease.worktree_path
     store.release(lease.lease_id)
     assert not worktree.exists()

@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -24,6 +24,7 @@ class AgentRuntimeBundleLeaseError(ValueError):
 
 
 _LEASE_RE = re.compile(r"^runtime-bundle-lease:sha256:[0-9a-f]{64}$")
+_LEASE_RENEWAL_TTL_SECONDS = 86400.0
 
 
 def default_agent_runtime_bundle_lease_db_path() -> Path:
@@ -142,7 +143,7 @@ class AgentRuntimeBundleLeaseStore:
                 conn.rollback()
                 lease = self._row(existing)
                 self._validate_file(lease)
-                return lease
+                return self.get(lease.lease_id)
             conn.execute(
                 """
                 INSERT INTO runtime_bundle_leases(
@@ -213,10 +214,8 @@ class AgentRuntimeBundleLeaseStore:
             raise AgentRuntimeBundleLeaseError("runtime bundle build evidence mismatch")
         if lease.status not in {"ready", "uploaded"}:
             raise AgentRuntimeBundleLeaseError("runtime bundle lease is not ready")
-        if lease.expires_at <= float(self._now_fn()):
-            raise AgentRuntimeBundleLeaseError("runtime bundle lease has expired")
         self._validate_file(lease)
-        return lease
+        return self._renew_if_needed(lease)
 
     def mark_uploaded(self, lease_id: str, storage_ref: str) -> AgentRuntimeBundleLease:
         if not str(storage_ref or "").startswith("shared://selena-bundles/"):
@@ -230,6 +229,30 @@ class AgentRuntimeBundleLeaseStore:
                 raise AgentRuntimeBundleLeaseError("runtime bundle lease is unavailable")
             conn.commit()
         return self.get(lease_id)
+
+    def _renew_if_needed(self, lease: AgentRuntimeBundleLease) -> AgentRuntimeBundleLease:
+        """Slide the retention window after immutable evidence is revalidated.
+
+        ``expires_at`` is a garbage-collection hint for an idle local cache,
+        not a wall-clock limit on a queued or running simulation.  A lease may
+        therefore be recovered after that hint has passed when its archive is
+        still present and unchanged.  The caller has already performed the
+        full archive validation before this method is reached.
+        """
+
+        now = float(self._now_fn())
+        if not math.isfinite(now) or now < 0:
+            raise AgentRuntimeBundleLeaseError("runtime bundle lease timestamps are invalid")
+        target = now + _LEASE_RENEWAL_TTL_SECONDS
+        if lease.expires_at >= target:
+            return lease
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE runtime_bundle_leases SET expires_at=? WHERE lease_id=? AND expires_at<?",
+                (target, lease.lease_id, target),
+            )
+            conn.commit()
+        return replace(lease, expires_at=target)
 
     def _validate_file(self, lease: AgentRuntimeBundleLease) -> None:
         if _file_identity(lease.archive_path) != lease.file_identity:

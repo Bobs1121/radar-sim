@@ -90,3 +90,15 @@ def test_lease_requires_matching_build_evidence_and_shared_storage_ref(tmp_path)
         store.mark_uploaded(lease.lease_id, "C:/server/path")
     uploaded = store.mark_uploaded(lease.lease_id, "shared://selena/ovrs25/team/a/selena.exe")
     assert uploaded.status == "uploaded"
+
+
+def test_lease_renews_after_idle_retention_when_artifact_is_unchanged(tmp_path):
+    prepared, result, _ = _prepared(tmp_path)
+    now = [100]
+    store = AgentArtifactLeaseStore(tmp_path / "leases.db", now_fn=lambda: now[0])
+    lease = store.create(
+        prepared, result, build_stage_id="stage-build", build_attempt=1, ttl_seconds=5
+    )
+    now[0] = 106
+    renewed = store.get(lease.lease_id, build_evidence_ref="stage-build:1")
+    assert renewed.expires_at > now[0]

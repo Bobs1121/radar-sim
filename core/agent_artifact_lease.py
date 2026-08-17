@@ -16,7 +16,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ class AgentArtifactLeaseError(ValueError):
 
 
 _LEASE_RE = re.compile(r"^artifact-lease:sha256:[0-9a-f]{64}$")
+_LEASE_RENEWAL_TTL_SECONDS = 86400.0
 
 
 def default_agent_artifact_lease_db_path() -> Path:
@@ -150,7 +151,7 @@ class AgentArtifactLeaseStore:
                     conn.rollback()
                     lease = self._row(existing)
                     self._validate_lease_file(lease, prepared)
-                    return lease
+                    return self.get(lease.lease_id, prepared=prepared)
                 conn.execute(
                     """
                     INSERT INTO artifact_leases(
@@ -199,10 +200,8 @@ class AgentArtifactLeaseStore:
             raise AgentArtifactLeaseError("artifact lease build evidence mismatch")
         if lease.status not in {"ready", "uploaded"}:
             raise AgentArtifactLeaseError("artifact lease is not ready")
-        if lease.expires_at <= float(self._now_fn()):
-            raise AgentArtifactLeaseError("artifact lease has expired")
         self._validate_lease_file(lease, prepared)
-        return lease
+        return self._renew_if_needed(lease)
 
     def mark_uploaded(self, lease_id: str, storage_ref: str) -> AgentArtifactLease:
         storage_ref = str(storage_ref or "").strip()
@@ -217,6 +216,28 @@ class AgentArtifactLeaseStore:
                 raise AgentArtifactLeaseError("artifact lease is unavailable")
             conn.commit()
         return self.get(lease_id)
+
+    def _renew_if_needed(self, lease: AgentArtifactLease) -> AgentArtifactLease:
+        """Renew retention after the artifact checksum and identity match.
+
+        Expiration is an idle-cache hint, not a fixed build or simulation
+        deadline.  Revalidation remains mandatory, so a missing, replaced, or
+        modified artifact cannot be revived merely because its lease is old.
+        """
+
+        now = float(self._now_fn())
+        if not math.isfinite(now) or now < 0:
+            raise AgentArtifactLeaseError("artifact lease timestamps are invalid")
+        target = now + _LEASE_RENEWAL_TTL_SECONDS
+        if lease.expires_at >= target:
+            return lease
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE artifact_leases SET expires_at=? WHERE lease_id=? AND expires_at<?",
+                (target, lease.lease_id, target),
+            )
+            conn.commit()
+        return replace(lease, expires_at=target)
 
     def _validate_lease_file(
         self,

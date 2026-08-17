@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ class AgentSourceLeaseError(ValueError):
 
 
 _LEASE_RE = re.compile(r"^source-lease:sha256:[0-9a-f]{64}$")
+_LEASE_RENEWAL_TTL_SECONDS = 86400.0
 
 
 def default_agent_source_lease_db_path() -> Path:
@@ -135,7 +136,7 @@ class AgentSourceLeaseStore:
         if existing is not None:
             lease = self._row(existing)
             self._validate(lease)
-            return lease
+            return self.get(lease.lease_id)
         bindings = binding_store or AgentBindingStore()
         try:
             binding = bindings.get(workspace_binding_id, project=project)
@@ -187,10 +188,30 @@ class AgentSourceLeaseStore:
             raise AgentSourceLeaseError("source lease evidence mismatch")
         if lease.status != "ready":
             raise AgentSourceLeaseError("source lease is not ready")
-        if lease.expires_at <= float(self._now_fn()):
-            raise AgentSourceLeaseError("source lease has expired")
         self._validate(lease)
-        return lease
+        return self._renew_if_needed(lease)
+
+    def _renew_if_needed(self, lease: AgentSourceLease) -> AgentSourceLease:
+        """Renew retention after the detached worktree remains immutable.
+
+        The timestamp bounds idle cleanup; it is not a maximum lifetime for a
+        queued build.  Branch/commit and dirty-tree validation happens before
+        renewal, so an altered worktree cannot be revived.
+        """
+
+        now = float(self._now_fn())
+        if not math.isfinite(now) or now < 0:
+            raise AgentSourceLeaseError("source lease timestamps are invalid")
+        target = now + _LEASE_RENEWAL_TTL_SECONDS
+        if lease.expires_at >= target:
+            return lease
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE source_leases SET expires_at=? WHERE lease_id=? AND expires_at<?",
+                (target, lease.lease_id, target),
+            )
+            conn.commit()
+        return replace(lease, expires_at=target)
 
     def release(self, lease_id: str) -> None:
         if not _LEASE_RE.fullmatch(str(lease_id or "")):

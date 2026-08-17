@@ -46,7 +46,7 @@ def test_runtime_bundle_lease_is_path_free_idempotent_and_revalidated(tmp_path):
         store.get(first.lease_id)
 
 
-def test_runtime_bundle_lease_evidence_and_expiry_are_enforced(tmp_path):
+def test_runtime_bundle_lease_evidence_is_enforced_and_idle_retention_renews(tmp_path):
     bundle, archive = _bundle(tmp_path)
     now = [20.0]
     store = AgentRuntimeBundleLeaseStore(tmp_path / "leases.db", now_fn=lambda: now[0])
@@ -57,5 +57,5 @@ def test_runtime_bundle_lease_evidence_and_expiry_are_enforced(tmp_path):
     with pytest.raises(AgentRuntimeBundleLeaseError, match="evidence"):
         store.get(lease.lease_id, build_evidence_ref="other:1")
     now[0] = 26.0
-    with pytest.raises(AgentRuntimeBundleLeaseError, match="expired"):
-        store.get(lease.lease_id)
+    renewed = store.get(lease.lease_id, build_evidence_ref="stage-1:1")
+    assert renewed.expires_at > now[0]
