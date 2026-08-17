@@ -438,6 +438,65 @@ def test_retry_repairs_legacy_register_artifact_route(tmp_path, target, expected
     assert stage["payload"]["dispatch_scope"] == expected_scope
 
 
+def test_retry_repairs_local_finalizer_bundle_and_result_handoff(tmp_path):
+    service = make_service(tmp_path)
+    job = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        spec={"simulation": {"target": "local"}},
+        resolved_spec={
+            "decisions": {
+                "execution": {"selected_target": "local"},
+                "data": {"dataset": {"id": "dataset:sha256:" + "3" * 64}},
+            }
+        },
+        tasks=[
+            {"task_id": "register", "task_type": "register_artifact", "stage_type": "register_artifact"},
+            {"task_id": "collect", "task_type": "collect_results", "stage_type": "collect_results"},
+            {
+                "task_id": "finalize",
+                "task_type": "finalize_manifest",
+                "stage_type": "finalize_manifest",
+                "payload": {
+                    "dispatch_scope": "local_simulation",
+                    "runtime_bundle_id": "",
+                    "result_ref": "result:sha256:" + "6" * 64,
+                },
+                "dependencies": ["collect"],
+            },
+        ],
+    )
+    with sqlite3.connect(tmp_path / "control.db") as conn:
+        conn.execute(
+            "UPDATE tasks SET status='succeeded', result_json=? WHERE task_id='register'",
+            (json.dumps({"runtime_bundle": {"id": "selena-bundle:sha256:" + "2" * 64}}),),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='succeeded', result_json=? WHERE task_id='collect'",
+            (
+                json.dumps(
+                    {
+                        "local_run_lease_ref": "local-run-lease:sha256:" + "4" * 64,
+                        "result_ref": "result:sha256:" + "6" * 64,
+                        "delivery": {"status": "delivered", "file_count": 1, "checksum": "sha256:" + "5" * 64},
+                    }
+                ),
+            ),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='failed', error_json=? WHERE task_id='finalize'",
+            (json.dumps({"code": "local_stage_failed"}),),
+        )
+        conn.execute("UPDATE jobs SET status='failed' WHERE job_id=?", (job["job_id"],))
+
+    retried = service.retry_stage(job["job_id"], "finalize")
+    final = next(item for item in retried["stages"] if item["stage_id"] == "finalize")
+    assert final["status"] == "queued"
+    assert final["payload"]["runtime_bundle_id"].startswith("selena-bundle:")
+    assert final["payload"]["result_ref"].startswith("result:")
+    assert final["payload"]["delivery"]["status"] == "delivered"
+
+
 def test_submit_task_result_rejects_different_agent(tmp_path):
     service = make_service(tmp_path)
     job = service.create_job("local.check", payload={"project": "ovrs25"})

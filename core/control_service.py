@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 
 from core.simulation import normalize_radar_metadata
 from core.agent_policy import windows_connector_contract_is_current
-from core.stage_routing import register_artifact_dispatch_scope
+from core.stage_routing import register_artifact_dispatch_scope, selected_execution_target
 
 TERMINAL_TASK_STATUSES = {"succeeded", "failed", "cancelled", "skipped"}
 TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -2833,6 +2833,77 @@ class ControlService:
                             if registration_scope == "local_runtime_registration"
                             else "cluster_direct_transfer"
                         )
+                        conn.execute(
+                            "UPDATE tasks SET payload_json=?, updated_at=? WHERE task_id=?",
+                            (self._dumps(payload), now, stage_id),
+                        )
+                stage_type = str(task.get("stage_type") or task.get("task_type") or "")
+                if stage_type == "finalize_manifest":
+                    payload = dict(task.get("payload") or {})
+                    try:
+                        is_local_route = selected_execution_target(job) == "local"
+                    except ValueError:
+                        is_local_route = str(payload.get("dispatch_scope") or "") == "local_simulation"
+                    if is_local_route:
+                        # A failed finalizer may be retried without rerunning
+                        # collect_results.  Repair payloads created before the
+                        # local Bundle identity fallback was deployed, using
+                        # only durable successful Stage results.  This is the
+                        # same handoff evidence used by the normal binder.
+                        stages = {
+                            str(item.get("stage_type") or ""): item
+                            for item in job.get("stages") or []
+                        }
+                        collect = stages.get("collect_results") or {}
+                        collect_result = dict(collect.get("result") or {})
+                        register_result = dict(
+                            (stages.get("register_artifact") or {}).get("result") or {}
+                        )
+                        environment_result = dict(
+                            (stages.get("environment_check") or {}).get("result") or {}
+                        )
+                        resolved = dict(job.get("resolved_spec") or {})
+                        decisions = dict(resolved.get("decisions") or {})
+                        selena = dict(decisions.get("selena") or {})
+                        registered_bundle = dict(
+                            register_result.get("runtime_bundle") or {}
+                        )
+                        existing_bundle = dict(
+                            environment_result.get("runtime_bundle") or {}
+                        )
+                        runtime_bundle_id = str(
+                            registered_bundle.get("id")
+                            or existing_bundle.get("id")
+                            or dict(selena.get("runtime_bundle") or {}).get("id")
+                            or ""
+                        )
+                        if not runtime_bundle_id.startswith("selena-bundle:sha256:"):
+                            raise ValueError(
+                                "local Runtime Bundle identity is unavailable for finalizer retry"
+                            )
+                        result_ref = str(collect_result.get("result_ref") or "")
+                        if not result_ref.startswith("result:sha256:"):
+                            raise ValueError(
+                                "local result reference is unavailable for finalizer retry"
+                            )
+                        payload.update(
+                            {
+                                "runtime_bundle_id": runtime_bundle_id,
+                                "result_ref": result_ref,
+                            }
+                        )
+                        delivery = collect_result.get("delivery")
+                        if isinstance(delivery, dict):
+                            payload["delivery"] = {
+                                "status": str(delivery.get("status") or ""),
+                                "file_count": max(0, int(delivery.get("file_count") or 0)),
+                                "checksum": str(delivery.get("checksum") or ""),
+                                **(
+                                    {"code": str(delivery.get("code") or "")}
+                                    if delivery.get("code")
+                                    else {}
+                                ),
+                            }
                         conn.execute(
                             "UPDATE tasks SET payload_json=?, updated_at=? WHERE task_id=?",
                             (self._dumps(payload), now, stage_id),
