@@ -87,7 +87,10 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # revalidation.  Their timestamps are idle-cache retention hints, not fixed
 # queue or simulation deadlines; older Connectors could still fail a valid
 # long-waiting job on an expired local lease.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 13
+# v14 removes the last Connector-side seven-day/24-hour ceilings for explicit
+# build and local-run policies.  Zero remains unlimited; a positive limit is
+# caller-selected and cancellation/process liveness remain independent.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 14
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

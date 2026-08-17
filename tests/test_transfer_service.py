@@ -181,6 +181,44 @@ def test_issue_plan_reissues_for_failed_cancelled_expired_or_changed_metadata(tm
     assert changed_retry.transfer_id != changed.transfer_id
 
 
+def test_active_transfer_renews_idle_lease_instead_of_using_wall_clock_deadline(tmp_path: Path) -> None:
+    clock = [NOW]
+    service = TransferService(
+        TransferStore(tmp_path / "renew.sqlite3"),
+        trusted_root=tmp_path / "trusted-renew",
+        allow_local_test_root=True,
+        now_fn=lambda: clock[0],
+    )
+    plan = service.issue_plan(
+        owner="alice",
+        job_id="job_long_transfer",
+        stage_id="stage_prepare",
+        mode="shared_copy",
+        source_role="dataset",
+        items=[_item()],
+        ttl_seconds=1,
+    )
+    clock[0] = NOW + 0.5
+    service.report_progress(
+        TransferProgress(
+            transfer_id=plan.transfer_id,
+            owner_scope=plan.owner_scope,
+            bytes_transferred=1,
+            bytes_total=plan.items[0].size,
+            current_file=plan.items[0].relative_path,
+            updated_at=clock[0],
+        ),
+        owner="alice",
+    )
+    renewed = service.get_plan(plan.transfer_id, owner="alice")
+    assert renewed.expires_at > NOW + 3600
+
+    # The copy crosses the original one-second issuance window but remains
+    # valid because the client sent an accepted progress heartbeat.
+    clock[0] = NOW + 2
+    assert service.receive_manifest(_manifest(plan), owner="alice")["status"] == "completed"
+
+
 def test_issue_plan_is_sqlite_serialized_across_concurrent_retries(tmp_path: Path) -> None:
     db = tmp_path / "concurrent.sqlite3"
 

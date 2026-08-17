@@ -1099,9 +1099,10 @@ def _positive_timeout(value: int) -> int:
         raise AgentLocalRunError("local run timeout is invalid")
     timeout = int(value)
     # Zero is intentional: it means no framework wall-clock limit.  Positive
-    # values remain opt-in and bounded so an accidental YAML value cannot make
-    # a Connector lease unbounded by surprise.
-    if timeout < 0 or timeout > 7 * 24 * 60 * 60:
+    # Positive values are an explicit caller/deployment policy.  There is no
+    # framework-imposed maximum duration: large batches may legitimately run
+    # longer than a week.  Zero remains the normal unlimited-runtime mode.
+    if timeout < 0:
         raise AgentLocalRunError("local run timeout is invalid")
     return timeout
 

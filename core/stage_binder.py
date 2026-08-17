@@ -988,16 +988,37 @@ def bind_local_stage_after_result(control: ControlService, completed_stage: dict
     lease_ref = str(result.get("local_run_lease_ref") or (completed_stage.get("payload") or {}).get("local_run_lease_ref") or "")
     if not lease_ref.startswith("local-run-lease:sha256:"):
         raise StageBindingError("local run lease is unavailable")
+    resolved_decisions = dict((job.get("resolved_spec") or {}).get("decisions") or {})
+    resolved_selena = dict(resolved_decisions.get("selena") or {})
+    # Local registration deliberately does not publish a shared storage_ref.
+    # In that route ``complete_runtime_bundle_registration`` leaves the
+    # resolved public snapshot unchanged, while the authoritative Bundle
+    # identity is still present in the successful local register Stage result.
+    # Prefer the Stage result and fall back to the resolved snapshot for the
+    # existing-runtime/legacy path.  Without this fallback the finalizer was
+    # handed an empty runtime_bundle_id and failed only after the expensive
+    # simulation and result collection had already succeeded.
+    registered_bundle = dict(
+        (stages.get("register_artifact") or {}).get("result") or {}
+    ).get("runtime_bundle") or {}
+    existing_bundle = dict(
+        (stages.get("environment_check") or {}).get("result") or {}
+    ).get("runtime_bundle") or {}
+    runtime_bundle_id = str(
+        dict(registered_bundle).get("id")
+        or dict(existing_bundle).get("id")
+        or dict(resolved_selena.get("runtime_bundle") or {}).get("id")
+        or ""
+    )
+    if not runtime_bundle_id.startswith("selena-bundle:sha256:"):
+        raise StageBindingError("local Runtime Bundle identity is unavailable")
     payload = {
         "dispatch_scope": "local_simulation",
         "contract": "user-run-config/2.0",
         "local_run_lease_ref": lease_ref,
         "owner": str(job.get("owner") or (job.get("metadata") or {}).get("owner") or ""),
         "job_id": job_id,
-        "runtime_bundle_id": str(
-            (((job.get("resolved_spec") or {}).get("decisions") or {}).get("selena") or {})
-            .get("runtime_bundle", {}).get("id") or ""
-        ),
+        "runtime_bundle_id": runtime_bundle_id,
         "dataset_id": str(
             (((job.get("resolved_spec") or {}).get("decisions") or {}).get("data") or {})
             .get("dataset", {}).get("id") or ""

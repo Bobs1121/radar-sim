@@ -83,7 +83,6 @@ def test_local_four_stage_chain_stays_on_same_windows_full_agent(tmp_path):
         result={
             "runtime_bundle": {
                 "id": "selena-bundle:sha256:" + "2" * 64,
-                "storage_ref": "shared://selena-bundles/demo/runtime-bundle.zip",
             },
             "build_evidence_ref": "build:1",
         },

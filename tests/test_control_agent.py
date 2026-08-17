@@ -34,7 +34,7 @@ def test_build_timeout_is_unlimited_by_default_but_deployment_tunable(monkeypatc
     assert _build_timeout_seconds({}) == 7200
     assert _build_timeout_seconds({"build_timeout_seconds": 0}) == 0
     assert _build_timeout_seconds({"build_timeout_seconds": 1}) == 60
-    assert _build_timeout_seconds({"build_timeout_seconds": 999999}) == 86400
+    assert _build_timeout_seconds({"build_timeout_seconds": 999999}) == 999999
 
 
 def test_build_task_command_for_local_run_sim_matches_cli_flags():

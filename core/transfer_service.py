@@ -45,6 +45,12 @@ TRANSFER_PLAN_STATUSES = frozenset(
     {"pending", "in_progress", "completed", "failed", "cancelled", "skipped_shared", "skipped_local"}
 )
 
+# Transfer expiry is an inactivity lease, not a maximum transfer duration.
+# Every accepted progress heartbeat slides this window forward.  A quiet,
+# abandoned plan can still be reclaimed; an active multi-hour/multi-day copy
+# is not rejected merely because it crossed the original issuance timestamp.
+TRANSFER_IDLE_LEASE_SECONDS = 86400.0
+
 
 class TransferError(RuntimeError):
     """Stable service error suitable for an API boundary."""
@@ -382,7 +388,16 @@ class TransferStore:
             row = connection.execute("SELECT progress_json FROM transfer_plans WHERE transfer_id=?", (transfer_id,)).fetchone()
         return None if row is None or not row["progress_json"] else TransferProgress(**json.loads(str(row["progress_json"])))
 
-    def update_status(self, transfer_id: str, status: str, *, progress: Optional[TransferProgress] = None, manifest: Optional[TransferManifest] = None, completed_at: Optional[float] = None) -> None:
+    def update_status(
+        self,
+        transfer_id: str,
+        status: str,
+        *,
+        progress: Optional[TransferProgress] = None,
+        manifest: Optional[TransferManifest] = None,
+        completed_at: Optional[float] = None,
+        expires_at: Optional[float] = None,
+    ) -> None:
         sets, values = ["status=?"], [status]
         if progress is not None:
             sets.append("progress_json=?")
@@ -393,8 +408,28 @@ class TransferStore:
         if completed_at is not None:
             sets.append("completed_at=?")
             values.append(float(completed_at))
-        values.append(transfer_id)
         with self._connect() as connection:
+            if expires_at is not None:
+                row = connection.execute(
+                    "SELECT plan_json FROM transfer_plans WHERE transfer_id=?",
+                    (transfer_id,),
+                ).fetchone()
+                if row is None:
+                    raise TransferError(
+                        "transfer_not_found",
+                        "Transfer plan not found",
+                        status_code=404,
+                    )
+                plan_payload = json.loads(str(row["plan_json"]))
+                plan_payload["expires_at"] = float(expires_at)
+                sets.extend(["plan_json=?", "expires_at=?"])
+                values.extend(
+                    [
+                        json.dumps(plan_payload, sort_keys=True),
+                        float(expires_at),
+                    ]
+                )
+            values.append(transfer_id)
             cursor = connection.execute("UPDATE transfer_plans SET %s WHERE transfer_id=?" % ",".join(sets), values)
             if cursor.rowcount != 1:
                 raise TransferError("transfer_not_found", "Transfer plan not found", status_code=404)
@@ -531,13 +566,19 @@ class TransferService:
         plan = self._owned_plan(progress.transfer_id, owner=owner, owner_scope=progress.owner_scope)
         if plan.status in {"completed", "cancelled", "failed"}:
             return
-        if plan.expires_at <= float(self._now_fn()):
+        now = float(self._now_fn())
+        if plan.expires_at <= now:
             raise TransferError("transfer_plan_expired", "Transfer plan has expired", status_code=410)
         if progress.bytes_total != sum(item.size for item in plan.items):
             raise TransferError("progress_total_mismatch", "Progress total differs from plan", status_code=422)
         if progress.current_file and progress.current_file not in {item.relative_path for item in plan.items}:
             raise TransferError("progress_file_mismatch", "Progress file is not in the plan", status_code=422)
-        self._store.update_status(plan.transfer_id, "in_progress", progress=progress)
+        self._store.update_status(
+            plan.transfer_id,
+            "in_progress",
+            progress=progress,
+            expires_at=max(plan.expires_at, now + TRANSFER_IDLE_LEASE_SECONDS),
+        )
 
     def receive_manifest(self, manifest: TransferManifest, *, owner: str = "") -> dict[str, Any]:
         """Validate and persist metadata only; never read a transferred file."""

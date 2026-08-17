@@ -410,7 +410,10 @@ def _build_timeout_seconds(payload: dict) -> int:
         value = 0
     if value <= 0:
         return 0
-    return max(60, min(value, 86400))
+    # A positive value is an explicit deployment policy.  Do not impose a
+    # second hidden 24-hour ceiling on long toolchain builds; the default
+    # remains unlimited and process liveness/cancellation stay active.
+    return max(60, value)
 
 
 def _terminate_process_tree(process: subprocess.Popen, exit_code: int) -> None:
