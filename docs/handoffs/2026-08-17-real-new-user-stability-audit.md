@@ -282,3 +282,75 @@ Total number of signals not found: 22830
 7. 让结果 watermark 配置真正进入生产部署，而不只是代码提供可选参数。
 
 本次审查没有修改业务代码；只做了候选部署、只读 live 测试、SDK 结果下载、Web 浏览器测试、Connector 更新和测试回归。工作区中的 `.zcode/`、`tmp-agent-home/` 是另一 AI 的本地运行痕迹，未纳入代码提交，不能作为产品交付物。
+
+## 10. fresh Agent + UNC 数据 + 并发任务追加测试
+
+按用户要求，将原 Windows Connector 安装根移出并保留 backup，使用新 owner 做 fresh install：
+
+- 旧安装根：`C:\Users\HOZ2WX\AppData\Local\radar-sim`；
+- 旧安装内容 backup：
+  `C:\Users\HOZ2WX\AppData\Local\radar-sim-backup-fresh-20260817-185700`；
+  `C:\Users\HOZ2WX\AppData\Local\radar-sim-residual-fresh-20260817-185854`；
+- fresh owner：`user-fresh-agent-smoke`；
+- fresh Agent ID：`agent-HOZ2WX-WX8-C-0001A-17bcd77a31b9`；
+- fresh contract/status：`contract_current=true`、`available=true`、watchdog registered；
+- 原始工程 `C:\BYD_OVS_CB` 和数据盘 `D:\data\...` 未删除。
+
+### 10.1 无编译并发提交
+
+两个 `source=existing` 任务同时提交，均使用上一任务的已有 Selena 产物和用户给出的 UNC 数据目录：
+
+- local：`job_8583e9adc7bf`；
+- Cluster：`job_36f358aa39d1`；
+- 两者 `build_selena=skipped`，没有启动编译进程。
+
+结果：
+
+- Cluster Job 在 `environment_check` 失败：
+  `CLUSTER_ENVIRONMENT_UNAVAILABLE: Manager XML-RPC port: unavailable; Submit path: unavailable`。
+  任务没有进入数据传输/仿真，后续 Stage 正确取消。
+- local Job 在 UNC 目录 discovery/hash 阶段长时间无进度；取消请求写入后，`prepare_data` 仍保持 running 多分钟，直到数据扫描结束后才变成 cancelled。
+
+这暴露出两个稳定性事实：
+
+1. `capabilities.cluster.available=true` 不能代表 Cluster Manager 当前可提交；真正的 `environment_check` 才是可信 readiness，UI/SDK 不能只依据 capability 快照允许用户认为 Cluster 可用。
+2. UNC 大目录 discovery/hash 的取消响应不及时。代码传递了 cancel callback，但真实网络扫描期间仍会长期占用 Agent；需要分块取消、可取消 I/O 或将 discovery 变为可恢复 Stage，否则用户取消后会长时间看到 `cancelling`。
+
+### 10.2 单文件 local existing 测试
+
+为避开整目录扫描，使用同一 UNC 目录中的单个 MF4：
+
+- Job：`job_5fc0235fb6a2`；
+- `source=existing`；
+- `build_selena=skipped`；
+- `prepare_data=succeeded`；
+- `preflight=succeeded`；
+- `run_simulation=failed`；
+- diagnosis：`simulation_failed` / `selena_failed`。
+
+Selena 本地日志实际错误：
+
+```text
+boost::filesystem::status: The network name cannot be found: "\\szh-soc4.apac.bosch.com\urmszh_i_2208_089"
+```
+
+用户提交的 UNC 别名是：
+
+```text
+\\abtvdfs2.de.bosch.com\ismdfs\loc\szh\Isilon2\OverseaData\Driving\AU_data\BYD_SR\12-5-26_CBNA\12-5-26_CBNA
+```
+
+但 Agent 的 `local-runs.db` 中，输入路径已经被 canonicalize 成后端共享名：
+
+```text
+\\szh-soc4.apac.bosch.com\urmszh_i_2208_089$\AU_data\BYD_SR\12-5-26_CBNA\12-5-26_CBNA\Gen5_2009-01-01_03-57_0115.MF4
+```
+
+当前最可能的原因是：框架对 UNC 路径使用 `Path.resolve()` 后得到 DFS/backend canonical path；Agent 进程能够扫描该路径，但 Selena 子进程在当前 Windows 登录/网络凭据上下文下不能访问 canonical share。这个结论是基于真实路径和 Selena 日志的推断，必须用“保留原始 UNC 别名”和“canonical path”各跑一次最小命令进一步确认。
+
+该问题属于框架/运行环境边界，不应继续归类为“Selena 内部失败”后忽略。至少需要：
+
+- 保存原始用户 UNC path 与授权 canonical path 两份证据；
+- 让 Selena 使用执行上下文可访问的路径表示，不能只把 `Path.resolve()` 结果写入 paramconfig；
+- 在 preflight 中用与 Selena 相同的子进程/凭据上下文验证 network share；
+- 若 Agent 能读而 Selena 不能读，Job 应在仿真前给出 `network_share_unavailable_for_child_process` 类框架诊断，而不是启动后才得到 `selena_failed`。
