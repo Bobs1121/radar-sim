@@ -8,6 +8,32 @@
 
 ---
 
+## 0A. 修复状态更新（2026-08-17 晚：P1/P2 最小加固已提交）
+
+> 本矩阵初版为**纯汇总（AUDIT ONLY）**。随后按用户要求以「优化为主、最小改动、不破坏本地已跑通的仿真」对 P1/P2 做了**代码修复**，commit `0a06c01`（`codex/new-branch`）。修复详情见 `docs/handoffs/2026-08-17-p1-p2-minimal-hardening.md`。
+> 本节把矩阵中已被代码修复/测试覆盖的行做**状态回填**；未修复项（尤其 P0-1 认证与 P1-1 失败输入重试）保持开放并注明理由。
+
+| 原风险 ID | 原定级 | 修复情况（commit `0a06c01`） | 验证 |
+|---|---|---|---|
+| P1-3 commit→bind 重启窗口缺直接回归测试 | P1 | ✅ 已补 `test_reconcile_stage_handoffs_repairs_commit_before_bind_window`（`test_control_stages.py`），直接调用 `reconcile_stage_handoffs` 并验证 binder 被正确调用、可安全重放 | 通过 |
+| P1-4 结果归档无 GC/磁盘水位/告警 | P1 | ✅ `ResultCatalog.collect_expired()`（引用计数删除过期归档）+ `_check_watermark()`（`min_free_bytes`，默认 0=关闭）+ `_LOGGER` 告警；接入 `cli/server.py` 维护循环 | `test_local_results.py` 新增 2 条通过 |
+| P1-5 Cluster 结果默认永不过期 | P1 | ✅ `execute_cluster_collect` 从 spec `result.retain_days` 传 `retain_until`（默认 30 天，与本地一致） | `test_cluster_collect_passes_retain_until_from_spec` 通过 |
+| P2-1 SDK 无 `wait_job()`/指数退避 | P2 | ✅ 新增 `wait_job()` 文档化入口；`watch`/`wait` 新增 `backoff_factor`/`max_poll_interval`（默认 0 保持原行为） | `test_sdk_wait_job_...`、`test_sdk_watch_backoff_...` 通过 |
+| P2-3 下载 checksum mismatch 无稳定错误码 | P2 | ✅ 新增 `RadarSimIntegrityError`（code=`result_checksum_mismatch`），替换裸 `ValueError` | `test_sdk_download_result_rejects_checksum_mismatch_with_stable_error` 通过 |
+| P2-4 result.path 不可写缺端到端测试 | P2 | ✅ 新增 `test_result_path_unwritable_keeps_server_zip_and_reports_stable_delivery_failure`（`test_windows_full_local_e2e.py`） | 通过 |
+| P2-5 cancel→success 落盘缺直接测试 | P2 | ✅ 新增 `test_cancel_does_not_override_a_genuine_success...` 与 `test_cancel_turns_a_failed_result_into_cancelled_not_failure` | 通过 |
+| P2-6 Connector 配置损坏不自动恢复 | P2 | ✅ `start_windows.ps1` / `watch_windows_connector.ps1` 增加损坏 JSON 回退 backup 逻辑 | `test_connector_start_restores_corrupt_install_metadata_from_backup` + 静态断言通过 |
+| P2-22 fresh 误标 incremental、`incremental_reused` 未记录 | P2 | ✅ `build_policy.mode` 支持 `fresh`；新增 `fresh_start` / `incremental_reused` 结构化字段（`agent_build_stage.py`、`cli/agent.py`） | `test_finish_labels_fresh_build_not_incremental_reuse` 等通过 |
+| P1-1 无「只重试失败输入」能力 | P1 | ❌ **未修复**：属新功能面（API/SDK/Web + 逐输入过滤 + attempt 语义），非最小改动，需单独设计交付 | — |
+| P1-2 partial 在 DB 归一化为 failed | P1/P2 | ❌ **未修复**：改动会触碰 finalize/stale/恢复语义，违背「最小改动、不破坏本地仿真」约束；对外 API 已正确显示 partial，属内部表述不一致 | — |
+| P0-1 认证缺失/owner 可伪造 | P0 | ❌ **未修复**：属部署门禁（启用 Bearer + 双 owner live 验收），非代码最小改动 | — |
+
+> 全量回归：**1645 passed（基线 1631，+14 新增）、12 skipped**；6 个失败与基线一致（`test_gen5.py` 缺 `asammdf`、`test_cluster.py` 缺 python2，环境问题）。定向覆盖全部改动文件的回归 **364 passed**。所有改动模块导入正常。
+
+---
+
+
+
 ## 0. 阅读入口与方法说明
 
 ### 0.1 十三份审计文档索引（证据源）

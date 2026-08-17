@@ -4,6 +4,7 @@
 任务书：`docs/handoffs/2026-08-17-radar-sim-service-scenarios-ai-execution-brief.md`（执行合同）  
 方式：14 个并行审计子代理（与主 AI 同模型）+ 主 AI 汇总。审计只读，未修改任何源码、未提交代码。  
 范围：Web/SDK 提交 → Windows Connector / Selena 编译 → 本地/Cluster 执行 → 批量结果 → 结果下载 → 故障恢复的完整链路，覆盖 brief 第 11 节 Task 0/0.1/A/B/C/D/E/F/G/H/I/J/K/L/M/N/O。
+**后续更新（2026-08-17 晚）**：按用户要求对 P1/P2 做了最小代码加固，commit `0a06c01`（详见 `docs/handoffs/2026-08-17-p1-p2-minimal-hardening.md` 与 `docs/audits/2026-08-17-simulation-correctness-gap-matrix.md` 第 0A 节）。
 
 ## 1. 结论
 
@@ -12,6 +13,7 @@
 - 核心链路（提交 → 状态机 → 传输 → 构建 → 运行 → 收集 → 下载）在代码与自动化测试层面齐备；无已确认的重复执行、结果完整性、分支污染、数据丢失类 P0 缺陷。旧分支污染问题（`selena_branch_changed`）已修复并有真实 Job attempt=4 证据。
 - 不能判定「可上线」：P0 认证缺失（`X-Rsim-User` 在 `authentication_required=false` 下可伪造、同 owner 设备可互相冒充）+ 13 类故障注入场景的真实部署验收全部未完成。
 - 因此当前只能称为「受信内网试用」，不满足 brief 7.4 的正式多租户门禁。
+- **P1/P2 修复后（`0a06c01`）**：P1-3/P1-4/P1-5 与 6 类 P2 已代码修复 + 回归测试（见第 5 节）；P1-1/P1-2/P0-1 有意保留（理由见 P1/P2 加固 handoff 第 5 节）。总结论不变（仍有 P0-1 与真实部署验收未完成）。
 
 ## 2. 交付物：14 份审计文档（docs/audits/）
 
@@ -32,21 +34,25 @@
 | Task N | `2026-08-17-project-free-build-matrix.md` | 项目无关成立（V2 generic 流无硬编码项目依赖）；用户脚本为执行入口 |
 | Task O | `2026-08-17-agent-user-journey-audit.md` | 单实例/身份保留/Web-SDK 复用同一 Agent 成立；真实 Windows 首装/升级/重启需验收 |
 
+**后续修复交付物（commit `0a06c01`）**：`docs/handoffs/2026-08-17-p1-p2-minimal-hardening.md`（P1/P2 最小加固修复与验收记录）；`docs/audits/2026-08-17-simulation-correctness-gap-matrix.md` 已新增第 0A 节「修复状态更新」回填。
+
 ## 3. P0/P1/P2 风险分级（去重后，来源见各审计文档）
 
 ### P0 — 阻断正式多租户上线
 - **P0-1 认证缺失（Task C，A/F/O 印证）**：`authentication_required=false` 时 `X-Rsim-User` 可伪造（`api_v1_fastapi.py:298-315`），`agent_id` 可冒充（`:327-337`）；7.4 门禁 0/6 达标 → 只能「受信内网试用」。启用 Bearer 为部署期变更（`serve-v1 --auth-file` 挂 `http-auth.json`），回滚=去掉 flag。
 
 ### P1 — 高优先，生产前必修（不阻断受信内网单用户）
-- **P1-1 无「只重试失败输入」API/SDK/Web**（brief §6.3 明确交付物；Task A/F/H 一致定为 P1，Task H 视为其范围阻断项）：仅 Stage 级 `retry_stage`；`partial` Job 的 `run_simulation` 在 DB 为 succeeded，无法只重跑失败 MF4。per-failed-input 重试只存在于 legacy `cli/run.py`，不在 V2 Windows-full Agent。
-- **P1-2 partial 在控制面 DB 被归一化为 failed**（`control_service.py:2453-2462`）：公开 API 通过 `_v1_status` 再导出 partial，但内部 DB/诊断/retry 入口按 failed 处理。（Task A 定 P1，Task H 定 P2，已记录分级不一致。）
-- **P1-3 commit→bind 重启窗口缺直接回归测试**（Task B GAP-1/GAP-3）：无测试直接调用 `reconcile_stage_handoffs`；真实服务重启恢复需部署验收。
-- **P1-4 结果归档无 GC/磁盘水位/告警**（Task I）：`retain_until` 只隐藏不回收；结果 catalog 无 `min_free_bytes` 检查；无过期/磁盘告警。
-- **P1-5 保留期不对称**（Task I）：Cluster 结果默认永不过期（`cluster_stage_executor.py:1372-1378`）vs Windows-local 默认 30 天。
-- **P1-6 真实端到端验收缺失**：跨全部场景（双 owner、250+ 批量、断网、重启、长 Cluster 队列、真实下载断流）需在部署环境完成。
+- **P1-1 无「只重试失败输入」API/SDK/Web**（brief §6.3 明确交付物；Task A/F/H 一致定为 P1，Task H 视为其范围阻断项）：仅 Stage 级 `retry_stage`；`partial` Job 的 `run_simulation` 在 DB 为 succeeded，无法只重跑失败 MF4。per-failed-input 重试只存在于 legacy `cli/run.py`，不在 V2 Windows-full Agent。**❌ 未修复**（新功能面，需单独交付；理由见 P1/P2 加固 handoff §5）。
+- **P1-2 partial 在控制面 DB 被归一化为 failed**（`control_service.py:2453-2462`）：公开 API 通过 `_v1_status` 再导出 partial，但内部 DB/诊断/retry 入口按 failed 处理。（Task A 定 P1，Task H 定 P2，已记录分级不一致。）**❌ 未修复**（触碰 finalize/stale 语义；对外已正确）。
+- **P1-3 commit→bind 重启窗口缺直接回归测试**（Task B GAP-1/GAP-3）：无测试直接调用 `reconcile_stage_handoffs`；真实服务重启恢复需部署验收。**✅ 已修复（`0a06c01`）**：新增 `test_reconcile_stage_handoffs_repairs_commit_before_bind_window`。
+- **P1-4 结果归档无 GC/磁盘水位/告警**（Task I）：`retain_until` 只隐藏不回收；结果 catalog 无 `min_free_bytes` 检查；无过期/磁盘告警。**✅ 已修复（`0a06c01`）**：`collect_expired()` + `_check_watermark()` + 告警 + 维护循环接入。
+- **P1-5 保留期不对称**（Task I）：Cluster 结果默认永不过期（`cluster_stage_executor.py:1372-1378`）vs Windows-local 默认 30 天。**✅ 已修复（`0a06c01`）**：Cluster publish 从 spec `retain_days` 传 `retain_until`。
+- **P1-6 真实端到端验收缺失**：跨全部场景（双 owner、250+ 批量、断网、重启、长 Cluster 队列、真实下载断流）需在部署环境完成。**❌ 未完成**（部署门禁，本机不可替代）。
 
 ### P2 — 建议改进（22 项摘要）
-SDK 等待命名/退避（无 `wait_job()` 字面方法、`watch()` 固定 poll_interval）；下载 checksum mismatch 抛裸 `ValueError` 无稳定 code；result.path 不可写缺端到端故障注入测试；cancel→success 竞态缺测试；config 损坏恢复仅覆盖缺失未覆盖损坏；杀毒/Defender 诊断缺失；单实例 mutex 为 session 级；Web 重试按钮口径；250+/磁盘满/断网/UNC 未验收；Cluster 无幂等 request ID；blocked collector；retry payload 仅 local 路由；legacy-only 硬编码路径（`core/config.py`，V2 已绕过）；审计日志/认证 pairing；遗留 `web/` 目录；过时测试文件名（`test_stage_routing.py`、`test_agent_store_paths.py` 不存在）；build provenance 记录缺口（Task D G1-G7：fresh 误标 incremental、commit/源码指纹/工具链/脚本 checksum 未进决策、`clean_applied/clean_proof/incremental_reused` 字段缺失）。
+- **✅ 已修复（`0a06c01`）**：SDK 等待命名/退避（`wait_job()` + 指数退避）；下载 checksum mismatch 稳定错误码（`RadarSimIntegrityError`）；result.path 不可写端到端故障注入测试；cancel→success 竞态直接测试；config 损坏恢复覆盖「损坏」；build provenance 记录缺口之 fresh 误标 incremental + `fresh_start`/`incremental_reused` 字段（Task D G1/G4 部分）。
+- **❌ 仍开放**：杀毒/Defender 诊断缺失；单实例 mutex 为 session 级；Web 重试按钮口径；250+/磁盘满/断网/UNC 未验收；Cluster 无幂等 request ID；blocked collector；retry payload 仅 local 路由；legacy-only 硬编码路径（`core/config.py`，V2 已绕过）；审计日志/认证 pairing；遗留 `web/` 目录；过时测试文件名（`test_stage_routing.py`、`test_agent_store_paths.py` 不存在）；build provenance 记录缺口之 commit/源码指纹/工具链/脚本 checksum 未进决策、`clean_applied/clean_proof` 字段缺失（Task D G2/G3/G5，多为记录/持久化合规项，非安全漏洞）。
+
 
 ## 4. 状态转移与正确性核心结论（Task 0 摘要）
 
@@ -57,7 +63,19 @@ SDK 等待命名/退避（无 `wait_job()` 字面方法、`watch()` 固定 poll_
 
 ## 5. 已完成修改
 
-无源码修改、无 commit。本次为纯审计，交付 14 份审计文档（见第 2 节）。此前的代码修复基线为 `20ba6b7`（branch: `codex/new-branch`），详见前序 handoffs（`2026-08-17-comprehensive-runtime-hardening.md`、`2026-08-17-non-engine-failure-audit.md`）。
+**阶段一（纯审计，`785fce4`）**：交付 14 份审计文档（见第 2 节），未改源码。
+
+**阶段二（P1/P2 最小加固，`0a06c01`，2026-08-17 晚）**：
+- 结果归档 GC + 磁盘水位 + 告警（`core/local_results.py` `collect_expired`/`_check_watermark` + `cli/server.py` 维护循环接入）——P1-4
+- Cluster 结果保留期与本地一致（`core/cluster_stage_executor.py` publish 传 `retain_until`）——P1-5
+- SDK `wait_job()` + 指数退避（`radar_sim_sdk/client.py`，默认行为不变）——P2-1
+- SDK 下载 checksum 稳定错误码 `RadarSimIntegrityError`（`errors.py`/`client.py`/`__init__.py`）——P2-3
+- Connector 配置损坏恢复（`start_windows.ps1`/`watch_windows_connector.ps1`）——P2-6
+- 控制面回归测试（`test_control_stages.py`：reconcile 重启窗口 + cancel→success/failed 竞态）——P1-3/P2-5
+- build provenance 结构化字段 + fresh 模式（`agent_build_stage.py`/`cli/agent.py`）——P2-22
+- result.path 不可写端到端故障注入测试（`test_windows_full_local_e2e.py`）——P2-4
+
+源码基线：`0a06c01`（branch `codex/new-branch`）。此前基线见前序 handoffs（`2026-08-17-comprehensive-runtime-hardening.md`、`2026-08-17-non-engine-failure-audit.md`）。
 
 ## 6. 真实证据（当前机器可复现部分）
 
@@ -75,18 +93,24 @@ SDK 等待命名/退避（无 `wait_job()` 字面方法、`watch()` 固定 poll_
 
 生产环境（Linux `10.190.171.44:8877`，release `/home/hoz2wx/radar-sim-d3de370`）的真实 Job `job_26028465ebeb` 已于前序 handoff 记录为最终 `succeeded`（10 Stage、批量 3/3、Manifest `succeeded`、ZIP SHA-256 校验一致）；本次审计未在部署环境新增 Job，部署级场景均标记「需要真实部署验收」。
 
+**P1/P2 修复后验证（`0a06c01`）**：
+- 定向回归（覆盖全部改动文件 + 相关套件）：`364 passed, 1 skipped`。
+- 全量回归：`1645 passed, 12 skipped, 1 warning`（基线 1631；+14 新增测试；0 新增失败）。6 个失败与基线一致：`test_cluster.py::test_cluster_check_allows_xmlrpc_without_python2`（缺 python2）与 `test_gen5.py::TestMf4ReaderExtract::*` ×5（缺 asammdf），均为环境问题。
+- 全部改动模块导入正常（`import core.local_results, core.cluster_stage_executor, core.agent_build_stage, core.control_service, cli.server, cli.agent, radar_sim_sdk, radar_sim_sdk.client` → OK）。
+
 ## 7. 未完成事项（下一步动作）
 
 1. **P0 认证（阻断）**：启用 Bearer（`serve-v1 --auth-file`），双 owner + 双设备 live 验收，确认伪造 `X-Rsim-User` 无效。责任：部署 owner。
-2. **P1-1 失败输入重试**：为 V2 API/SDK/Web 增加「只重试失败输入」能力（brief 6.3 deliverable），并实测成功输入不重复消耗编译/仿真资源。
-3. **P1-4/5 结果 GC/水位/告警/保留期对齐**：实现归档 GC、磁盘水位、告警，统一 Cluster/local 保留期。
-4. **P1-3 重启窗口回归测试**：新增直接调用 `reconcile_stage_handoffs` 的测试；部署环境做真实服务重启恢复。
-5. **Task K/L 真实闭环**：按 `docs/release-deployment.md` 做 release/系统/Connector 回滚验收；Web + SDK 同一 YAML 的真实 `spec_hash`/DAG/Manifest 对比。
-6. **部署级故障注入**：250+ 批量、断网续传、磁盘满、UNC、长 Cluster 队列、结果目录晚到、真实下载断流、杀毒/权限阻断。
+2. **P1-1 失败输入重试**：为 V2 API/SDK/Web 增加「只重试失败输入」能力（brief 6.3 deliverable），并实测成功输入不重复消耗编译/仿真资源。（新功能面，需单独设计交付；本批未动。）
+3. **P1-2 partial 在 DB 归一化**：复核并决定是否调整（对外 API 已正确显示 partial；改动触碰 finalize/stale 语义，需谨慎设计）。
+4. **Task K/L 真实闭环**：按 `docs/release-deployment.md` 做 release/系统/Connector 回滚验收；Web + SDK 同一 YAML 的真实 `spec_hash`/DAG/Manifest 对比。
+5. **部署级故障注入**：250+ 批量、断网续传、磁盘满、UNC、长 Cluster 队列、结果目录晚到、真实下载断流、杀毒/权限阻断。
+6. **P2 剩余项**：杀毒/Defender 诊断、单实例 session 级边界、Web 重试按钮口径、Cluster 幂等 request ID、audit log、legacy 清理等（详见 P1/P2 加固 handoff §5）。
 
 ## 8. 回滚方法
 
-- 本次为审计，无代码/部署变更，回滚不适用。若后续按 P1 实施代码修复：代码 release 回滚到 `20ba6b7`；systemd 恢复 `radar-sim-v1.service.bak-d3de370`；Connector 用官方 installer 降级；数据库无迁移（SQLite 向后兼容）。
+- **代码回滚**：本批 P1/P2 修复可用 `git revert 0a06c01` 回退；全部为新增/可选参数/新字段，默认路径与旧行为一致，无需数据库迁移。审计文档（`785fce4`）可保留或随历史回退。
+- **部署回滚**：systemd 恢复 `radar-sim-v1.service.bak-d3de370`；Connector 用官方 installer 降级；数据库无迁移（SQLite 向后兼容）。
 - 若启用 Bearer 后需回滚：去掉 `--auth-file` 并 `systemctl --user restart radar-sim-v1.service`，回到受信内网模式。
 
 ## 9. 不要重复做的事情
