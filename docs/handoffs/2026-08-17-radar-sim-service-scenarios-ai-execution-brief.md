@@ -766,12 +766,15 @@ build_slot = physical_device/workspace_binding_id/selena_script/output_root
 - 跨 Selena 分支的全量编译策略已在真实 Job attempt=4 上被事件、脚本实际内容和本机策略预演共同证明；
 - 取消后重试的下游 Stage 解锁已被控制面测试和真实 Job 状态证明；
 - 长编译没有被固定总时长提前杀掉，heartbeat、进程和构建日志正在工作。
+- `job_26028465ebeb` 已最终 `succeeded`：10 个 Stage 全部完成，`build_selena/register_artifact/preflight/run_simulation/collect_results/finalize_manifest` 均 succeeded；
+- 本地批量 3/3 输入成功，Manifest `status=succeeded`、`delivery.status=delivered`、`file_count=3`；
+- `result_ref=result:sha256:ea27d6ec3b4d4b1fa5954c95543c8e50e716107e87a96724d3d7936fa337f48e`；结果 ZIP metadata 为 `archive_size=32243932`、`archive_checksum=sha256:b2bb68288826db3fb71cf2402367cb37ebd1fff354b303e5e15e9d537b09fbb7`；实际 HTTP 200 下载文件大小和 SHA-256 与 metadata 一致；
 
 当前不能提前宣称：
 
-- `job_26028465ebeb` 最终仿真成功；
 - 两个认证 owner 的正式多租户安全已通过；
 - 首装/升级/断网/重启/SDK/Cluster/250+ 批量的完整真实链路已全部通过；
-- result.path、Web ZIP、SDK 下载和 partial retry 已在生产环境端到端通过。
+- SDK 独立端到端调用、Windows 本地源到 Cluster 的源到源传输、Cluster existing/build、Agent 全新机器首装/升级/断网恢复和 partial 失败输入重试已通过；
+- result.path 和本次 Web/API ZIP 已验证；SDK 独立下载和 partial retry 仍需单独验收。
 
 后续 AI 的第一优先级是完成本文件第 11 节的审计任务和第 12 节的真实验收，不是继续增加项目专用分支或固定等待时间。
