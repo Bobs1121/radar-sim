@@ -575,6 +575,32 @@ def test_result_from_reclaimed_attempt_is_adopted_before_new_claim(tmp_path):
     assert completed["stages"][0]["attempt_count"] == attempt
 
 
+def test_retry_after_user_cancel_resets_cancelled_dependency_descendants(tmp_path):
+    service = make_service(tmp_path)
+    job = service.create_job(
+        "workflow",
+        tasks=[
+            {"task_type": "local.build", "stage_type": "build"},
+            {"task_type": "local.run", "stage_type": "run", "dependencies": ["build"]},
+            {"task_type": "local.collect", "stage_type": "collect", "dependencies": ["run"]},
+        ],
+    )
+    agent = service.register_agent("runner", agent_id="runner", capabilities=["local.*"])
+    first = service.claim_next_task(agent["agent_id"])
+    service.cancel_job(job["job_id"])
+    service.submit_task_result(
+        first["task_id"],
+        agent_id=agent["agent_id"],
+        attempt=int(first["attempt_count"]),
+        status="cancelled",
+        returncode=130,
+    )
+
+    retried = service.retry_stage(job["job_id"], first["task_id"])
+    statuses = [item["status"] for item in retried["stages"]]
+    assert statuses == ["queued", "queued", "queued"]
+
+
 def test_heartbeat_cannot_claim_another_agent_task_identity(tmp_path):
     service = make_service(tmp_path)
     first_job = service.create_job("local.check")

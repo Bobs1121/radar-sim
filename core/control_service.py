@@ -3724,12 +3724,36 @@ class ControlService:
             """,
             (job_id, stage_id),
         ).fetchall()
-        return [
-            row
-            for row in rows
-            if self._loads(row["error_json"]).get("code") == "UPSTREAM_FAILED"
-            and self._loads(row["error_json"]).get("upstream_stage_id") == stage_id
-        ]
+        # Reset the complete dependency closure, not only stages carrying the
+        # old ``UPSTREAM_FAILED`` marker.  User cancellation intentionally
+        # leaves downstream stages as plain ``cancelled`` rows, and a retry of
+        # the upstream build must make those stages claimable again as well.
+        descendants = {str(stage_id)}
+        result: list[sqlite3.Row] = []
+        pending = list(rows)
+        while pending:
+            progressed = False
+            remaining: list[sqlite3.Row] = []
+            for row in pending:
+                dependencies = self._loads(row["dependencies_json"] or "[]")
+                error = self._loads(row["error_json"] or "{}")
+                is_dependency_descendant = any(
+                    str(item) in descendants for item in dependencies or ()
+                )
+                has_upstream_failure_marker = (
+                    error.get("code") == "UPSTREAM_FAILED"
+                    and str(error.get("upstream_stage_id") or "") in descendants
+                )
+                if is_dependency_descendant or has_upstream_failure_marker:
+                    descendants.add(str(row["task_id"]))
+                    result.append(row)
+                    progressed = True
+                else:
+                    remaining.append(row)
+            if not progressed:
+                break
+            pending = remaining
+        return result
 
     @staticmethod
     def _capability_matches(task_type: str, capabilities: list[str]) -> bool:
