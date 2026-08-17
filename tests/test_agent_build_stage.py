@@ -370,6 +370,47 @@ def test_finish_returns_redacted_evidence_and_detects_change(local_binding, monk
     assert str(local_binding.workspace.resolve()) not in json.dumps(result)
 
 
+def test_finish_labels_fresh_build_not_incremental_reuse(local_binding, monkeypatch):
+    """An empty output root is a fresh build, never an incremental reuse."""
+    prepared = prepare(local_binding, monkeypatch)
+    (local_binding.output / "selena.exe").write_bytes(b"binary")
+    monkeypatch.setattr(
+        build_stage,
+        "capture_source_snapshot",
+        lambda *_args: snapshot(sha="c" * 64),
+    )
+    result = build_stage.finish_selena_build(prepared)
+    policy = result["build_policy"]
+    assert policy["mode"] == "fresh"
+    assert policy["fresh_start"] is True
+    assert policy["incremental_reused"] is False
+    assert policy["full_rebuild_required"] is False
+
+
+def test_finish_marks_incremental_reuse_when_existing_state_matches(local_binding, monkeypatch):
+    """A matching existing build tree is an incremental reuse, not fresh."""
+    prepared = prepare(
+        local_binding,
+        monkeypatch,
+        payload={"actual_branch": "feature/test", "actual_commit": "b" * 40},
+    )
+    # Simulate an existing build that matches the requested branch.
+    prepared = build_stage.PreparedSelenaBuild(
+        **{**prepared.__dict__, "existing_build_detected": True},
+    )
+    (local_binding.output / "selena.exe").write_bytes(b"binary")
+    monkeypatch.setattr(
+        build_stage,
+        "capture_source_snapshot",
+        lambda *_args: snapshot(sha="c" * 64),
+    )
+    result = build_stage.finish_selena_build(prepared)
+    policy = result["build_policy"]
+    assert policy["mode"] == "incremental"
+    assert policy["fresh_start"] is False
+    assert policy["incremental_reused"] is True
+
+
 def test_finish_keeps_nested_branch_evidence_consistent(local_binding, monkeypatch):
     nested = local_binding.workspace / "apl" / "base" / "bindings" / "xpeng"
     nested.mkdir(parents=True)

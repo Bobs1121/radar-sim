@@ -633,6 +633,13 @@ def _run_serve_v1(args) -> int:
                 # One malformed/legacy job must not prevent stale recovery for
                 # unrelated owners or future maintenance passes.
                 continue
+        try:
+            # Result retention is server-owned capacity management.  Reclaim
+            # expired archives in the same maintenance pass so a long-running
+            # deployment does not grow without bound.
+            result_catalog.collect_expired()
+        except Exception:
+            _LOGGER.exception("Result-expiry maintenance pass failed; will retry")
         return reclaimed
 
     maintenance_loop = _MaintenanceLoop(

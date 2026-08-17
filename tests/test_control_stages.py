@@ -773,3 +773,101 @@ def test_startup_normalizes_failed_job_with_contradictory_historical_summary(tmp
     assert reconciled["result"]["manifest"]["result_ref"].endswith("d" * 64)
     final = {stage["stage_type"]: stage for stage in reconciled["stages"]}["finalize_manifest"]
     assert final["result"]["manifest"]["status"] == "failed"
+
+
+def test_reconcile_stage_handoffs_repairs_commit_before_bind_window(tmp_path, monkeypatch):
+    """A result commit without a successor bind must be repaired by reconcile."""
+    import core.stage_binder as stage_binder
+
+    service = make_service(tmp_path)
+    job = service.create_job(
+        "restart-window",
+        tasks=[
+            {"task_type": "resolve", "stage_type": "resolve_spec"},
+            {"task_type": "env", "stage_type": "environment_check", "dependencies": ["resolve_spec"]},
+        ],
+    )
+    service.register_agent("runner", agent_id="runner", capabilities=["*"])
+    first = service.claim_next_task("runner")
+    service.submit_task_result(first["stage_id"], agent_id="runner", returncode=0)
+
+    # submit_task_result commits the Stage but a bind/restart gap must be
+    # repaired by the durable reconcile pass, not lost silently.
+    calls: list[str] = []
+    released: list[dict] = []
+
+    def fake_advance(control, completed_stage):
+        calls.append(str(completed_stage.get("stage_type") or ""))
+        released.append(dict(completed_stage))
+        return None
+
+    monkeypatch.setattr(stage_binder, "advance_after_stage_result", fake_advance)
+
+    service.reconcile_stage_handoffs(job["job_id"])
+    # The binder was invoked for the succeeded resolve_spec Stage with a
+    # still-queued successor.
+    assert calls == ["resolve_spec"]
+    assert len(released) == 1
+    assert released[0]["status"] == "succeeded"
+
+    # Reconcile is safe to re-run: invoking the binder again for the same
+    # succeeded Stage is the normal poll-time retry, never a duplicate run.
+    service.reconcile_stage_handoffs(job["job_id"])
+    assert calls == ["resolve_spec", "resolve_spec"]
+
+
+def test_cancel_does_not_override_a_genuine_success_that_lands_after_cancel(tmp_path):
+    """A success callback that races a cancel keeps the completed result."""
+    service = make_service(tmp_path)
+    job = service.create_job(
+        "cancel-race",
+        tasks=[
+            {"task_type": "run", "stage_type": "run_simulation"},
+            {"task_type": "collect", "stage_type": "collect_results", "dependencies": ["run_simulation"]},
+        ],
+    )
+    service.register_agent("runner", agent_id="runner", capabilities=["*"])
+    claimed = service.claim_next_task("runner")
+
+    cancelled = service.cancel_job(job["job_id"])
+    assert cancelled["status"] == "cancel_requested"
+    assert cancelled["stages"][0]["cancel_requested"] is True
+
+    # The Agent already completed the run before observing the cancel; the
+    # success result must be preserved, not converted into a framework failure.
+    submitted = service.submit_task_result(
+        claimed["stage_id"],
+        agent_id="runner",
+        status="succeeded",
+        returncode=0,
+        result={"message": "run finished"},
+    )
+    assert submitted["stages"][0]["status"] == "succeeded"
+    # The successor was not launched; the Job reflects the user cancel.
+    assert submitted["stages"][1]["status"] == "cancelled"
+    assert submitted["status"] == "cancelled"
+
+
+def test_cancel_turns_a_failed_result_into_cancelled_not_failure(tmp_path):
+    """A late failure after cancel is a user cancel, not a framework failure."""
+    service = make_service(tmp_path)
+    job = service.create_job(
+        "cancel-race-fail",
+        tasks=[
+            {"task_type": "run", "stage_type": "run_simulation"},
+            {"task_type": "collect", "stage_type": "collect_results", "dependencies": ["run_simulation"]},
+        ],
+    )
+    service.register_agent("runner", agent_id="runner", capabilities=["*"])
+    claimed = service.claim_next_task("runner")
+    service.cancel_job(job["job_id"])
+
+    submitted = service.submit_task_result(
+        claimed["stage_id"],
+        agent_id="runner",
+        status="failed",
+        returncode=1,
+        result={"message": "stopped during cancel"},
+    )
+    assert submitted["stages"][0]["status"] == "cancelled"
+    assert submitted["status"] == "cancelled"

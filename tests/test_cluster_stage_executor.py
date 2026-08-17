@@ -746,6 +746,63 @@ def test_failed_cluster_result_publishes_downloadable_diagnostics(tmp_path: Path
         }
 
 
+def test_cluster_collect_passes_retain_until_from_spec(tmp_path: Path, monkeypatch):
+    private_job = tmp_path / "private-job"
+    output_dir = private_job / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "result.ini").write_text("successfull=1\n", encoding="utf-8")
+    (output_dir / "out.MF4").write_bytes(b"mf4")
+
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="ovrs25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/ovrs25/runtime-bundle.zip",
+        profile="default", job_dir=str(private_job),
+        config_path="//cluster/job/Config.cfg", output_location=str(output_dir),
+    )
+    store.mark_submitted(run.ref, owner="alice", external_job_id="7", submit_mode="xmlrpc")
+    captured: dict = {}
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {"timeout_min": 1}},
+        now_fn=lambda: 10.0,
+        result_catalog=SimpleNamespace(
+            publish=lambda **kwargs: captured.update(kwargs)
+            or SimpleNamespace(ref="result:sha256:" + "a" * 64)
+        ),
+    )
+    monkeypatch.setattr(
+        "core.cluster.get_cluster_web_status",
+        lambda *_args, **_kwargs: {
+            "found": True,
+            "tasks": [{"simulation_state": "finished"}],
+        },
+    )
+    inspected = {
+        "state": "finished", "file_count": 2,
+        "success_count": 1, "fail_count": 0,
+        "files": [
+            {"relative_path": "output/result.ini"},
+            {"relative_path": "output/out.MF4"},
+        ],
+        "output_mf4": [{"relative_path": "output/out.MF4", "size": 3}],
+        "result_files": [{"relative_path": "output/result.ini"}],
+        "logs": [],
+    }
+    monkeypatch.setattr("core.cluster.inspect_cluster_job", lambda *_args, **_kwargs: inspected)
+
+    job = _job()
+    job["spec"] = {"simulation": {"timeout_minutes": 1}, "result": {"retain_days": 7}}
+    execute_cluster_collect(
+        context, job, run.ref, cancelled=lambda: False, sleep_fn=lambda _seconds: None
+    )
+
+    # Cluster results now honor the same retention policy as Windows-local runs.
+    assert captured["retain_until"] == pytest.approx(time.time() + 7 * 86400, abs=10.0)
+
+
 def test_collect_queries_by_generated_job_directory_and_waits_for_every_dataset_file(
     tmp_path: Path, monkeypatch
 ):

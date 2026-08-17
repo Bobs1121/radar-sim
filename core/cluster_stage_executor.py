@@ -1369,11 +1369,13 @@ def execute_cluster_collect(
         # contains result.ini/log/partial output so users can diagnose the
         # failure without exposing the private Cluster workspace.  If a source
         # file changes while archiving, the Stage remains retryable.
+        retain_days = int(((job.get("spec") or {}).get("result") or {}).get("retain_days") or 30)
         published = context.result_catalog.publish(
             owner=owner,
             run_ref=run_ref,
             source_root=lease.job_dir,
             files=[item for item in files if item],
+            retain_until=time.time() + max(1, retain_days) * 86400,
         )
         public_result_ref = published.ref
     result = context.run_store.finalize_result(

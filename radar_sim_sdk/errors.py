@@ -13,6 +13,21 @@ class RadarSimTransportError(RadarSimError):
     """Raised for HTTP transport/timeouts before a valid API response exists."""
 
 
+class RadarSimIntegrityError(RadarSimError):
+    """Raised when downloaded content fails its advertised checksum.
+
+    The error carries the stable machine-readable ``code`` and the affected
+    resource reference so automation can decide how to retry without parsing
+    human text.
+    """
+
+    def __init__(self, code: str, message: str, *, resource: str = "") -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+        self.resource = resource
+
+
 class RadarSimApiError(RadarSimError):
     """Raised for `/api/v1` error envelopes."""
 

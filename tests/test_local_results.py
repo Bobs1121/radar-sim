@@ -166,3 +166,52 @@ def test_publish_rejects_source_identity_change_during_single_pass_archive(
             owner="alice", run_ref="local-run:race", source_root=source,
             files=["summary.json"],
         )
+
+
+def test_collect_expired_removes_only_expired_rows_and_shared_files(tmp_path: Path) -> None:
+    catalog, allowed = _catalog(tmp_path, now=100)
+    source = _result_tree(allowed)
+    shared = catalog.publish(
+        owner="alice", run_ref="local-run:shared", source_root=source,
+        files=["summary.json"], retain_until=0,
+    )
+    expiring = catalog.publish(
+        owner="alice", run_ref="local-run:expiring", source_root=source,
+        files=["nested/output.mf4"], retain_until=150,
+    )
+    future = catalog.publish(
+        owner="alice", run_ref="local-run:future", source_root=source,
+        files=["summary.json"], retain_until=1000,
+    )
+
+    assert catalog.collect_expired(now=200) == 1
+    # Never-expire rows and future rows are preserved.
+    remaining = set(catalog.list(owner="alice", now=200, include_expired=True))
+    assert remaining == {future, shared}
+    # The expiring archive file is actually removed from disk.
+    assert not list(
+        (tmp_path / "private-store" / "content").rglob(
+            expiring.archive_checksum.removeprefix("sha256:") + ".zip"
+        )
+    )
+    # A second pass is a no-op.
+    assert catalog.collect_expired(now=200) == 0
+
+
+def test_watermark_blocks_publish_below_free_space(tmp_path: Path, monkeypatch) -> None:
+    allowed = tmp_path / "controlled"
+    allowed.mkdir()
+    catalog = ResultCatalog(
+        tmp_path / "private-store",
+        tmp_path / "catalog.db",
+        allowed_source_root=allowed,
+        min_free_bytes=10_000_000,
+    )
+    source = _result_tree(allowed)
+    monkeypatch.setattr(
+        local_results.shutil,
+        "disk_usage",
+        lambda _path: type("Usage", (), {"free": 1_000, "used": 0, "total": 1_000_000})(),
+    )
+    with pytest.raises(ResultCatalogError, match="free-space watermark"):
+        catalog.publish(owner="alice", run_ref="local-run:one", source_root=source, files=["summary.json"])

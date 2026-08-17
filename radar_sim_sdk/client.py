@@ -28,7 +28,11 @@ from core.transfer_service import TransferProgress
 from core.user_config import UserRunConfig
 from core.datasets import classify_data_path
 from core.user import USER_HEADER, stable_user_identity
-from radar_sim_sdk.errors import RadarSimApiError, RadarSimTransportError
+from radar_sim_sdk.errors import (
+    RadarSimApiError,
+    RadarSimIntegrityError,
+    RadarSimTransportError,
+)
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
 from radar_sim_sdk.models import (
     ArtifactUpload,
@@ -747,9 +751,14 @@ class RadarSimClient:
         cursor: int = 0,
         timeout: float = 60.0,
         poll_interval: float = 1.0,
+        backoff_factor: float = 0.0,
+        max_poll_interval: float = 30.0,
     ) -> Iterator[Event]:
         deadline = time.monotonic() + float(timeout)
         next_cursor = int(cursor or 0)
+        factor = max(0.0, float(backoff_factor or 0.0))
+        cap = max(float(poll_interval), float(max_poll_interval))
+        consecutive_transport_errors = 0
         while True:
             if time.monotonic() > deadline:
                 raise TimeoutError(f"watch timed out after {timeout} seconds")
@@ -768,11 +777,16 @@ class RadarSimClient:
                 had_transport_error = True
                 page = None
             if had_transport_error and page is None:
-                sleep_for = min(float(poll_interval), max(deadline - time.monotonic(), 0.0))
+                consecutive_transport_errors += 1
+                sleep_for = self._next_poll_delay(
+                    float(poll_interval), cap, factor, consecutive_transport_errors,
+                    deadline,
+                )
                 if sleep_for <= 0:
                     raise TimeoutError(f"watch timed out after {timeout} seconds")
                 time.sleep(sleep_for)
                 continue
+            consecutive_transport_errors = 0
             if page is None:
                 continue
             for event in page.events:
@@ -787,18 +801,68 @@ class RadarSimClient:
                 raise TimeoutError(f"watch timed out after {timeout} seconds")
             time.sleep(sleep_for)
 
+    @staticmethod
+    def _next_poll_delay(
+        poll_interval: float,
+        cap: float,
+        factor: float,
+        consecutive_errors: int,
+        deadline: float,
+    ) -> float:
+        if factor <= 0:
+            delay = poll_interval
+        else:
+            delay = poll_interval * (factor ** max(0, consecutive_errors - 1))
+        delay = min(delay, cap)
+        return min(delay, max(deadline - time.monotonic(), 0.0))
+
     def wait(
         self,
         job_id: str,
         *,
         timeout: float = 600.0,
         poll_interval: float = 1.0,
+        backoff_factor: float = 0.0,
+        max_poll_interval: float = 30.0,
         on_event: Callable[[Event], None] | None = None,
     ) -> Job:
-        for event in self.watch(job_id, timeout=timeout, poll_interval=poll_interval):
+        for event in self.watch(
+            job_id,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            backoff_factor=backoff_factor,
+            max_poll_interval=max_poll_interval,
+        ):
             if on_event is not None:
                 on_event(event)
         return self.get_job(job_id)
+
+    def wait_job(
+        self,
+        job_id: str,
+        *,
+        timeout: float = 600.0,
+        poll_interval: float = 1.0,
+        backoff_factor: float = 0.0,
+        max_poll_interval: float = 30.0,
+        on_event: Callable[[Event], None] | None = None,
+    ) -> Job:
+        """Wait adaptively for a Job to reach a terminal state.
+
+        This is the documented entry point for ``wait``; it prefers the event
+        stream, falls back to cursor polling, and never applies a fixed total
+        simulation duration.  ``backoff_factor > 1`` grows the poll delay on
+        repeated transport errors so a briefly unreachable control plane does
+        not hammer the server.
+        """
+        return self.wait(
+            job_id,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            backoff_factor=backoff_factor,
+            max_poll_interval=max_poll_interval,
+            on_event=on_event,
+        )
 
     def cancel(self, job_id: str) -> Job:
         return Job.from_dict(self._request("POST", f"/api/v1/jobs/{_quote_path_token(job_id)}/cancel"))
@@ -920,7 +984,11 @@ class RadarSimClient:
                 raise RadarSimTransportError(str(exc)) from exc
             checksum = "sha256:" + digest.hexdigest()
             if checksum != str(metadata.get("archive_checksum") or ""):
-                raise ValueError("downloaded result checksum does not match catalog")
+                raise RadarSimIntegrityError(
+                    "result_checksum_mismatch",
+                    "downloaded result checksum does not match catalog",
+                    resource=result_ref,
+                )
             temporary.replace(target)
             return target
         finally:

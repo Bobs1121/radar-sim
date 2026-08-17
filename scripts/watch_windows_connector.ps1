@@ -41,7 +41,27 @@ function Find-ConnectorSupervisor {
 }
 
 function Repair-ConnectorControlFiles {
-    if (-not (Test-Path -LiteralPath $ConfigPath) -and (Test-Path -LiteralPath $RecoveryConfigPath)) {
+    if (Test-Path -LiteralPath $ConfigPath) {
+        # A truncated or partially written install.json is as unusable as a
+        # missing one.  Validate it and fall back to the restricted backup so
+        # a corrupt metadata file does not strand a healthy connector.
+        try {
+            $null = Get-Content -Raw -Encoding UTF8 $ConfigPath | ConvertFrom-Json
+        } catch {
+            if (Test-Path -LiteralPath $RecoveryConfigPath) {
+                try {
+                    $repairTemp = "$ConfigPath.repairing"
+                    Copy-Item -LiteralPath $RecoveryConfigPath -Destination $repairTemp -Force
+                    Move-Item -LiteralPath $repairTemp -Destination $ConfigPath -Force
+                    Write-WatchdogLog "Recovered corrupt install metadata from the restricted backup."
+                } catch {
+                    Write-WatchdogLog ("Corrupt install metadata recovery failed: " + $_.Exception.Message)
+                }
+            } else {
+                Write-WatchdogLog "Connector install metadata is corrupt and no recovery copy exists."
+            }
+        }
+    } elseif (Test-Path -LiteralPath $RecoveryConfigPath) {
         try {
             $repairTemp = "$ConfigPath.repairing"
             Copy-Item -LiteralPath $RecoveryConfigPath -Destination $repairTemp -Force

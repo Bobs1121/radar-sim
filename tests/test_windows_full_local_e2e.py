@@ -131,6 +131,60 @@ def test_partial_local_result_collects_and_finalizes_input_results(tmp_path, mon
     assert manifest["diagnostics"]["engine_log_tail"] == ["one runnable failed"]
     assert manifest["delivery"] == collected["delivery"]
     assert str(tmp_path) not in json.dumps(manifest)
+
+
+def test_result_path_unwritable_keeps_server_zip_and_reports_stable_delivery_failure(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("RSIM_HOME", str(tmp_path / "home"))
+    run_root = tmp_path / "home" / "agent" / "runs" / "delivery-fail"
+    output = run_root / "outputs" / "out.MF4"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"result")
+    local_result = {
+        "status": "succeeded",
+        "files": [{"relative_path": "outputs/out.MF4"}],
+        "summary": {"file_count": 1, "error_count": 0},
+    }
+
+    class FakeStore:
+        runs_root = tmp_path
+
+        def get_private(self, _lease_ref):
+            return {"run_root": Path(run_root)}
+
+        def result(self, _lease_ref):
+            return dict(local_result)
+
+    monkeypatch.setattr("core.agent_local_run.AgentLocalRunLeaseStore", FakeStore)
+    # result.path points at an existing file: local delivery must fail closed
+    # without losing the immutable server-side ZIP.
+    blocked = tmp_path / "blocked-as-file"
+    blocked.write_text("not a directory", encoding="utf-8")
+    payload = {
+        "local_run_lease_ref": "local-run-lease:sha256:" + "1" * 64,
+        "owner": "alice",
+        "job_id": "job-delivery-fail",
+        "runtime_bundle_id": "selena-bundle:sha256:" + "2" * 64,
+        "dataset_id": "dataset:sha256:" + "3" * 64,
+        "retain_days": 1,
+        "result_path": str(blocked),
+    }
+
+    collected = _execute_v5_local_collect({"payload": payload})
+
+    # The catalog ZIP is still published and the delivery reports a stable
+    # path-free failure instead of aborting the whole collection.
+    assert collected["result_ref"].startswith("result:sha256:")
+    assert collected["delivery"]["status"] == "failed"
+    assert collected["delivery"]["code"] in {"result_destination_invalid", "result_destination_conflict", "result_delivery_failed"}
+
+    payload["result_ref"] = collected["result_ref"]
+    payload["delivery"] = collected["delivery"]
+    finalized = _execute_v5_local_finalize({"payload": payload})
+    assert finalized["manifest"]["status"] == "succeeded"
+    assert finalized["manifest"]["delivery"]["status"] == "failed"
+    assert str(tmp_path) not in json.dumps(finalized["manifest"])
 from core.agent_asset_bindings import AgentAssetBindingStore
 from core.agent_data_bindings import AgentDataBindingStore
 from core.agent_data_lease import AgentDataLeaseStore

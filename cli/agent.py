@@ -787,7 +787,11 @@ def _run_task(
         build_policy_mode = (
             "full"
             if bool(getattr(prepared_build, "full_rebuild_required", False))
-            else "incremental"
+            else (
+                "fresh"
+                if not bool(getattr(prepared_build, "existing_build_detected", False))
+                else "incremental"
+            )
         )
         build_policy_reason = str(
             getattr(prepared_build, "full_rebuild_reason", "") or "default_incremental"

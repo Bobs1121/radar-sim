@@ -16,15 +16,39 @@ if (-not $InstallRoot) {
 $configPath = Join-Path $InstallRoot "install.json"
 $recoveryConfigPath = Join-Path $InstallRoot "data\install.backup.json"
 $secretsPath = Join-Path $InstallRoot "credentials.json"
-if (-not (Test-Path -LiteralPath $configPath) -and (Test-Path -LiteralPath $recoveryConfigPath)) {
+
+function Restore-ConnectorConfig([string]$Why) {
     $repairTemp = "$configPath.repairing"
     Copy-Item -LiteralPath $recoveryConfigPath -Destination $repairTemp -Force
     Move-Item -LiteralPath $repairTemp -Destination $configPath -Force
+    Write-Warning "Connector install metadata was $Why; restored from the recovery copy."
+}
+
+function Read-ConnectorConfig {
+    $config = Get-Content -Raw -Encoding UTF8 $configPath | ConvertFrom-Json
+    if (-not $config -or -not $config.data_root -or -not $config.owner) {
+        throw "Connector install metadata is incomplete."
+    }
+    return $config
+}
+
+if (-not (Test-Path -LiteralPath $configPath) -and (Test-Path -LiteralPath $recoveryConfigPath)) {
+    Restore-ConnectorConfig -Why "missing"
 }
 if (-not (Test-Path $configPath)) {
     throw "The Connector install metadata is missing and no recovery copy exists. Reconnect this PC from Web."
 }
-$config = Get-Content -Raw -Encoding UTF8 $configPath | ConvertFrom-Json
+$config = $null
+try {
+    $config = Read-ConnectorConfig
+} catch {
+    if (Test-Path -LiteralPath $recoveryConfigPath) {
+        Restore-ConnectorConfig -Why "corrupt or incomplete"
+        $config = Read-ConnectorConfig
+    } else {
+        throw "The Connector install metadata is corrupt and no recovery copy exists. Reconnect this PC from Web."
+    }
+}
 if (-not (Test-Path -LiteralPath $recoveryConfigPath)) {
     $recoveryParent = Split-Path -Parent $recoveryConfigPath
     New-Item -ItemType Directory -Force -Path $recoveryParent | Out-Null

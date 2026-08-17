@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -25,6 +26,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping
 
 from core.user import normalize_user
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ResultCatalogError(ValueError):
@@ -138,6 +141,7 @@ class ResultCatalog:
         *,
         allowed_source_root: str | Path | Iterable[str | Path],
         now_fn: Callable[[], float] = time.time,
+        min_free_bytes: int = 0,
     ) -> None:
         self._storage_root = _prepare_root(storage_root, "result storage root")
         raw_roots = (
@@ -153,6 +157,7 @@ class ResultCatalog:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._now_fn = now_fn
+        self._min_free_bytes = max(0, int(min_free_bytes or 0))
         self._lock = threading.RLock()
         with self._connect() as conn:
             conn.executescript(
@@ -202,6 +207,7 @@ class ResultCatalog:
         retention = float(retain_until)
         if not math.isfinite(retention) or retention < 0:
             raise ResultCatalogError("result retention is invalid")
+        self._check_watermark()
         source = _authorized_source_root(self._allowed_source_roots, source_root)
         relatives = _validate_file_set(files)
 
@@ -290,6 +296,7 @@ class ResultCatalog:
         retention = float(retain_until)
         if not math.isfinite(retention) or retention < 0:
             raise ResultCatalogError("result retention is invalid")
+        self._check_watermark()
 
         source = Path(archive_path).expanduser()
         _ensure_contained(self._storage_root, source)
@@ -368,6 +375,83 @@ class ResultCatalog:
         _ensure_contained(self._storage_root, archive)
         _verify_archive_file(archive, result.archive_checksum, result.archive_size)
         return archive
+
+    def collect_expired(self, *, now: float | None = None) -> int:
+        """Remove expired result archives and their database rows.
+
+        Only results with an explicit ``retain_until`` in the past are
+        reclaimed; ``retain_until=0`` (never expire) rows are preserved.
+        The same archive file is content-addressed and shared by every result
+        that references it, so deletion is reference-counted: a file is only
+        removed after the last owning row has expired.  This is a server-owned
+        maintenance operation and intentionally safe to call repeatedly.
+        """
+        current = float(self._now_fn() if now is None else now)
+        if not math.isfinite(current) or current < 0:
+            raise ResultCatalogError("result access time is invalid")
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT result_ref, archive_location FROM local_results
+                    WHERE retain_until > 0 AND retain_until < ?
+                    """,
+                    (current,),
+                ).fetchall()
+                if not rows:
+                    return 0
+                expired_refs = {str(row["result_ref"]) for row in rows}
+                archive_locations = [str(row["archive_location"]) for row in rows]
+                placeholders = ",".join("?" for _ in expired_refs)
+                remaining = conn.execute(
+                    f"SELECT archive_location FROM local_results WHERE result_ref NOT IN ({placeholders})",
+                    tuple(expired_refs),
+                ).fetchall()
+                still_referenced = {str(row["archive_location"]) for row in remaining}
+                conn.execute(
+                    f"DELETE FROM local_results WHERE result_ref IN ({placeholders})",
+                    tuple(expired_refs),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        removed_files = 0
+        for location in set(archive_locations):
+            if location in still_referenced:
+                continue
+            archive = Path(location)
+            _ensure_contained(self._storage_root, archive)
+            try:
+                archive.unlink(missing_ok=True)
+                removed_files += 1
+            except OSError as exc:
+                _LOGGER.warning("Result GC could not remove expired archive %s: %s", archive, exc)
+        if removed_files or len(expired_refs):
+            _LOGGER.info(
+                "Result GC reclaimed %d expired result(s) and %d archive file(s)",
+                len(expired_refs),
+                removed_files,
+            )
+        return len(expired_refs)
+
+    def _check_watermark(self) -> None:
+        """Fail-closed when result storage free space is below the watermark."""
+        minimum = self._min_free_bytes
+        if minimum <= 0:
+            return
+        try:
+            usage = shutil.disk_usage(str(self._storage_root))
+        except OSError as exc:
+            _LOGGER.warning("Result storage watermark check failed: %s", exc)
+            raise ResultCatalogError("result storage is unavailable") from exc
+        if usage.free < minimum:
+            _LOGGER.warning(
+                "Result storage free space %d bytes is below watermark %d bytes",
+                usage.free,
+                minimum,
+            )
+            raise ResultCatalogError("result storage is below its free-space watermark")
 
     def _register(self, result: ResultRef, *, owner: str, archive: Path) -> None:
         files_json = _files_json(result.files)

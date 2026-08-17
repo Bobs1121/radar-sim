@@ -684,6 +684,32 @@ def test_sdk_lists_gets_and_downloads_owner_scoped_local_result(tmp_path):
     assert excinfo.value.status_code == 404
 
 
+def test_sdk_download_result_rejects_checksum_mismatch_with_stable_error(tmp_path):
+    digest = "0" * 64
+    result_ref = "result:sha256:" + digest
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == f"/api/v1/results/{result_ref}":
+            return httpx.Response(200, json={"archive_checksum": "sha256:" + "f" * 64})
+        if request.url.path == f"/api/v1/results/{result_ref}/download":
+            return httpx.Response(200, content=b"tampered")
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    from radar_sim_sdk.errors import RadarSimIntegrityError
+
+    sdk = RadarSimClient(
+        "http://testserver", transport=httpx.MockTransport(handler), user="alice"
+    )
+    target = tmp_path / "downloads"
+    with pytest.raises(RadarSimIntegrityError) as excinfo:
+        sdk.download_result(result_ref, target)
+    assert excinfo.value.code == "result_checksum_mismatch"
+    assert excinfo.value.resource == result_ref
+    # The corrupted stream must not leave a usable destination file behind.
+    assert not target.exists()
+    assert not list(target.parent.glob("*.part.*"))
+
+
 def test_sdk_download_job_result_follows_manifest_and_explicit_zip_destination(tmp_path):
     archive = b"result-zip"
     checksum = "sha256:" + hashlib.sha256(archive).hexdigest()
@@ -870,6 +896,51 @@ def test_sdk_stream_events_watch_wait_cancel_and_manifest(tmp_path):
     manifest = sdk.manifest(job.id)
     assert manifest.available is False
     assert manifest.manifest is None
+
+
+def test_sdk_wait_job_is_the_documented_adaptive_wait_entry_point(tmp_path):
+    sdk, services = make_sdk(tmp_path)
+    job = sdk.submit_run(run_config_dict())
+    services["user-alice"].cancel_job(job.id)
+
+    terminal = sdk.wait_job(job.id, timeout=2.0, poll_interval=0.01)
+    assert terminal.status == "cancelled"
+
+
+def test_sdk_watch_backoff_grows_delay_on_repeated_transport_errors(monkeypatch):
+    from radar_sim_sdk.client import RadarSimClient
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        transport=httpx.MockTransport(
+            lambda _request: (_ for _ in ()).throw(httpx.ConnectError("down"))
+        ),
+        user="alice",
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdk.watch.__globals__["time"], "sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(TimeoutError):
+        list(sdk.watch("job-x", timeout=0.2, poll_interval=0.01, backoff_factor=2.0, max_poll_interval=0.08))
+
+    # Backoff grows the transport-error delay across repeated failures.
+    assert len(sleeps) >= 2
+    assert sleeps[-1] > sleeps[0]
+
+
+def test_sdk_watch_backoff_delay_is_bounded_by_max_poll_interval():
+    from radar_sim_sdk.client import RadarSimClient
+
+    delay = RadarSimClient._next_poll_delay(
+        poll_interval=1.0, cap=8.0, factor=2.0, consecutive_errors=10, deadline=float("inf")
+    )
+    # 1.0 * 2**9 = 512, capped at 8.0.
+    assert delay == 8.0
+    no_backoff = RadarSimClient._next_poll_delay(
+        poll_interval=1.0, cap=8.0, factor=0.0, consecutive_errors=10, deadline=float("inf")
+    )
+    # Default backoff_factor=0 keeps the original fixed poll interval.
+    assert no_backoff == 1.0
 
 
 def test_sdk_structured_event_fields_and_retry_stage(tmp_path):

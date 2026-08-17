@@ -116,6 +116,8 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "Repair-ConnectorControlFiles" in watchdog
     assert "Recovered deleted install metadata" in watchdog
     assert "Recovered deleted or stale supervisor PID metadata" in watchdog
+    assert "Recovered corrupt install metadata" in watchdog
+    assert "Corrupt install metadata recovery failed" in watchdog
     assert "Start-ScheduledTask -TaskName $ConnectorTaskName" in watchdog
     assert "watchdog.log" in watchdog
     hidden_launcher = (ROOT / "scripts" / "run_hidden.vbs").read_text(encoding="utf-8")
@@ -249,6 +251,49 @@ def test_connector_start_restores_deleted_install_metadata_from_backup(tmp_path:
     assert completed.returncode != 0  # the fixture intentionally has no venv
     restored = json.loads((install_root / "install.json").read_text(encoding="utf-8-sig"))
     assert restored["agent_id"] == "agent-recovery-test"
+
+
+def test_connector_start_restores_corrupt_install_metadata_from_backup(tmp_path: Path):
+    if sys.platform != "win32":
+        pytest.skip("Connector recovery is a Windows-only behavior")
+    install_root = tmp_path / "radar-sim"
+    data_root = install_root / "data"
+    scripts_root = install_root / "app" / "scripts"
+    data_root.mkdir(parents=True)
+    scripts_root.mkdir(parents=True)
+    starter = ROOT / "scripts" / "start_windows.ps1"
+    installed_starter = scripts_root / "start_windows.ps1"
+    installed_starter.write_bytes(starter.read_bytes())
+    recovery = data_root / "install.backup.json"
+    recovery.write_text(
+        json.dumps({
+            "mode": "unified",
+            "control_plane": "linux",
+            "server_url": "http://127.0.0.1:1",
+            "agent_id": "agent-corrupt-recovery-test",
+            "owner": "user-recovery-test",
+            "data_root": str(data_root),
+        }),
+        encoding="utf-8",
+    )
+    # Truncated/invalid install metadata must not strand the connector.
+    (install_root / "install.json").write_text("{broken-json", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(installed_starter), "-InstallRoot", str(install_root),
+            "-NoBrowser",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode != 0  # the fixture intentionally has no venv
+    restored = json.loads((install_root / "install.json").read_text(encoding="utf-8-sig"))
+    assert restored["agent_id"] == "agent-corrupt-recovery-test"
 
 
 def test_windows_connector_bundle_contains_hidden_launcher(tmp_path: Path):

@@ -3,7 +3,12 @@
 from core.user_config import UserResultConfig, UserRunConfig
 
 from radar_sim_sdk.client import RadarSimClient
-from radar_sim_sdk.errors import RadarSimApiError, RadarSimError, RadarSimTransportError
+from radar_sim_sdk.errors import (
+    RadarSimApiError,
+    RadarSimError,
+    RadarSimIntegrityError,
+    RadarSimTransportError,
+)
 from radar_sim_sdk.models import (
     ArtifactUpload,
     ArtifactUploadResult,
@@ -28,6 +33,7 @@ __all__ = [
     "RadarSimApiError",
     "RadarSimClient",
     "RadarSimError",
+    "RadarSimIntegrityError",
     "RadarSimTransportError",
     "UserResultConfig",
     "UserRunConfig",

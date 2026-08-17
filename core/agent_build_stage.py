@@ -102,6 +102,7 @@ class PreparedSelenaBuild:
     full_rebuild_reason: str = ""
     requested_build_branch: str = ""
     previous_build_branch: str = ""
+    existing_build_detected: bool = False
 
     def __post_init__(self) -> None:
         _validate_project(self.project)
@@ -119,6 +120,8 @@ class PreparedSelenaBuild:
             raise AgentBuildStageError("build script checksum is invalid")
         if not isinstance(self.full_rebuild_required, bool):
             raise AgentBuildStageError("full_rebuild_required must be true or false")
+        if not isinstance(self.existing_build_detected, bool):
+            raise AgentBuildStageError("existing_build_detected must be true or false")
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +358,20 @@ def _uninspected_workspace_evidence() -> WorkspaceFingerprint:
         unstaged_diff_bytes=0,
         untracked=(),
     )
+
+
+def _build_policy_mode_label(prepared: PreparedSelenaBuild) -> str:
+    """Return the build-policy mode without hiding the fresh-build origin.
+
+    A build that starts from an empty/untracked output root is not an
+    incremental reuse of anything: label it ``fresh`` and record the fact
+    instead of advertising it as a default-incremental build.
+    """
+    if prepared.full_rebuild_required:
+        return "full"
+    if not prepared.existing_build_detected:
+        return "fresh"
+    return "incremental"
 
 
 def _resolve_artifact_path(exe_path: str, authorized: AuthorizedRoots) -> Path:
@@ -864,6 +881,7 @@ def prepare_selena_build(
     full_rebuild_reason = str(branch_policy.get("full_rebuild_reason") or "")
     requested_build_branch = str(branch_policy.get("requested_build_branch") or "")
     previous_build_branch = str(branch_policy.get("previous_build_branch") or "")
+    existing_build_detected = bool(branch_policy.get("existing_build_detected"))
     if full_rebuild_required:
         clean = True
 
@@ -962,6 +980,7 @@ def prepare_selena_build(
         full_rebuild_reason=full_rebuild_reason,
         requested_build_branch=requested_build_branch,
         previous_build_branch=previous_build_branch,
+        existing_build_detected=existing_build_detected,
     )
 
 
@@ -1071,11 +1090,15 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
         "workspace_binding_id": prepared.binding_id,
         "build_mode": prepared.build_mode,
         "build_policy": {
-            "mode": "full" if prepared.full_rebuild_required else "incremental",
+            "mode": _build_policy_mode_label(prepared),
             "full_rebuild_required": prepared.full_rebuild_required,
             "reason": prepared.full_rebuild_reason,
             "requested_branch": prepared.requested_build_branch,
             "previous_branch": prepared.previous_build_branch,
+            "fresh_start": not prepared.existing_build_detected,
+            "incremental_reused": (
+                not prepared.full_rebuild_required and prepared.existing_build_detected
+            ),
         },
         "before": before_public,
         "after": after_public,
