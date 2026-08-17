@@ -17,6 +17,7 @@
 - 维护线程同时负责 stale recovery 和持久化 Stage handoff 重放；
 - Cluster 批量结果不再只保留前 50 个 `result.ini`，结果匹配从线性扫描改为路径索引；
 - Selena 编译会校验已有 Runtime Bundle 的 branch/build-mode/entrypoint checksum provenance；跨分支、无 provenance 或旧 exe 被替换时强制全量编译；
+- 已修复一次真实漏检：旧实现只在授权 output root 中递归检查前 512 个条目，深层配置目录中的 `selena.exe` 可能被漏掉，导致跨分支错误走增量；现在先判断授权 output root 是否存在任何既有构建状态，再进行 provenance 决策；
 - 缺少 direct-transfer 部署根时，在提交前阻断，不等到编译完成或数据复制开始后才失败；
 - 本地执行拒绝 `dataset://`、`shared://` 和 Linux-only 路径，真实 UNC 路径仍可以在 Windows Agent 上建立绑定；
 - 结果归档从 Agent/上传存储复制到中央 catalog 时使用原子发布，避免进程崩溃留下损坏的 canonical ZIP。
@@ -146,6 +147,8 @@ resolve_spec
 - 编译 workspace 单飞锁，等待第二个 Job，而不是并发覆盖 build tree；
 - 已有 `selena.exe` 只有在同一 workspace、同一 Selena branch、同一 build mode 且 exe checksum 与最近 Runtime Bundle provenance 一致时才允许增量；
 - 发现新 Selena branch 时自动恢复并执行脚本 clean 命令；如果脚本没有可识别 clean 语义，直接阻断，不能把增量编译伪装成全量编译；
+- `output_root` 非空但入口文件不在默认位置时，也不能绕过 provenance；没有历史 provenance 时 fail-closed，需要全量/人工修复；
+- Agent 每次 build 记录 `Selena build policy: full/incremental (reason)`，验收不再依赖脚本里类似 `echo Cleaning` 的提示文本；
 - build 默认 `timeout=0`，正数 timeout 只能来自明确运维策略；
 - 脚本派生依赖只修改子进程环境，不污染机器全局环境。
 
@@ -331,9 +334,19 @@ owner 是业务身份，device/Agent 是执行身份，workspace/data/runtime/re
 - `core/cluster.py`：Cluster submission handshake timeout 和完整 task result 保留；
 - `core/control_service.py`：reclaimed attempt 终态 callback 接管、transfer terminal 幂等；
 - `core/agent_build_stage.py`、`core/agent_runtime_bundle_lease.py`、`core/agent_policy.py`：Selena branch provenance 全量编译门禁和 Connector contract v15；
+- `cli/agent.py`、`core/agent_build_stage.py`：对授权 output root 的既有构建状态做保守检测，并输出结构化 build policy 事件；修复 commit `d3de370`；
 - `core/api_v1.py`：local 逻辑资源拒绝、direct-transfer 前置阻断、批量 resolved snapshot 压缩；
 - `cli/agent.py`：真实 UNC 数据绑定；
 - `cli/server.py`：stale recovery 默认无限制、maintenance handoff reconciliation；
 - 对应 `tests/` 回归测试覆盖上述故障边界。
 
-当前阶段：代码审计修复已完成，完整测试和生产部署仍需在本次变更上重新执行；在重新部署前不能把本文件当作线上已生效证明。
+## 本次真实任务复测记录
+
+- 任务：`job_26028465ebeb`，owner：`user-hoz2wx`；原始 Selena 分支：`feature/CRGVBYDPF-13580-selena-environment-setup-and-simulation-for-byd_ovrs25_cr5cb_bl16_rc71`；本次请求分支：`feature/BYD_OVRS25_CR5CB_BL16_RC25_selena`。
+- 初始 attempt：旧版本环境检查把第 73 行 clean 命令注释掉，后续 attempt=3 的日志只有 `echo Cleaning`，实际第 73 行仍为 `rem ... -clean`；该 attempt 在进入仿真前被取消，没有把错误增量编译当成成功。
+- 根因证据：旧探测器使用 `max_candidates=512`，而现有入口位于 `ip_dc/build/ROS_PER_SIT_RPM_FCT_RECR/...` 深层目录；本机真实策略预演在修复前返回 `full=False`，修复后返回 `full=True, reason=selena_branch_changed, clean=True`。
+- 发布：候选 release `/home/hoz2wx/radar-sim-d3de370`；用户级 `radar-sim-v1.service` 已切换并观测 `active/running`、`NRestarts=0`；Connector 已重新安装，contract 15，Windows 1、Cluster 2 均可用；回滚副本为 `/home/hoz2wx/.config/systemd/user/radar-sim-v1.service.bak-d3de370`。
+- 线上验收：同一任务的最终重试为 `build_selena attempt=4`，事件 `3628` 为 `Selena build policy: full (selena_branch_changed)`，事件 `3629` 为 `full Selena rebuild required: selena_branch_changed`；本机脚本第 73 行已恢复为真实 `R2D2.py ... -clean`，随后才允许进入编译。
+- 代码验证：`1637 passed, 12 skipped, 1 warning`；定向 build/control 回归为 `72 passed`。截至本记录写入时，attempt=4 的全量 Selena 编译仍在运行，后续仿真结果必须在 Job 终态后另行记录，不能用编译策略通过替代仿真成功。
+
+当前阶段：分支切换导致错误增量编译的问题已定位、修复、部署并在真实 Job 上取得全量策略证据；`job_26028465ebeb` 的最终编译/仿真仍需按其自然时长完成后再判定成功或失败。
