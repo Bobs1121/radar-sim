@@ -303,9 +303,22 @@ class ResultCatalog:
         if canonical.exists():
             _verify_archive_file(canonical, checksum, size)
         elif source.resolve() != canonical.resolve():
-            # Keep the upload-store copy available for idempotent retries. A
-            # later retention cleanup can remove duplicate upload copies.
-            shutil.copyfile(source, canonical)
+            # Keep the upload-store copy available for idempotent retries, but
+            # publish it atomically. A process crash during a direct
+            # ``copyfile`` used to leave a corrupt canonical ZIP that every
+            # later retry treated as an immutable conflict.
+            temporary = _temporary_archive(owner_root)
+            try:
+                with source.open("rb") as reader, temporary.open("wb") as writer:
+                    shutil.copyfileobj(reader, writer, length=1024 * 1024)
+                    writer.flush()
+                    os.fsync(writer.fileno())
+                try:
+                    os.replace(temporary, canonical)
+                except FileExistsError:
+                    _verify_archive_file(canonical, checksum, size)
+            finally:
+                temporary.unlink(missing_ok=True)
 
         digest_payload = "\0".join((owner, run_ref, checksum))
         result_ref = "result:sha256:" + hashlib.sha256(digest_payload.encode("utf-8")).hexdigest()

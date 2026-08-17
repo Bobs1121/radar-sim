@@ -66,6 +66,27 @@ def test_submit_requires_external_id_and_terminal_state_is_immutable(tmp_path):
         store.update_state(run.ref, owner="alice", state="running")
 
 
+def test_submission_receipt_survives_before_run_state_commit(tmp_path):
+    store = _store(tmp_path)
+    run = _create(store)
+    receipt = store.record_submission_receipt(
+        run.ref,
+        owner="alice",
+        external_job_id="10322",
+        submit_mode="xmlrpc",
+    )
+    assert receipt.state == "prepared"
+    assert store.get_submission_receipt(run.ref, owner="alice")["external_job_id"] == "10322"
+
+    recovered = store.mark_submitted(
+        run.ref,
+        owner="alice",
+        external_job_id="10322",
+        submit_mode="recovered-receipt",
+    )
+    assert recovered.external_job_id == "10322"
+
+
 def test_result_ref_is_path_free_idempotent_and_private_root_is_server_only(tmp_path):
     store = _store(tmp_path)
     run = _create(store)

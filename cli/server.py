@@ -19,7 +19,11 @@ NO_CONFIG = True
 _LOGGER = logging.getLogger(__name__)
 _DEFAULT_MAINTENANCE_INTERVAL_SECONDS = 30.0
 _DEFAULT_MAINTENANCE_STALE_AFTER_SECONDS = 300.0
-_DEFAULT_MAINTENANCE_MAX_ATTEMPTS = 3
+# Heartbeat loss is a control-plane liveness observation, not proof that a
+# long-running build/simulation failed.  Keep stale recovery requeueable by
+# default; deployments that explicitly want a finite infrastructure retry
+# budget can set RSIM_MAINTENANCE_MAX_ATTEMPTS.
+_DEFAULT_MAINTENANCE_MAX_ATTEMPTS = 0
 
 
 def _positive_env_float(name: str, default: float, *, minimum: float = 0.1) -> float:
@@ -242,8 +246,8 @@ def register(subparsers):
         help="Seconds since last agent heartbeat before a task is considered stale (default 300)",
     )
     reclaim.add_argument(
-        "--max-attempts", type=int, default=3,
-        help="Fail tasks that have already been reclaimed this many times (default 3, 0=unlimited)",
+        "--max-attempts", type=int, default=0,
+        help="Fail tasks that have already been reclaimed this many times (default 0=unlimited)",
     )
     reclaim.add_argument("--db-path", default="", help="SQLite database path")
 
@@ -605,12 +609,34 @@ def _run_serve_v1(args) -> int:
         maintenance_max_attempts,
         maintenance_assignment_grace,
     ) = _maintenance_settings()
-    maintenance_loop = _MaintenanceLoop(
-        lambda: service.reclaim_stale_tasks(
+
+    def maintenance_pass() -> list[dict[str, Any]]:
+        """Recover stale attempts and replay durable Stage handoffs.
+
+        Result callbacks commit a Stage before the HTTP handler binds its
+        successor.  If the process dies in that gap and the Agent is offline,
+        Agent polling cannot perform the repair.  Keep reconciliation in the
+        server-owned maintenance pass as a second durable trigger.
+        """
+
+        reclaimed = service.reclaim_stale_tasks(
             stale_after_seconds=maintenance_stale_after,
             max_attempts=maintenance_max_attempts,
             assignment_grace_seconds=maintenance_assignment_grace,
-        ),
+        )
+        for summary in service.list_jobs(limit=200):
+            if str(summary.get("status") or "") in {"succeeded", "failed", "cancelled"}:
+                continue
+            try:
+                service.reconcile_stage_handoffs(str(summary.get("job_id") or ""))
+            except (KeyError, ValueError):
+                # One malformed/legacy job must not prevent stale recovery for
+                # unrelated owners or future maintenance passes.
+                continue
+        return reclaimed
+
+    maintenance_loop = _MaintenanceLoop(
+        maintenance_pass,
         interval_seconds=maintenance_interval,
     )
     print(f"Radar Sim v1 API server: http://{host}:{port}/api/v1/")

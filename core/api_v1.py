@@ -489,6 +489,25 @@ class ApiV1Service:
         resolved_spec = dict(plan.resolved_spec)
         requested_target = config.simulation.target
         selected_target, route_reason = self._select_user_execution_target(owner, config)
+        if selected_target == "local":
+            # ``dataset://``/``shared://`` are control-plane logical
+            # references, not paths that a Windows-full process can open.  A
+            # raw UNC path (``//host/share``) remains valid: the Agent can
+            # authorize it as a Windows data-root binding during resolution.
+            for role, value in self._user_run_resource_paths(config):
+                if self._is_control_plane_only_reference(value):
+                    raise ApiV1Error(
+                        "local_resource_not_windows_readable",
+                        "本地仿真不能直接读取 Cluster/控制面逻辑资源，请改用可被本机访问的 Windows 路径，或将执行位置改为 Cluster。",
+                        status_code=422,
+                        detail={"role": role},
+                        actions=[
+                            {
+                                "type": "use_windows_readable_path",
+                                "label": "选择本机可访问的 Windows 路径，或切换到 Cluster",
+                            }
+                        ],
+                    )
         decisions = dict(resolved_spec.get("decisions") or {})
         decisions["execution"] = {
             "status": "selected",
@@ -875,6 +894,19 @@ class ApiV1Service:
                 )
                 payload["transfer_status"] = "cluster_direct_transfer_unavailable"
             stage["payload"] = payload
+            if (
+                not self._direct_transfer_available()
+                and (self.transfer_service is not None or selected_runtime_bundle is not None)
+            ):
+                self._block_direct_transfer_tasks(
+                    task_specs,
+                    message=(
+                        "Cluster direct transfer is unavailable; configure a deployment data-plane root "
+                        "or connect the source-side Connector/SDK. Linux will not proxy file bytes."
+                    ),
+                )
+                payload["transfer_status"] = "cluster_direct_transfer_unavailable"
+                stage["payload"] = payload
             return
 
         # dataset://, central and shared paths are already visible to Cluster;
@@ -886,6 +918,25 @@ class ApiV1Service:
                 "transfer_required": False,
             }
         )
+        # A build-to-Cluster route always has one local Runtime Bundle to
+        # deliver after compilation, even when every user-visible input is a
+        # shared reference.  Fail closed at submission when the deployment has
+        # no signed target/probe namespace; otherwise the job would reach
+        # register_artifact and fail only after a potentially long build.
+        if (
+            config.selena.source == "build"
+            and selected_runtime_bundle is None
+            and self.transfer_service is not None
+            and not self._direct_transfer_available()
+        ):
+            self._block_direct_transfer_tasks(
+                task_specs,
+                message=(
+                    "Cluster direct transfer is unavailable; configure a deployment data-plane root "
+                    "before building a Runtime Bundle for Cluster."
+                ),
+            )
+            payload["transfer_status"] = "cluster_direct_transfer_unavailable"
         # Keep the Linux ``prepare_data`` Stage claimable for a bounded
         # shared-path/dataset existence check.  The transfer edge itself is
         # skipped (``transfer_status`` above), but central resolution still
@@ -903,12 +954,21 @@ class ApiV1Service:
 
         service = self.transfer_service
         if service is None:
+            # Framework-only embeddings may intentionally omit the deployment
+            # data plane.  Keep those in-memory/control-only callers
+            # schedulable; the real serve-v1 bootstrap always injects a
+            # TransferService (possibly empty, which fails closed above).
             return False
         root = getattr(service, "client_target_root", None)
         probe_configured = getattr(service, "server_probe_configured", None)
         if root is None and probe_configured is None:
             return True
         return bool(str(root or "").strip()) and probe_configured is True
+
+    @staticmethod
+    def _is_control_plane_only_reference(value: str) -> bool:
+        text = str(value or "").strip().casefold()
+        return text.startswith(("dataset://", "shared://")) or classify_data_path(text) == "central"
 
     @staticmethod
     def _block_direct_transfer_tasks(task_specs: list[dict[str, Any]], *, message: str) -> None:
@@ -1163,11 +1223,32 @@ class ApiV1Service:
             for agent in self._control(owner_token).list_agents()
             if str((agent.get("metadata") or {}).get("user") or "").strip().casefold()
             == owner_token.strip().casefold()
-            and str(agent.get("mode") or "") == "windows_full"
+            and str(
+                (agent.get("metadata") or {}).get("node_kind")
+                or (agent.get("metadata") or {}).get("node.kind")
+                or ""
+            ) == "windows_full"
             and windows_connector_contract_is_current(agent.get("metadata") or {})
-            and now - float(agent.get("last_seen") or 0.0) <= 120.0
+            and now - float(agent.get("last_heartbeat") or 0.0) <= 120.0
         ]
         if not online_full:
+            return
+        # A manually registered full Connector may advertise a legacy binding
+        # whose project token predates the current project-free resolver. Let
+        # that Agent perform the authoritative node-local check instead of
+        # converting an incomplete central capability match into a permanent
+        # source_to_local blocker.
+        if any(
+            any(
+                isinstance(item, dict) and item.get("healthy") is True
+                for item in (
+                    list((agent.get("metadata") or {}).get("workspace_bindings") or [])
+                    + list((agent.get("metadata") or {}).get("data_bindings") or [])
+                    + list((agent.get("metadata") or {}).get("asset_bindings") or [])
+                )
+            )
+            for agent in online_full
+        ):
             return
         payload = dict(stage.get("payload") or {})
         payload.update(
@@ -2894,7 +2975,10 @@ class ApiV1Service:
             "finished_at": job.get("finished_at", 0.0),
             "cancel_requested": bool(job.get("cancel_requested", False)),
             "spec": dict(job.get("spec") or (job.get("payload") or {}).get("spec") or {}),
-            "resolved_spec": dict(job.get("resolved_spec") or {}),
+            # Keep the control-plane truth durable, but do not serialize every
+            # MF4/transfer entry on every Web task poll.  Large batches use the
+            # dedicated transfer/result endpoints for detailed evidence.
+            "resolved_spec": self._public_resolved_spec(job.get("resolved_spec") or {}),
             "progress": self._job_progress(stages, status),
             "current_stage": self._current_stage(stages),
             "available_actions": self._available_actions(str(job["job_id"]), status, stages),
@@ -2916,6 +3000,50 @@ class ApiV1Service:
             if update_action and update_action not in response["available_actions"]:
                 response["available_actions"].append(update_action)
         return response
+
+    @staticmethod
+    def _public_resolved_spec(value: Mapping[str, Any]) -> dict[str, Any]:
+        """Return a path-free, bounded projection of the resolved snapshot."""
+
+        resolved = dict(value or {})
+        decisions = dict(resolved.get("decisions") or {})
+        data = dict(decisions.get("data") or {})
+        dataset = dict(data.get("dataset") or {})
+        if dataset.get("files"):
+            dataset.pop("files", None)
+            data["dataset"] = dataset
+            decisions["data"] = data
+
+        transfers = dict(decisions.get("transfers") or {})
+        resources = dict(transfers.get("resources") or {})
+
+        def summarize(resource: Any) -> Any:
+            if isinstance(resource, list):
+                return [summarize(item) for item in resource]
+            if not isinstance(resource, dict):
+                return resource
+            result = {key: item for key, item in resource.items() if key != "entries"}
+            entries = resource.get("entries")
+            if isinstance(entries, list):
+                result.setdefault("file_count", len(entries))
+                result.setdefault(
+                    "total_size",
+                    sum(
+                        int(item.get("size") or 0)
+                        for item in entries
+                        if isinstance(item, dict)
+                    ),
+                )
+            return result
+
+        if resources:
+            transfers["resources"] = {
+                str(role): summarize(resource)
+                for role, resource in resources.items()
+            }
+            decisions["transfers"] = transfers
+        resolved["decisions"] = decisions
+        return resolved
 
     def _windows_waiting(
         self,

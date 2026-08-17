@@ -192,6 +192,30 @@ def test_expired_session_staging_is_cleaned_and_reservation_released(tmp_path: P
     assert not store._staging_path(first.session_id).exists()
 
 
+def test_active_dataset_upload_renews_after_disconnect(tmp_path: Path):
+    clock = {"now": 100.0}
+    quota = DatasetStoreQuota(
+        min_free_bytes=0,
+        chunk_size=4,
+        max_file_size=100,
+        max_total_size=100,
+        max_owner_reserved_bytes=8,
+        session_ttl_seconds=10,
+    )
+    store = DatasetStore(tmp_path / "store", quota=quota, now_fn=lambda: clock["now"])
+    session = store.create_session(
+        owner="alice", project="ovrs25", files=[_file("a.MF4", b"12345678")]
+    )
+    store.append_file(session.session_id, session.files[0].file_id, owner="alice", offset=0, data=b"1234")
+    clock["now"] = 111.0
+
+    renewed = store.get_session(session.session_id, owner="alice")
+    assert renewed.expires_at > clock["now"]
+    store.append_file(session.session_id, session.files[0].file_id, owner="alice", offset=4, data=b"5678")
+    finalized = store.finalize(session.session_id, owner="alice")
+    assert finalized.storage_ref.startswith("shared://datasets/")
+
+
 def test_agent_upload_requires_trusted_stage_evidence(tmp_path: Path):
     store = _store(tmp_path)
     with pytest.raises(DatasetUploadSessionError, match="evidence"):

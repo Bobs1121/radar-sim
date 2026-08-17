@@ -78,6 +78,19 @@ class RuntimeBundleUploadService:
         evidence = self._evidence(normalize_user(owner), evidence_ref)
         path = str(publish_path or "").strip() or f"bundles/{evidence.manifest.id.rsplit(':', 1)[-1]}"
         try:
+            existing = self._store.find_upload_session(
+                evidence.owner,
+                evidence.project,
+                evidence_ref=evidence.evidence_ref,
+                expected_size=evidence.archive_size,
+                expected_checksum=evidence.archive_checksum,
+            )
+            requested_logical = path.replace("\\", "/").rstrip("/")
+            if requested_logical.rsplit("/", 1)[-1].casefold() != "runtime-bundle.zip":
+                requested_logical += "/runtime-bundle.zip"
+            if existing is not None and existing.logical_path.casefold() == requested_logical.casefold():
+                return _session_dict(existing)
+            self._store.cleanup_expired_sessions()
             session = self._store.create_upload_session(
                 evidence.owner,
                 evidence.project,

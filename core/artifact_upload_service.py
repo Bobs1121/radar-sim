@@ -128,6 +128,19 @@ class ArtifactUploadService:
         evidence = self._evidence(owner, evidence_ref)
         path = str(publish_path or "").strip() or _generated_publish_path(evidence)
         try:
+            existing = self._store.find_upload_session(
+                owner,
+                evidence.project,
+                evidence_ref=evidence.evidence_ref,
+                expected_size=evidence.size,
+                expected_checksum=evidence.checksum,
+            )
+            requested_logical = path.replace("\\", "/").rstrip("/")
+            if requested_logical.rsplit("/", 1)[-1].casefold() != "selena.exe":
+                requested_logical += "/selena.exe"
+            if existing is not None and existing.logical_path.casefold() == requested_logical.casefold():
+                return _session_dict(existing)
+            self._store.cleanup_expired_sessions()
             session = self._store.create_upload_session(
                 owner,
                 evidence.project,

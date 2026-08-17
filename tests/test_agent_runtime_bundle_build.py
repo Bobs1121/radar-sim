@@ -28,7 +28,7 @@ def test_v2_build_stages_only_exe_dll_and_bound_runtime(tmp_path, monkeypatch):
     output = workspace / "build"
     output.mkdir(parents=True)
     script = workspace / "build.bat"
-    script.write_text("@echo off", encoding="utf-8")
+    script.write_text("@echo off\npython R2D2.py --clean\n", encoding="utf-8")
     package_script = workspace / "package.bat"
     package_script.write_text("@echo off", encoding="utf-8")
     exe = output / "selena.exe"

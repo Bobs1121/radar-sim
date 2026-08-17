@@ -983,6 +983,20 @@ def test_explicit_local_submission_waits_for_first_connector_instead_of_failing(
     )
 
 
+def test_explicit_local_rejects_control_plane_only_data_reference(tmp_path):
+    control = ControlService(tmp_path / "control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+    config = run_config_dict()
+    config["simulation"]["target"] = "local"
+    config["data"] = {"path": "dataset://sha256/" + "a" * 64}
+
+    with pytest.raises(ApiV1Error) as caught:
+        api.submit_user_run("alice", config_payload=config)
+
+    assert caught.value.code == "local_resource_not_windows_readable"
+    assert caught.value.status_code == 422
+
+
 def test_build_cluster_shared_data_is_owned_by_linux_before_bundle_exists(tmp_path):
     from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID
 

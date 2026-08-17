@@ -98,6 +98,10 @@ class PreparedSelenaBuild:
     branch_repo_path: Path | None = None
     branch_before: WorkspaceFingerprint | None = None
     workspace_identity_mode: str = "full"
+    full_rebuild_required: bool = False
+    full_rebuild_reason: str = ""
+    requested_build_branch: str = ""
+    previous_build_branch: str = ""
 
     def __post_init__(self) -> None:
         _validate_project(self.project)
@@ -113,6 +117,8 @@ class PreparedSelenaBuild:
             raise AgentBuildStageError("before snapshot is required")
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.build_script_checksum):
             raise AgentBuildStageError("build script checksum is invalid")
+        if not isinstance(self.full_rebuild_required, bool):
+            raise AgentBuildStageError("full_rebuild_required must be true or false")
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +197,113 @@ def _hash_script(path: Path) -> str:
     except OSError as exc:
         raise AgentBuildStageError("selena build script hashing failed") from exc
     return "sha256:" + digest.hexdigest()
+
+
+def _hash_regular_file(path: Path) -> str:
+    """Hash one existing regular artifact for provenance comparison."""
+
+    if not _is_regular_non_symlink(path):
+        return ""
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return "sha256:" + digest.hexdigest()
+
+
+def _requested_build_identity(payload: Mapping[str, Any], source_lease: Any) -> tuple[str, str]:
+    """Return the branch/commit selected for this build without reading paths."""
+
+    if source_lease is not None:
+        return (
+            str(getattr(source_lease, "requested_ref", "") or "").strip(),
+            str(getattr(source_lease, "commit", "") or "").strip().lower(),
+        )
+    return (
+        str(
+            payload.get("actual_branch")
+            or payload.get("branch")
+            or payload.get("expected_branch")
+            or ""
+        ).strip(),
+        str(payload.get("actual_commit") or payload.get("commit") or "").strip().lower(),
+    )
+
+
+def _branch_rebuild_policy(
+    payload: Mapping[str, Any],
+    *,
+    contract: str,
+    source_lease: Any,
+    project: str,
+    binding_id: str,
+    build_mode: str,
+    artifact_path: Path,
+    authorized: AuthorizedRoots,
+) -> dict[str, Any]:
+    """Decide whether an existing Selena output may be reused incrementally.
+
+    A build tree is reusable only when its persisted Runtime Bundle provenance
+    proves the same Selena branch and build mode.  Missing provenance is not
+    treated as "probably the same"; it forces a full build so an old branch's
+    object files cannot contaminate a new branch.
+    """
+
+    requested_branch, requested_commit = _requested_build_identity(payload, source_lease)
+    existing = has_existing_build_artifact(artifact_path, authorized.output_roots)
+    result: dict[str, Any] = {
+        "existing_build_detected": bool(existing),
+        "full_rebuild_required": False,
+        "full_rebuild_reason": "",
+        "requested_build_branch": requested_branch,
+        "requested_build_commit": requested_commit,
+        "previous_build_branch": "",
+        "previous_build_mode": "",
+        "previous_entrypoint_checksum": "",
+    }
+    if contract != "user-run-config/2.0" or not existing:
+        return result
+
+    try:
+        from core.agent_runtime_bundle_lease import AgentRuntimeBundleLeaseStore
+
+        previous = AgentRuntimeBundleLeaseStore().latest_build_provenance(
+            project=project,
+            workspace_binding_id=binding_id,
+        )
+    except Exception:
+        previous = None
+    if previous:
+        result["previous_build_branch"] = str(previous.get("branch") or "").strip()
+        result["previous_build_mode"] = str(previous.get("build_mode") or "").strip()
+        result["previous_entrypoint_checksum"] = str(
+            previous.get("entrypoint_checksum") or ""
+        ).strip().lower()
+
+    reason = ""
+    if not previous:
+        reason = "existing_artifact_provenance_unavailable"
+    elif not requested_branch or not result["previous_build_branch"]:
+        reason = "selena_branch_identity_unavailable"
+    elif requested_branch.casefold() != result["previous_build_branch"].casefold():
+        reason = "selena_branch_changed"
+    elif result["previous_build_mode"] and result["previous_build_mode"].casefold() != str(build_mode).casefold():
+        reason = "selena_build_mode_changed"
+    elif not result["previous_entrypoint_checksum"]:
+        reason = "existing_artifact_provenance_incomplete"
+    else:
+        current_checksum = _hash_regular_file(artifact_path)
+        if not current_checksum:
+            reason = "existing_artifact_location_unverified"
+        elif current_checksum != result["previous_entrypoint_checksum"]:
+            reason = "existing_artifact_content_changed"
+    if reason:
+        result["full_rebuild_required"] = True
+        result["full_rebuild_reason"] = reason
+    return result
 
 
 def _uninspected_workspace_evidence() -> WorkspaceFingerprint:
@@ -682,30 +795,6 @@ def prepare_selena_build(
     if not authorized.contains_workspace(resolved_script):
         raise AgentBuildStageError("selena build script is outside authorized workspace")
 
-    # Obtain command and cwd from injected builder.
-    try:
-        cmd_list, cwd_raw = command_builder(config, build_mode, clean)
-    except Exception as exc:
-        raise AgentBuildStageError("command builder failed") from exc
-
-    if not cmd_list:
-        raise AgentBuildStageError("command must not be empty")
-    # Reject empty strings and NUL in command.
-    for item in cmd_list:
-        if not isinstance(item, str) or "\x00" in item or item.strip() == "":
-            raise AgentBuildStageError("command contains invalid entries")
-    cwd = _resolve_cwd(cwd_raw, authorized)
-    if len(cmd_list) < 3 or cmd_list[0].strip().lower() not in {"cmd", "cmd.exe"} or cmd_list[1].strip().lower() != "/c":
-        raise AgentBuildStageError("command must execute the configured Selena build script")
-    try:
-        command_script_path = Path(cmd_list[2])
-        if not command_script_path.is_absolute():
-            command_script_path = cwd / command_script_path
-        command_script = command_script_path.resolve(strict=True)
-    except OSError as exc:
-        raise AgentBuildStageError("command build script is unavailable") from exc
-    if command_script != resolved_script:
-        raise AgentBuildStageError("command must execute the configured Selena build script")
     script_checksum = _hash_script(resolved_script)
     package_script_path: Path | None = None
     package_script = str(getattr(user_bindings, "environment_build_script", "") or "").strip()
@@ -731,13 +820,55 @@ def prepare_selena_build(
 
     artifact_path = _resolve_artifact_path(exe_path, authorized)
 
+    branch_policy = _branch_rebuild_policy(
+        payload,
+        contract=contract,
+        source_lease=source_lease,
+        project=project,
+        binding_id=binding_id,
+        build_mode=build_mode,
+        artifact_path=artifact_path,
+        authorized=authorized,
+    )
+    full_rebuild_required = bool(branch_policy.get("full_rebuild_required"))
+    full_rebuild_reason = str(branch_policy.get("full_rebuild_reason") or "")
+    requested_build_branch = str(branch_policy.get("requested_build_branch") or "")
+    previous_build_branch = str(branch_policy.get("previous_build_branch") or "")
+    if full_rebuild_required:
+        clean = True
+
+    # Obtain command and cwd only after branch provenance has decided whether
+    # this is an incremental or full build.
+    try:
+        cmd_list, cwd_raw = command_builder(config, build_mode, clean)
+    except Exception as exc:
+        raise AgentBuildStageError("command builder failed") from exc
+
+    if not cmd_list:
+        raise AgentBuildStageError("command must not be empty")
+    for item in cmd_list:
+        if not isinstance(item, str) or "\x00" in item or item.strip() == "":
+            raise AgentBuildStageError("command contains invalid entries")
+    cwd = _resolve_cwd(cwd_raw, authorized)
+    if len(cmd_list) < 3 or cmd_list[0].strip().lower() not in {"cmd", "cmd.exe"} or cmd_list[1].strip().lower() != "/c":
+        raise AgentBuildStageError("command must execute the configured Selena build script")
+    try:
+        command_script_path = Path(cmd_list[2])
+        if not command_script_path.is_absolute():
+            command_script_path = cwd / command_script_path
+        command_script = command_script_path.resolve(strict=True)
+    except OSError as exc:
+        raise AgentBuildStageError("command build script is unavailable") from exc
+    if command_script != resolved_script:
+        raise AgentBuildStageError("command must execute the configured Selena build script")
+
     # This is the last local-only point before the immutable script checksum is
     # captured.  Enforce incremental mode here as well as in the environment
     # inspection path so a caller cannot bypass the safety policy by submitting
     # a build Stage directly or by using a legacy command builder.
     if enforce_incremental_policy:
         try:
-            adapt_build_script_for_incremental(
+            policy_result = adapt_build_script_for_incremental(
                 resolved_script,
                 existing_build=has_existing_build_artifact(
                     artifact_path,
@@ -745,6 +876,10 @@ def prepare_selena_build(
                 ),
                 allow_clean=clean,
             )
+            if full_rebuild_required and not policy_result.clean_command_lines:
+                raise AgentBuildStageError(
+                    "full rebuild is required but no clean command is available"
+                )
         except BuildScriptPolicyError as exc:
             raise AgentBuildStageError("incremental build policy failed") from exc
 
@@ -793,6 +928,10 @@ def prepare_selena_build(
         branch_repo_path=branch_repo_path,
         branch_before=branch_before,
         workspace_identity_mode="branch_head_only" if identity_only else "full",
+        full_rebuild_required=full_rebuild_required,
+        full_rebuild_reason=full_rebuild_reason,
+        requested_build_branch=requested_build_branch,
+        previous_build_branch=previous_build_branch,
     )
 
 
@@ -901,6 +1040,13 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
         "project": prepared.project,
         "workspace_binding_id": prepared.binding_id,
         "build_mode": prepared.build_mode,
+        "build_policy": {
+            "mode": "full" if prepared.full_rebuild_required else "incremental",
+            "full_rebuild_required": prepared.full_rebuild_required,
+            "reason": prepared.full_rebuild_reason,
+            "requested_branch": prepared.requested_build_branch,
+            "previous_branch": prepared.previous_build_branch,
+        },
         "before": before_public,
         "after": after_public,
         "source_changed_during_build": source_changed,

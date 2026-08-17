@@ -94,6 +94,55 @@ def prepare(local_binding, monkeypatch, **patch):
     )
 
 
+def test_v2_branch_change_forces_full_rebuild_from_existing_artifact(local_binding, monkeypatch):
+    artifact = local_binding.output / "selena.exe"
+    artifact.write_bytes(b"old-branch-artifact")
+    authorized = local_binding.store.resolve_authorized_roots(
+        local_binding.binding.binding_id,
+        project="demo",
+    )
+    checksum = build_stage._hash_regular_file(artifact)
+
+    class FakeLeaseStore:
+        def latest_build_provenance(self, *, project, workspace_binding_id):
+            assert project == "demo"
+            assert workspace_binding_id == local_binding.binding.binding_id
+            return {
+                "branch": "feature/old-selena",
+                "build_mode": "Release",
+                "entrypoint_checksum": checksum,
+            }
+
+    monkeypatch.setattr(
+        "core.agent_runtime_bundle_lease.AgentRuntimeBundleLeaseStore",
+        FakeLeaseStore,
+    )
+    changed = build_stage._branch_rebuild_policy(
+        {"actual_branch": "feature/new-selena"},
+        contract="user-run-config/2.0",
+        source_lease=None,
+        project="demo",
+        binding_id=local_binding.binding.binding_id,
+        build_mode="Release",
+        artifact_path=artifact,
+        authorized=authorized,
+    )
+    same = build_stage._branch_rebuild_policy(
+        {"actual_branch": "feature/old-selena"},
+        contract="user-run-config/2.0",
+        source_lease=None,
+        project="demo",
+        binding_id=local_binding.binding.binding_id,
+        build_mode="Release",
+        artifact_path=artifact,
+        authorized=authorized,
+    )
+
+    assert changed["full_rebuild_required"] is True
+    assert changed["full_rebuild_reason"] == "selena_branch_changed"
+    assert same["full_rebuild_required"] is False
+
+
 def test_prepare_happy_path_is_frozen_and_local_only(local_binding, monkeypatch):
     prepared = prepare(local_binding, monkeypatch)
     assert prepared.project == "demo"

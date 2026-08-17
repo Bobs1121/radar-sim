@@ -318,7 +318,28 @@ class DatasetStore:
                 (session_id,),
             ).fetchall()
         if row["status"] == "active" and float(row["expires_at"]) < float(self._now_fn()):
-            raise DatasetUploadSessionError("dataset upload session has expired")
+            # The upload TTL is an inactivity lease. If the private staging
+            # directory still exists, a client reconnect can resume the exact
+            # owner/project/manifest instead of restarting a multi-file batch.
+            staging = self._staging_path(session_id)
+            if not staging.is_dir():
+                raise DatasetUploadSessionError("dataset upload session has expired")
+            now = float(self._now_fn())
+            renewed = now + float(self._quota.session_ttl_seconds)
+            with self._lock, self._conn() as renew_conn:
+                renew_conn.execute(
+                    "UPDATE dataset_upload_sessions SET expires_at=?,updated_at=? WHERE session_id=? AND owner=? AND status='active'",
+                    (renewed, now, session_id, owner),
+                )
+                renew_conn.commit()
+                row = renew_conn.execute(
+                    "SELECT * FROM dataset_upload_sessions WHERE session_id=? AND owner=?",
+                    (session_id, owner),
+                ).fetchone()
+                files = renew_conn.execute(
+                    "SELECT * FROM dataset_upload_files WHERE session_id=? ORDER BY ordinal",
+                    (session_id,),
+                ).fetchall()
         return _session_from_rows(row, files)
 
     def append_file(
@@ -357,6 +378,10 @@ class DatasetStore:
             if existing is not None:
                 if int(existing["size"]) != len(data) or existing["checksum"] != chunk_checksum:
                     raise DatasetUploadSessionError("dataset upload retry chunk does not match")
+                conn.execute(
+                    "UPDATE dataset_upload_sessions SET updated_at=?,expires_at=MAX(expires_at,?) WHERE session_id=?",
+                    (now, now + float(self._quota.session_ttl_seconds), session_id),
+                )
                 conn.commit()
                 return self.get_session(session_id, owner=owner)
             current = conn.execute(
@@ -382,8 +407,8 @@ class DatasetStore:
                 (received, status, file_id),
             )
             conn.execute(
-                "UPDATE dataset_upload_sessions SET updated_at=? WHERE session_id=?",
-                (now, session_id),
+                "UPDATE dataset_upload_sessions SET updated_at=?,expires_at=MAX(expires_at,?) WHERE session_id=?",
+                (now, now + float(self._quota.session_ttl_seconds), session_id),
             )
             conn.commit()
         return self.get_session(session_id, owner=owner)

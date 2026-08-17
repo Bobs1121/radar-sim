@@ -592,7 +592,10 @@ def inspect_cluster_job(job_dir: str, *, max_files: int = 500) -> dict[str, Any]
         "output_mf4": output_mf4,
         "logs": logs[:20],
         "result_files": result_files,
-        "task_results": task_results[:50],
+        # Keep every per-input result for the V2 collector.  The collector may
+        # publish a large batch manifest; silently retaining only the first 50
+        # made a successful batch look complete while losing its truth data.
+        "task_results": task_results,
         "success_count": success_count,
         "fail_count": fail_count,
         "error_summary": error_summary,
@@ -953,10 +956,26 @@ def submit_cluster_job(config_path: str, config: dict[str, Any], *, dry_run: boo
     mode = _resolve_submit_mode(cluster)
     if dry_run:
         return SubmitResult(mode=mode, dry_run=True, command=cmd, returncode=0, stdout="", stderr="")
+    timeout = _cluster_submission_timeout_seconds(cluster)
     if mode == "client":
-        result = subprocess.run(cmd, text=True, capture_output=True)
+        try:
+            result = subprocess.run(
+                cmd,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return SubmitResult(
+                mode=mode,
+                dry_run=False,
+                command=cmd,
+                returncode=124,
+                stdout=str(exc.stdout or ""),
+                stderr=f"Cluster submission client timed out after {timeout:g}s",
+            )
         return SubmitResult(mode=mode, dry_run=False, command=cmd, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
-    return _submit_via_xmlrpc(config_path, config, cluster)
+    return _submit_via_xmlrpc(config_path, config, cluster, timeout=timeout)
 
 
 def submit_cluster_job_legacy(config_path: str, config: dict[str, Any], *, dry_run: bool = True) -> subprocess.CompletedProcess | list[str]:
@@ -1032,7 +1051,13 @@ def _resolve_submit_mode(cluster: dict[str, Any]) -> str:
     return "xmlrpc"
 
 
-def _submit_via_xmlrpc(config_path: str, config: dict[str, Any], cluster: dict[str, Any]) -> SubmitResult:
+def _submit_via_xmlrpc(
+    config_path: str,
+    config: dict[str, Any],
+    cluster: dict[str, Any],
+    *,
+    timeout: float | None = None,
+) -> SubmitResult:
     config_file = Path(config_path)
     # On Linux the config_path is a UNC string (the manager reads it on Windows).
     # _validate_submit_package needs to stat the local file, so resolve via mount map.
@@ -1061,7 +1086,17 @@ def _submit_via_xmlrpc(config_path: str, config: dict[str, Any], cluster: dict[s
     password = _cluster_kill_password(cluster)
     hostname = socket.getfqdn().split(".")[0]
     try:
-        manager = xmlrpc.client.ServerProxy(_manager_url(cluster), allow_none=True)
+        manager_url = _manager_url(cluster)
+        transport = (
+            _TimeoutSafeTransport(timeout)
+            if manager_url.lower().startswith("https://")
+            else _TimeoutTransport(timeout)
+        )
+        manager = xmlrpc.client.ServerProxy(
+            manager_url,
+            allow_none=True,
+            transport=transport,
+        )
         manager.is_manager_online()
         value, result_text = manager.addSimulation(hostname, username, longname, str(config_file), password)
         try:
@@ -1084,6 +1119,50 @@ def _manager_url(cluster: dict[str, Any]) -> str:
     host = str(cluster.get("manager_host") or "SZHRADAR01")
     port = int(cluster.get("manager_port") or 8123)
     return f"http://{host}:{port}"
+
+
+def _cluster_submission_timeout_seconds(cluster: dict[str, Any]) -> float:
+    """Return a transport timeout for submission handshakes only.
+
+    This does not govern Cluster execution or result collection. It prevents a
+    dead manager/client process from occupying a Stage forever; the Stage can
+    be retried using the prepared Config.cfg and submission receipt.
+    """
+
+    raw = cluster.get("submit_timeout_seconds")
+    if raw in (None, ""):
+        raw = os.environ.get("RSIM_CLUSTER_SUBMIT_TIMEOUT_SECONDS", "120")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 120.0
+    if value <= 0:
+        value = 120.0
+    return max(5.0, value)
+
+
+class _TimeoutTransport(xmlrpc.client.Transport):
+    def __init__(self, timeout: float | None) -> None:
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host: str):  # type: ignore[override]
+        connection = super().make_connection(host)
+        if self._timeout is not None:
+            connection.timeout = float(self._timeout)
+        return connection
+
+
+class _TimeoutSafeTransport(xmlrpc.client.SafeTransport):
+    def __init__(self, timeout: float | None) -> None:
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host: str):  # type: ignore[override]
+        connection = super().make_connection(host)
+        if self._timeout is not None:
+            connection.timeout = float(self._timeout)
+        return connection
 
 
 def _validate_submit_package(config_path: Path, mount_map: dict[str, str] | None = None) -> list[str]:

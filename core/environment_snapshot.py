@@ -442,7 +442,18 @@ def inspect_selena_build_environment(
             explicitly_allowed = bool(
                 getattr(incremental_adaptation, "explicit_clean_requested", False)
             )
-            if suppressed:
+            full_rebuild_required = bool(getattr(prepared, "full_rebuild_required", False))
+            if full_rebuild_required and not clean_lines:
+                raise AgentBuildStageError(
+                    "full rebuild is required but the selected build script has no recognized clean command"
+                )
+            if full_rebuild_required:
+                policy_code = "selena_full_rebuild_required"
+                policy_message = (
+                    "The existing Selena artifact belongs to a different or unproven branch; "
+                    "a full clean build is required before execution."
+                )
+            elif suppressed:
                 policy_code = "selena_clean_commands_suppressed"
                 policy_message = (
                     "Detected active clean commands in the selected build script and disabled them; "

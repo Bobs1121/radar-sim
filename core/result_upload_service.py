@@ -67,6 +67,7 @@ class ResultUploadService:
             )
             if existing is not None:
                 return self._session_dict(existing)
+            self._store.cleanup_expired_sessions()
             session = self._store.create_upload_session(
                 owner,
                 self._PROJECT,

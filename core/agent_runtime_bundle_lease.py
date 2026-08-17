@@ -217,6 +217,50 @@ class AgentRuntimeBundleLeaseStore:
         self._validate_file(lease)
         return self._renew_if_needed(lease)
 
+    def latest_build_provenance(
+        self,
+        *,
+        project: str,
+        workspace_binding_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the newest persisted source identity for one build workspace.
+
+        This is provenance metadata only.  It deliberately does not require
+        the old archive to remain on disk: the archive may have been garbage
+        collected while its branch identity is still needed to decide whether
+        an existing build tree is safe for incremental reuse.
+        """
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT manifest_json,created_at
+                FROM runtime_bundle_leases
+                WHERE project=? AND workspace_binding_id=?
+                ORDER BY created_at DESC, rowid DESC
+                """,
+                (str(project or ""), str(workspace_binding_id or "")),
+            ).fetchall()
+        for row in rows:
+            try:
+                manifest = _manifest_from_dict(json.loads(str(row["manifest_json"] or "{}")))
+            except (TypeError, ValueError, json.JSONDecodeError, KeyError):
+                continue
+            entrypoint = next(
+                (item for item in manifest.files if item.role == "entrypoint"),
+                None,
+            )
+            return {
+                "bundle_id": manifest.id,
+                "branch": str(manifest.source.branch or "").strip(),
+                "commit": str(manifest.source.commit or "").strip(),
+                "build_mode": str(manifest.source.build_mode or "").strip(),
+                "entrypoint_checksum": str(entrypoint.checksum if entrypoint else ""),
+                "entrypoint_size": int(entrypoint.size if entrypoint else 0),
+                "created_at": float(row["created_at"] or 0.0),
+            }
+        return None
+
     def mark_uploaded(self, lease_id: str, storage_ref: str) -> AgentRuntimeBundleLease:
         if not str(storage_ref or "").startswith("shared://selena-bundles/"):
             raise AgentRuntimeBundleLeaseError("runtime bundle storage reference is invalid")

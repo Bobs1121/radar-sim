@@ -784,6 +784,11 @@ def _run_task(
     start_logs = [f"[agent] starting {task['task_type']}"]
     if is_v5_build:
         start_logs.append("[agent] authorized Selena build command prepared")
+        if bool(getattr(prepared_build, "full_rebuild_required", False)):
+            start_logs.append(
+                "[agent] full Selena rebuild required: "
+                + str(getattr(prepared_build, "full_rebuild_reason", "branch provenance") or "branch provenance")
+            )
         dependencies = tuple(
             getattr(prepared_build_environment, "dependencies", ()) or ()
         )
@@ -3075,10 +3080,13 @@ def _resolve_v2_run_config(
     data_binding_id = ""
     data_path = str(payload.get("data_path") or "").strip()
     if data_path and payload.get("auto_configure") is True:
-        from core.datasets import classify_data_path
-
         local_data = Path(data_path).expanduser()
-        if classify_data_path(data_path) not in {"shared", "central"} and local_data.exists():
+        # A raw UNC path is classified as ``shared`` by the control plane but
+        # may still be directly readable by this Windows Agent.  Only logical
+        # ``shared://``/``dataset://`` references are non-local; let the
+        # binding store authorize any real path that exists on this machine.
+        logical_only = data_path.casefold().startswith(("shared://", "dataset://"))
+        if not logical_only and local_data.exists():
             root = local_data if local_data.is_dir() else local_data.parent
             if owner:
                 data_binding_id = AgentDataBindingStore().register(

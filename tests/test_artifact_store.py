@@ -480,6 +480,22 @@ class TestEdgeCases:
         with pytest.raises(ArtifactSessionError, match="expired"):
             store.get_session(s.session_id, owner="alice")
 
+    def test_expired_active_session_with_partial_file_is_renewed(self) -> None:
+        now = [100.0]
+        root = Path(tempfile.mkdtemp(prefix="rsim_art_renew_"))
+        store = ArtifactStore(root=root, db_path=root / "sessions.db", now_fn=lambda: now[0])
+        session = store.create_upload_session(
+            "alice", "p1", "a/b", 5, _sha256(b"hello"), expires_after_seconds=1
+        )
+        store.append_chunk(session.session_id, 0, b"he", owner="alice")
+        now[0] = 100000.0
+
+        renewed = store.get_session(session.session_id, owner="alice")
+        assert renewed.expires_at > now[0]
+        store.append_chunk(session.session_id, 2, b"llo", owner="alice")
+        finalized = store.finalize_upload(session.session_id, owner="alice")
+        assert finalized["status"] == "finalized"
+
     def test_declared_size_mismatch_on_finalize(self) -> None:
         store, _ = _make_store()
         data = b"hello"

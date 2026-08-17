@@ -696,6 +696,32 @@ def test_cluster_secret_comes_from_deployment_env_and_dry_run_is_redacted(tmp_pa
     assert command[-1] == "deployment-secret"
 
 
+def test_cluster_client_submission_timeout_is_retryable(tmp_path, monkeypatch):
+    from core import cluster as cluster_mod
+
+    client = tmp_path / "client.py"
+    client.write_text("# stub", encoding="utf-8")
+    config = {
+        "cluster": {
+            "submit_mode": "client",
+            "python_path": sys.executable,
+            "software_path": str(tmp_path),
+            "client_py": client.name,
+            "kill_password": "secret",
+            "submit_timeout_seconds": 5,
+        }
+    }
+
+    def timed_out(*_args, **_kwargs):
+        raise cluster_mod.subprocess.TimeoutExpired(cmd="client.py", timeout=5)
+
+    monkeypatch.setattr(cluster_mod.subprocess, "run", timed_out)
+    result = cluster_mod.submit_cluster_job(str(tmp_path / "Config.cfg"), config, dry_run=False)
+
+    assert result.returncode == 124
+    assert "timed out" in result.stderr
+
+
 def test_cluster_environment_reports_submission_credential_status_without_secret(tmp_path, monkeypatch):
     import core.cluster as cluster_mod
 

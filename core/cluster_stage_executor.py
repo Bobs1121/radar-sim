@@ -1057,7 +1057,59 @@ def execute_cluster_submit(context: ClusterStageContext, job: dict[str, Any], ru
     owner = _owner(job)
     lease = context.run_store.resolve_private(run_ref, owner=owner)
     config = context.config_loader(lease.public.project)
-    from core.cluster import submit_cluster_job
+    from core.cluster import get_cluster_web_status, submit_cluster_job
+
+    receipt = context.run_store.get_submission_receipt(run_ref, owner=owner)
+    if receipt is not None:
+        external_job_id = str(receipt.get("external_job_id") or "").strip()
+        run = context.run_store.mark_submitted(
+            run_ref,
+            owner=owner,
+            external_job_id=external_job_id,
+            submit_mode=str(receipt.get("submit_mode") or "recovered-receipt"),
+        )
+        return {
+            "cluster_run": run.to_dict(),
+            "cluster_run_ref": run.ref,
+            "state": "submitted",
+            "recovered_existing_submission": True,
+        }
+
+    # Submission is an external side effect and cannot share a transaction
+    # with the local ClusterRunStore.  After a server/worker restart, first
+    # adopt a job that the manager already created for this unique Config.cfg
+    # path.  This closes the window between ``submit_cluster_job`` returning
+    # and ``mark_submitted`` committing, where blindly retrying would enqueue
+    # the same simulation twice.
+    raw_cluster = dict(config.get("cluster") or {})
+    if str(raw_cluster.get("web_url") or "").strip():
+        try:
+            observed = get_cluster_web_status(
+                config,
+                _cluster_status_query(lease),
+            )
+        except Exception:
+            observed = {}
+        existing_external_id = str(observed.get("job_id") or "").strip()
+        if bool(observed.get("found")) and existing_external_id:
+            context.run_store.record_submission_receipt(
+                run_ref,
+                owner=owner,
+                external_job_id=existing_external_id,
+                submit_mode="recovered-existing-submission",
+            )
+            run = context.run_store.mark_submitted(
+                run_ref,
+                owner=owner,
+                external_job_id=existing_external_id,
+                submit_mode="recovered-existing-submission",
+            )
+            return {
+                "cluster_run": run.to_dict(),
+                "cluster_run_ref": run.ref,
+                "state": "submitted",
+                "recovered_existing_submission": True,
+            }
 
     submitted = submit_cluster_job(lease.config_path, config, dry_run=False)
     if int(submitted.returncode or 0) != 0:
@@ -1089,6 +1141,12 @@ def execute_cluster_submit(context: ClusterStageContext, job: dict[str, Any], ru
             actions=({"type": "retry_stage", "label": "Retry Cluster submission"},),
         )
     external = _external_job_id(str(submitted.stdout or ""), run_ref)
+    context.run_store.record_submission_receipt(
+        run_ref,
+        owner=owner,
+        external_job_id=external,
+        submit_mode=str(submitted.mode or ""),
+    )
     run = context.run_store.mark_submitted(
         run_ref, owner=owner, external_job_id=external, submit_mode=str(submitted.mode or "")
     )
@@ -1111,7 +1169,7 @@ def execute_cluster_collect(
     # generated Config path is unique and lets the official status page resolve
     # the actual job (for example ``10357``) without exposing that detail to the
     # user contract.
-    query = str(PureWindowsPath(lease.config_path).parent)
+    query = _cluster_status_query(lease)
     expected_count = _expected_cluster_task_count(job)
     state = "running"
     summary: dict[str, Any] = {}
@@ -1356,6 +1414,18 @@ def _expected_cluster_task_count(job: dict[str, Any]) -> int:
         return 0
 
 
+def _cluster_status_query(lease: Any) -> str:
+    """Return the unique generated Config.cfg directory for manager lookup.
+
+    Some Cluster deployments return a task count (for example ``12``) from
+    submission rather than the durable manager job id.  The generated path is
+    therefore the portable lookup key even when a numeric external value was
+    recorded in the private run store.
+    """
+
+    return str(PureWindowsPath(str(getattr(lease, "config_path", "") or "")).parent)
+
+
 def _inspect_cluster_job_for_collection(job_dir: str, *, expected_count: int = 0) -> dict[str, Any]:
     """Inspect a result directory without losing ``result.ini`` evidence.
 
@@ -1376,7 +1446,10 @@ def _inspect_cluster_job_for_collection(job_dir: str, *, expected_count: int = 0
         count = max(int(expected_count or 0), 0)
     except (TypeError, ValueError):
         count = 0
-    retry_limit = min(max(1000, count * 4 + 256), 10_000)
+    # DatasetStore permits up to 20,000 input files. Reserve room for each
+    # input's result.ini, MF4 and auxiliary log files without imposing a
+    # second hidden 10,000-file ceiling on the Cluster route.
+    retry_limit = max(1000, count * 8 + 512)
     try:
         expanded = inspect_cluster_job(job_dir, max_files=retry_limit)
     except TypeError:
@@ -1441,6 +1514,14 @@ def _cluster_input_results(inspected: dict[str, Any], job_root: str) -> list[dic
         for item in inspected.get("output_mf4") or []
         if str(item.get("relative_path") or "").strip()
     ]
+    output_by_parent = {
+        (
+            candidate.rsplit("/", 1)[0].casefold()
+            if "/" in candidate
+            else ""
+        ): candidate
+        for candidate in output_files
+    }
     rows: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_results, 1):
         result_relative = _cluster_logical_relative_path(
@@ -1451,7 +1532,7 @@ def _cluster_input_results(inspected: dict[str, Any], job_root: str) -> list[dic
         task_relative = result_relative.rsplit("/", 1)[0] if "/" in result_relative else result_relative
         source_hint = _cluster_source_hint(raw, job_root)
         input_relative = source_hint or task_relative or f"cluster-task-{index}"
-        output_relative = _matching_cluster_output(task_relative, output_files)
+        output_relative = output_by_parent.get(task_relative.casefold(), "")
         success_value = str(raw.get("successfull") or raw.get("successful") or "").strip().lower()
         status = "succeeded" if success_value in {"1", "true", "success", "succeeded"} else (
             "failed" if success_value in {"0", "false", "failure", "failed"} else "unknown"
@@ -1471,7 +1552,7 @@ def _cluster_input_results(inspected: dict[str, Any], job_root: str) -> list[dic
                 "error_code": error_code,
             }
         )
-    return rows[:200]
+    return rows
 
 
 def _cluster_logical_relative_path(value: object, job_root: str, *, fallback: str) -> str:
@@ -1507,15 +1588,6 @@ def _cluster_source_hint(raw: dict[str, Any], job_root: str) -> str:
             return name[:240]
         if ".." not in text.split("/"):
             return text.strip("/")[:240]
-    return ""
-
-
-def _matching_cluster_output(task_relative: str, output_files: list[str]) -> str:
-    parent = task_relative.rsplit("/", 1)[0].casefold() if "/" in task_relative else ""
-    for candidate in output_files:
-        candidate_parent = candidate.rsplit("/", 1)[0].casefold() if "/" in candidate else ""
-        if parent and candidate_parent == parent:
-            return candidate
     return ""
 
 

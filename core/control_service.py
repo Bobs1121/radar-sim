@@ -1482,6 +1482,19 @@ class ControlService:
                 )
                 if task is None:
                     raise KeyError(f"unknown stage: {stage_id}")
+                task_status = str(task.get("status") or "")
+                if task_status == "succeeded":
+                    # A transfer manifest can be delivered twice when the
+                    # response to the first request is lost.  TransferService
+                    # has already verified the exact plan/manifest identity;
+                    # never downgrade or rewrite a terminal Stage on the
+                    # duplicate callback.
+                    conn.commit()
+                    return self._get_job_locked(conn, str(job_id))
+                if task_status not in {"queued", "running"}:
+                    raise ValueError(
+                        f"transfer stage {stage_id} is {task_status} and cannot accept a manifest"
+                    )
                 resolved = dict(job.get("resolved_spec") or {})
                 decisions = dict(resolved.get("decisions") or {})
                 transfers = dict(decisions.get("transfers") or {})
@@ -2048,7 +2061,7 @@ class ControlService:
         self,
         *,
         stale_after_seconds: float = 300.0,
-        max_attempts: Optional[int] = 3,
+        max_attempts: Optional[int] = None,
         assignment_grace_seconds: float = 30.0,
     ) -> list[dict[str, Any]]:
         """Requeue running tasks whose agent has gone silent (dead-agent recovery).
@@ -2333,10 +2346,76 @@ class ControlService:
                 if task["status"] in TERMINAL_TASK_STATUSES:
                     raise ValueError(f"task already completed: {task_id}")
                 if str(task.get("status") or "") != "running":
-                    raise TaskResultRejected(
-                        "stale_task_result",
-                        f"task {task_id} is no longer running; result callback is stale",
-                    )
+                    # A result may already be durable in the Agent outbox when
+                    # the server's heartbeat reclaimer moves the task back to
+                    # ``queued``.  If no newer attempt has claimed it, adopt
+                    # that exact old attempt instead of starting a duplicate
+                    # build/transfer/simulation.  Once a newer attempt exists,
+                    # the old callback remains fenced and is rejected below.
+                    can_adopt_reclaimed_attempt = False
+                    if (
+                        str(task.get("status") or "") == "queued"
+                        and attempt is not None
+                        and not bool(task.get("cancel_requested"))
+                    ):
+                        try:
+                            callback_attempt = int(attempt)
+                        except (TypeError, ValueError):
+                            callback_attempt = 0
+                        expected_attempt = int(task.get("attempt_count") or 0)
+                        attempt_row = conn.execute(
+                            """
+                            SELECT agent_id,status,error_json
+                            FROM stage_attempts
+                            WHERE stage_id=? AND attempt=?
+                            """,
+                            (task_id, callback_attempt),
+                        ).fetchone()
+                        attempt_error = self._loads(
+                            attempt_row["error_json"]
+                        ) if attempt_row is not None else {}
+                        can_adopt_reclaimed_attempt = bool(
+                            callback_attempt > 0
+                            and callback_attempt == expected_attempt
+                            and attempt_row is not None
+                            and str(attempt_row["agent_id"] or "") == str(agent_id or "")
+                            and str(attempt_row["status"] or "") == "failed"
+                            and str(attempt_error.get("code") or "") == "AGENT_STALE"
+                        )
+                    if can_adopt_reclaimed_attempt:
+                        self._get_agent_locked(conn, str(agent_id))
+                        now = self._now()
+                        conn.execute(
+                            """
+                            UPDATE tasks
+                            SET status='running', assigned_agent_id=?, claimed_at=?, updated_at=?
+                            WHERE task_id=? AND status='queued' AND attempt_count=?
+                            """,
+                            (str(agent_id), now, now, task_id, int(attempt)),
+                        )
+                        conn.execute(
+                            """
+                            UPDATE agents
+                            SET status='busy', current_task_id=?, last_heartbeat=?
+                            WHERE agent_id=?
+                            """,
+                            (task_id, now, str(agent_id)),
+                        )
+                        self._append_event_locked(
+                            conn,
+                            task["job_id"],
+                            stage_id=task_id,
+                            attempt=int(attempt),
+                            event_type="stage.resumed",
+                            status="running",
+                            message="adopted terminal callback from reclaimed Agent attempt",
+                        )
+                        task = self._get_task_locked(conn, task_id)
+                    else:
+                        raise TaskResultRejected(
+                            "stale_task_result",
+                            f"task {task_id} is no longer running; result callback is stale",
+                        )
                 assigned_agent_id = str(task["assigned_agent_id"] or "")
                 required_agent_id = str(task.get("required_agent_id") or "")
                 if agent_id:

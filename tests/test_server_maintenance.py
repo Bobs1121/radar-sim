@@ -73,7 +73,7 @@ def test_invalid_maintenance_settings_fall_back_to_safe_defaults(monkeypatch):
 
     assert interval == 30.0
     assert stale_after == 300.0
-    assert max_attempts == 3
+    assert max_attempts is None
     assert assignment_grace == 30.0
 
 

@@ -107,6 +107,7 @@ class ClusterRunStore:
                     job_dir TEXT NOT NULL,
                     config_path TEXT NOT NULL,
                     output_location TEXT NOT NULL,
+                    submission_receipt_json TEXT NOT NULL DEFAULT '{}',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     UNIQUE(owner, control_job_id)
@@ -125,6 +126,14 @@ class ClusterRunStore:
                 );
                 """
             )
+            columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(cluster_runs)").fetchall()
+            }
+            if "submission_receipt_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE cluster_runs ADD COLUMN submission_receipt_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=10)
@@ -227,6 +236,58 @@ class ClusterRunStore:
             external_job_id=external_job_id,
             submit_mode=str(submit_mode or "").strip(),
         )
+
+    def record_submission_receipt(
+        self,
+        run_ref: str,
+        *,
+        owner: str,
+        external_job_id: str,
+        submit_mode: str,
+    ) -> ClusterRunRef:
+        """Persist the external side effect before advancing the run state.
+
+        Cluster submission is not transactional with SQLite.  This receipt is
+        written immediately after the manager accepts the request and before
+        ``mark_submitted``.  A restarted executor can adopt it without issuing
+        a second external submission.
+        """
+
+        external = str(external_job_id or "").strip()
+        if not external:
+            raise ClusterRunStoreError("cluster submission receipt has no external job id")
+        row = self._run_row(run_ref, owner=owner)
+        receipt = {
+            "control_job_id": str(row["control_job_id"]),
+            "external_job_id": external,
+            "submit_mode": str(submit_mode or "").strip(),
+            "recorded_at": float(self._now_fn()),
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE cluster_runs SET submission_receipt_json=?, updated_at=? WHERE run_ref=? AND owner=?",
+                (
+                    json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+                    float(receipt["recorded_at"]),
+                    str(run_ref),
+                    normalize_user(owner),
+                ),
+            )
+        return self.get(run_ref, owner=owner)
+
+    def get_submission_receipt(self, run_ref: str, *, owner: str) -> dict[str, Any] | None:
+        """Return one private submission receipt, if the side effect is known."""
+
+        row = self._run_row(run_ref, owner=owner)
+        try:
+            value = json.loads(str(row["submission_receipt_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ClusterRunStoreError("cluster submission receipt is invalid") from exc
+        if not isinstance(value, dict) or not str(value.get("external_job_id") or "").strip():
+            return None
+        if str(value.get("control_job_id") or "") != str(row["control_job_id"]):
+            raise ClusterRunStoreError("cluster submission receipt identity mismatch")
+        return dict(value)
 
     def update_state(self, run_ref: str, *, owner: str, state: str) -> ClusterRunRef:
         return self._update_state(run_ref, owner=owner, state=state)

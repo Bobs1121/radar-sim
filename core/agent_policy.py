@@ -90,7 +90,10 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # v14 removes the last Connector-side seven-day/24-hour ceilings for explicit
 # build and local-run policies.  Zero remains unlimited; a positive limit is
 # caller-selected and cancellation/process liveness remain independent.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 14
+# v15 records Selena Runtime Bundle branch provenance and forces a full clean
+# build when an existing output belongs to another/unproven branch. Incremental
+# reuse is allowed only for the same branch, mode and entrypoint checksum.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 15
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

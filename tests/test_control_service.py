@@ -528,7 +528,14 @@ def test_late_result_from_reclaimed_attempt_cannot_complete_new_attempt(tmp_path
     reclaimed = service.reclaim_stale_tasks(stale_after_seconds=-1, max_attempts=3)
     assert reclaimed and reclaimed[0]["new_status"] == "queued"
 
-    with pytest.raises(ValueError, match="stale"):
+    # A newer attempt fences the old outbox callback.  If the old callback had
+    # arrived before this claim, the server would safely adopt it instead of
+    # launching a duplicate; once attempt 2 exists it must remain stale.
+    second_agent = service.register_agent("second", agent_id="second", capabilities=["local.check"])
+    claimed_again = service.claim_next_task(second_agent["agent_id"])
+    assert claimed_again["attempt_count"] == old_attempt + 1
+
+    with pytest.raises(ValueError, match="assigned to second"):
         service.submit_task_result(
             claimed["task_id"],
             agent_id=first_agent["agent_id"],
@@ -537,9 +544,6 @@ def test_late_result_from_reclaimed_attempt_cannot_complete_new_attempt(tmp_path
             returncode=0,
         )
 
-    second_agent = service.register_agent("second", agent_id="second", capabilities=["local.check"])
-    claimed_again = service.claim_next_task(second_agent["agent_id"])
-    assert claimed_again["attempt_count"] == old_attempt + 1
     completed = service.submit_task_result(
         claimed_again["task_id"],
         agent_id=second_agent["agent_id"],
@@ -548,6 +552,27 @@ def test_late_result_from_reclaimed_attempt_cannot_complete_new_attempt(tmp_path
         returncode=0,
     )
     assert completed["status"] == "succeeded"
+
+
+def test_result_from_reclaimed_attempt_is_adopted_before_new_claim(tmp_path):
+    service = make_service(tmp_path)
+    job = service.create_job("local.check")
+    agent = service.register_agent("first", agent_id="first", capabilities=["local.check"])
+    claimed = service.claim_next_task(agent["agent_id"])
+    attempt = int(claimed["attempt_count"])
+
+    reclaimed = service.reclaim_stale_tasks(stale_after_seconds=-1, max_attempts=None)
+    assert reclaimed[0]["new_status"] == "queued"
+
+    completed = service.submit_task_result(
+        claimed["task_id"],
+        agent_id=agent["agent_id"],
+        attempt=attempt,
+        status="succeeded",
+        returncode=0,
+    )
+    assert completed["status"] == "succeeded"
+    assert completed["stages"][0]["attempt_count"] == attempt
 
 
 def test_heartbeat_cannot_claim_another_agent_task_identity(tmp_path):

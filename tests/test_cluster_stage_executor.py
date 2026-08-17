@@ -195,6 +195,42 @@ def test_submit_transport_failure_is_retryable_without_rebuilding(tmp_path: Path
     assert store.get(run.ref, owner="alice").state == "prepared"
 
 
+def test_submit_adopts_durable_receipt_without_second_external_submission(
+    tmp_path: Path, monkeypatch
+):
+    store = ClusterRunStore(tmp_path / "runs.db", now_fn=lambda: 10.0)
+    run = store.create_run(
+        owner="alice", control_job_id="job-demo", project="bydod25",
+        dataset_id="dataset:sha256:" + "3" * 64,
+        artifact_id="selena-bundle:sha256:" + "2" * 64,
+        artifact_storage_ref="shared://selena-bundles/bydod25/runtime-bundle.zip",
+        profile="default", job_dir=str(tmp_path / "private-job"),
+        config_path=r"\\cluster\jobs\job-demo\Config.cfg",
+        output_location=str(tmp_path / "private-output"),
+    )
+    store.record_submission_receipt(
+        run.ref,
+        owner="alice",
+        external_job_id="10321",
+        submit_mode="xmlrpc",
+    )
+    context = SimpleNamespace(
+        run_store=store,
+        config_loader=lambda _project: {"cluster": {}},
+    )
+    monkeypatch.setattr(
+        "core.cluster.submit_cluster_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not submit the external Cluster job twice")
+        ),
+    )
+
+    recovered = execute_cluster_submit(context, _job(), run.ref)
+
+    assert recovered["recovered_existing_submission"] is True
+    assert recovered["cluster_run"]["external_job_id"] == "10321"
+
+
 def test_collect_gateway_outage_keeps_observing_until_shared_result(
     tmp_path: Path, monkeypatch
 ):
@@ -618,6 +654,27 @@ def test_partial_cluster_result_keeps_each_input_outcome_in_manifest(tmp_path: P
     assert [item["status"] for item in manifest["input_results"]] == ["succeeded", "failed"]
     assert manifest["status"] == "partial"
     assert str(tmp_path) not in str(manifest)
+
+
+def test_cluster_batch_input_results_are_not_truncated():
+    from core.cluster_stage_executor import _cluster_input_results
+
+    inspected = {
+        "task_results": [
+            {
+                "relative_path": f"output/{index:04d}/result.ini",
+                "successfull": "1",
+                "Returncode": "0",
+            }
+            for index in range(250)
+        ],
+        "output_mf4": [],
+    }
+
+    rows = _cluster_input_results(inspected, "C:/private/job")
+
+    assert len(rows) == 250
+    assert rows[-1]["index"] == 250
 
 
 def test_failed_cluster_result_publishes_downloadable_diagnostics(tmp_path: Path, monkeypatch):

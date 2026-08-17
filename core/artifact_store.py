@@ -43,6 +43,12 @@ _SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.~!$&'()*+,;=:@-]+$")
 # Chunk size default (4 MiB).
 DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024
 
+# Upload expiry is an inactivity lease, not a wall-clock limit.  A large MF4
+# batch or a Runtime Bundle may take many hours to transfer; every successful
+# chunk renews this window.  The value is deliberately deployment-owned and is
+# not part of the user simulation configuration.
+_UPLOAD_IDLE_LEASE_SECONDS = 24 * 60 * 60.0
+
 # Internal reserved namespace segments that users cannot address.
 _RESERVED_INTERNAL = {".store", "temp", "metadata", "sessions", "chunks", "artifact_finalized"}
 
@@ -411,7 +417,7 @@ class ArtifactStore:
         expected_checksum: str,
         *,
         evidence_ref: str = "",
-        expires_after_seconds: float = 3600.0,
+        expires_after_seconds: float = _UPLOAD_IDLE_LEASE_SECONDS,
     ) -> UploadSession:
         """Create a new upload session.
 
@@ -503,14 +509,32 @@ class ArtifactStore:
                       AND expected_size=? AND expected_checksum=?
                       AND (
                         status='finalized'
-                        OR (status='active' AND expires_at>=?)
+                        OR status='active'
                       )
                     ORDER BY updated_at DESC, rowid DESC
                     LIMIT 1
                     """,
-                    (owner, project, evidence_ref, expected_size, expected_checksum, now),
+                    (owner, project, evidence_ref, expected_size, expected_checksum),
                 ).fetchone()
-                return self._get_session_locked(conn, str(row["session_id"])) if row is not None else None
+                if row is None:
+                    return None
+                session = self._get_session_locked(conn, str(row["session_id"]))
+                if session.status == "active" and session.expires_at < now:
+                    # An interrupted client may only recover an expired session
+                    # when its private partial file still exists.  The request
+                    # identity (owner, evidence, size and checksum) is exact,
+                    # so reviving that immutable upload is safe and avoids
+                    # restarting a multi-gigabyte transfer from byte zero.
+                    if not self._temp_path(session.session_id).is_file():
+                        return None
+                    renewed = now + _UPLOAD_IDLE_LEASE_SECONDS
+                    conn.execute(
+                        "UPDATE artifact_upload_sessions SET expires_at=?, updated_at=? WHERE session_id=?",
+                        (renewed, now, session.session_id),
+                    )
+                    conn.commit()
+                    session = self._get_session_locked(conn, session.session_id)
+                return session
             finally:
                 conn.close()
 
@@ -528,7 +552,26 @@ class ArtifactStore:
         if owner and session.owner != normalize_user(owner):
             raise ArtifactSessionError("session owner mismatch")
         if session.status == "active" and session.expires_at < self._now():
-            raise ArtifactSessionError("session has expired")
+            # Treat expiry as an idle lease.  A resumable partial file is an
+            # immutable upload identified by owner/evidence/checksum, so it
+            # can be renewed after a service or network outage instead of
+            # forcing the Agent to restart the complete archive.
+            temp_path = self._temp_path(session.session_id)
+            if not temp_path.is_file():
+                raise ArtifactSessionError("session has expired")
+            now = self._now()
+            renewed = now + _UPLOAD_IDLE_LEASE_SECONDS
+            with self._lock:
+                conn = self._conn()
+                try:
+                    conn.execute(
+                        "UPDATE artifact_upload_sessions SET expires_at=?, updated_at=? WHERE session_id=? AND status='active'",
+                        (renewed, now, session.session_id),
+                    )
+                    conn.commit()
+                    session = self._get_session_locked(conn, session.session_id)
+                finally:
+                    conn.close()
         return session
 
     def append_chunk(
@@ -578,6 +621,10 @@ class ArtifactStore:
                             "chunk at this offset already exists with different size/checksum"
                         )
                     # Exact retry: nothing to do.
+                    conn.execute(
+                        "UPDATE artifact_upload_sessions SET updated_at=?, expires_at=MAX(expires_at, ?) WHERE session_id=?",
+                        (now, now + _UPLOAD_IDLE_LEASE_SECONDS, session_id),
+                    )
                     conn.commit()
                     return self._get_session_locked(conn, session_id)
                 # Validate contiguous semantics.
@@ -605,8 +652,13 @@ class ArtifactStore:
                 )
                 new_received = offset + len(data)
                 conn.execute(
-                    "UPDATE artifact_upload_sessions SET received_bytes=?, updated_at=? WHERE session_id=?",
-                    (new_received, now, session_id),
+                    """
+                    UPDATE artifact_upload_sessions
+                    SET received_bytes=?, updated_at=?,
+                        expires_at=MAX(expires_at, ?)
+                    WHERE session_id=?
+                    """,
+                    (new_received, now, now + _UPLOAD_IDLE_LEASE_SECONDS, session_id),
                 )
                 conn.commit()
                 return self._get_session_locked(conn, session_id)
@@ -949,6 +1001,43 @@ class ArtifactStore:
                 conn.close()
         if temp_path.exists():
             temp_path.unlink()
+
+    def cleanup_expired_sessions(self, *, limit: int = 100) -> int:
+        """Remove abandoned inactive upload sessions and their partial files."""
+
+        now = self._now()
+        size = max(1, min(int(limit or 100), 1000))
+        removed: list[str] = []
+        with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT session_id FROM artifact_upload_sessions WHERE status='active' AND expires_at<? LIMIT ?",
+                    (now, size),
+                ).fetchall()
+                removed = [str(row["session_id"]) for row in rows]
+                for session_id in removed:
+                    conn.execute(
+                        "DELETE FROM artifact_chunks WHERE session_id=?", (session_id,)
+                    )
+                    conn.execute(
+                        "DELETE FROM artifact_upload_sessions WHERE session_id=? AND status='active'",
+                        (session_id,),
+                    )
+                conn.commit()
+            except Exception:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise
+            finally:
+                conn.close()
+        for session_id in removed:
+            try:
+                self._temp_path(session_id).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return len(removed)
 
     def _temp_path(self, session_id: str) -> Path:
         """Return the temporary file path for a session."""
