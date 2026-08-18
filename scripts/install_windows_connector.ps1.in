@@ -278,7 +278,27 @@ try {
     Write-Host "`nThis PC is connected. Return to the Web page and continue the task." -ForegroundColor Green
     Write-Host "Visual Studio is user-managed. The connector checks it and reports a clear build prerequisite if missing."
 } catch {
-    Fail $_.Exception.Message
+    $failureMessage = $_.Exception.Message
+    # The previous connector is stopped before source replacement. If a later
+    # install/bootstrap step fails, restore service availability from the
+    # preserved install metadata instead of leaving the user's only Agent
+    # offline. A single-instance mutex makes this safe when the new process
+    # actually managed to start before reporting an error.
+    try {
+        $fallbackStart = Join-Path $AppRoot "scripts\start_windows.ps1"
+        if (Test-Path -LiteralPath $fallbackStart) {
+            Write-Warning "Installation failed; attempting to restore the previous Connector process."
+            $fallbackArgs = @(
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $fallbackStart,
+                "-InstallRoot", $InstallRoot, "-Background", "-NoBrowser"
+            )
+            Start-Process -FilePath "powershell.exe" -ArgumentList $fallbackArgs `
+                -WorkingDirectory $AppRoot -WindowStyle Hidden | Out-Null
+        }
+    } catch {
+        Write-Warning "Automatic Connector recovery after installation failure could not be started."
+    }
+    Fail $failureMessage
 } finally {
     Remove-Item -LiteralPath $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
