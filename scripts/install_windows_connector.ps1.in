@@ -355,17 +355,16 @@ try {
     Stop-PreviousConnector
     Reset-InstalledApplication
     Copy-Item -Path (Join-Path $Expanded '*') -Destination $AppRoot -Recurse -Force
-    $bootstrapArgs = @(
-        "-Mode", $Mode,
-        "-ControlPlane", "linux",
-        "-ServerUrl", $ServerUrl,
-        "-Owner", $Owner,
-        "-InstallRoot", $InstallRoot,
-        "-RegisterStartup",
-        "-Start"
-    )
-    if ($forceRebind) { $bootstrapArgs += "-ForceRebind" }
-    & (Join-Path $AppRoot "scripts\bootstrap.ps1") @bootstrapArgs
+    $bootstrapPath = Join-Path $AppRoot "scripts\bootstrap.ps1"
+    if ($forceRebind) {
+        & $bootstrapPath -Mode $Mode -ControlPlane linux `
+            -ServerUrl $ServerUrl -Owner $Owner -InstallRoot $InstallRoot `
+            -RegisterStartup -Start -ForceRebind
+    } else {
+        & $bootstrapPath -Mode $Mode -ControlPlane linux `
+            -ServerUrl $ServerUrl -Owner $Owner -InstallRoot $InstallRoot `
+            -RegisterStartup -Start
+    }
     if ($LASTEXITCODE -ne 0) { Fail "The local component installation did not complete." }
 
     Write-Host "`nThis PC is connected. Return to the Web page and continue the task." -ForegroundColor Green
