@@ -144,6 +144,7 @@ class SourceResolutionInputs:
 
 SourceResolutionProvider = Callable[[str, SimulationSpec], SourceResolutionInputs]
 DataResolutionProvider = Callable[[str, SimulationSpec], DataResolution]
+ClusterReadinessProvider = Callable[[UserRunConfig], Mapping[str, Any]]
 
 
 class SourceResolutionProviderError(RuntimeError):
@@ -185,6 +186,11 @@ class ApiV1Service:
     # ``cluster_direct_transfer_unavailable`` blocker instead of falling back
     # to an HTTP/body upload path.
     transfer_service: TransferService | None = None
+    # Optional deployment-owned Cluster probe.  Capability heartbeats only
+    # prove that the Linux/Gateway roles are online; this probe verifies the
+    # actual Cluster paths and submit dependency before a job transfers data
+    # or starts a long build.
+    cluster_readiness_provider: ClusterReadinessProvider | None = None
     now_fn: Callable[[], float] = time.time
 
     def health(self) -> dict[str, Any]:
@@ -318,6 +324,15 @@ class ApiV1Service:
                 "Linux 服务当前未连接到 Cluster 调度组件，暂不能提交云端仿真。",
                 "请等待服务恢复，或联系部署方检查 Linux 调度与 Cluster 网关。",
             )
+        cluster_probe = {}
+        if selected_target == "cluster" and capabilities["cluster"]["available"]:
+            cluster_probe = self._cluster_readiness(config)
+            if cluster_probe and not bool(cluster_probe.get("ready")):
+                block(
+                    str(cluster_probe.get("code") or "cluster_readiness_unavailable"),
+                    str(cluster_probe.get("message") or "Cluster 就绪检查未通过，当前不能提交云端仿真。"),
+                    str(cluster_probe.get("action") or "稍后重新检查 Cluster 就绪状态。"),
+                )
         if (
             selected_target == "local"
             and not capabilities["windows_full"]["available"]
@@ -400,11 +415,54 @@ class ApiV1Service:
                     "action": "确认该共享路径已由部署方挂载到 Linux 服务。",
                 }
             )
-        return {
+        readiness_result = {
             "status": "ready" if not blockers else "blocked",
             "can_submit": not blockers,
             "blockers": blockers,
             "notices": notices,
+        }
+        if cluster_probe:
+            readiness_result["cluster"] = cluster_probe
+        return readiness_result
+
+    def _cluster_readiness(self, config: UserRunConfig) -> dict[str, Any]:
+        """Run the optional authoritative deployment readiness probe."""
+
+        provider = self.cluster_readiness_provider
+        if provider is None:
+            return {}
+        try:
+            raw = provider(config)
+        except Exception:
+            return {
+                "ready": False,
+                "code": "cluster_readiness_unavailable",
+                "message": "Cluster 就绪检查暂时无法完成，未启动仿真。",
+                "action": "稍后重新检查 Cluster 就绪状态；如果持续失败，请检查 Cluster 网关和共享工作区。",
+            }
+        if not isinstance(raw, Mapping):
+            return {
+                "ready": False,
+                "code": "cluster_readiness_invalid",
+                "message": "Cluster 就绪检查返回了无效结果，未启动仿真。",
+                "action": "检查服务端 Cluster 就绪检查配置后重试。",
+            }
+        # Keep the public contract deliberately small.  A custom provider may
+        # have access to private mount paths or raw CheckItem details; those
+        # are useful in server logs but never belong in Web/SDK JSON.
+        raw_ready = raw.get("ready")
+        if isinstance(raw_ready, bool):
+            ready = raw_ready
+        else:
+            ready = str(raw_ready or raw.get("status") or "").strip().lower() in {
+                "1", "true", "yes", "ready", "ok", "succeeded"
+            }
+        return {
+            "ready": ready,
+            "status": str(raw.get("status") or ("ready" if raw.get("ready") else "blocked")),
+            "code": str(raw.get("code") or "cluster_environment_unavailable"),
+            "message": str(raw.get("message") or "Cluster 就绪检查未通过，当前不能提交云端仿真。"),
+            "action": str(raw.get("action") or "稍后重新检查 Cluster 就绪状态。"),
         }
 
     def submit_user_run(
@@ -489,6 +547,25 @@ class ApiV1Service:
         resolved_spec = dict(plan.resolved_spec)
         requested_target = config.simulation.target
         selected_target, route_reason = self._select_user_execution_target(owner, config)
+        cluster_probe = (
+            self._cluster_readiness(config)
+            if selected_target == "cluster" and not dry_run
+            else {}
+        )
+        if cluster_probe and not bool(cluster_probe.get("ready")):
+            self._block_cluster_readiness_tasks(
+                task_specs,
+                source=str(config.selena.source or ""),
+                code=str(cluster_probe.get("code") or "cluster_environment_unavailable"),
+                message=str(
+                    cluster_probe.get("message")
+                    or "Cluster 就绪检查未通过，未启动仿真。"
+                ),
+                action=str(
+                    cluster_probe.get("action")
+                    or "稍后重新检查 Cluster 就绪状态。"
+                ),
+            )
         if selected_target == "local":
             # ``dataset://``/``shared://`` are control-plane logical
             # references, not paths that a Windows-full process can open.  A
@@ -751,6 +828,12 @@ class ApiV1Service:
             "idempotency": {"key": key, "request_hash": request_hash},
             "recognition": {"status": recognition_status},
         }
+        if cluster_probe:
+            metadata["cluster_readiness"] = {
+                key: value
+                for key, value in cluster_probe.items()
+                if key not in {"physical_paths"}
+            }
         try:
             job = control.create_job(
                 job_type,
@@ -996,6 +1079,45 @@ class ApiV1Service:
             payload = dict(task.get("payload") or {})
             payload["transfer_status"] = "cluster_direct_transfer_unavailable"
             task["payload"] = payload
+
+    @staticmethod
+    def _block_cluster_readiness_tasks(
+        task_specs: list[dict[str, Any]],
+        *,
+        source: str,
+        code: str,
+        message: str,
+        action: str,
+    ) -> None:
+        """Block the first Cluster-owned gate before source work/transfer starts."""
+
+        preferred = "environment_check" if str(source or "").strip().lower() == "existing" else "preflight"
+        candidates = [
+            task for task in task_specs
+            if str(task.get("stage_type") or task.get("task_type") or "") == preferred
+            and str(task.get("status") or task.get("initial_status") or "") != "skipped"
+        ]
+        if not candidates and preferred != "preflight":
+            candidates = [
+                task for task in task_specs
+                if str(task.get("stage_type") or task.get("task_type") or "") == "preflight"
+                and str(task.get("status") or task.get("initial_status") or "") != "skipped"
+            ]
+        if not candidates:
+            return
+        task = candidates[0]
+        task["status"] = "blocked"
+        task["initial_status"] = "blocked"
+        task["skip_reason"] = str(code or "cluster_environment_unavailable")
+        task["error"] = {
+            "code": str(code or "cluster_environment_unavailable"),
+            "status": "needs_input",
+            "message": str(message),
+            "actions": [{"type": "retry_stage", "label": str(action)}],
+        }
+        payload = dict(task.get("payload") or {})
+        payload["cluster_readiness"] = "blocked"
+        task["payload"] = payload
 
     def _select_user_execution_target(
         self,
@@ -1725,6 +1847,55 @@ class ApiV1Service:
                 actions=[{"type": "choose_failed_stage", "label": "Retry a failed or cancelled stage"}],
             ) from exc
         return self._job_response(job)
+
+    def retry_failed_inputs(
+        self,
+        owner: str,
+        job_id: str,
+        *,
+        stage_id: str = "",
+        input_paths: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """Retry only failed inputs of a local partial run."""
+
+        owner = self._owner(owner)
+        job = self._get_owned_job(owner, job_id)
+        stages = list(job.get("stages") or job.get("tasks") or [])
+        run_stage = next(
+            (
+                item for item in stages
+                if str(item.get("stage_type") or item.get("task_type") or "") == "run_simulation"
+                and (not stage_id or str(item.get("stage_id") or item.get("task_id") or "") == str(stage_id))
+            ),
+            None,
+        )
+        if run_stage is None:
+            raise ApiV1Error(
+                "partial_retry_stage_not_found",
+                "The run_simulation stage for partial retry is unavailable",
+                status_code=404,
+            )
+        resolved_stage_id = str(run_stage.get("stage_id") or run_stage.get("task_id") or "")
+        try:
+            updated = self._control(owner).retry_failed_inputs(
+                job_id,
+                resolved_stage_id,
+                list(input_paths or ()),
+            )
+        except ValueError as exc:
+            raise ApiV1Error(
+                "invalid_failed_input_retry",
+                str(exc),
+                status_code=409,
+                detail={"job_id": job_id, "stage_id": resolved_stage_id},
+                actions=[
+                    {
+                        "type": "inspect_partial_result",
+                        "label": "Inspect failed input results",
+                    }
+                ],
+            ) from exc
+        return self._job_response(updated)
 
     def manifest(self, owner: str, job_id: str) -> dict[str, Any]:
         job = self._get_owned_job(owner, job_id)
@@ -3091,6 +3262,10 @@ class ApiV1Service:
 
         stage_type = str(current.get("stage_type") or current.get("task_type") or "")
         dispatch_scope = str((current.get("payload") or {}).get("dispatch_scope") or "")
+        direct_transfer_pending = bool(
+            dispatch_scope == "direct_transfer"
+            and (current.get("payload") or {}).get("transfer_required") is True
+        )
         spec = dict(job.get("spec") or (job.get("payload") or {}).get("spec") or {})
         selena = dict(spec.get("selena") or {})
         simulation = dict(spec.get("simulation") or {})
@@ -3153,7 +3328,12 @@ class ApiV1Service:
         if (
             connector_state.get("update_required") is True
             and not bool(capabilities["windows"]["available"])
-            and (target == "local" or source == "build" or bool(local_path_values))
+            and (
+                target == "local"
+                or source == "build"
+                or bool(local_path_values)
+                or direct_transfer_pending
+            )
         ):
             return {
                 "reason": "windows_connector_update_required",
@@ -3223,7 +3403,10 @@ class ApiV1Service:
                     and dispatch_scope != "direct_transfer_environment"
                 )
             )
-            and any(classify_data_path(str(value or "")) == "agent" for value in local_path_values)
+            and (
+                any(classify_data_path(str(value or "")) == "agent" for value in local_path_values)
+                or direct_transfer_pending
+            )
             and not (
                 capabilities["windows_light"]["available"]
                 or capabilities["windows_full"]["available"]
@@ -3458,6 +3641,23 @@ class ApiV1Service:
         actions: list[dict[str, Any]] = []
         if status in {"queued", "running", "needs_input"}:
             actions.append({"type": "cancel_job", "label": "Cancel job", "job_id": job_id})
+        if status == "partial":
+            run_stage = next(
+                (
+                    stage for stage in stages
+                    if str(stage.get("stage_type") or stage.get("task_type") or "") == "run_simulation"
+                ),
+                None,
+            )
+            if run_stage is not None:
+                actions.append(
+                    {
+                        "type": "retry_failed_inputs",
+                        "label": "Retry failed inputs",
+                        "job_id": job_id,
+                        "stage_id": str(run_stage.get("stage_id") or run_stage.get("task_id") or ""),
+                    }
+                )
         for stage in stages:
             stage_status = str(stage.get("status") or "")
             if stage_status == "blocked":

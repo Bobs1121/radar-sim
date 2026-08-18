@@ -1027,6 +1027,15 @@ def bind_local_stage_after_result(control: ControlService, completed_stage: dict
         "result_path": str((spec.get("result") or {}).get("path") or ""),
         "config_fingerprint": str((job.get("resolved_spec") or {}).get("source_config_hash") or ""),
     }
+    try:
+        retry_attempt = max(0, int((completed_stage.get("payload") or {}).get("retry_attempt") or 0))
+    except (TypeError, ValueError):
+        retry_attempt = 0
+    payload["result_run_ref"] = (
+        lease_ref
+        if retry_attempt <= 0
+        else f"{lease_ref}.retry.{retry_attempt}"
+    )
     if stage_type == "collect_results":
         result_ref = str(result.get("result_ref") or "")
         if not result_ref.startswith("result:sha256:"):

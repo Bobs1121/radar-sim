@@ -281,7 +281,7 @@ def discover_dataset_files(
     cancelled = cancel_requested or (lambda: False)
     # Inventory and fingerprint must always cover the complete dataset.
     # SimulationSpec.data.limit is applied later when selecting run inputs.
-    for path in iter_mf4_inputs(source, limit=0):
+    for path in iter_mf4_inputs(source, limit=0, cancel_requested=cancelled):
         if cancelled():
             raise DatasetDiscoveryCancelled("dataset discovery cancelled")
         scan = scan_data_file(path, signals, max_bytes=max(0, int(max_read_mb)) * 1024 * 1024)

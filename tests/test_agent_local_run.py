@@ -215,6 +215,37 @@ def test_execution_rejects_same_size_same_mtime_input_replacement(tmp_path):
     assert result["diagnostics"]["items"][0]["error_code"] == "input_changed_after_preflight"
 
 
+def test_partial_retry_resets_only_selected_failed_input(tmp_path):
+    store, kwargs = _fixture(tmp_path)
+    lease = store.create_from_authorized_inputs(**kwargs)
+    calls: list[int] = []
+
+    def first_runner(request, _cancel_requested):
+        calls.append(request.item_index)
+        if request.item_index == 2:
+            return LocalRunOutcome(1, "selena_failed")
+        request.output_mf4.write_bytes(b"first-output")
+        return LocalRunOutcome(0)
+
+    assert execute_local_run(lease["lease_id"], store, runner=first_runner) == 1
+    partial = store.result(lease["lease_id"])
+    assert partial["summary"]["failed_input_count"] == 1
+    assert calls == [1, 2]
+
+    store.reset_failed_inputs(lease["lease_id"], ["nested/two.mf4"])
+    calls.clear()
+
+    def retry_runner(request, _cancel_requested):
+        calls.append(request.item_index)
+        request.output_mf4.write_bytes(b"retry-output")
+        return LocalRunOutcome(0)
+
+    assert execute_local_run(lease["lease_id"], store, runner=retry_runner) == 0
+    final = store.result(lease["lease_id"])
+    assert final["status"] == "succeeded"
+    assert calls == [2]
+
+
 def test_create_rejects_changed_runtime_and_unauthorized_assets(tmp_path):
     store, kwargs = _fixture(tmp_path)
     kwargs["runtime_locations"]["bin/runtime.dll"].write_bytes(b"changed")

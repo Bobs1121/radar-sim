@@ -503,6 +503,53 @@ def _run_serve_v1(args) -> int:
             required_signals=spec.data.required_signals,
         )
 
+    def cluster_readiness_provider(_run_config):
+        """Return a path-free authoritative Cluster dependency snapshot.
+
+        Heartbeat capabilities only show that the Linux and gateway roles are
+        alive.  The actual Cluster integration can still be unusable because
+        a share, client.py, Manager XML-RPC port, or submission credential is
+        unavailable.  Run the same bounded environment probe used by the
+        Linux Cluster stage before accepting a new cloud run.
+        """
+        from core.cluster import check_cluster_environment
+        from core.config import load_cluster_execution_config
+
+        infrastructure = load_cluster_execution_config("run-config-v2")
+        checks = check_cluster_environment(infrastructure)
+        failed = [
+            item
+            for item in checks
+            if not bool(getattr(item, "ok", False))
+            and str(getattr(item, "severity", "error") or "error").lower() == "error"
+        ]
+        if not failed:
+            return {
+                "ready": True,
+                "status": "ready",
+                "code": "cluster_ready",
+                "message": "Cluster dependencies are ready.",
+                "checks": [
+                    {"name": str(getattr(item, "name", "Cluster dependency")), "ok": True}
+                    for item in checks
+                    if bool(getattr(item, "ok", False))
+                ],
+            }
+        names = []
+        for item in failed[:6]:
+            name = str(getattr(item, "name", "Cluster dependency") or "Cluster dependency")
+            if name.lower().startswith("worker dependency path:"):
+                name = "Worker dependency path"
+            names.append(name)
+        return {
+            "ready": False,
+            "status": "blocked",
+            "code": "cluster_environment_unavailable",
+            "message": "Cluster 就绪检查未通过：" + "、".join(names),
+            "action": "修复 Cluster 依赖后重新校验；任务不会在未就绪时启动。",
+            "checks": [{"name": name, "ok": False} for name in names],
+        }
+
     def cluster_result_roots() -> list[Path]:
         """Return deployment-authorized Cluster workspaces for result archiving."""
         return _deployment_cluster_result_roots()
@@ -559,6 +606,7 @@ def _run_serve_v1(args) -> int:
         result_catalog=result_catalog,
         result_upload_service_factory=result_upload_service_factory,
         transfer_service=transfer_service,
+        cluster_readiness_provider=cluster_readiness_provider,
     )
     app_kwargs = {"api_service": api_service}
     if authenticator is not None:

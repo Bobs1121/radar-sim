@@ -1,6 +1,6 @@
 # Web、SDK 与 AI 集成契约
 
-> **V2 单轨收敛声明（2026-08-11）**：本文件是 Web/SDK/AI 集成合同，继续有效。V2 单轨收敛索引见 `docs/V2_ARCHITECTURE.md`，该文件在其之上收敛 Web/SDK 同能力、唯一 `user-run-config/2.0` 与明确删除清单（用户可见 project/profile/recipe/light/full/legacy 概念全部移除）。本文件下文“未来 Skill/MCP”是明确缺口：仓库目前无可安装的 radar-sim MCP Server 或 Skill 包，本文件只定义未来薄封装合同，不得对外宣称“安装 MCP/Skill 即可使用”。Cluster 结果反向交付同样未实现。两者详见 `docs/V2_ARCHITECTURE.md` §10。
+> **V2 单轨收敛声明（2026-08-18）**：本文件是 Web/SDK/AI 集成合同，继续有效。V2 单轨收敛索引见 `docs/V2_ARCHITECTURE.md`，该文件在其之上收敛 Web/SDK 同能力、唯一 `user-run-config/2.0` 与明确删除清单（用户可见 project/profile/recipe/light/full/legacy 概念全部移除）。本文件下文“未来 Skill/MCP”仍是明确缺口：仓库目前无可安装的 radar-sim MCP Server 或 Skill 包，本文件只定义未来薄封装合同，不得对外宣称“安装 MCP/Skill 即可使用”。Cluster 结果归档、Manifest、Web/SDK 下载已经由统一结果接口提供。
 
 ## 结论
 
@@ -12,10 +12,11 @@ Web、Python SDK、未来 Skill/MCP 只使用同一套 `/api/v1`，不得复制�
 2. `capabilities()` 查询与 Web 右上角相同的 owner-scoped Windows/Cluster 能力。
 3. `prepare_direct_transfers()` / `resume_direct_transfers()` 让 SDK 调用机把可读的 Selena 完整目录、Runtime、MatFilter、Adapter 和 MF4 按同一 `TransferPlan` 直接送到 Cluster 数据面；`get_job_transfer_status()` 查询传输汇总。
 4. `get_job()` / `list_jobs()` 查询任务，`cancel()` / `retry_stage()` 执行与 Web 相同的任务动作。
-5. `watch()` / `wait()` 通过可续传事件游标等待任务。
+5. `watch()` / `wait_job()` 通过可续传事件游标等待任务；默认 `timeout=None` 表示只观察、不设置仿真总时长，业务方需要观察窗口时再显式传入 `timeout`。
 6. `diagnosis()` 获取稳定、脱敏、AI 可理解的业务结论。
 7. `manifest()` 获取运行清单。
 8. `list_results()` / `get_result()` / `download_result()` 获取并校验结果。
+9. `retry_failed_inputs()` 在批量任务为 `partial` 时只重跑失败输入；已成功输入不会重复执行，重跑后的结果会生成新的不可变归档引用。
 
 ### Owner identity
 
@@ -33,6 +34,8 @@ Connector 配对仍需部署方提供受控的短期配对流程。
 并由实际的 Windows 用户执行一次。该方法不在 Linux 上执行 PowerShell，也不把 Agent Token 写入 YAML；
 安装后的连接由 Windows 登录自启和监督进程持久复用。若电脑关机、睡眠或尚未登录，SDK/Web 只能等待连接恢复，
 不能远程唤醒电源。`existing + cluster` 且输入已在 Cluster 可访问位置时不需要调用此方法。
+
+若 SDK 提交后返回 `windows_connection_required` 或 `windows_path_access_required`，集成方应按以下顺序处理：下载入口、由实际 Windows 用户执行一次、等待 `capabilities()` 显示连接、再调用 `resume_direct_transfers()`；SDK 不会在 Linux 进程中隐式执行 PowerShell。`download_windows_connector_for_run()` 返回的脚本只下载/安装一次，之后同一 Windows 用户登录会自动启动并复用连接。
 
 用户 YAML 中的文件路径统一由 `/api/v1` 规范化；Skill/MCP 不应自行替换斜杠或解析 Windows/UNC，直接转发用户输入。
 
@@ -95,6 +98,12 @@ Manifest 在这种情况下使用 `status=partial`，并提供：
 
 `input_results[].status=succeeded` 的条目可以继续被下载或交给后续处理；`failed` 条目只作为业务诊断，不会被伪装为成功。若所有输入都失败、Runner 不可用或控制面无法建立执行租约，仍按普通 Stage 失败处理，不进入部分成功分支。Web、SDK、Skill/MCP 都应展示逐条结果，而不是只显示一个批次级布尔值。
 
+当 Job 为 `partial` 时，Web 的“只重试失败数据”和 SDK 的
+`client.retry_failed_inputs(job_id)` 使用同一接口。省略 `input_paths` 表示重试全部失败输入，
+也可以传入失败条目的 `input_relative_path` 子集。Windows 本地租约保留已成功输入的 checkpoint；
+Cluster 会建立只包含待重试 MF4 的新包，并在最终 Manifest 中合并旧成功结果与本次新结果。
+重试失败再次得到 `partial` 时仍可重复调用该接口；重试成功或失败都不会覆盖旧的不可变结果归档。
+
 结果判断优先级：
 
 1. Manifest 明确为 `partial` 时，业务结果为 `partial`，稳定码为 `simulation_partial`。
@@ -116,11 +125,16 @@ Diagnosis 不返回用户本地绝对路径、共享盘路径、Agent 标识、�
 | `resume_simulation_transfer` | `resume_direct_transfers()` |
 | `get_simulation_transfer` | `get_job_transfer_status()` |
 | `get_simulation` | `get_job()` |
-| `wait_simulation` | `wait()` |
+| `wait_simulation` | `wait_job()` |
 | `diagnose_simulation` | `diagnosis()` |
 | `get_simulation_manifest` | `manifest()` |
 | `download_simulation_result` | `download_result()` |
+| `retry_failed_inputs` | `retry_failed_inputs()` |
 
-AI 调用顺序固定为：提交后保存 `job_id`；等待终态；读取 diagnosis；仅当 `artifacts_available=true` 时下载结果。重试提交必须复用同一 `idempotency_key`，Stage 重试必须使用 diagnosis 返回的 `retry_stage` 动作。
+AI 调用顺序固定为：提交后保存 `job_id`；等待终态；读取 diagnosis；仅当 `artifacts_available=true` 时下载结果。重试提交必须复用同一 `idempotency_key`，Stage 重试必须使用 diagnosis 返回的 `retry_stage` 动作，批量 `partial` 则使用 `retry_failed_inputs` 动作。
+
+`submit_run()` 未显式传入 `idempotency_key` 时 SDK 会自动生成幂等键，并通过
+`client.last_submission_key` 暴露最近一次提交键，便于响应丢失后安全重放。Artifact/Runtime Bundle
+分块上传会在连接中断或 offset 冲突后先读取服务端 offset 再继续；结果 ZIP 下载会在断流后有限重启并始终做 SHA-256 校验。永久 4xx、证据不匹配和 checksum 错误直接返回，不转换成等待状态。
 
 暂不实现独立 MCP Server。等 Linux Web/SDK 全流程稳定后，MCP 仅做参数描述、权限适配和 SDK 调用转发。

@@ -4,6 +4,7 @@ import pytest
 
 from core.agent_data_bindings import AgentDataBindingStore
 from core.agent_data_lease import AgentDataLeaseError, AgentDataLeaseStore
+from core.datasets import DatasetDiscoveryCancelled, discover_dataset_files
 
 
 def test_authorized_discovery_creates_path_free_immutable_lease(tmp_path: Path):
@@ -58,6 +59,21 @@ def test_lease_rejects_changed_file_before_upload(tmp_path: Path):
     mf4.write_bytes(b"changed")
     with pytest.raises(AgentDataLeaseError, match="changed"):
         leases.get(lease.lease_id)
+
+
+def test_dataset_discovery_stops_between_network_directory_entries(tmp_path: Path):
+    root = tmp_path / "data"
+    root.mkdir()
+    for index in range(8):
+        (root / f"{index:02d}.MF4").write_bytes(b"mf4")
+    checks = {"count": 0}
+
+    def cancel() -> bool:
+        checks["count"] += 1
+        return checks["count"] >= 3
+
+    with pytest.raises(DatasetDiscoveryCancelled):
+        discover_dataset_files(root, checksum=True, cancel_requested=cancel)
 
 
 def test_lease_rejects_path_outside_bound_root(tmp_path: Path):

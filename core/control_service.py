@@ -3063,6 +3063,196 @@ class ControlService:
             finally:
                 conn.close()
 
+    def retry_failed_inputs(
+        self,
+        job_id: str,
+        stage_id: str,
+        input_paths: list[str] | tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Queue a local partial simulation for selected failed inputs only."""
+
+        requested = {
+            str(value or "").strip().replace("\\", "/")
+            for value in (input_paths or ())
+            if str(value or "").strip()
+        }
+        now = self._now()
+        with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                job = self._get_job_locked(conn, job_id)
+                task = self._get_task_locked(conn, stage_id)
+                if task["job_id"] != job_id:
+                    raise ValueError(f"stage {stage_id} does not belong to job {job_id}")
+                stage_type = str(task.get("stage_type") or task.get("task_type") or "")
+                if stage_type != "run_simulation":
+                    raise ValueError("partial input retry is only available for run_simulation")
+                try:
+                    from core.stage_routing import selected_execution_target
+
+                    target = selected_execution_target(job)
+                except ValueError:
+                    target = str((task.get("payload") or {}).get("dispatch_scope") or "")
+                if target not in {"local", "local_simulation", "cluster"}:
+                    raise ValueError("partial input retry target is unavailable")
+                result = dict(task.get("result") or {})
+                job_result = job.get("result") if isinstance(job.get("result"), dict) else {}
+                manifest_value = job_result.get("manifest")
+                manifest = dict(manifest_value) if isinstance(manifest_value, dict) else {}
+                if target in {"local", "local_simulation"}:
+                    if str(result.get("status") or "").strip().lower() != "partial":
+                        raise ValueError("run_simulation has no partial result to retry")
+                    lease_ref = str(result.get("local_run_lease_ref") or "")
+                    if not lease_ref.startswith("local-run-lease:sha256:"):
+                        raise ValueError("local partial retry lease is unavailable")
+                    diagnostics = dict(result.get("diagnostics") or {})
+                    outcome_items = diagnostics.get("items") or ()
+                else:
+                    if str(manifest.get("status") or "").strip().lower() != "partial":
+                        raise ValueError("Cluster job has no partial result to retry")
+                    outcome_items = manifest.get("input_results") or ()
+                failed = {
+                    str(item.get("input_relative_path") or item.get("relative_path") or "")
+                    .strip().replace("\\", "/")
+                    for item in outcome_items
+                    if isinstance(item, dict)
+                    and str(item.get("status") or "").strip().lower() == "failed"
+                }
+                if not failed:
+                    raise ValueError("partial result contains no failed input evidence")
+                if not requested:
+                    requested = set(failed)
+                unknown = requested - failed
+                if unknown:
+                    raise ValueError("partial retry contains an input that did not fail")
+                if target in {"local", "local_simulation"}:
+                    retry_ids = [stage_id]
+                    payload = dict(task.get("payload") or {})
+                    payload["retry_input_paths"] = sorted(requested)
+                    payload["retry_mode"] = "failed_inputs_only"
+                    try:
+                        payload["retry_attempt"] = int(payload.get("retry_attempt") or 0) + 1
+                    except (TypeError, ValueError):
+                        payload["retry_attempt"] = 1
+                    conn.execute(
+                        "UPDATE tasks SET payload_json=? WHERE task_id=?",
+                        (self._dumps(payload), stage_id),
+                    )
+                else:
+                    preflight = next(
+                        (
+                            item for item in self._get_job_locked(conn, job_id).get("stages") or []
+                            if str(item.get("stage_type") or item.get("task_type") or "") == "preflight"
+                        ),
+                        None,
+                    )
+                    if not preflight:
+                        raise ValueError("Cluster preflight stage is unavailable for partial retry")
+                    preflight_id = str(preflight.get("stage_id") or preflight.get("task_id") or "")
+                    retry_ids = [preflight_id, stage_id]
+                    payload = dict(preflight.get("payload") or {})
+                    payload["retry_input_paths"] = sorted(requested)
+                    payload["retry_mode"] = "failed_inputs_only"
+                    try:
+                        payload["retry_attempt"] = int(payload.get("retry_attempt") or 0) + 1
+                    except (TypeError, ValueError):
+                        payload["retry_attempt"] = 1
+                    # Keep the previous path-free manifest in the private
+                    # preflight payload.  The retry package contains only the
+                    # selected failed files, so Cluster collection must merge
+                    # its new evidence with the already successful inputs.
+                    payload["retry_previous_manifest"] = manifest
+                    conn.execute(
+                        "UPDATE tasks SET payload_json=? WHERE task_id=?",
+                        (self._dumps(payload), preflight_id),
+                    )
+                retry_ids.extend(
+                    str(item["task_id"])
+                    for item in conn.execute(
+                        """
+                        SELECT task_id FROM tasks
+                        WHERE job_id=? AND order_index>?
+                          AND stage_type IN ('collect_results','finalize_manifest')
+                        """,
+                        (job_id, int(task.get("order_index") or 0)),
+                    ).fetchall()
+                )
+                for retry_id in dict.fromkeys(retry_ids):
+                    conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status='queued', cancel_requested=0, claimed_at=0,
+                            started_at=0, completed_at=0, returncode=NULL,
+                            result_json='{}', error_json='{}', output_ref_json='{}',
+                            progress=0, updated_at=?
+                        WHERE task_id=? AND initial_status!='skipped'
+                        """,
+                        (now, retry_id),
+                    )
+                # The downstream collect/finalize stages must consume the new
+                # lease outcome. Successful upstream stages stay untouched.
+                downstream = conn.execute(
+                    """
+                    SELECT task_id, stage_type, initial_status
+                    FROM tasks
+                    WHERE job_id=? AND order_index>?
+                      AND stage_type IN ('collect_results','finalize_manifest')
+                    """,
+                    (job_id, int(task.get("order_index") or 0)),
+                ).fetchall()
+                for item in downstream:
+                    next_status = "skipped" if str(item["initial_status"] or "") == "skipped" else "queued"
+                    conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status=?, cancel_requested=0, claimed_at=0, started_at=0,
+                            completed_at=?, returncode=NULL, result_json='{}', error_json='{}',
+                            output_ref_json='{}', progress=?, updated_at=?
+                        WHERE task_id=?
+                        """,
+                        (
+                            next_status,
+                            now if next_status == "skipped" else 0.0,
+                            1.0 if next_status == "skipped" else 0.0,
+                            now,
+                            item["task_id"],
+                        ),
+                    )
+                    self._append_event_locked(
+                        conn,
+                        job_id,
+                        stage_id=str(item["task_id"]),
+                        event_type="stage.retry_reset",
+                        status=next_status,
+                        progress=1.0 if next_status == "skipped" else 0.0,
+                        message="downstream stage reset for failed-input retry",
+                    )
+                conn.execute(
+                    "UPDATE jobs SET cancel_requested=0, completed_at=0, finished_at=0, result_json='{}', updated_at=? WHERE job_id=?",
+                    (now, job_id),
+                )
+                self._append_event_locked(
+                    conn,
+                    job_id,
+                    stage_id=stage_id,
+                    event_type="stage.retry_failed_inputs",
+                    status="queued",
+                    progress=0.0,
+                    message=f"queued {len(requested)} failed input(s) for retry",
+                    detail={"input_paths": sorted(requested)},
+                )
+                self._refresh_job_status_locked(conn, job_id, now)
+                new_job = self._get_job_locked(conn, job_id)
+                conn.commit()
+                return new_job
+            except Exception:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise
+            finally:
+                conn.close()
+
     def reconcile_stage_handoffs(self, job_id: str) -> dict[str, Any]:
         """Repair a persisted-successful Stage whose successor was not bound.
 

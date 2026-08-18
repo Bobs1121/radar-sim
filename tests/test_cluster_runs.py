@@ -78,6 +78,38 @@ def test_submission_receipt_survives_before_run_state_commit(tmp_path):
     assert receipt.state == "prepared"
     assert store.get_submission_receipt(run.ref, owner="alice")["external_job_id"] == "10322"
 
+
+def test_terminal_cluster_run_can_reset_private_lease_for_failed_input_retry(tmp_path):
+    store = _store(tmp_path)
+    run = _create(store)
+    store.mark_submitted(run.ref, owner="alice", external_job_id="10323", submit_mode="xmlrpc")
+    store.update_state(run.ref, owner="alice", state="failed")
+    old_result = store.finalize_result(
+        run.ref,
+        owner="alice",
+        state="failed",
+        files=(),
+        summary={"failed_input_count": 1},
+        physical_root="//private/share/job-1/output",
+    )
+
+    reset = store.reset_for_retry(
+        run.ref,
+        owner="alice",
+        profile="default",
+        job_dir="//private/share/job-1-retry",
+        config_path="//private/share/job-1-retry/Config.cfg",
+        output_location="//private/share/job-1-retry/output",
+    )
+
+    assert reset.ref == run.ref
+    assert reset.state == "prepared"
+    assert reset.external_job_id == ""
+    assert store.get_submission_receipt(run.ref, owner="alice") is None
+    assert store.resolve_private(run.ref, owner="alice").job_dir.endswith("job-1-retry")
+    with pytest.raises(ClusterRunStoreError, match="unavailable"):
+        store.get_result(old_result.ref, owner="alice")
+
     recovered = store.mark_submitted(
         run.ref,
         owner="alice",

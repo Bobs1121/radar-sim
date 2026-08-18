@@ -134,6 +134,13 @@ class AgentRegisterRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RetryFailedInputsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage_id: str = Field(default="", max_length=200)
+    input_paths: list[str] = Field(default_factory=list, max_length=20000)
+
+
 class AgentPollRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     agent_id: str = Field(min_length=1, max_length=200)
@@ -682,6 +689,19 @@ def create_app(
     @app.post("/api/v1/jobs/{job_id}/stages/{stage_id}/retry")
     def retry_stage(request: Request, job_id: str, stage_id: str):
         return service.retry_stage(owner(request), job_id, stage_id)
+
+    @app.post("/api/v1/jobs/{job_id}/retry-failed-inputs")
+    def retry_failed_inputs(
+        request: Request,
+        job_id: str,
+        body: RetryFailedInputsRequest,
+    ):
+        return service.retry_failed_inputs(
+            owner(request),
+            job_id,
+            stage_id=body.stage_id,
+            input_paths=body.input_paths,
+        )
 
     @app.get("/api/v1/jobs/{job_id}/manifest")
     def manifest(request: Request, job_id: str):

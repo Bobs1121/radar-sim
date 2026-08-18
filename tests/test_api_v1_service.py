@@ -826,6 +826,61 @@ def test_run_config_readiness_blocks_known_infrastructure_gaps_without_paths(tmp
     ]}
 
 
+def test_cluster_readiness_probe_blocks_submit_before_cluster_work(tmp_path):
+    control = ControlService(tmp_path / "cluster-readiness.db")
+    control.register_agent(
+        "Linux executor",
+        agent_id="linux-1",
+        capabilities=["cluster.prepare"],
+        metadata={"node_kind": "linux_executor"},
+    )
+    control.register_agent(
+        "Cluster gateway",
+        agent_id="gateway-1",
+        capabilities=["simulation.cluster"],
+        metadata={"node_kind": "platform_gateway"},
+    )
+    api = ApiV1Service(
+        control_service_factory=lambda _owner: control,
+        cluster_readiness_provider=lambda _config: {
+            "ready": False,
+            "code": "cluster_environment_unavailable",
+            "message": "Cluster workspace is unavailable",
+            "action": "Retry Cluster readiness",
+            "physical_paths": ["/private/cluster"],
+        },
+    )
+
+    validation = api.validate_user_run_config(run_config_dict(), owner="alice")
+    assert validation["readiness"]["status"] == "blocked"
+    assert {
+        item["code"] for item in validation["readiness"]["blockers"]
+    } >= {"cluster_environment_unavailable"}
+    assert "/private/cluster" not in json.dumps(validation)
+
+    job = api.submit_user_run("alice", config_payload=run_config_dict())
+    stages = {item["stage_type"]: item for item in job["stages"]}
+    assert job["status"] == "needs_input"
+    assert stages["preflight"]["status"] == "blocked"
+    assert stages["preflight"]["error"]["code"] == "cluster_environment_unavailable"
+
+
+def test_cluster_readiness_probe_is_not_called_by_dry_run(tmp_path):
+    control = ControlService(tmp_path / "cluster-dry-run.db")
+    api = ApiV1Service(
+        control_service_factory=lambda _owner: control,
+        cluster_readiness_provider=lambda _config: pytest.fail("dry-run must not probe Cluster"),
+    )
+
+    job = api.submit_user_run(
+        "alice",
+        config_payload=run_config_dict(),
+        dry_run=True,
+    )
+
+    assert job["status"] == "succeeded"
+
+
 def test_run_config_job_reports_path_free_windows_connection_wait(tmp_path):
     api, services = make_api(tmp_path)
     job = api.submit_user_run("alice", config_payload=run_config_dict())
@@ -1632,6 +1687,108 @@ def test_retry_stage_api_preserves_attempt_history(tmp_path):
     assert next_stage["stage_id"] == stage["stage_id"]
     service.submit_task_result(next_stage["stage_id"], agent_id=V1_SCHEDULER_AGENT_ID, returncode=0)
     assert [attempt["attempt"] for attempt in service.list_attempts(stage["stage_id"])] == [1, 2]
+
+
+def test_retry_failed_inputs_resets_only_selected_local_partial_input(tmp_path):
+    service = ControlService(tmp_path / "partial-retry.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: service)
+    job = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        spec={"simulation": {"target": "local"}},
+        tasks=[
+            {
+                "task_type": "run_simulation",
+                "stage_type": "run_simulation",
+                "payload": {
+                    "local_run_lease_ref": "local-run-lease:sha256:" + "a" * 64,
+                },
+            },
+            {
+                "task_type": "collect_results",
+                "stage_type": "collect_results",
+                "dependencies": ["run_simulation"],
+            },
+        ],
+    )
+    service.register_agent("windows", agent_id="windows", capabilities=["*"])
+    stage = service.claim_next_task("windows")
+    service.submit_task_result(
+        stage["stage_id"],
+        agent_id="windows",
+        status="succeeded",
+        returncode=0,
+        result={
+            "status": "partial",
+            "local_run_lease_ref": "local-run-lease:sha256:" + "a" * 64,
+            "summary": {"succeeded_input_count": 1, "failed_input_count": 1},
+            "diagnostics": {
+                "items": [
+                    {"input_relative_path": "good.MF4", "status": "succeeded"},
+                    {"input_relative_path": "bad.MF4", "status": "failed", "error_code": "selena_failed"},
+                ]
+            },
+        },
+    )
+
+    retried = api.retry_failed_inputs(
+        "alice", job["job_id"], stage_id=stage["stage_id"], input_paths=["bad.MF4"]
+    )
+    private = service.get_task(stage["stage_id"])
+
+    assert retried["stages"][0]["status"] == "queued"
+    assert private["status"] == "queued"
+    assert private["payload"]["retry_mode"] == "failed_inputs_only"
+    assert private["payload"]["retry_input_paths"] == ["bad.MF4"]
+
+
+def test_retry_failed_inputs_rebuilds_cluster_preflight_input_filter(tmp_path):
+    service = ControlService(tmp_path / "cluster-partial-retry.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: service)
+    job = service.create_job(
+        "simulation.run_config.v2",
+        owner="alice",
+        spec={"simulation": {"target": "cluster"}},
+        tasks=[
+            {"task_type": "preflight", "stage_type": "preflight", "payload": {}},
+            {"task_type": "run_simulation", "stage_type": "run_simulation"},
+            {"task_type": "collect_results", "stage_type": "collect_results"},
+            {"task_type": "finalize_manifest", "stage_type": "finalize_manifest"},
+        ],
+    )
+    stages = {item["stage_type"]: item for item in service.get_job(job["job_id"])["stages"]}
+    partial_manifest = {
+        "status": "partial",
+        "input_results": [
+            {"input_relative_path": "good.MF4", "status": "succeeded"},
+            {"input_relative_path": "bad.MF4", "status": "failed"},
+        ],
+    }
+    with sqlite3.connect(tmp_path / "cluster-partial-retry.db") as conn:
+        for stage in stages.values():
+            conn.execute(
+                "UPDATE tasks SET status='succeeded', result_json=? WHERE task_id=?",
+                (json.dumps({}), stage["stage_id"]),
+            )
+        conn.execute(
+            "UPDATE jobs SET status='failed', result_json=? WHERE job_id=?",
+            (json.dumps({"manifest": partial_manifest}), job["job_id"]),
+        )
+        conn.commit()
+
+    retried = api.retry_failed_inputs(
+        "alice",
+        job["job_id"],
+        stage_id=stages["run_simulation"]["stage_id"],
+        input_paths=["bad.MF4"],
+    )
+    private = service.get_job(job["job_id"])
+    by_type = {item["stage_type"]: item for item in private["stages"]}
+
+    assert retried["status"] == "queued"
+    assert by_type["preflight"]["status"] == "queued"
+    assert by_type["preflight"]["payload"]["retry_input_paths"] == ["bad.MF4"]
+    assert by_type["run_simulation"]["status"] == "queued"
 
 
 def test_invalid_spec_uses_stable_error_shape(tmp_path):

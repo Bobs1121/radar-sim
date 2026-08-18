@@ -19,6 +19,7 @@ from core.cluster_stage_executor import (
     ClusterStageContext,
     ClusterStageExecutor,
     LINUX_STAGE_AGENT_ID,
+    _merge_cluster_retry_input_results,
 )
 from core.control_service import ControlService
 from core.api_v1 import ApiV1Service
@@ -29,6 +30,39 @@ from core.runtime_bundle import RuntimeSourceEvidence, discover_runtime_bundle
 from core.runtime_bundle_archive import stage_runtime_bundle_archive
 from core.runtime_bundle_catalog import RuntimeBundleCatalog, RuntimeBundleRecord
 from core.local_results import ResultCatalog
+
+
+def test_cluster_partial_retry_merges_new_failed_input_evidence_with_old_success():
+    previous = {
+        "input_results": [
+            {
+                "index": 1,
+                "input_relative_path": "good.MF4",
+                "output_relative_path": "output/good.MF4",
+                "status": "succeeded",
+            },
+            {
+                "index": 2,
+                "input_relative_path": "bad.MF4",
+                "output_relative_path": "",
+                "status": "failed",
+            },
+        ]
+    }
+    current = [
+        {
+            "index": 1,
+            "input_relative_path": "retry-data/bad.MF4",
+            "output_relative_path": "output/bad.MF4",
+            "status": "succeeded",
+        }
+    ]
+
+    merged = _merge_cluster_retry_input_results(previous, current, ["bad.MF4"])
+
+    assert [item["input_relative_path"] for item in merged] == ["good.MF4", "bad.MF4"]
+    assert [item["status"] for item in merged] == ["succeeded", "succeeded"]
+    assert merged[1]["index"] == 2
 
 
 def test_busy_cluster_stage_keeps_heartbeating_for_other_users(monkeypatch):

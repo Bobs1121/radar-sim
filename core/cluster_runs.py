@@ -292,6 +292,62 @@ class ClusterRunStore:
     def update_state(self, run_ref: str, *, owner: str, state: str) -> ClusterRunRef:
         return self._update_state(run_ref, owner=owner, state=state)
 
+    def reset_for_retry(
+        self,
+        run_ref: str,
+        *,
+        owner: str,
+        profile: str,
+        job_dir: str,
+        config_path: str,
+        output_location: str,
+    ) -> ClusterRunRef:
+        """Reuse one logical Cluster run after a failed-input retry.
+
+        A control Job keeps one stable ``cluster_run_ref`` for its entire
+        lifecycle, while a partial-input retry must point Cluster at a fresh
+        Config.cfg and must not reuse the old external submission receipt.
+        Resetting the private lease is safe only from a terminal run; the old
+        result row is removed so the next collection can publish a new
+        immutable result for the same logical run.  The old result archive is
+        owned by ResultCatalog and remains available until its normal
+        retention policy reclaims it.
+        """
+
+        owner = normalize_user(owner)
+        private_paths = [
+            str(job_dir or "").strip(),
+            str(config_path or "").strip(),
+            str(output_location or "").strip(),
+        ]
+        if not all(private_paths) or not str(profile or "").strip():
+            raise ClusterRunStoreError("cluster retry private lease is incomplete")
+        row = self._run_row(run_ref, owner=owner)
+        if str(row["state"] or "") not in _TERMINAL_STATES:
+            raise ClusterRunStoreError("cluster run is not terminal and cannot be retried")
+        now = float(self._now_fn())
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM cluster_results WHERE run_ref=? AND owner=?",
+                (str(run_ref), owner),
+            )
+            conn.execute(
+                """
+                UPDATE cluster_runs
+                SET profile=?, state='prepared', external_job_id='', submit_mode='',
+                    job_dir=?, config_path=?, output_location=?,
+                    submission_receipt_json='{}', updated_at=?
+                WHERE run_ref=? AND owner=?
+                """,
+                (
+                    str(profile), private_paths[0], private_paths[1], private_paths[2],
+                    now, str(run_ref), owner,
+                ),
+            )
+            conn.commit()
+        return self.get(run_ref, owner=owner)
+
     def finalize_result(
         self,
         run_ref: str,

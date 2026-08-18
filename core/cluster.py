@@ -18,6 +18,7 @@ import time
 import urllib.request
 import xmlrpc.client
 import zipfile
+import uuid
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
@@ -271,15 +272,29 @@ def check_cluster_environment(config: dict[str, Any], *, profile: str = "") -> l
 
     writable_detail = "not checked"
     writable_ok = False
+    probe_file: Path | None = None
     try:
         probe_dir = workspace_root / cluster["project_folder"] / "_rsim_probe"
         probe_dir.mkdir(parents=True, exist_ok=True)
-        probe_file = probe_dir / "write_probe.txt"
+        # Use one unique probe per validation so concurrent Web/SDK users do
+        # not overwrite one another's test file.  The file is removed in the
+        # finally block; readiness checks must not accumulate workspace data.
+        probe_file = probe_dir / f"write_probe_{uuid.uuid4().hex}.txt"
         probe_file.write_text("radar-sim cluster probe\n", encoding="utf-8")
         writable_ok = probe_file.exists()
         writable_detail = str(probe_file)
     except Exception as exc:  # pragma: no cover - depends on network state
         writable_detail = str(exc)
+    finally:
+        if probe_file is not None:
+            try:
+                probe_file.unlink(missing_ok=True)
+                probe_file.parent.rmdir()
+            except OSError:
+                # Another concurrent probe may still use the directory; its
+                # existence is harmless and must not turn a successful write
+                # probe into a false failure.
+                pass
     items.append(CheckItem("Workspace write probe", writable_ok, writable_detail,
                            severity="info" if writable_ok else "error"))
 
@@ -707,6 +722,7 @@ def prepare_cluster_job(
     profile: str = "",
     copy_data: bool | None = None,
     copy_selena: bool | None = None,
+    input_paths: list[str] | tuple[str, ...] = (),
 ) -> ClusterJobPackage:
     """Create a self-contained Cluster job folder and return its manifest."""
     config = apply_cluster_profile(config, profile)
@@ -767,6 +783,42 @@ def prepare_cluster_job(
 
     warnings: list[str] = []
     datafile_path = _resolve_datafile_path(sim, input_path=input_path, dataset=dataset)
+    retry_inputs = [
+        str(value or "").strip().replace("\\", "/")
+        for value in (input_paths or ())
+        if str(value or "").strip()
+    ]
+    if retry_inputs:
+        if not datafile_path:
+            raise ValueError("partial retry has no source dataset path")
+        source_root = Path(_to_local_path(datafile_path))
+        source_root = source_root if source_root.is_dir() else source_root.parent
+        source_root = source_root.resolve(strict=True)
+        retry_root = job_dir_local / "retry-data"
+        retry_root.mkdir(parents=True, exist_ok=True)
+        for relative in retry_inputs:
+            parts = relative.split("/")
+            if (
+                not relative
+                or any(not part or part in {".", ".."} for part in parts)
+                or Path(relative).is_absolute()
+                or Path(relative).drive
+            ):
+                raise ValueError("partial retry input path is invalid")
+            source = source_root.joinpath(*parts).resolve(strict=True)
+            try:
+                source.relative_to(source_root)
+            except ValueError as exc:
+                raise ValueError("partial retry input path escapes the dataset root") from exc
+            if not source.is_file() or source.is_symlink():
+                raise ValueError("partial retry input file is unavailable")
+            destination = retry_root.joinpath(*parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        datafile_path = _to_unc_path(str(retry_root))
+        warnings.append(
+            f"Partial retry staged {len(retry_inputs)} failed input(s) without rerunning successful inputs."
+        )
     do_copy_data = bool(cluster.get("copy_data")) if copy_data is None else copy_data
     if not datafile_path:
         warnings.append("No input path was provided; Config.cfg datafile_path is empty.")

@@ -8,6 +8,7 @@ import getpass
 import ipaddress
 import json
 import hashlib
+import re
 import ssl
 import tempfile
 import time
@@ -106,6 +107,11 @@ class RadarSimClient:
                 transport=transport,
                 trust_env=effective_trust_env,
             )
+        # Expose the last non-dry-run submission key so a caller can replay a
+        # request after an unrecoverable response loss without creating a
+        # second Job.  The SDK still generates this key automatically when a
+        # caller does not provide one.
+        self.last_submission_key = ""
 
     def health(self) -> dict[str, Any]:
         """Check server health and API version."""
@@ -200,7 +206,11 @@ class RadarSimClient:
             if dry_run
             else sorted({role for role, _path in _sdk_local_transfer_sources(parsed)})
         )
-        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        effective_idempotency_key = str(idempotency_key or "").strip()
+        if not dry_run and not effective_idempotency_key:
+            effective_idempotency_key = "sdk-" + uuid.uuid4().hex
+        self.last_submission_key = effective_idempotency_key
+        headers = {"Idempotency-Key": effective_idempotency_key} if effective_idempotency_key else None
         job = Job.from_dict(
             self._request(
                 "POST",
@@ -408,24 +418,16 @@ class RadarSimClient:
                 except (RadarSimApiError, RadarSimTransportError):
                     pass
             except Exception as exc:
-                # Keep the server-side Stage queued/running.  The control
-                # plane remains the source of truth and a later Connector can
-                # resume with a fresh plan; this process never falls back to
-                # a Linux body upload.
                 code = str(getattr(exc, "code", "") or "cluster_direct_transfer_unavailable")
-                if code not in {
-                    "cluster_direct_transfer_unavailable",
-                    "transfer_io_error",
-                    "direct_transfer_stage_unavailable",
-                    "source_changed_during_transfer",
-                    "transfer_plan_expired",
-                    "transfer_cancelled",
-                }:
-                    code = "cluster_direct_transfer_unavailable"
+                if not _is_retryable_direct_transfer_exception(exc, code=code):
+                    # Permanent 4xx contract errors and source/content errors
+                    # must be visible to the caller; otherwise a malformed
+                    # request can sit in ``waiting`` forever.
+                    raise
                 return self._direct_transfer_waiting(
                     job,
                     code=code,
-                    message="Local input transfer is waiting for a connected Agent or an accessible Cluster target.",
+                    message="Local input transfer is waiting for a connected Agent, an accessible Cluster target, or transient control-plane recovery.",
                 )
 
         try:
@@ -749,18 +751,18 @@ class RadarSimClient:
         job_id: str,
         *,
         cursor: int = 0,
-        timeout: float = 60.0,
+        timeout: float | None = None,
         poll_interval: float = 1.0,
         backoff_factor: float = 0.0,
         max_poll_interval: float = 30.0,
     ) -> Iterator[Event]:
-        deadline = time.monotonic() + float(timeout)
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
         next_cursor = int(cursor or 0)
         factor = max(0.0, float(backoff_factor or 0.0))
         cap = max(float(poll_interval), float(max_poll_interval))
         consecutive_transport_errors = 0
         while True:
-            if time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() > deadline:
                 raise TimeoutError(f"watch timed out after {timeout} seconds")
             had_transport_error = False
             try:
@@ -796,7 +798,9 @@ class RadarSimClient:
             next_cursor = max(next_cursor, page.next_cursor)
             if page.terminal:
                 return
-            sleep_for = min(float(poll_interval), max(deadline - time.monotonic(), 0.0))
+            sleep_for = float(poll_interval)
+            if deadline is not None:
+                sleep_for = min(sleep_for, max(deadline - time.monotonic(), 0.0))
             if sleep_for <= 0:
                 raise TimeoutError(f"watch timed out after {timeout} seconds")
             time.sleep(sleep_for)
@@ -807,20 +811,22 @@ class RadarSimClient:
         cap: float,
         factor: float,
         consecutive_errors: int,
-        deadline: float,
+        deadline: float | None,
     ) -> float:
         if factor <= 0:
             delay = poll_interval
         else:
             delay = poll_interval * (factor ** max(0, consecutive_errors - 1))
         delay = min(delay, cap)
+        if deadline is None:
+            return delay
         return min(delay, max(deadline - time.monotonic(), 0.0))
 
     def wait(
         self,
         job_id: str,
         *,
-        timeout: float = 600.0,
+        timeout: float | None = None,
         poll_interval: float = 1.0,
         backoff_factor: float = 0.0,
         max_poll_interval: float = 30.0,
@@ -841,7 +847,7 @@ class RadarSimClient:
         self,
         job_id: str,
         *,
-        timeout: float = 600.0,
+        timeout: float | None = None,
         poll_interval: float = 1.0,
         backoff_factor: float = 0.0,
         max_poll_interval: float = 30.0,
@@ -870,6 +876,26 @@ class RadarSimClient:
     def retry_stage(self, job_id: str, stage_id: str) -> Job:
         return Job.from_dict(self._request("POST", f"/api/v1/jobs/{_quote_path_token(job_id)}/stages/{_quote_path_token(stage_id)}/retry"))
 
+    def retry_failed_inputs(
+        self,
+        job_id: str,
+        input_paths: list[str] | tuple[str, ...] = (),
+        *,
+        stage_id: str = "",
+    ) -> Job:
+        """Retry only failed inputs of a local partial simulation result."""
+
+        return Job.from_dict(
+            self._request(
+                "POST",
+                f"/api/v1/jobs/{_quote_path_token(job_id)}/retry-failed-inputs",
+                json={
+                    "stage_id": str(stage_id or ""),
+                    "input_paths": [str(item) for item in input_paths or ()],
+                },
+            )
+        )
+
     def manifest(self, job_id: str) -> ManifestResponse:
         return ManifestResponse.from_dict(self._request("GET", f"/api/v1/jobs/{_quote_path_token(job_id)}/manifest"))
 
@@ -889,6 +915,8 @@ class RadarSimClient:
         self,
         job: Job | str,
         destination: str | Path | None = None,
+        *,
+        download_retries: int = 2,
     ) -> Path:
         """Fetch a Job Manifest and download its owner-scoped result ZIP.
 
@@ -943,7 +971,7 @@ class RadarSimClient:
         # ZIP name.
         if target.suffix.casefold() != ".zip":
             target.mkdir(parents=True, exist_ok=True)
-        return self.download_result(result_ref, target)
+        return self.download_result(result_ref, target, retries=download_retries)
 
     def diagnosis(self, job_id: str) -> JobDiagnosis:
         """Return the shared path-free diagnosis used by Web and AI adapters."""
@@ -958,8 +986,14 @@ class RadarSimClient:
     def get_result(self, result_ref: str) -> dict[str, Any]:
         return dict(self._request("GET", f"/api/v1/results/{result_ref}"))
 
-    def download_result(self, result_ref: str, destination: str | Path) -> Path:
-        """Download one owner-scoped result ZIP and verify its catalog checksum."""
+    def download_result(
+        self,
+        result_ref: str,
+        destination: str | Path,
+        *,
+        retries: int = 2,
+    ) -> Path:
+        """Download one owner-scoped result ZIP with bounded restart recovery."""
         metadata = self.get_result(result_ref)
         target = Path(destination)
         if target.exists() and target.is_dir():
@@ -967,30 +1001,37 @@ class RadarSimClient:
             target = target / f"radar-sim-result-{digest}.zip"
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(target.name + f".part.{uuid.uuid4().hex}")
-        digest = hashlib.sha256()
         try:
-            try:
-                with self._client.stream("GET", f"/api/v1/results/{result_ref}/download") as response:
-                    self._raise_for_status(response)
-                    with temporary.open("wb") as handle:
-                        for chunk in response.iter_bytes():
-                            handle.write(chunk)
-                            digest.update(chunk)
-            except httpx.TransportError as exc:
-                # Binary downloads are deliberately not retried here: a
-                # multi-GB archive must not be silently fetched repeatedly.
-                # The caller receives the same stable transport error as JSON
-                # reads and can retry explicitly with a fresh temp file.
-                raise RadarSimTransportError(str(exc)) from exc
-            checksum = "sha256:" + digest.hexdigest()
-            if checksum != str(metadata.get("archive_checksum") or ""):
-                raise RadarSimIntegrityError(
-                    "result_checksum_mismatch",
-                    "downloaded result checksum does not match catalog",
-                    resource=result_ref,
-                )
-            temporary.replace(target)
-            return target
+            attempts = max(1, int(retries) + 1)
+            last_error: httpx.TransportError | None = None
+            for attempt in range(attempts):
+                digest = hashlib.sha256()
+                try:
+                    with self._client.stream("GET", f"/api/v1/results/{result_ref}/download") as response:
+                        self._raise_for_status(response)
+                        with temporary.open("wb") as handle:
+                            for chunk in response.iter_bytes():
+                                handle.write(chunk)
+                                digest.update(chunk)
+                    checksum = "sha256:" + digest.hexdigest()
+                    if checksum != str(metadata.get("archive_checksum") or ""):
+                        raise RadarSimIntegrityError(
+                            "result_checksum_mismatch",
+                            "downloaded result checksum does not match catalog",
+                            resource=result_ref,
+                        )
+                    temporary.replace(target)
+                    return target
+                except RadarSimIntegrityError:
+                    raise
+                except httpx.TransportError as exc:
+                    last_error = exc
+                    temporary.unlink(missing_ok=True)
+                    if attempt + 1 >= attempts:
+                        break
+                    time.sleep(0.5 * (2**attempt))
+            assert last_error is not None
+            raise RadarSimTransportError(str(last_error)) from last_error
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -1151,15 +1192,13 @@ class RadarSimClient:
     ) -> ArtifactUploadResult:
         """Resume or complete one trusted build-artifact upload from a local file."""
         session = self.create_artifact_upload(build_evidence_ref, publish_path=publish_path)
-        path = Path(source)
-        with path.open("rb") as handle:
-            handle.seek(session.received_bytes)
-            current = session
-            while current.received_bytes < current.expected_size:
-                data = handle.read(min(current.chunk_size, current.expected_size - current.received_bytes))
-                if not data:
-                    raise ValueError("local artifact ended before the trusted build size")
-                current = self.append_artifact_upload(current.session_id, current.received_bytes, data)
+        self._upload_resumable_file(
+            source,
+            session,
+            get_session=self.get_artifact_upload,
+            append_chunk=self.append_artifact_upload,
+            short_name="artifact",
+        )
         return self.finalize_artifact_upload(session.session_id)
 
     def create_runtime_bundle_upload(self, build_evidence_ref: str, *, publish_path: str = "") -> ArtifactUpload:
@@ -1263,15 +1302,13 @@ class RadarSimClient:
         publish_path: str = "",
     ) -> RuntimeBundleUploadResult:
         session = self.create_runtime_bundle_upload(build_evidence_ref, publish_path=publish_path)
-        path = Path(source)
-        with path.open("rb") as handle:
-            handle.seek(session.received_bytes)
-            current = session
-            while current.received_bytes < current.expected_size:
-                data = handle.read(min(current.chunk_size, current.expected_size - current.received_bytes))
-                if not data:
-                    raise ValueError("local Runtime Bundle ended before the trusted archive size")
-                current = self.append_runtime_bundle_upload(current.session_id, current.received_bytes, data)
+        self._upload_resumable_file(
+            source,
+            session,
+            get_session=self.get_runtime_bundle_upload,
+            append_chunk=self.append_runtime_bundle_upload,
+            short_name="Runtime Bundle",
+        )
         return self.finalize_runtime_bundle_upload(session.session_id)
 
     def close(self) -> None:
@@ -1284,9 +1321,105 @@ class RadarSimClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    def _upload_resumable_file(
+        self,
+        source: str | Path,
+        session: Any,
+        *,
+        get_session: Callable[[str], Any],
+        append_chunk: Callable[[str, int, bytes], Any],
+        short_name: str,
+        max_attempts: int = 4,
+    ) -> Any:
+        """Upload a resumable file with offset reconciliation after failures.
+
+        The server commits a chunk before the HTTP response reaches the SDK.
+        Therefore retrying the same offset blindly is unsafe: the first
+        request may already have advanced the session.  Every retry first
+        reconciles the durable server offset and then either skips the
+        committed bytes or retries the exact same chunk.  Only transport and
+        transient/offset API errors are retried; validation and evidence
+        errors remain visible to the caller.
+        """
+
+        path = Path(source).expanduser()
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"{short_name} source is unavailable")
+        expected_size = int(getattr(session, "expected_size", 0) or 0)
+        if expected_size <= 0:
+            raise ValueError(f"{short_name} upload session has no expected size")
+        chunk_size = max(1, int(getattr(session, "chunk_size", 0) or 4 * 1024 * 1024))
+        session_id = str(getattr(session, "session_id", "") or "").strip()
+        if not session_id:
+            raise ValueError(f"{short_name} upload session is unavailable")
+        current_offset = max(0, int(getattr(session, "received_bytes", 0) or 0))
+        if current_offset > expected_size:
+            raise ValueError(f"{short_name} upload session offset is invalid")
+        actual_size = int(path.stat().st_size)
+        if actual_size != expected_size:
+            raise ValueError(
+                f"local {short_name} size does not match the trusted size"
+            )
+
+        with path.open("rb") as handle:
+            handle.seek(current_offset)
+            while current_offset < expected_size:
+                data = handle.read(min(chunk_size, expected_size - current_offset))
+                if not data:
+                    raise ValueError(f"local {short_name} ended before the trusted size")
+                offset = current_offset
+                current = None
+                for attempt in range(max(1, int(max_attempts))):
+                    try:
+                        current = append_chunk(session_id, offset, data)
+                        break
+                    except Exception as exc:
+                        if not _is_retryable_upload_exception(exc):
+                            raise
+                        if attempt + 1 >= max(1, int(max_attempts)):
+                            raise
+                        # A response can be lost after the server committed
+                        # this chunk.  Reconcile before the next append.
+                        try:
+                            observed = get_session(session_id)
+                            observed_offset = int(getattr(observed, "received_bytes", 0) or 0)
+                            if observed_offset > expected_size:
+                                raise ValueError(f"{short_name} upload session offset is invalid")
+                            if str(getattr(observed, "status", "") or "").strip().lower() == "finalized":
+                                current_offset = expected_size
+                                current = observed
+                                break
+                            if observed_offset > offset:
+                                current_offset = observed_offset
+                                handle.seek(current_offset)
+                                current = observed
+                                break
+                        except ValueError:
+                            raise
+                        except Exception:
+                            # The append error remains the most useful stable
+                            # error if the session lookup itself is transient.
+                            pass
+                        time.sleep(0.5 * (2**attempt))
+                if current_offset == expected_size:
+                    break
+                if current is None:
+                    raise RadarSimTransportError(f"{short_name} upload retry exhausted")
+                next_offset = int(getattr(current, "received_bytes", 0) or 0)
+                if next_offset < current_offset or next_offset > expected_size:
+                    raise ValueError(f"{short_name} upload returned an invalid offset")
+                current_offset = next_offset
+                handle.seek(current_offset)
+
+        return session
+
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         normalized_method = method.upper()
-        attempts = 3 if normalized_method in {"GET", "HEAD"} else 1
+        request_headers = kwargs.get("headers") or {}
+        has_idempotency_key = bool(
+            str(request_headers.get("Idempotency-Key") or "").strip()
+        )
+        attempts = 3 if normalized_method in {"GET", "HEAD"} or has_idempotency_key else 1
         last_error: httpx.TransportError | None = None
 
         for attempt in range(attempts):
@@ -1299,9 +1432,9 @@ class RadarSimClient:
                 last_error = exc
                 if attempt + 1 >= attempts:
                     break
-                # Only idempotent reads reach this branch.  A short bounded
-                # backoff masks transient proxy/socket disconnects without
-                # retrying task creation or any other state-changing request.
+                # State-changing requests are retried only when the caller
+                # supplied a stable Idempotency-Key. Reusing the same key
+                # makes a response-lost submit safe to replay.
                 time.sleep(0.2 * (2**attempt))
             finally:
                 # ``Client.request`` buffers the response body, but does not
@@ -1373,6 +1506,43 @@ def _resolved_direct_transfer_roles(job: Job) -> set[str]:
     return resolved
 
 
+def _is_retryable_direct_transfer_exception(exc: BaseException, *, code: str) -> bool:
+    """Classify only recoverable direct-transfer failures as waiting."""
+
+    normalized = str(code or "").strip().casefold()
+    if isinstance(exc, RadarSimTransportError):
+        return True
+    if isinstance(exc, RadarSimApiError):
+        return bool(
+            exc.status_code >= 500
+            or exc.status_code in {408, 429}
+            or normalized
+            in {
+                "cluster_direct_transfer_unavailable",
+                "direct_transfer_stage_unavailable",
+                "transfer_stage_not_ready",
+                "transfer_plan_expired",
+            }
+        )
+    return normalized in {
+        "cluster_direct_transfer_unavailable",
+        "direct_transfer_stage_unavailable",
+        "transfer_io_error",
+        "transfer_plan_expired",
+        "transfer_cancelled",
+    }
+
+
+def _is_retryable_upload_exception(exc: BaseException) -> bool:
+    """Return whether one resumable upload attempt may be reconciled/retried."""
+
+    if isinstance(exc, (RadarSimTransportError, TimeoutError, OSError)):
+        return True
+    if isinstance(exc, RadarSimApiError):
+        return exc.status_code >= 500 or exc.status_code in {408, 409, 429}
+    return False
+
+
 def _default_sdk_user() -> str:
     """Return the stable no-config owner shared with the Web Connector.
 
@@ -1389,13 +1559,21 @@ def _default_sdk_user() -> str:
     return stable_user_identity(login)
 
 
+def _is_windows_physical_path(value: str) -> bool:
+    """Return whether a value is a Windows drive or UNC filesystem path."""
+
+    text = str(value or "").strip().replace("/", "\\")
+    return bool(re.match(r"^[A-Za-z]:\\", text) or text.startswith("\\\\"))
+
+
 def _sdk_local_transfer_sources(config: UserRunConfig) -> list[tuple[str, Path]]:
     """Return readable config inputs that can be copied by this SDK process.
 
-    ``shared://``/UNC references stay zero-copy.  Other existing paths are
-    considered candidates when the direct-transfer Stage is queued; the
-    Stage's server-side role allow-list remains authoritative when a plan is
-    issued.
+    Logical ``shared://``/``dataset://`` references stay zero-copy. A Windows
+    SDK process may own a readable UNC source, so a materialized UNC path is
+    treated like a drive-letter source and is eligible for source-to-Cluster
+    direct transfer. A Linux SDK normally cannot materialize the UNC path and
+    therefore keeps the shared/Cluster behavior.
     """
 
     candidates: list[tuple[str, str]] = [("dataset", str(config.data.path or ""))]
@@ -1414,10 +1592,10 @@ def _sdk_local_transfer_sources(config: UserRunConfig) -> list[tuple[str, Path]]
         value = str(raw or "").strip()
         if not value or value.casefold().startswith(("shared://", "dataset://")):
             continue
-        # UNC/shared paths belong to the deployment namespace even if this
-        # process happens to have a mapped view of them.
+        # A readable Windows UNC path is local to this SDK process even though
+        # the syntax-only classifier calls it ``shared``.
         data_kind = classify_data_path(value)
-        if data_kind == "shared":
+        if data_kind == "shared" and not _is_windows_physical_path(value):
             continue
         source = Path(value).expanduser()
         try:
@@ -1427,7 +1605,7 @@ def _sdk_local_transfer_sources(config: UserRunConfig) -> list[tuple[str, Path]]
                 data_kind=data_kind,
             ):
                 continue
-            resolved = source.resolve(strict=True)
+            resolved = source if _is_windows_physical_path(value) else source.resolve(strict=True)
         except (OSError, RuntimeError, ValueError):
             continue
         if not resolved.is_file() and not resolved.is_dir():
@@ -1482,7 +1660,7 @@ def _scan_sdk_transfer_items(
     original = Path(source_path).expanduser()
     if original.is_symlink():
         raise ValueError("direct transfer source is a symlink")
-    path = original.resolve(strict=True)
+    path = original if _is_windows_physical_path(str(original)) else original.resolve(strict=True)
     if path.is_dir():
         root = path
         paths = [
@@ -1674,7 +1852,7 @@ def _should_upload_client_data(
     if (
         not text
         or text.lower().startswith("dataset://")
-        or data_kind == "shared"
+        or (data_kind == "shared" and not _is_windows_physical_path(text))
         or not local_path.exists()
     ):
         return False

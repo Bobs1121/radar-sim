@@ -671,7 +671,11 @@ async function submitCurrentSpec(event) {
     const job = await api("/run-jobs", {
       method: "POST",
       headers: { "Idempotency-Key": state.submitIdempotencyKey },
-      json: { config, dry_run: false },
+      json: {
+        config,
+        dry_run: false,
+        client_transfer_roles: clientTransferRoles(config),
+      },
     });
     state.submitIdempotencyKey = "";
     state.submitConfigSignature = "";
@@ -822,7 +826,28 @@ function renderJobs() {
 
 function isWindowsLocalPath(value) {
   const path = String(value || "").trim();
-  return /^[a-z]:[\\/]/i.test(path) || /^file:\/\/[a-z]:/i.test(path);
+  return /^[a-z]:[\\/]/i.test(path)
+    || /^file:\/\/[a-z]:/i.test(path)
+    || /^\\\\/.test(path)
+    || /^\/\//.test(path);
+}
+
+function clientTransferRoles(config) {
+  const roles = [];
+  const add = (role, value) => {
+    const text = String(value || "").trim();
+    if (text && isWindowsLocalPath(text) && !/^(?:shared|dataset):\/\//i.test(text)) {
+      roles.push(role);
+    }
+  };
+  add("dataset", config.data?.path);
+  if (config.selena?.source === "existing") {
+    add("runtime_bundle", config.selena?.existing_path);
+  }
+  add("runtime_xml", config.selena?.runtime_xml);
+  add("mat_filter", config.simulation?.mat_filter);
+  add("adapter", config.simulation?.adapter_file);
+  return [...new Set(roles)];
 }
 
 function selectedExecutionTarget(job) {
@@ -985,6 +1010,12 @@ function renderJobDetail(job, events, manifest) {
   actions.className = "detail-actions";
   (job.available_actions || []).filter((action) => action.type === "cancel_job").forEach(() => {
     const button = actionButton("取消任务", "danger", () => cancelJob(job.id));
+    actions.append(button);
+  });
+  (job.available_actions || []).filter((action) => action.type === "retry_failed_inputs").forEach((action) => {
+    const button = actionButton("只重试失败数据", "secondary", () =>
+      retryFailedInputs(job.id, action.stage_id || "")
+    );
     actions.append(button);
   });
   if (manifest?.result_ref) {
@@ -1270,6 +1301,21 @@ async function cancelJob(jobId) {
     showToast("已请求取消任务");
     await loadJobs();
   } catch (error) { showToast(error.message); }
+}
+
+async function retryFailedInputs(jobId, stageId) {
+  try {
+    const job = await api(`/jobs/${encodeURIComponent(jobId)}/retry-failed-inputs`, {
+      method: "POST",
+      json: { stage_id: stageId || "", input_paths: [] },
+    });
+    state.selectedJobId = job.id;
+    showToast("失败数据已重新排队，成功数据不会重复运行");
+    await loadJobs();
+    await loadJobDetail(job.id, true);
+  } catch (error) {
+    showToast(error.message || "失败数据重试失败");
+  }
 }
 
 async function retryStage(jobId, stageId) {

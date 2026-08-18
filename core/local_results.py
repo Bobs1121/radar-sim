@@ -207,9 +207,10 @@ class ResultCatalog:
         retention = float(retain_until)
         if not math.isfinite(retention) or retention < 0:
             raise ResultCatalogError("result retention is invalid")
-        self._check_watermark()
         source = _authorized_source_root(self._allowed_source_roots, source_root)
         relatives = _validate_file_set(files)
+        required_space = _archive_space_estimate(source, relatives)
+        self._check_watermark(required_bytes=required_space)
 
         owner_key = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:24]
         owner_root = self._storage_root / "content" / owner_key
@@ -296,12 +297,11 @@ class ResultCatalog:
         retention = float(retain_until)
         if not math.isfinite(retention) or retention < 0:
             raise ResultCatalogError("result retention is invalid")
-        self._check_watermark()
-
         source = Path(archive_path).expanduser()
         _ensure_contained(self._storage_root, source)
         _verify_archive_file(source, checksum, size)
         _verify_archive_entries(source, evidence_tuple)
+        self._check_watermark(required_bytes=size)
 
         owner_key = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:24]
         owner_root = self._storage_root / "content" / owner_key
@@ -435,8 +435,8 @@ class ResultCatalog:
             )
         return len(expired_refs)
 
-    def _check_watermark(self) -> None:
-        """Fail-closed when result storage free space is below the watermark."""
+    def _check_watermark(self, *, required_bytes: int = 0) -> None:
+        """Fail-closed when result storage cannot hold the next archive."""
         minimum = self._min_free_bytes
         if minimum <= 0:
             return
@@ -445,11 +445,20 @@ class ResultCatalog:
         except OSError as exc:
             _LOGGER.warning("Result storage watermark check failed: %s", exc)
             raise ResultCatalogError("result storage is unavailable") from exc
-        if usage.free < minimum:
+        required = max(0, int(required_bytes or 0))
+        if usage.free - required < minimum:
+            # Retention GC normally runs in the maintenance loop, but a
+            # result can arrive just before that loop. Reclaim expired rows
+            # once before refusing a new archive, then measure again.
+            try:
+                self.collect_expired()
+                usage = shutil.disk_usage(str(self._storage_root))
+            except OSError:
+                pass
+        if usage.free - required < minimum:
             _LOGGER.warning(
-                "Result storage free space %d bytes is below watermark %d bytes",
-                usage.free,
-                minimum,
+                "Result storage free space %d bytes minus required %d bytes is below watermark %d bytes",
+                usage.free, required, minimum,
             )
             raise ResultCatalogError("result storage is below its free-space watermark")
 
@@ -525,10 +534,16 @@ def default_result_catalog(
     """Return the shared local-full catalog under the configured RSIM_HOME."""
     home_text = str(os.environ.get("RSIM_HOME") or "").strip()
     home = Path(home_text).expanduser() if home_text else Path.home() / ".rsim"
+    raw_watermark = str(os.environ.get("RSIM_RESULT_MIN_FREE_BYTES") or "1073741824").strip()
+    try:
+        min_free_bytes = max(0, int(raw_watermark))
+    except (TypeError, ValueError):
+        min_free_bytes = 1024**3
     return ResultCatalog(
         home / "results" / "local-archives",
         home / "results" / "local-results.db",
         allowed_source_root=(home / "agent" / "runs", *tuple(extra_allowed_source_roots)),
+        min_free_bytes=min_free_bytes,
     )
 
 
@@ -571,6 +586,22 @@ def _validate_file_set(files: Iterable[str]) -> tuple[str, ...]:
     if len({item.casefold() for item in values}) != len(values):
         raise ResultCatalogError("result file paths must be case-insensitively unique")
     return tuple(sorted(values, key=lambda item: (item.casefold(), item)))
+
+
+def _archive_space_estimate(root: Path, files: tuple[str, ...]) -> int:
+    """Estimate temporary ZIP plus canonical-copy space before archiving."""
+
+    total = 0
+    for relative in files:
+        path = root.joinpath(*PurePosixPath(relative).parts)
+        _ensure_contained(root, path)
+        details = _regular_source_stat(path)
+        total += max(0, int(details.st_size))
+    # Deflate can expand incompressible input slightly and publish keeps a
+    # temporary archive until the atomic canonical rename. Reserve a bounded
+    # header/expansion allowance in addition to source bytes; imported
+    # archives use their exact size as the conservative estimate.
+    return total + max(1024 * 1024, len(files) * 512)
 
 
 def _validate_relative_path(value: str) -> str:

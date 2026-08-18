@@ -25,7 +25,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from core.agent_asset_bindings import AgentAssetBindingStore
 from core.agent_bindings import default_agent_binding_db_path
@@ -369,6 +369,86 @@ class AgentLocalRunLeaseStore:
                 WHERE lease_id=?
                 """,
                 (token, pid, now, now, lease_id),
+            )
+            conn.commit()
+            updated = conn.execute(
+                "SELECT * FROM agent_local_runs WHERE lease_id=?", (lease_id,)
+            ).fetchone()
+        return self._public(updated)
+
+    def reset_failed_inputs(
+        self,
+        lease_id: str,
+        input_paths: Iterable[str],
+    ) -> dict[str, Any]:
+        """Prepare only selected failed inputs for a partial retry.
+
+        Successful checkpoints and their verified outputs remain immutable.
+        Failed inputs not selected by the caller remain failed so a retry can
+        be incremental and deterministic instead of silently rerunning the
+        whole batch.
+        """
+
+        requested = {
+            str(value or "").strip().replace("\\", "/")
+            for value in (input_paths or ())
+            if str(value or "").strip()
+        }
+        if not requested:
+            raise AgentLocalRunError("partial retry requires at least one input path")
+        now = float(self._now_fn())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM agent_local_runs WHERE lease_id=?", (lease_id,)
+            ).fetchone()
+            if row is None:
+                raise AgentLocalRunError("local run lease is unavailable")
+            if str(row["status"] or "") not in {"failed", "cancelled"}:
+                raise AgentLocalRunError("local run is not a retryable partial result")
+            diagnostics = json.loads(row["diagnostics_json"] or "{}")
+            items = [
+                dict(item)
+                for item in diagnostics.get("items") or ()
+                if isinstance(item, Mapping)
+            ]
+            failed_paths = {
+                str(item.get("input_relative_path") or "").strip().replace("\\", "/")
+                for item in items
+                if str(item.get("status") or "").strip().lower() == "failed"
+            }
+            unknown = requested - failed_paths
+            if unknown:
+                raise AgentLocalRunError("partial retry contains an input that did not fail")
+            remaining_items = [
+                item
+                for item in items
+                if not (
+                    str(item.get("status") or "").strip().lower() == "failed"
+                    and str(item.get("input_relative_path") or "").strip().replace("\\", "/")
+                    in requested
+                )
+            ]
+            remaining_failed = sum(
+                1
+                for item in remaining_items
+                if str(item.get("status") or "").strip().lower() == "failed"
+            )
+            diagnostics["items"] = remaining_items
+            conn.execute(
+                """
+                UPDATE agent_local_runs
+                SET status='ready', error_count=?, error_code=?, diagnostics_json=?,
+                    execution_token='', execution_pid=0, running_since=0, updated_at=?
+                WHERE lease_id=?
+                """,
+                (
+                    remaining_failed,
+                    "partial_retry_pending" if remaining_failed else "",
+                    _json(diagnostics),
+                    now,
+                    lease_id,
+                ),
             )
             conn.commit()
             updated = conn.execute(

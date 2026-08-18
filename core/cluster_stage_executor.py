@@ -13,6 +13,7 @@ import logging
 import ntpath
 import os
 import re
+import shutil
 import threading
 import time
 from dataclasses import dataclass
@@ -763,6 +764,62 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     for key in ("runtime_xml", "adapter_file", "matfilefilter", "config_template"):
         project_assets.pop(key, None)
     job_id = str(job.get("job_id") or "")
+    preflight_stage = next(
+        (
+            item for item in list(job.get("stages") or job.get("tasks") or [])
+            if str(item.get("stage_type") or item.get("task_type") or "") == "preflight"
+        ),
+        {},
+    )
+    preflight_payload = (
+        preflight_stage.get("payload")
+        if isinstance(preflight_stage.get("payload"), dict)
+        else {}
+    )
+    retry_input_paths = sorted(
+        {
+            str(item).strip().replace("\\", "/")
+            for item in preflight_payload.get("retry_input_paths") or []
+            if str(item).strip()
+        }
+    )
+    retry_manifest_value = preflight_payload.get("retry_previous_manifest")
+    retry_previous_manifest = (
+        dict(retry_manifest_value)
+        if isinstance(retry_manifest_value, dict)
+        else {}
+    )
+    retry_previous_run_ref = str(retry_previous_manifest.get("cluster_run_ref") or "").strip()
+    if retry_input_paths and not retry_previous_run_ref:
+        try:
+            retry_previous_run_ref = str(
+                _stage_result(job, "run_simulation").get("cluster_run_ref") or ""
+            ).strip()
+        except ClusterStageExecutionError:
+            retry_previous_run_ref = ""
+    retry_previous_lease = None
+    if retry_input_paths:
+        if not retry_previous_manifest or not retry_previous_run_ref:
+            raise ClusterStageExecutionError(
+                "Previous partial Cluster result is unavailable for retry",
+                code="CLUSTER_RETRY_CONTEXT_UNAVAILABLE",
+                actions=({"type": "retry_stage", "label": "Retry Cluster preparation"},),
+            )
+        try:
+            retry_previous_lease = context.run_store.resolve_private(
+                retry_previous_run_ref,
+                owner=owner,
+            )
+        except Exception as exc:
+            raise ClusterStageExecutionError(
+                "Previous partial Cluster execution lease is unavailable",
+                code="CLUSTER_RETRY_CONTEXT_UNAVAILABLE",
+                actions=({"type": "retry_stage", "label": "Retry Cluster preparation"},),
+            ) from exc
+    try:
+        preflight_attempt = max(1, int(preflight_stage.get("attempt_count") or 1))
+    except (TypeError, ValueError):
+        preflight_attempt = 1
     registry = SharedNamespaceRegistry.from_config(config)
     transfer_resources = _transfer_resources(job)
     direct_refs = bool(transfer_resources)
@@ -972,11 +1029,20 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
     package = prepare_cluster_job(
         config,
         input_path=str(data_location),
-        run_id=_safe_token(job_id),
+        run_id=_safe_token(
+            job_id + (f"-retry-{preflight_attempt}" if retry_input_paths else "")
+        ),
         copy_data=False if direct_dataset or dataset.source_kind == "shared_path" else True,
         copy_selena=False if direct_refs or shared_existing else True,
+        input_paths=retry_input_paths,
     )
     local_job_root = Path(package.manifest_path).parent
+    if retry_input_paths and retry_previous_lease is not None:
+        _preserve_cluster_retry_outputs(
+            retry_previous_manifest,
+            previous_root=Path(retry_previous_lease.job_dir),
+            retry_root=local_job_root,
+        )
     if not bundle_id:
         if shared_existing:
             bundle_id = _shared_existing_bundle_id(job)
@@ -1008,6 +1074,20 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         config_path=package.config_path,
         output_location=str(local_job_root / "output"),
     )
+    if retry_input_paths:
+        if str(run.ref) != retry_previous_run_ref:
+            raise ClusterStageExecutionError(
+                "Cluster retry changed the logical run identity",
+                code="CLUSTER_RETRY_CONTEXT_UNAVAILABLE",
+            )
+        run = context.run_store.reset_for_retry(
+            run.ref,
+            owner=owner,
+            profile=package.profile,
+            job_dir=str(local_job_root),
+            config_path=package.config_path,
+            output_location=str(local_job_root / "output"),
+        )
     result_payload = {
         "cluster_run": run.to_dict(),
         "cluster_run_ref": run.ref,
@@ -1362,6 +1442,57 @@ def execute_cluster_collect(
         )
         if message not in errors:
             errors.append(message)
+    retry_paths = _cluster_retry_input_paths(job)
+    retry_previous_manifest = _cluster_retry_previous_manifest(job)
+    input_results = _cluster_input_results(inspected, lease.job_dir)
+    if retry_paths and retry_previous_manifest:
+        # The fresh Cluster package contains only the selected failed inputs.
+        # Rebuild the public truth from the previous partial manifest plus the
+        # new evidence, otherwise a successful retry would silently drop all
+        # files that had already succeeded in the first attempt.
+        input_results = _merge_cluster_retry_input_results(
+            retry_previous_manifest,
+            input_results,
+            retry_paths,
+        )
+        succeeded_inputs = sum(
+            1
+            for item in input_results
+            if str(item.get("status") or "").strip().lower() == "succeeded"
+        )
+        failed_inputs = sum(
+            1
+            for item in input_results
+            if str(item.get("status") or "").strip().lower() == "failed"
+        )
+        state = "failed" if failed_inputs else "succeeded"
+        summary.update(
+            {
+                "task_count": len(input_results),
+                "finished_count": succeeded_inputs,
+                "failed_count": failed_inputs,
+            }
+        )
+        previous_errors = list(retry_previous_manifest.get("summary", {}).get("errors") or [])
+        errors = _dedupe_relative_paths(
+            [str(item) for item in (*previous_errors, *errors) if str(item or "").strip()]
+        )[:6]
+    merged_success_count = sum(
+        1
+        for item in input_results
+        if str(item.get("status") or "").strip().lower() == "succeeded"
+    )
+    merged_fail_count = sum(
+        1
+        for item in input_results
+        if str(item.get("status") or "").strip().lower() == "failed"
+    )
+    if not input_results and not retry_previous_manifest:
+        # Minimal deployment/test adapters may expose only aggregate counts;
+        # those counts are still authoritative when per-input result.ini
+        # parsing is unavailable.
+        merged_success_count = int(inspected.get("success_count") or 0)
+        merged_fail_count = int(inspected.get("fail_count") or 0)
     public_result_ref = ""
     if state in {"succeeded", "failed"} and context.result_catalog is not None and files:
         # Publish diagnostics for both successful and failed simulations before
@@ -1370,9 +1501,10 @@ def execute_cluster_collect(
         # failure without exposing the private Cluster workspace.  If a source
         # file changes while archiving, the Stage remains retryable.
         retain_days = int(((job.get("spec") or {}).get("result") or {}).get("retain_days") or 30)
+        result_run_ref = _cluster_result_run_ref(job, run_ref)
         published = context.result_catalog.publish(
             owner=owner,
-            run_ref=run_ref,
+            run_ref=result_run_ref,
             source_root=lease.job_dir,
             files=[item for item in files if item],
             retain_until=time.time() + max(1, retain_days) * 86400,
@@ -1386,13 +1518,12 @@ def execute_cluster_collect(
         summary={
             **summary,
             "file_count": int(inspected.get("file_count") or 0),
-            "success_count": int(inspected.get("success_count") or 0),
-            "fail_count": int(inspected.get("fail_count") or 0),
-            "succeeded_input_count": int(inspected.get("success_count") or 0),
-            "failed_input_count": int(inspected.get("fail_count") or 0),
-            "total_input_count": int(inspected.get("success_count") or 0)
-            + int(inspected.get("fail_count") or 0),
-            "input_results": _cluster_input_results(inspected, lease.job_dir),
+            "success_count": int(merged_success_count),
+            "fail_count": int(merged_fail_count),
+            "succeeded_input_count": int(merged_success_count),
+            "failed_input_count": int(merged_fail_count),
+            "total_input_count": len(input_results) or merged_success_count + merged_fail_count,
+            "input_results": input_results,
             "errors": errors,
         },
         physical_root=lease.job_dir,
@@ -1408,12 +1539,147 @@ def execute_cluster_collect(
 
 
 def _expected_cluster_task_count(job: dict[str, Any]) -> int:
+    retry_paths = _cluster_retry_input_paths(job)
+    if retry_paths:
+        # A failed-input retry creates a fresh Cluster package containing only
+        # the selected inputs.  The original DatasetRef count must not keep
+        # the collector waiting for result.ini files that are intentionally
+        # not part of this retry package.
+        return len(retry_paths)
     decisions = dict((job.get("resolved_spec") or {}).get("decisions") or {})
     dataset = dict((decisions.get("data") or {}).get("dataset") or {})
     try:
         return max(int(dataset.get("file_count") or 0), 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _cluster_retry_input_paths(job: dict[str, Any]) -> list[str]:
+    """Return normalized failed-input paths from the private preflight payload."""
+
+    for stage in list(job.get("stages") or job.get("tasks") or []):
+        if not isinstance(stage, dict):
+            continue
+        if str(stage.get("stage_type") or stage.get("task_type") or "") != "preflight":
+            continue
+        payload = stage.get("payload") if isinstance(stage.get("payload"), dict) else {}
+        return sorted(
+            {
+                str(item or "").strip().replace("\\", "/")
+                for item in payload.get("retry_input_paths") or []
+                if str(item or "").strip()
+            }
+        )
+    return []
+
+
+def _cluster_result_run_ref(job: dict[str, Any], run_ref: str) -> str:
+    """Use a new immutable catalog run reference for each Cluster retry."""
+
+    retry_paths = _cluster_retry_input_paths(job)
+    if not retry_paths:
+        return str(run_ref)
+    for stage in list(job.get("stages") or job.get("tasks") or []):
+        if not isinstance(stage, dict):
+            continue
+        if str(stage.get("stage_type") or stage.get("task_type") or "") != "preflight":
+            continue
+        payload = stage.get("payload") if isinstance(stage.get("payload"), dict) else {}
+        try:
+            attempt = max(1, int(payload.get("retry_attempt") or stage.get("attempt_count") or 1))
+        except (TypeError, ValueError):
+            attempt = 1
+        return f"{run_ref}.retry.{attempt}"
+    return f"{run_ref}.retry.1"
+
+
+def _cluster_retry_previous_manifest(job: dict[str, Any]) -> dict[str, Any]:
+    """Read the path-free previous partial manifest from retry context."""
+
+    for stage in list(job.get("stages") or job.get("tasks") or []):
+        if not isinstance(stage, dict):
+            continue
+        if str(stage.get("stage_type") or stage.get("task_type") or "") != "preflight":
+            continue
+        payload = stage.get("payload") if isinstance(stage.get("payload"), dict) else {}
+        value = payload.get("retry_previous_manifest")
+        return dict(value) if isinstance(value, dict) else {}
+    return {}
+
+
+def _preserve_cluster_retry_outputs(
+    previous_manifest: dict[str, Any],
+    *,
+    previous_root: Path,
+    retry_root: Path,
+) -> None:
+    """Copy successful MF4 outputs into the fresh failed-input retry root."""
+
+    try:
+        previous_root = previous_root.expanduser().resolve(strict=True)
+        retry_root = retry_root.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise ClusterStageExecutionError(
+            "Previous successful Cluster outputs are unavailable for merge",
+            code="CLUSTER_RETRY_OUTPUT_UNAVAILABLE",
+            actions=({"type": "retry_stage", "label": "Retry Cluster preparation"},),
+        ) from exc
+    input_results = [
+        item for item in previous_manifest.get("input_results") or []
+        if isinstance(item, dict)
+        and str(item.get("status") or "").strip().lower() == "succeeded"
+    ]
+    relative_paths = [
+        str(item.get("output_relative_path") or "").strip().replace("\\", "/")
+        for item in input_results
+        if str(item.get("output_relative_path") or "").strip()
+    ]
+    # Older Cluster adapters do not emit output_relative_path in result.ini.
+    # Their public manifest still identifies the immutable MF4 entries, so use
+    # those as a safe fallback.  Failed inputs do not contribute output files
+    # to this list when the worker follows the normal contract.
+    if not relative_paths:
+        relative_paths = [
+            str(item or "").strip().replace("\\", "/")
+            for item in previous_manifest.get("files") or []
+            if str(item or "").strip().casefold().endswith(".mf4")
+        ]
+    copied = 0
+    for relative in dict.fromkeys(relative_paths):
+        safe = _safe_cluster_relative_path(relative)
+        if not safe:
+            continue
+        source = (previous_root / safe).resolve(strict=False)
+        target = (retry_root / safe).resolve(strict=False)
+        try:
+            source.relative_to(previous_root)
+            target.relative_to(retry_root)
+        except ValueError:
+            continue
+        if not source.is_file() or source.is_symlink():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        copied += 1
+    if not copied and input_results:
+        raise ClusterStageExecutionError(
+            "Previous successful Cluster outputs are unavailable for merge",
+            code="CLUSTER_RETRY_OUTPUT_UNAVAILABLE",
+            actions=({"type": "retry_stage", "label": "Retry Cluster preparation"},),
+        )
+
+
+def _safe_cluster_relative_path(value: str) -> Path | None:
+    text = str(value or "").strip().replace("\\", "/")
+    if (
+        not text
+        or Path(text).is_absolute()
+        or PureWindowsPath(text).is_absolute()
+        or PureWindowsPath(text).drive
+        or any(part in {"", ".", ".."} for part in text.split("/"))
+    ):
+        return None
+    return Path(*text.split("/"))
 
 
 def _cluster_status_query(lease: Any) -> str:
@@ -1555,6 +1821,62 @@ def _cluster_input_results(inspected: dict[str, Any], job_root: str) -> list[dic
             }
         )
     return rows
+
+
+def _merge_cluster_retry_input_results(
+    previous_manifest: dict[str, Any],
+    current: list[dict[str, Any]],
+    retry_paths: list[str],
+) -> list[dict[str, Any]]:
+    """Replace selected old failures while preserving prior input evidence."""
+
+    previous = [
+        dict(item)
+        for item in previous_manifest.get("input_results") or []
+        if isinstance(item, dict)
+    ]
+    if not previous:
+        return list(current)
+    previous_keys = {
+        str(item.get("input_relative_path") or item.get("relative_path") or "")
+        .strip()
+        .replace("\\", "/")
+        .casefold(): index
+        for index, item in enumerate(previous)
+        if str(item.get("input_relative_path") or item.get("relative_path") or "").strip()
+    }
+    selected = [str(item or "").strip().replace("\\", "/") for item in retry_paths if str(item or "").strip()]
+    replacements: dict[int, dict[str, Any]] = {}
+    unmatched: list[dict[str, Any]] = []
+    used_indices: set[int] = set()
+    for current_index, raw in enumerate(current):
+        item = dict(raw)
+        key = str(item.get("input_relative_path") or item.get("relative_path") or "").strip().replace("\\", "/")
+        previous_index = previous_keys.get(key.casefold())
+        if previous_index is None and current_index < len(selected):
+            selected_key = selected[current_index].casefold()
+            previous_index = previous_keys.get(selected_key)
+            if previous_index is not None:
+                item["input_relative_path"] = selected[current_index]
+        if previous_index is None or previous_index in used_indices:
+            unmatched.append(item)
+            continue
+        item["index"] = previous[previous_index].get("index", item.get("index"))
+        replacements[previous_index] = item
+        used_indices.add(previous_index)
+
+    merged: list[dict[str, Any]] = []
+    for index, item in enumerate(previous):
+        merged.append(dict(replacements.get(index, item)))
+    next_index = max(
+        [int(item.get("index") or 0) for item in merged if str(item.get("index") or "").isdigit()]
+        or [0]
+    ) + 1
+    for item in unmatched:
+        item["index"] = next_index
+        next_index += 1
+        merged.append(item)
+    return merged
 
 
 def _cluster_logical_relative_path(value: object, job_root: str, *, fallback: str) -> str:

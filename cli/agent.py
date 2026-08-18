@@ -2742,6 +2742,13 @@ def _execute_v5_local_simulation(task: dict, cancel_requested) -> tuple[dict, in
 
     lease_ref = str((task.get("payload") or {}).get("local_run_lease_ref") or "")
     store = AgentLocalRunLeaseStore()
+    retry_input_paths = [
+        str(item).strip()
+        for item in (task.get("payload") or {}).get("retry_input_paths") or []
+        if str(item).strip()
+    ]
+    if retry_input_paths:
+        store.reset_failed_inputs(lease_ref, retry_input_paths)
     private = store.get_private(lease_ref)
     if private["status"] in {"succeeded", "failed", "cancelled"}:
         result = store.result(lease_ref)
@@ -2904,6 +2911,9 @@ def _execute_v5_local_collect(
     payload = dict(task.get("payload") or {})
     cancel = cancel_requested or (lambda: False)
     lease_ref = str(payload.get("local_run_lease_ref") or "")
+    result_run_ref = str(payload.get("result_run_ref") or lease_ref).strip()
+    if not result_run_ref:
+        raise ValueError("local result run reference is unavailable")
     store = AgentLocalRunLeaseStore()
     private = store.get_private(lease_ref)
     local_result = store.result(lease_ref)
@@ -2919,13 +2929,13 @@ def _execute_v5_local_collect(
     # per-owner/run record when it already exists; the upload operation below
     # remains independently resumable/idempotent.
     published = next(
-        (item for item in catalog.list(owner=owner) if item.run_ref == lease_ref),
+        (item for item in catalog.list(owner=owner) if item.run_ref == result_run_ref),
         None,
     )
     if published is None:
         published = catalog.publish(
             owner=owner,
-            run_ref=lease_ref,
+            run_ref=result_run_ref,
             source_root=private["run_root"],
             files=[str(item.get("relative_path") or "") for item in local_result["files"]],
             retain_until=time.time() + retain_days * 86400,
@@ -2949,7 +2959,7 @@ def _execute_v5_local_collect(
             try:
                 uploaded = client.upload_result_archive(
                     archive,
-                    run_ref=lease_ref,
+                    run_ref=result_run_ref,
                     files=[item.to_dict() for item in published.files],
                     retain_until=published.retain_until,
                     owner=str(payload.get("owner") or ""),

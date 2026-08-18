@@ -32,10 +32,13 @@ from core.simulation import (
     detect_radar_transfer_metadata_safe,
     discover_radar_acquisition_sources,
 )
-from radar_sim_sdk import Job, RadarSimApiError, RadarSimClient, UserRunConfig
+from radar_sim_sdk import ArtifactUpload, ArtifactUploadResult, Job, RadarSimApiError, RadarSimClient, UserRunConfig
 from radar_sim_sdk.client import (
     _dataset_transfer_fingerprints,
+    _is_retryable_direct_transfer_exception,
+    _is_windows_physical_path,
     _resolved_direct_transfer_roles,
+    _sdk_local_transfer_sources,
     _trust_environment_proxy,
 )
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
@@ -506,6 +509,38 @@ def test_sdk_submit_run_keeps_shared_data_even_when_caller_can_read_it(tmp_path,
     assert job.spec["data"]["path"] == readable_share.as_posix()
 
 
+def test_sdk_readable_windows_unc_is_eligible_for_direct_transfer(tmp_path, monkeypatch):
+    source = tmp_path / "unc-mounted-data"
+    source.mkdir()
+    (source / "one.MF4").write_bytes(b"mf4")
+    config_payload = run_config_dict()
+    config_payload["data"] = {"path": str(source)}
+    config_payload["simulation"]["target"] = "cluster"
+    config = UserRunConfig.from_dict(config_payload)
+    monkeypatch.setattr(
+        "radar_sim_sdk.client.classify_data_path", lambda _value: "shared"
+    )
+    monkeypatch.setattr(
+        "radar_sim_sdk.client._is_windows_physical_path", lambda _value: True
+    )
+
+    sources = _sdk_local_transfer_sources(config)
+
+    assert _is_windows_physical_path(r"\\server\share\data") is True
+    assert [role for role, _path in sources] == ["dataset"]
+
+
+def test_sdk_permanent_transfer_api_errors_are_not_waiting():
+    assert not _is_retryable_direct_transfer_exception(
+        RadarSimApiError("invalid_transfer_item", "bad item", status_code=422),
+        code="invalid_transfer_item",
+    )
+    assert _is_retryable_direct_transfer_exception(
+        RadarSimApiError("cluster_direct_transfer_unavailable", "temporary", status_code=503),
+        code="cluster_direct_transfer_unavailable",
+    )
+
+
 def test_sdk_submit_run_preserves_local_data_and_configuration_assets_for_direct_transfer(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     data = tmp_path / "measurements"
@@ -600,6 +635,47 @@ def test_sdk_uploads_and_lists_reusable_configuration_assets(tmp_path):
     assert uploaded["uri"].startswith("config-asset://sha256/")
     assert sdk.list_config_assets(kind="mat_filter") == [uploaded]
     assert sdk.get_config_asset(uploaded["id"], kind="mat_filter") == uploaded
+
+
+def test_sdk_artifact_upload_reconciles_a_committed_chunk_after_transport_loss(tmp_path):
+    source = tmp_path / "selena.exe"
+    source.write_bytes(b"abcdef")
+    initial = ArtifactUpload(
+        session_id="artifact-session",
+        status="pending",
+        project="demo",
+        publish_path="selena.exe",
+        storage_ref="shared://artifact/demo/selena.exe",
+        build_evidence_ref="evidence-1",
+        expected_size=6,
+        expected_checksum="sha256:" + "a" * 64,
+        received_bytes=0,
+        chunk_size=3,
+    )
+    observed = {"value": initial}
+    append_offsets = []
+
+    sdk = RadarSimClient("http://testserver", transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={})))
+    sdk.create_artifact_upload = lambda *_args, **_kwargs: initial
+
+    def append(_session_id, offset, data):
+        append_offsets.append((offset, data))
+        if len(append_offsets) == 1:
+            # The server committed the first chunk but the response was lost.
+            observed["value"] = ArtifactUpload(**{**initial.__dict__, "received_bytes": 3})
+            raise RadarSimTransportError("connection dropped after commit")
+        return ArtifactUpload(**{**initial.__dict__, "received_bytes": offset + len(data)})
+
+    sdk.append_artifact_upload = append
+    sdk.get_artifact_upload = lambda _session_id: observed["value"]
+    sdk.finalize_artifact_upload = lambda session_id: ArtifactUploadResult(
+        session=observed["value"], artifact={"id": "artifact-1"}, reused=False
+    )
+
+    result = sdk.upload_artifact("evidence-1", source)
+
+    assert result.artifact["id"] == "artifact-1"
+    assert append_offsets == [(0, b"abc"), (3, b"def")]
 
 
 def test_sdk_token_adds_bearer_authorization_header():
@@ -828,6 +904,39 @@ def test_sdk_result_download_wraps_stream_transport_error(tmp_path):
     with pytest.raises(RadarSimTransportError, match="connection dropped"):
         sdk.download_result("result:sha256:transport", tmp_path / "result.zip")
     assert not (tmp_path / "result.zip").exists()
+
+
+def test_sdk_result_download_restarts_a_broken_stream(tmp_path, monkeypatch):
+    archive = b"retryable-result-zip"
+    checksum = "sha256:" + hashlib.sha256(archive).hexdigest()
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/download"):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                def broken_stream() -> object:
+                    yield archive[:4]
+                    raise httpx.ReadError("temporary disconnect")
+
+                return httpx.Response(200, content=broken_stream())
+            return httpx.Response(200, content=archive)
+        return httpx.Response(200, json={"archive_checksum": checksum})
+
+    monkeypatch.setattr("radar_sim_sdk.client.time.sleep", lambda _seconds: None)
+    sdk = RadarSimClient(
+        "http://testserver",
+        transport=httpx.MockTransport(handler),
+        user="alice",
+    )
+
+    downloaded = sdk.download_result(
+        "result:sha256:" + "e" * 64,
+        tmp_path / "result.zip",
+    )
+
+    assert attempts["count"] == 2
+    assert downloaded.read_bytes() == archive
 
 
 def test_sdk_v2_run_and_task_center_list(tmp_path):
@@ -1460,7 +1569,7 @@ def test_sdk_retries_transient_transport_errors_for_idempotent_reads(monkeypatch
     assert sleeps == [0.2, 0.4]
 
 
-def test_sdk_does_not_retry_transport_errors_for_state_changing_requests(monkeypatch):
+def test_sdk_retries_submit_transport_errors_with_generated_idempotency_key(monkeypatch):
     attempts = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1480,5 +1589,5 @@ def test_sdk_does_not_retry_transport_errors_for_state_changing_requests(monkeyp
     with pytest.raises(RadarSimTransportError, match="server disconnected"):
         sdk.submit_run(run_config_dict())
 
-    assert attempts == 1
-    assert sleeps == []
+    assert attempts == 3
+    assert sleeps == [0.2, 0.4]

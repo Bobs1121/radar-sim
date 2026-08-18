@@ -30,6 +30,15 @@ def _result_tree(root: Path) -> Path:
     return result
 
 
+def test_default_result_catalog_enables_configurable_free_space_watermark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RSIM_HOME", str(tmp_path / "rsim-home"))
+    monkeypatch.setenv("RSIM_RESULT_MIN_FREE_BYTES", "123456")
+    catalog = local_results.default_result_catalog()
+    assert catalog._min_free_bytes == 123456
+
+
 def test_publish_is_deterministic_and_public_metadata_is_path_free(tmp_path: Path) -> None:
     catalog, allowed = _catalog(tmp_path)
     source = _result_tree(allowed)

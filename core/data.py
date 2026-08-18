@@ -21,7 +21,7 @@ import os
 import shutil
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from core.simulation import OUTPUT_FILE_PATTERN
 
@@ -87,13 +87,21 @@ def is_input_mf4(path: Path) -> bool:
     return path.suffix.upper() == ".MF4" and not OUTPUT_FILE_PATTERN.search(path.stem)
 
 
-def iter_mf4_inputs(source: Path, *, limit: int = 0) -> Iterator[Path]:
+def iter_mf4_inputs(
+    source: Path,
+    *,
+    limit: int = 0,
+    cancel_requested: Optional[Callable[[], bool]] = None,
+) -> Iterator[Path]:
     """Yield candidate input MF4 paths from a file or directory tree.
 
     When ``source`` is a single file, yield it (if it is an input MF4).
     When ``source`` is a directory, walk it deterministically (sorted dirs/files).
     ``limit`` <= 0 means unlimited.
     """
+    cancelled = cancel_requested or (lambda: False)
+    if cancelled():
+        return
     if source.is_file():
         if is_input_mf4(source):
             yield source
@@ -102,8 +110,12 @@ def iter_mf4_inputs(source: Path, *, limit: int = 0) -> Iterator[Path]:
         return
     yielded = 0
     for root, dirs, files in os.walk(source):
+        if cancelled():
+            return
         dirs.sort()
         for name in sorted(files):
+            if cancelled():
+                return
             path = Path(root) / name
             if not is_input_mf4(path):
                 continue
