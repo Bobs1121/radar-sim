@@ -109,3 +109,19 @@ Web 生成的 `connect.cmd`/`install.ps1` 已经携带当前 Web 页面 owner，
 - 事务备份目录位于本次下载的临时目录，安装成功后随临时目录清理；安装失败时优先恢复旧文件和旧 owner，再尝试启动旧 Connector。
 
 同 owner 的普通更新仍复用原 Agent ID，不触发 rebind。
+
+## 7. 2026-08-18 真实安装验收结果
+
+真实 Windows profile 曾绑定 `user-fresh-agent-smoke`，随后从服务以 `user-hoz2wx` 下载全新一键安装脚本。最终 release `95e7e32` 上验收通过：
+
+- 未填写 NTID；owner 由当前 Web/SDK 请求生成并写入脚本；
+- 安装器检测到旧 owner，确认旧 owner `jobs=0`、未完成 tasks 为 0；
+- 自动执行 rebind，生成新 Agent ID `agent-HOZ2WX-WX8-C-0001A-8eb997b96324`；
+- `install.json` 已切换到 `user-hoz2wx`；
+- 服务 `health.ok=true`，用户级 systemd `active/running`，`NRestarts=0`；
+- Windows Agent `available=true`、`contract_current=true`；
+- Cluster `count=2`；
+- 当前 Job 列表为空；
+- 清理后服务器只保留 `/home/hoz2wx/radar-sim-95e7e32`，旧测试 Agent 注册记录已删除。
+
+这次真实测试还验证了 rollback：故意暴露安装器错误时，旧 owner 和旧 Agent 能恢复在线；修正变量初始化和 PowerShell 参数传递后，最终跨 owner 一键安装成功。
