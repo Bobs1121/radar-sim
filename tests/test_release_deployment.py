@@ -148,6 +148,7 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "Restore-PreviousConnector" in connector
     assert "previous-app" in connector
     assert "previous-config" in connector
+    assert '$DataRoot = Join-Path $InstallRoot "data"' in connector
     assert "unfinished task(s)" in connector
     assert "automatically rebinding" in connector
     assert '"-ForceRebind"' in connector

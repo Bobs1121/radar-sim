@@ -18,6 +18,7 @@ try {
 $Base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME "AppData\Local" }
 $InstallRoot = Join-Path $Base "radar-sim"
 $AppRoot = Join-Path $InstallRoot "app"
+$DataRoot = Join-Path $InstallRoot "data"
 $WorkRoot = Join-Path $env:TEMP ("radar-sim-connect-" + [Guid]::NewGuid().ToString("N"))
 $Archive = Join-Path $WorkRoot "package.zip"
 $Expanded = Join-Path $WorkRoot "package"
