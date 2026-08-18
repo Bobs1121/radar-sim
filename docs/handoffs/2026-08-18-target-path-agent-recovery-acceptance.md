@@ -96,3 +96,13 @@ HTTP 404 / connector_not_registered
 
 第 2 项点云/信号缺失问题按用户要求不在本次修复和放行判断中。
 
+## 6. 一键安装的 owner 绑定恢复
+
+Web 生成的 `connect.cmd`/`install.ps1` 已经携带当前 Web 页面 owner，用户不需要再次填写 NTID。针对同一 Windows profile 之前绑定过其他稳定 `user-*` owner 的情况，一键安装器现在会：
+
+- 查询旧 owner 的未完成任务；
+- 旧 owner 没有 queued/running/waiting/cancelling 任务时，自动调用 `bootstrap.ps1 -ForceRebind`；
+- 让 bootstrap 基于当前 Web/SDK owner 生成新的稳定 Agent ID，并重新注册；
+- 旧 owner 存在未完成任务时停止安装并给出明确提示，避免静默抢占导致任务丢失。
+
+同 owner 的普通更新仍复用原 Agent ID，不触发 rebind。

@@ -145,6 +145,48 @@ function Stop-PreviousConnector {
     }
 }
 
+function Get-OneClickRebindRequired {
+    # The Web-generated installer already carries the current page owner.  A
+    # Windows profile may still contain a previous explicit user binding (for
+    # example after a test user or a different Web/SDK identity was used on
+    # this PC).  Do not make the user type an NTID again: rebind only when the
+    # old owner has no unfinished jobs, and let bootstrap create a new stable
+    # Agent ID for the current owner.
+    $configPath = Join-Path $InstallRoot "install.json"
+    if (-not (Test-Path -LiteralPath $configPath) -or -not $Owner) { return $false }
+    $existing = $null
+    try { $existing = Get-Content -Raw -Encoding UTF8 $configPath | ConvertFrom-Json } catch { return $false }
+    $oldOwner = [string]($existing.owner | ForEach-Object { $_ })
+    if (-not $oldOwner -or [string]::Equals($oldOwner.Trim(), $Owner.Trim(), [StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    # Preserve the established one-time migration for old generated browser/
+    # SDK labels; bootstrap already handles that transition without changing
+    # the Agent ID.
+    if ($oldOwner -match '^(?:user-)?(?:web|sdk)-[0-9a-f]{24,64}$' -and $Owner -match '^user-[a-z0-9_.-]+$') {
+        return $false
+    }
+    Write-Host "This PC is currently bound to '$oldOwner'; the current Web/SDK identity is '$Owner'." -ForegroundColor Yellow
+    Write-Host "Checking the old identity for unfinished tasks before automatic rebind..." -ForegroundColor Yellow
+    try {
+        $headers = @{ "X-Rsim-User" = $oldOwner }
+        $snapshot = Invoke-RestMethod -Method Get -Uri "$ServerUrl/api/v1/jobs?limit=100" `
+            -Headers $headers -TimeoutSec 15
+        $active = @(
+            @($snapshot.jobs) | Where-Object {
+                [string]$_.status -notin @("succeeded", "partial", "failed", "cancelled")
+            }
+        )
+        if ($active.Count -gt 0) {
+            Fail "This PC has $($active.Count) unfinished task(s) under '$oldOwner'. Finish or cancel them before connecting it to '$Owner'."
+        }
+    } catch {
+        if ($_.Exception.Message -like "This PC has *unfinished task*") { throw }
+        Fail "Could not safely verify the previous identity's tasks before rebinding. Keep the original Web/SDK identity or contact the service administrator. Detail: $($_.Exception.Message)"
+    }
+    return $true
+}
+
 function Reset-InstalledApplication {
     # Keep the isolated Python environment, but replace every source/runtime
     # file.  Copying over an old tree leaves removed modules and timestamp-
@@ -213,11 +255,24 @@ try {
     }
 
     Step "Install and connect this PC"
+    $forceRebind = Get-OneClickRebindRequired
+    if ($forceRebind) {
+        Write-Host "No unfinished tasks were found; automatically rebinding this PC to the current Web/SDK identity." -ForegroundColor Yellow
+    }
     Stop-PreviousConnector
     Reset-InstalledApplication
     Copy-Item -Path (Join-Path $Expanded '*') -Destination $AppRoot -Recurse -Force
-    & (Join-Path $AppRoot "scripts\bootstrap.ps1") -Mode $Mode -ControlPlane linux `
-        -ServerUrl $ServerUrl -Owner $Owner -InstallRoot $InstallRoot -RegisterStartup -Start
+    $bootstrapArgs = @(
+        "-Mode", $Mode,
+        "-ControlPlane", "linux",
+        "-ServerUrl", $ServerUrl,
+        "-Owner", $Owner,
+        "-InstallRoot", $InstallRoot,
+        "-RegisterStartup",
+        "-Start"
+    )
+    if ($forceRebind) { $bootstrapArgs += "-ForceRebind" }
+    & (Join-Path $AppRoot "scripts\bootstrap.ps1") @bootstrapArgs
     if ($LASTEXITCODE -ne 0) { Fail "The local component installation did not complete." }
 
     Write-Host "`nThis PC is connected. Return to the Web page and continue the task." -ForegroundColor Green
