@@ -48,9 +48,9 @@
 5. `POST /api/v1/jobs/{job_id}/retry-failed-inputs`、Web“只重试失败数据”、SDK `retry_failed_inputs()`。
 6. Windows 本地 checkpoint 恢复；Cluster partial 新包只包含失败输入，并合并旧成功输出；每次重试使用新结果归档引用。
 
-## 当前未提交、未部署的继续改动
+## 本轮继续改动（已提交并部署）
 
-这些修改必须完成针对性测试和全局风险审查后才能提交；线上仍保持 `674366f`：
+这些修改已完成针对性测试、全仓回归并部署到 `30ad4a6`：
 
 ### A. Cluster readiness 最早 gate
 
@@ -95,15 +95,15 @@
 
 只对服务端自身按 owner/evidence/run 查重的创建接口开放，不扩大到普通状态变更 POST。
 
-## 下一步必须执行的动作
+## 已执行的收口动作
 
-1. 运行新增针对性测试：readiness earliest gate、blocked readiness retry、preflight 二次 probe、SDK transfer cancellation、upload-session retry。
-2. 运行受影响专项回归，至少覆盖 `test_api_v1_service.py`、`test_cluster_stage_executor.py`、`test_sdk.py`、`test_identity_unification.py`、`test_control_service.py`、`test_windows_full_local_e2e.py`。
-3. 做一次代码审查：确认 build+Cluster 正常路径、existing+Cluster、local 路径、dry-run、普通 blocked Stage retry 没有被改变。
-4. 通过后再运行全仓回归；失败时先修根因，不修改测试迎合实现。
-5. 仅全仓通过后提交新 commit、重新打包不可变 release、切换 service；切换前确认无活动 Job。
-6. 线上重复验证 health、capabilities、readiness、Connector poll、结果水位环境和 Job 状态；部署验收不等同于 Selena 内部结果正确性验收。
-7. 更新本 handoff 的提交、release、测试和线上证据；如证据不足，保持“框架候选/受控内网可用”，不要宣称所有真实仿真组合均已通过。
+1. 新增针对性测试通过：readiness earliest gate、blocked readiness retry、preflight 二次 probe、SDK transfer cancellation、upload-session retry。
+2. 受影响专项回归通过：`208 passed, 1 warning`。
+3. 全仓回归通过：`1673 passed, 12 skipped, 1 warning`。
+4. 切换前确认线上无 Job；服务切换到 `/home/hoz2wx/radar-sim-30ad4a6` 后保持 `active`、`NRestarts=0`、`ExecMainStatus=0`。
+5. 线上 health、capabilities、Cluster readiness、Connector poll、Connector ZIP checksum 和结果水位环境均复验通过。
+6. 两个 owner 的并发 Cluster-visible `validate_run` 均返回 `ready=true`、无 blocker，未创建测试 Job。
+7. 线上验收只证明外围框架与控制链路；不把 Selena 内部结果内容正确性宣称为本框架已验证。
 
 ## 禁止事项
 
