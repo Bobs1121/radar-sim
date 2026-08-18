@@ -645,6 +645,9 @@ def _run_serve_v1(args) -> int:
             config_loader=lambda project: __import__(
                 "core.config", fromlist=["load_cluster_execution_config"]
             ).load_cluster_execution_config(project),
+            environment_probe=lambda config: __import__(
+                "core.cluster", fromlist=["check_cluster_environment"]
+            ).check_cluster_environment(config),
             result_catalog=result_catalog,
             server_probe_root=transfer_service.server_probe_root,
             storage_ref_resolver=resolve_transfer_storage_ref,

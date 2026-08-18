@@ -22,6 +22,7 @@ import httpx
 from core.direct_transfer import (
     TransferManifest,
     TransferPlan,
+    TransferCancelled,
     _TransferProgressReporter,
     execute_transfer,
 )
@@ -33,6 +34,7 @@ from radar_sim_sdk.errors import (
     RadarSimApiError,
     RadarSimIntegrityError,
     RadarSimTransportError,
+    RadarSimTransferCancelledError,
 )
 from radar_sim_sdk.events import event_from_sse, parse_sse_lines
 from radar_sim_sdk.models import (
@@ -582,16 +584,23 @@ class RadarSimClient:
             )
             reporter.emit(progress)
 
-        manifest = execute_transfer(
-            signed,
-            Path(source_root).expanduser(),
-            signed.items,
-            client_target_root=signed.client_target_root,
-            allow_local_test=bool(allow_local_test),
-            cancel_callback=cancel_check,
-            progress_callback=report,
-            chunk_size=int(chunk_size),
-        )
+        try:
+            manifest = execute_transfer(
+                signed,
+                Path(source_root).expanduser(),
+                signed.items,
+                client_target_root=signed.client_target_root,
+                allow_local_test=bool(allow_local_test),
+                cancel_callback=cancel_check,
+                progress_callback=report,
+                chunk_size=int(chunk_size),
+            )
+        except TransferCancelled as exc:
+            # User cancellation is a terminal caller decision, not a
+            # transient "needs-agent" condition.  Do not let submit/resume
+            # silently retry the same transfer after the caller asked it to
+            # stop.
+            raise RadarSimTransferCancelledError(str(exc)) from exc
         final_file = (
             manifest.entries[-1].relative_path
             if manifest.entries
@@ -1419,7 +1428,12 @@ class RadarSimClient:
         has_idempotency_key = bool(
             str(request_headers.get("Idempotency-Key") or "").strip()
         )
-        attempts = 3 if normalized_method in {"GET", "HEAD"} or has_idempotency_key else 1
+        replayable_create = normalized_method == "POST" and str(path).split("?", 1)[0] in {
+            "/api/v1/artifact-uploads",
+            "/api/v1/runtime-bundle-uploads",
+            "/api/v1/result-uploads",
+        }
+        attempts = 3 if normalized_method in {"GET", "HEAD"} or has_idempotency_key or replayable_create else 1
         last_error: httpx.TransportError | None = None
 
         for attempt in range(attempts):
@@ -1432,9 +1446,11 @@ class RadarSimClient:
                 last_error = exc
                 if attempt + 1 >= attempts:
                     break
-                # State-changing requests are retried only when the caller
-                # supplied a stable Idempotency-Key. Reusing the same key
-                # makes a response-lost submit safe to replay.
+                # State-changing requests are retried only with a stable
+                # Idempotency-Key or on upload-session creation endpoints
+                # whose server-side (owner, evidence/run) lookup is itself
+                # idempotent. Reusing the same key/session prevents duplicate
+                # Jobs or duplicate upload sessions.
                 time.sleep(0.2 * (2**attempt))
             finally:
                 # ``Client.request`` buffers the response body, but does not
@@ -1529,7 +1545,6 @@ def _is_retryable_direct_transfer_exception(exc: BaseException, *, code: str) ->
         "direct_transfer_stage_unavailable",
         "transfer_io_error",
         "transfer_plan_expired",
-        "transfer_cancelled",
     }
 
 

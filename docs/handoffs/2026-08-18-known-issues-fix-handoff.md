@@ -4,7 +4,7 @@
 
 本轮修复覆盖 Web/SDK、多用户任务调度、源到源数据传输、长任务观察、批量 partial 恢复、Cluster 就绪检查、结果归档容量管理和 Connector 相关外围错误。Selena 内部仿真结果内容本身（包括点云内容正确性）不在本轮范围；认证也按受信内网约束不纳入本轮。
 
-本地全仓回归：`1669 passed, 12 skipped, 1 warning`。唯一 warning 是 Starlette/httpx 弃用提示，不是业务失败。
+上一阶段全仓回归：`1669 passed, 12 skipped, 1 warning`；继续审查后最新全仓回归为 `1673 passed, 12 skipped, 1 warning`。唯一 warning 是 Starlette/httpx 弃用提示，不是业务失败。
 
 ## 已修复的问题
 

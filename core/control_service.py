@@ -2892,8 +2892,20 @@ class ControlService:
                 task = self._get_task_locked(conn, stage_id)
                 if task["job_id"] != job_id:
                     raise ValueError(f"stage {stage_id} does not belong to job {job_id}")
-                if task["status"] not in {"failed", "cancelled"}:
-                    raise ValueError(f"stage {stage_id} is {task['status']}; only failed/cancelled stages can be retried")
+                retryable_readiness_block = (
+                    task["status"] == "blocked"
+                    and str((task.get("error") or {}).get("code") or "")
+                    in {
+                        "cluster_environment_unavailable",
+                        "cluster_readiness_unavailable",
+                        "cluster_readiness_invalid",
+                    }
+                )
+                if task["status"] not in {"failed", "cancelled"} and not retryable_readiness_block:
+                    raise ValueError(
+                        f"stage {stage_id} is {task['status']}; only failed/cancelled stages "
+                        "or Cluster readiness blocks can be retried"
+                    )
                 # Jobs created before the target-specific registration
                 # contract may have a failed register_artifact Stage with no
                 # dispatch_scope.  Repair that durable payload during retry so

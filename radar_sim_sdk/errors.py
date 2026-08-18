@@ -13,6 +13,16 @@ class RadarSimTransportError(RadarSimError):
     """Raised for HTTP transport/timeouts before a valid API response exists."""
 
 
+class RadarSimTransferCancelledError(RadarSimError):
+    """Raised when the caller explicitly cancels a source-to-target transfer."""
+
+    code = "transfer_cancelled"
+
+    def __init__(self, message: str = "transfer cancelled") -> None:
+        self.message = str(message or "transfer cancelled")
+        super().__init__(f"{self.code}: {self.message}")
+
+
 class RadarSimIntegrityError(RadarSimError):
     """Raised when downloaded content fails its advertised checksum.
 

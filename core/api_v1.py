@@ -1091,7 +1091,16 @@ class ApiV1Service:
     ) -> None:
         """Block the first Cluster-owned gate before source work/transfer starts."""
 
-        preferred = "environment_check" if str(source or "").strip().lower() == "existing" else "preflight"
+        # Existing Selena routes can use the Linux environment stage as the
+        # first Cluster gate.  Build routes bind environment_check to the
+        # Windows workspace/build handoff, so block resolve_spec instead;
+        # otherwise a failed Cluster probe would still allow compilation and
+        # direct data preparation to run upstream of preflight.
+        preferred = (
+            "environment_check"
+            if str(source or "").strip().lower() == "existing"
+            else "resolve_spec"
+        )
         candidates = [
             task for task in task_specs
             if str(task.get("stage_type") or task.get("task_type") or "") == preferred

@@ -1,10 +1,10 @@
 # radar-sim V2 当前交接
 
-> 更新时间：2026-08-14
-> 状态：V2 project-free、Connector v11 与控制状态自愈已部署；Cluster collect 无固定总观测期限已上线，`job_42379b085fdb` 已用原 ClusterRun 重测成功
+> 更新时间：2026-08-18
+> 状态：V2 project-free、Connector 恢复、SDK/数据路由、partial 失败输入重试、Cluster readiness、长任务等待和结果容量管理已收口；最新修复 handoff 见 `docs/handoffs/2026-08-18-continuation-requirement-risk-review.md`
 > 分支：`codex/new-branch`
-> 当前生产基线：`9c21c7d`，Linux release `/home/hoz2wx/radar-sim-9c21c7d`
-> 回滚基线：`538945e`，Linux release `/home/hoz2wx/radar-sim-538945e`
+> 当前生产基线：`674366f`，Linux release `/home/hoz2wx/radar-sim-674366f`
+> 回滚基线：`95e7e32`，Linux release `/home/hoz2wx/radar-sim-95e7e32`
 
 本文是下一位开发者的唯一实时入口。历史长篇实施日志已从根 handoff 删除；需要追溯时使用 Git 历史和 `docs/handoffs/` 中带日期的证据文件。产品和架构决策依次以 `docs/PRODUCT_CONTRACT.md`、`PRD.md`、`docs/V2_ARCHITECTURE.md`、`docs/DETAILED_DESIGN.md`、`DEVELOPMENT_PLAN.md` 为准。
 

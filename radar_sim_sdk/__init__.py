@@ -8,6 +8,7 @@ from radar_sim_sdk.errors import (
     RadarSimError,
     RadarSimIntegrityError,
     RadarSimTransportError,
+    RadarSimTransferCancelledError,
 )
 from radar_sim_sdk.models import (
     ArtifactUpload,
@@ -35,6 +36,7 @@ __all__ = [
     "RadarSimError",
     "RadarSimIntegrityError",
     "RadarSimTransportError",
+    "RadarSimTransferCancelledError",
     "UserResultConfig",
     "UserRunConfig",
     "RunConfigValidationResult",

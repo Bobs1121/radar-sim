@@ -107,6 +107,11 @@ class ClusterStageContext:
     # both callbacks here prevents a context construction site from silently
     # dropping owner-aware storage resolution.
     transfer_service: Any | None = None
+    # Optional deployment-owned readiness probe used immediately before a
+    # Cluster package is prepared.  API submission checks are advisory with
+    # respect to later outages; this execution-time gate closes that race.
+    # Kept at the end to preserve positional compatibility for embeddings.
+    environment_probe: Callable[[dict[str, Any]], list[Any]] | None = None
 
     def __post_init__(self) -> None:
         root = Path(self.work_root).expanduser().resolve()
@@ -660,6 +665,50 @@ def _public_environment_item_name(item: Any) -> str:
     return name
 
 
+def _assert_cluster_environment_ready(
+    context: ClusterStageContext,
+    config: dict[str, Any],
+) -> None:
+    """Fail before Cluster packaging when the deployment probe is unavailable."""
+
+    probe = getattr(context, "environment_probe", None)
+    if not callable(probe):
+        return
+    try:
+        checks = list(probe(config) or [])
+    except Exception as exc:
+        raise ClusterStageExecutionError(
+            "Cluster environment is temporarily unavailable; retry Cluster preparation",
+            code="CLUSTER_ENVIRONMENT_UNAVAILABLE",
+            actions=({"type": "retry_stage", "label": "Retry Cluster preparation"},),
+        ) from exc
+    superseded = {"Profile Selena executable", "Profile runtime XML"}
+    failed = [
+        item
+        for item in checks
+        if str(getattr(item, "name", "") or "") not in superseded
+        and not bool(getattr(item, "ok", False))
+        and str(getattr(item, "severity", "error") or "error").lower() == "error"
+    ]
+    if not failed:
+        return
+    for item in failed:
+        _LOG.error(
+            "Cluster environment dependency unavailable before preflight: name=%s detail=%s",
+            getattr(item, "name", "Cluster dependency"),
+            str(getattr(item, "detail", "") or "unavailable"),
+        )
+    detail = "; ".join(
+        f"{_public_environment_item_name(item)}: {_public_environment_error_detail(item)}"
+        for item in failed
+    )
+    raise ClusterStageExecutionError(
+        "Cluster environment is temporarily unavailable: " + detail,
+        code="CLUSTER_ENVIRONMENT_UNAVAILABLE",
+        actions=({"type": "retry_stage", "label": "Retry Cluster preparation"},),
+    )
+
+
 def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any]) -> dict[str, Any]:
     owner = _owner(job)
     transfer_resources = _transfer_resources(job)
@@ -717,6 +766,11 @@ def execute_cluster_preflight(context: ClusterStageContext, job: dict[str, Any])
         bundle_id = str(bundle_decision.get("id") or "").strip()
         bundle_storage_ref = str(bundle_decision.get("storage_ref") or "").strip()
     config = copy.deepcopy(context.config_loader(project))
+    # Submission-time readiness can become stale while a Windows build or
+    # source-side transfer is in progress.  Production injects this probe so
+    # the final Linux gate checks the actual Cluster dependencies immediately
+    # before creating Config.cfg/submitting the external job.
+    _assert_cluster_environment_ready(context, config)
     # Project adapters and legacy profiles may carry a historical source such
     # as RadarFC.  Only the public run YAML is user intent; an empty public
     # source delegates to MF4 acquisition metadata.

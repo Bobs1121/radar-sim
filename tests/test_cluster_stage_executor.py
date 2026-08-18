@@ -19,6 +19,7 @@ from core.cluster_stage_executor import (
     ClusterStageContext,
     ClusterStageExecutor,
     LINUX_STAGE_AGENT_ID,
+    _assert_cluster_environment_ready,
     _merge_cluster_retry_input_results,
 )
 from core.control_service import ControlService
@@ -63,6 +64,24 @@ def test_cluster_partial_retry_merges_new_failed_input_evidence_with_old_success
     assert [item["input_relative_path"] for item in merged] == ["good.MF4", "bad.MF4"]
     assert [item["status"] for item in merged] == ["succeeded", "succeeded"]
     assert merged[1]["index"] == 2
+
+
+def test_cluster_preflight_rechecks_injected_environment_probe():
+    context = SimpleNamespace(
+        environment_probe=lambda _config: [
+            SimpleNamespace(
+                name="Cluster workspace root",
+                ok=False,
+                severity="error",
+                detail="unavailable",
+            )
+        ]
+    )
+
+    with pytest.raises(ClusterStageExecutionError, match="Cluster environment") as caught:
+        _assert_cluster_environment_ready(context, {"cluster": {}})
+
+    assert caught.value.code == "CLUSTER_ENVIRONMENT_UNAVAILABLE"
 
 
 def test_busy_cluster_stage_keeps_heartbeating_for_other_users(monkeypatch):

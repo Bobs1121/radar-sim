@@ -121,6 +121,13 @@ def test_web_exposes_failed_input_retry_action():
     assert "/retry-failed-inputs" in source
 
 
+def test_web_can_retry_a_blocked_cluster_readiness_gate():
+    source = Path("radar_sim_web/static/app.js").read_text(encoding="utf-8")
+    assert 'stage.status === "blocked"' in source
+    assert "cluster_environment_unavailable" in source
+    assert "重新检查 Cluster" in source
+
+
 def test_connector_installer_migrates_only_generated_legacy_owner():
     source = Path("scripts/bootstrap.ps1").read_text(encoding="utf-8")
     assert "existingOwner" in source

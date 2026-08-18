@@ -6,7 +6,7 @@
 
 Linux 只运行一个 `serve-v1` 控制面进程，同时提供 Web、REST/SDK、Job/Stage 调度、统一 Windows Connector 接口和 Cluster executor。Linux 不编译 Selena、不执行 Windows 本地仿真，也不接收大文件正文。
 
-当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-8f8601c`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。
+当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-674366f`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
 
 普通部署：
 

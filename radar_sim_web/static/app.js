@@ -1266,8 +1266,16 @@ function renderStage(job, stage) {
   copy.append(title, detail);
   const actions = document.createElement("div");
   actions.className = "stage-actions";
-  if (!isBusinessStep && ["failed", "cancelled"].includes(stage.status)) {
-    actions.append(actionButton("重试", "secondary", () => retryStage(job.id, stage.stage_id || stage.task_id)));
+  const readinessRetry = stage.status === "blocked"
+    && (stage.error?.actions || []).some((action) => [
+      "cluster_environment_unavailable",
+      "cluster_readiness_unavailable",
+      "cluster_readiness_invalid",
+    ].includes(stage.error?.code));
+  if (!isBusinessStep && (["failed", "cancelled"].includes(stage.status) || readinessRetry)) {
+    actions.append(actionButton(readinessRetry ? "重新检查 Cluster" : "重试", "secondary", () =>
+      retryStage(job.id, stage.stage_id || stage.task_id)
+    ));
   }
   const canUpload = (stage.error?.actions || []).some((action) => action.type === "upload_data");
   if (stage.status === "blocked" && canUpload) {

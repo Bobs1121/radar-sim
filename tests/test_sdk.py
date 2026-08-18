@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from core.api_v1_fastapi import create_app
 from core.control_service import ControlService
 from core.direct_transfer import (
+    TransferCancelled,
     TransferPlan,
     TransferPlanItem,
     build_isolated_relative_root,
@@ -32,7 +33,15 @@ from core.simulation import (
     detect_radar_transfer_metadata_safe,
     discover_radar_acquisition_sources,
 )
-from radar_sim_sdk import ArtifactUpload, ArtifactUploadResult, Job, RadarSimApiError, RadarSimClient, UserRunConfig
+from radar_sim_sdk import (
+    ArtifactUpload,
+    ArtifactUploadResult,
+    Job,
+    RadarSimApiError,
+    RadarSimClient,
+    RadarSimTransferCancelledError,
+    UserRunConfig,
+)
 from radar_sim_sdk.client import (
     _dataset_transfer_fingerprints,
     _is_retryable_direct_transfer_exception,
@@ -538,6 +547,38 @@ def test_sdk_permanent_transfer_api_errors_are_not_waiting():
     assert _is_retryable_direct_transfer_exception(
         RadarSimApiError("cluster_direct_transfer_unavailable", "temporary", status_code=503),
         code="cluster_direct_transfer_unavailable",
+    )
+
+
+def test_sdk_transfer_cancellation_is_not_converted_to_waiting(monkeypatch, tmp_path):
+    plan = TransferPlan(
+        transfer_id="transfer-cancel-test",
+        owner_scope="owner-scope-cancel-test",
+        job_id="job-cancel-test",
+        stage_id="stage-cancel-test",
+        mode="shared_copy",
+        source_role="dataset",
+        client_target_root=str(tmp_path / "target"),
+        relative_root=build_isolated_relative_root(
+            "owner-scope-cancel-test", "job-cancel-test", "transfer-cancel-test"
+        ),
+        expires_at=time.time() + 3600,
+        items=(),
+    )
+    monkeypatch.setattr(
+        "radar_sim_sdk.client.execute_transfer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TransferCancelled("user stopped the transfer", code="transfer_cancelled")
+        ),
+    )
+    sdk = RadarSimClient("http://testserver", transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={})))
+
+    with pytest.raises(RadarSimTransferCancelledError) as caught:
+        sdk.execute_transfer_plan(plan, tmp_path)
+
+    assert caught.value.code == "transfer_cancelled"
+    assert not _is_retryable_direct_transfer_exception(
+        caught.value, code="transfer_cancelled"
     )
 
 
@@ -1589,5 +1630,29 @@ def test_sdk_retries_submit_transport_errors_with_generated_idempotency_key(monk
     with pytest.raises(RadarSimTransportError, match="server disconnected"):
         sdk.submit_run(run_config_dict())
 
+    assert attempts == 3
+    assert sleeps == [0.2, 0.4]
+
+
+def test_sdk_retries_idempotent_upload_session_creation(monkeypatch):
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.RemoteProtocolError("server disconnected", request=request)
+        return httpx.Response(200, json={"session_id": "session-1"})
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    assert sdk._request("POST", "/api/v1/artifact-uploads", json={})["session_id"] == "session-1"
     assert attempts == 3
     assert sleeps == [0.2, 0.4]
