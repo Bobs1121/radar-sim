@@ -105,5 +105,6 @@ Web 生成的 `connect.cmd`/`install.ps1` 已经携带当前 Web 页面 owner，
 - 让 bootstrap 基于当前 Web/SDK owner 生成新的稳定 Agent ID，并重新注册；
 - 旧 owner 存在未完成任务时停止安装并给出明确提示，避免静默抢占导致任务丢失。
 - 如果后续下载包替换、依赖检查或启动步骤失败，安装器会尝试用保留的安装配置重新启动原 Connector，避免“安装失败 + 原 Agent 离线”。
+- 安装更新现在先备份旧 app 源码和 `install.json`/credentials/recovery metadata，再停止旧进程；失败时恢复这些内容并重新注册/启动旧 Connector。
 
 同 owner 的普通更新仍复用原 Agent ID，不触发 rebind。

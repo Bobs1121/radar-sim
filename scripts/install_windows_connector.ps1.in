@@ -21,6 +21,9 @@ $AppRoot = Join-Path $InstallRoot "app"
 $WorkRoot = Join-Path $env:TEMP ("radar-sim-connect-" + [Guid]::NewGuid().ToString("N"))
 $Archive = Join-Path $WorkRoot "package.zip"
 $Expanded = Join-Path $WorkRoot "package"
+$PreviousAppBackup = Join-Path $WorkRoot "previous-app"
+$PreviousConfigBackup = Join-Path $WorkRoot "previous-config"
+$PreviousStateBackedUp = $false
 
 function Step([string]$message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
 function Fail([string]$message) { Write-Host "`nConnection failed: $message" -ForegroundColor Red; exit 1 }
@@ -199,6 +202,91 @@ function Reset-InstalledApplication {
     }
 }
 
+function Backup-InstalledState {
+    # Keep source/config rollback state in the per-attempt work directory.
+    # The isolated .venv is intentionally not copied: it is shared by old and
+    # new connector source trees and is never removed by Reset-InstalledApplication.
+    if (Test-Path -LiteralPath $AppRoot) {
+        New-Item -ItemType Directory -Force -Path $PreviousAppBackup | Out-Null
+        foreach ($entry in @(Get-ChildItem -LiteralPath $AppRoot -Force -ErrorAction SilentlyContinue)) {
+            if ($entry.Name -ieq ".venv") { continue }
+            Copy-Item -LiteralPath $entry.FullName -Destination $PreviousAppBackup -Recurse -Force -ErrorAction Stop
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $PreviousConfigBackup | Out-Null
+    foreach ($path in @(
+        $ConfigPath,
+        $SecretsPath,
+        (Join-Path $DataRoot "install.backup.json")
+    )) {
+        if (Test-Path -LiteralPath $path) {
+            Copy-Item -LiteralPath $path -Destination $PreviousConfigBackup -Force -ErrorAction Stop
+        }
+    }
+}
+
+function Restore-InstalledState {
+    if (Test-Path -LiteralPath $PreviousAppBackup) {
+        New-Item -ItemType Directory -Force -Path $AppRoot | Out-Null
+        foreach ($entry in @(Get-ChildItem -LiteralPath $AppRoot -Force -ErrorAction SilentlyContinue)) {
+            if ($entry.Name -ieq ".venv") { continue }
+            Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Copy-Item -Path (Join-Path $PreviousAppBackup '*') -Destination $AppRoot -Recurse -Force -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $PreviousConfigBackup) {
+        foreach ($name in @("install.json", "credentials.json", "install.backup.json")) {
+            $saved = Join-Path $PreviousConfigBackup $name
+            if (-not (Test-Path -LiteralPath $saved)) { continue }
+            $destination = if ($name -ieq "install.backup.json") {
+                Join-Path $DataRoot $name
+            } else {
+                Join-Path $InstallRoot $name
+            }
+            Copy-Item -LiteralPath $saved -Destination $destination -Force -ErrorAction Stop
+        }
+    }
+}
+
+function Restore-PreviousConnector {
+    if (-not $PreviousStateBackedUp) { return }
+    try {
+        Restore-InstalledState
+        $savedConfigPath = Join-Path $PreviousConfigBackup "install.json"
+        $saved = if (Test-Path -LiteralPath $savedConfigPath) {
+            Get-Content -Raw -Encoding UTF8 $savedConfigPath | ConvertFrom-Json
+        } else { $null }
+        $bootstrap = Join-Path $AppRoot "scripts\bootstrap.ps1"
+        if ($saved -and (Test-Path -LiteralPath $bootstrap)) {
+            $restoreMode = [string]($saved.mode | ForEach-Object { $_ })
+            if (-not $restoreMode) { $restoreMode = "unified" }
+            $restoreControlPlane = [string]($saved.control_plane | ForEach-Object { $_ })
+            if (-not $restoreControlPlane) { $restoreControlPlane = "linux" }
+            $restoreArgs = @(
+                "-Mode", $restoreMode,
+                "-ControlPlane", $restoreControlPlane,
+                "-ServerUrl", ([string]$saved.server_url),
+                "-Owner", ([string]$saved.owner),
+                "-InstallRoot", $InstallRoot,
+                "-SkipDeps", "-RegisterStartup", "-Start"
+            )
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bootstrap @restoreArgs
+            if ($LASTEXITCODE -eq 0) { return }
+        }
+        $fallbackStart = Join-Path $AppRoot "scripts\start_windows.ps1"
+        if (Test-Path -LiteralPath $fallbackStart) {
+            $fallbackArgs = @(
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $fallbackStart,
+                "-InstallRoot", $InstallRoot, "-Background", "-NoBrowser"
+            )
+            Start-Process -FilePath "powershell.exe" -ArgumentList $fallbackArgs `
+                -WorkingDirectory $AppRoot -WindowStyle Hidden | Out-Null
+        }
+    } catch {
+        Write-Warning "Automatic Connector rollback failed; the previous install files are retained in $PreviousAppBackup."
+    }
+}
+
 if ($env:OS -ne "Windows_NT") { Fail "Run this file on the Windows PC that needs to be connected." }
 
 try {
@@ -259,6 +347,8 @@ try {
     if ($forceRebind) {
         Write-Host "No unfinished tasks were found; automatically rebinding this PC to the current Web/SDK identity." -ForegroundColor Yellow
     }
+    Backup-InstalledState
+    $PreviousStateBackedUp = $true
     Stop-PreviousConnector
     Reset-InstalledApplication
     Copy-Item -Path (Join-Path $Expanded '*') -Destination $AppRoot -Recurse -Force
@@ -279,25 +369,8 @@ try {
     Write-Host "Visual Studio is user-managed. The connector checks it and reports a clear build prerequisite if missing."
 } catch {
     $failureMessage = $_.Exception.Message
-    # The previous connector is stopped before source replacement. If a later
-    # install/bootstrap step fails, restore service availability from the
-    # preserved install metadata instead of leaving the user's only Agent
-    # offline. A single-instance mutex makes this safe when the new process
-    # actually managed to start before reporting an error.
-    try {
-        $fallbackStart = Join-Path $AppRoot "scripts\start_windows.ps1"
-        if (Test-Path -LiteralPath $fallbackStart) {
-            Write-Warning "Installation failed; attempting to restore the previous Connector process."
-            $fallbackArgs = @(
-                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $fallbackStart,
-                "-InstallRoot", $InstallRoot, "-Background", "-NoBrowser"
-            )
-            Start-Process -FilePath "powershell.exe" -ArgumentList $fallbackArgs `
-                -WorkingDirectory $AppRoot -WindowStyle Hidden | Out-Null
-        }
-    } catch {
-        Write-Warning "Automatic Connector recovery after installation failure could not be started."
-    }
+    Write-Warning "Installation failed; attempting to restore the previous Connector transaction."
+    Restore-PreviousConnector
     Fail $failureMessage
 } finally {
     Remove-Item -LiteralPath $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue

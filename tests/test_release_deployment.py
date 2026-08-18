@@ -143,11 +143,16 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "foreach ($attempt in 1..$Attempts)" in connector
     assert "Stop-PreviousConnector" in connector
     assert "Get-OneClickRebindRequired" in connector
+    assert "Backup-InstalledState" in connector
+    assert "Restore-InstalledState" in connector
+    assert "Restore-PreviousConnector" in connector
+    assert "previous-app" in connector
+    assert "previous-config" in connector
     assert "unfinished task(s)" in connector
     assert "automatically rebinding" in connector
     assert '"-ForceRebind"' in connector
     assert "/api/v1/jobs?limit=100" in connector
-    assert "attempting to restore the previous Connector process" in connector
+    assert "restore the previous Connector transaction" in connector
     assert '"-Background", "-NoBrowser"' in connector
     assert "Stop-ProcessTreeIfPresent" in connector
     assert '"not found" means the requested end state was reached' in connector
