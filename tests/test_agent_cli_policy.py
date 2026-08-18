@@ -227,6 +227,48 @@ def test_run_registers_node_kind_and_mode_metadata(monkeypatch):
     assert "cluster.run" not in registration["capabilities"]
 
 
+def test_run_reregisters_after_connector_registration_is_lost(monkeypatch):
+    calls = []
+    poll_calls = []
+
+    class LostRegistration(RuntimeError):
+        status_code = 404
+        code = "connector_not_registered"
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def register_agent(self, **kwargs):
+            calls.append(kwargs)
+            return {"agent_id": kwargs["agent_id"]}
+
+        def poll(self, agent_id):
+            poll_calls.append(agent_id)
+            if len(poll_calls) == 1:
+                raise LostRegistration("registration was removed")
+            return {"task": None}
+
+    monkeypatch.setattr(agent_module, "_ControlClient", FakeClient)
+    args = SimpleNamespace(
+        server_url="http://control.invalid",
+        request_timeout=1,
+        capability=[],
+        windows_mode="light",
+        hostname="host-a",
+        name="agent-a",
+        agent_id="agent-a",
+        platform_name="Windows",
+        poll_interval=0.01,
+        heartbeat_interval=1,
+        once=True,
+    )
+
+    assert agent_module.run(args, None) == 0
+    assert len(calls) == 2
+    assert poll_calls == ["agent-a", "agent-a"]
+
+
 def test_light_forbidden_explicit_capability_fails_before_http(monkeypatch):
     class ForbiddenClient:
         def __init__(self, *_args, **_kwargs):

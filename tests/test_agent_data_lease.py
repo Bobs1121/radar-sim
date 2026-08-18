@@ -27,6 +27,7 @@ def test_authorized_discovery_creates_path_free_immutable_lease(tmp_path: Path):
     )
     assert lease.files[0].relative_path == "scene/a.MF4"
     assert lease.files[0].checksum.startswith("sha256:")
+    assert lease.source_path_text == str(root)
     assert str(root) not in str(lease.public_dict)
     assert leases.create(
         {

@@ -107,6 +107,21 @@ def _is_retryable_control_error(exc: BaseException) -> bool:
     )
 
 
+def _is_connector_not_registered_error(exc: BaseException) -> bool:
+    """Return whether the control plane lost this Agent registration.
+
+    A service/database reset is recoverable. Treat this distinct 404 as a
+    registration-recovery signal instead of endlessly polling an identity that
+    no longer exists. Other 404s remain ordinary control-plane errors.
+    """
+
+    return (
+        _error_status_code(exc) == 404
+        and str(getattr(exc, "code", "") or "").strip().casefold()
+        == "connector_not_registered"
+    )
+
+
 def _is_retryable_result_upload_error(
     exc: BaseException, *, allow_offset_conflict: bool = False
 ) -> bool:
@@ -254,9 +269,6 @@ def run(args, config):
     # Default agent_id embeds user+hostname so two users on one machine don't collide.
     default_agent_id = f"agent-{user}-{hostname}"
     requested_agent_id = getattr(args, "agent_id", "") or default_agent_id
-    workspace_bindings = _public_workspace_bindings()
-    data_bindings = _public_data_bindings(owner=user, device_id=requested_agent_id)
-    asset_bindings = _public_asset_bindings()
     poll_interval = float(getattr(args, "poll_interval", 3.0) or 3.0)
     once = bool(getattr(args, "once", False))
     if callable(getattr(client, "attach_result_outbox", None)):
@@ -270,38 +282,47 @@ def run(args, config):
             # instead of silently running without the outbox guarantee.
             print(f"[ERROR] local result outbox is unavailable: {exc}", file=sys.stderr)
             return 1
-    registration_failures = 0
-    while True:
-        try:
-            agent = client.register_agent(
-                name=name,
-                agent_id=requested_agent_id,
-                hostname=hostname,
-                platform=getattr(args, "platform_name", "") or platform_mod.platform(),
-                capabilities=capabilities,
-                metadata={
-                    "user": user,
-                    "node_kind": node_kind,
-                    "windows_mode": mode,
-                    "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
-                    "auto_configure": True,
-                    "workspace_bindings": workspace_bindings,
-                    "data_bindings": data_bindings,
-                    "asset_bindings": asset_bindings,
-                },
-            )
-            break
-        except Exception as exc:
-            registration_failures += 1
-            if once or not _is_retryable_control_error(exc):
-                raise
-            if registration_failures == 3 or registration_failures % 10 == 0:
-                print(
-                    f"[WARN] Linux control plane is temporarily unreachable during Agent registration "
-                    f"(attempt {registration_failures}): {exc}; reconnecting automatically",
-                    file=sys.stderr,
+    def register_current_agent() -> dict:
+        """Register the stable Agent identity, retrying transient errors."""
+
+        registration_failures = 0
+        while True:
+            try:
+                # Rebuild advertised bindings on recovery. A long-running
+                # Connector may have learned a new data/workspace binding
+                # before the control-plane registration was lost.
+                return client.register_agent(
+                    name=name,
+                    agent_id=requested_agent_id,
+                    hostname=hostname,
+                    platform=getattr(args, "platform_name", "") or platform_mod.platform(),
+                    capabilities=capabilities,
+                    metadata={
+                        "user": user,
+                        "node_kind": node_kind,
+                        "windows_mode": mode,
+                        "connector_contract_version": WINDOWS_CONNECTOR_CONTRACT_VERSION,
+                        "auto_configure": True,
+                        "workspace_bindings": _public_workspace_bindings(),
+                        "data_bindings": _public_data_bindings(
+                            owner=user, device_id=requested_agent_id
+                        ),
+                        "asset_bindings": _public_asset_bindings(),
+                    },
                 )
-            time.sleep(_poll_retry_delay(registration_failures, poll_interval))
+            except Exception as exc:
+                registration_failures += 1
+                if once or not _is_retryable_control_error(exc):
+                    raise
+                if registration_failures == 3 or registration_failures % 10 == 0:
+                    print(
+                        f"[WARN] Linux control plane is temporarily unreachable during Agent registration "
+                        f"(attempt {registration_failures}): {exc}; reconnecting automatically",
+                        file=sys.stderr,
+                    )
+                time.sleep(_poll_retry_delay(registration_failures, poll_interval))
+
+    agent = register_current_agent()
     if callable(getattr(client, "flush_result_outbox", None)):
         try:
             client.flush_result_outbox()
@@ -319,6 +340,27 @@ def run(args, config):
         try:
             claim = client.poll(agent_id)
         except Exception as exc:
+            if _is_connector_not_registered_error(exc):
+                try:
+                    agent = register_current_agent()
+                    agent_id = str(agent.get("agent_id") or requested_agent_id)
+                    print(
+                        "[INFO] Agent registration was lost; registration restored and polling resumed",
+                        file=sys.stderr,
+                    )
+                    if callable(getattr(client, "flush_result_outbox", None)):
+                        try:
+                            client.flush_result_outbox()
+                        except Exception as flush_error:
+                            print(
+                                f"[WARN] pending task results could not be flushed after Agent recovery: {flush_error}",
+                                file=sys.stderr,
+                            )
+                    poll_failure_count = 0
+                    last_poll_failure_log_at = 0.0
+                    continue
+                except Exception as registration_error:
+                    exc = registration_error
             poll_failure_count += 1
             now = time.monotonic()
             if _poll_failure_is_reportable(
@@ -1651,7 +1693,16 @@ def _scan_direct_transfer_items(source_root: Path, *, source_role: str) -> list[
     already available.
     """
 
-    root = Path(source_root).expanduser().resolve(strict=True)
+    raw_root = Path(source_root).expanduser()
+    # Keep the original UNC/DFS spelling for source-side reads. The direct
+    # transfer kernel validates the root and writes only to its signed target;
+    # canonicalizing here can make a valid share alias unavailable to the
+    # Windows process that owns the credentials.
+    root = (
+        raw_root
+        if str(raw_root).replace("/", "\\").startswith("\\\\")
+        else raw_root.resolve(strict=True)
+    )
     if not root.is_dir() or root.is_symlink():
         raise ValueError("direct transfer source root is unavailable")
     items: list[dict] = []
@@ -1725,7 +1776,12 @@ def _direct_transfer_asset(
     cancel_check,
 ) -> dict:
     """Transfer one runtime/config asset independently of dataset bytes."""
-    path = Path(source_path).expanduser().resolve(strict=True)
+    raw_path = Path(source_path).expanduser()
+    path = (
+        raw_path
+        if str(raw_path).replace("/", "\\").startswith("\\\\")
+        else raw_path.resolve(strict=True)
+    )
     if path.is_dir():
         source_root = path
         items = _scan_direct_transfer_items(source_root, source_role=source_role)
@@ -2041,9 +2097,12 @@ def _run_v5_prepare_data(
                 items=items,
                 source_fingerprints={"evidence_ref": evidence_ref, **radar_fingerprints},
             )
+            source_text = str(getattr(lease, "source_path_text", "") or "").strip()
+            source_path = Path(source_text).expanduser() if source_text else lease.source_path
+            source_root = source_path if source_path.is_dir() else source_path.parent
             manifest = client.execute_transfer_plan(
                 plan,
-                source_root=lease.source_path if lease.source_path.is_dir() else lease.source_path.parent,
+                source_root=source_root,
                 owner=owner,
                 cancel_check=cancel_event.is_set,
             )
@@ -4216,7 +4275,8 @@ class _ControlClient:
             }
             for item in lease.files
         ]
-        source = lease.source_path
+        source_text = str(getattr(lease, "source_path_text", "") or "").strip()
+        source = Path(source_text).expanduser() if source_text else lease.source_path
         root = source if source.is_dir() else source.parent
         transfer_owner = str(owner or connector_owner_identity())
         plan = _issue_transfer_plan_with_cancel(

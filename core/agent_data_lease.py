@@ -36,6 +36,11 @@ class AgentDataLease:
     dataset_id: str
     created_at: float
     updated_at: float
+    # ``source_path`` is canonicalized for authorization/discovery. Keep the
+    # user's original spelling separately because Windows DFS/UNC
+    # ``Path.resolve()`` may replace an accessible alias with a backend host
+    # name that a Selena child process cannot open.
+    source_path_text: str = ""
 
     @property
     def public_dict(self) -> dict[str, Any]:
@@ -69,6 +74,7 @@ class AgentDataLeaseStore:
                     project TEXT NOT NULL,
                     binding_id TEXT NOT NULL,
                     source_path TEXT NOT NULL,
+                    source_path_text TEXT NOT NULL DEFAULT '',
                     files_json TEXT NOT NULL,
                     evidence_ref TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL,
@@ -78,6 +84,15 @@ class AgentDataLeaseStore:
                 )
                 """
             )
+            columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(agent_data_leases)").fetchall()
+            }
+            if "source_path_text" not in columns:
+                conn.execute(
+                    "ALTER TABLE agent_data_leases ADD COLUMN source_path_text TEXT NOT NULL DEFAULT ''"
+                )
+            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=10, check_same_thread=False)
@@ -147,11 +162,11 @@ class AgentDataLeaseStore:
             inserted = conn.execute(
                 """
                 INSERT OR IGNORE INTO agent_data_leases(
-                    lease_id,project,binding_id,source_path,files_json,evidence_ref,status,created_at,updated_at
-                ) VALUES (?,?,?,?,?,?,'ready',?,?)
+                    lease_id,project,binding_id,source_path,source_path_text,files_json,evidence_ref,status,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,'ready',?,?)
                 """,
                 (
-                    lease_id, project, binding_id, str(source),
+                    lease_id, project, binding_id, str(source), str(data_path),
                     json.dumps([asdict(item) for item in files], sort_keys=True),
                     evidence_ref, now, now,
                 ),
@@ -246,6 +261,11 @@ def _row_to_lease(row: sqlite3.Row) -> AgentDataLease:
         dataset_id=str(row["dataset_id"]),
         created_at=float(row["created_at"]),
         updated_at=float(row["updated_at"]),
+        source_path_text=(
+            str(row["source_path_text"] or "")
+            if "source_path_text" in row.keys()
+            else ""
+        ),
     )
 
 

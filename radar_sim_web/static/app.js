@@ -10,6 +10,7 @@ const state = {
   view: sessionStorage.getItem("rsimView") || "create",
   jobs: [],
   jobsSignature: "",
+  jobsLoaded: false,
   selectedJobId: sessionStorage.getItem("rsimSelectedJobId") || "",
   eventsByJob: new Map(),
   pollTimer: null,
@@ -751,10 +752,15 @@ async function loadJobs() {
       ]),
     ]);
     state.jobs = jobs;
-    if (signature !== state.jobsSignature) {
+    // An empty successful page is still a meaningful state. Always paint it
+    // after the first successful response; otherwise a polling cycle can
+    // leave the initial "正在加载任务" placeholder visible forever when the
+    // signature is unchanged.
+    if (!state.jobsLoaded || !jobs.length || signature !== state.jobsSignature) {
       state.jobsSignature = signature;
       renderJobs();
     }
+    state.jobsLoaded = true;
     if (state.selectedJobId) await loadJobDetail(state.selectedJobId, false);
   } catch (error) {
     list.innerHTML = "";

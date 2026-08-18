@@ -101,6 +101,12 @@ def test_web_identity_source_drops_random_default_but_keeps_legacy_migration():
     assert "更新 Connector" in source
 
 
+def test_web_task_center_paints_empty_successful_page():
+    source = Path("radar_sim_web/static/app.js").read_text(encoding="utf-8")
+    assert "jobsLoaded: false" in source
+    assert "!state.jobsLoaded || !jobs.length || signature !== state.jobsSignature" in source
+
+
 def test_connector_installer_migrates_only_generated_legacy_owner():
     source = Path("scripts/bootstrap.ps1").read_text(encoding="utf-8")
     assert "existingOwner" in source

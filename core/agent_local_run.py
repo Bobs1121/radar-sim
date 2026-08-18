@@ -961,10 +961,16 @@ def _verify_runtime_locations(
 def _verify_data_lease(
     lease: AgentDataLease, *, verify_checksums: bool = True
 ) -> list[dict[str, Any]]:
-    root = lease.source_path if lease.source_path.is_dir() else lease.source_path.parent
+    # Use the canonical lease path for authorization/discovery, but preserve
+    # the user's original spelling for the local Selena child.  DFS/UNC
+    # ``Path.resolve()`` can otherwise turn a working alias into a backend host
+    # name that is not accessible from the child process.
+    source_text = str(getattr(lease, "source_path_text", "") or "").strip()
+    source_path = Path(source_text).expanduser() if source_text else lease.source_path
+    root = source_path if source_path.is_dir() else source_path.parent
     result: list[dict[str, Any]] = []
     for ref in lease.files:
-        path = lease.source_path if lease.source_path.is_file() else root.joinpath(*PurePosixPath(ref.relative_path).parts)
+        path = source_path if source_path.is_file() else root.joinpath(*PurePosixPath(ref.relative_path).parts)
         stat_result = path.stat()
         if stat_result.st_size != ref.size or (ref.mtime_ns and stat_result.st_mtime_ns != ref.mtime_ns):
             raise AgentLocalRunError("leased data file changed after discovery")

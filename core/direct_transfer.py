@@ -969,7 +969,14 @@ def execute_transfer(
     if not source_base.is_absolute() or not source_base.is_dir() or _is_reparse_point(source_base):
         raise DirectTransferError("source_root must be an existing absolute directory")
     _assert_no_reparse_ancestors(source_base)
-    source_resolved = source_base.resolve(strict=True)
+    # A UNC/DFS source can have a user-visible alias and a backend-resolved
+    # spelling.  The canonical path is useful for non-UNC containment checks,
+    # but opening a source through the resolved spelling can make a valid
+    # Windows credential/share alias unavailable to the copy process.  Keep
+    # the original UNC spelling for the source-to-source copy; the target is
+    # still the signed deployment root and all manifest refs remain path-free.
+    source_is_unc = _looks_unc(str(source_base))
+    source_resolved = source_base if source_is_unc else source_base.resolve(strict=True)
     sources: tuple[TransferSource, ...] = tuple(
         item if isinstance(item, TransferSource) else TransferSource(item.relative_path, size=item.size, sha256=item.checksum, mtime_ns=item.mtime_ns) if isinstance(item, TransferPlanItem) else TransferSource(str(item))
         for item in files
@@ -984,12 +991,24 @@ def execute_transfer(
     for item in sources:
         source = source_resolved.joinpath(*item.relative_path.split("/"))
         _assert_no_reparse_components(source_resolved, source)
+        # Validate the signed destination before resolving the source. If
+        # both sides are invalid, target reparse points must still fail
+        # closed with the target-path diagnostic rather than being masked
+        # by a platform-specific source ``resolve()`` error.
+        destination = _safe_target_path(target_base, item.relative_path)
         try:
-            resolved = source.resolve(strict=True)
-            resolved.relative_to(source_resolved)
+            if source_is_unc:
+                # The relative-path contract and reparse checks already bind
+                # this path to the trusted UNC root. Do not canonicalize the
+                # server/share spelling before opening it.
+                if not source.is_file() or _is_reparse_point(source):
+                    raise DirectTransferError("source path is unavailable")
+                resolved = source
+            else:
+                resolved = source.resolve(strict=True)
+                resolved.relative_to(source_resolved)
         except (OSError, ValueError) as exc:
             raise DirectTransferError("source path escapes source_root") from exc
-        destination = _safe_target_path(target_base, item.relative_path)
         report = (lambda processed, total, relative=item.relative_path: progress_callback(relative, processed, total) if progress_callback else None)
         entries.append(_copy_file_with_resume(resolved, destination, plan=plan, transfer_source=item, cancel_callback=cancel_callback, progress_callback=report, chunk_size=chunk_size, now_fn=clock))
     return TransferManifest(

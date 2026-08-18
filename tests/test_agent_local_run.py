@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import threading
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -152,6 +154,27 @@ def test_create_and_execute_without_optional_adapter(tmp_path):
 
     assert execute_local_run(lease["lease_id"], store, runner=runner) == 0
     assert store.result(lease["lease_id"])["status"] == "succeeded"
+
+
+def test_local_execution_preserves_original_data_path_spelling(tmp_path):
+    store, kwargs = _fixture(tmp_path)
+    raw_alias = tmp_path / "unc-alias"
+    shutil.copytree(kwargs["data_lease"].source_path, raw_alias)
+    kwargs["data_lease"] = replace(
+        kwargs["data_lease"], source_path_text=str(raw_alias)
+    )
+    lease = store.create_from_authorized_inputs(**kwargs)
+    seen = []
+
+    def runner(request, _cancel_requested):
+        seen.append(request.input_mf4)
+        request.output_mf4.write_bytes(b"output")
+        return LocalRunOutcome(0)
+
+    assert execute_local_run(lease["lease_id"], store, runner=runner) == 0
+    assert len(seen) == 2
+    assert all(path.is_relative_to(raw_alias) for path in seen)
+    assert all(not path.is_relative_to(kwargs["data_lease"].source_path) for path in seen)
 
 
 def test_zero_timeout_means_unlimited_local_batch_runtime(tmp_path):
