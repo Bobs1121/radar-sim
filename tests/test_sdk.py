@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from core.api_v1_fastapi import create_app
 from core.control_service import ControlService
@@ -81,6 +82,28 @@ def test_sdk_validate_and_submit_run_share_v2_hash_with_web_json(tmp_path):
     submitted = sdk.submit_run(config, dry_run=True, idempotency_key="sdk-key")
     assert submitted.id == job.id
     assert submitted.job_id == job.id
+
+
+def test_sdk_partial_yaml_import_export_is_separate_from_strict_submit_validation(tmp_path):
+    sdk, _ = make_sdk(tmp_path)
+    partial_yaml = """
+selena:
+  source: build
+  code_path: D:/workspace/byd
+"""
+
+    imported = sdk.import_yaml(partial_yaml)
+    assert imported["valid"] is True
+    assert imported["complete"] is False
+    assert imported["config"]["selena"]["code_path"] == "D:/workspace/byd"
+    assert "data.path" in imported["missing_fields"]
+
+    exported = sdk.export_yaml(imported["config"])
+    assert exported["complete"] is False
+    assert "code_path: D:/workspace/byd" in exported["yaml_content"]
+
+    with pytest.raises(ValidationError):
+        sdk.validate_run(imported["config"])
 
 
 def test_sdk_downloads_one_time_windows_connector_for_current_scope(tmp_path):

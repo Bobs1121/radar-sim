@@ -14,7 +14,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Mapping
 from urllib.parse import urlsplit
 
 import httpx
@@ -187,6 +187,68 @@ class RadarSimClient:
         return RunConfigValidationResult.from_dict(
             self._request("POST", "/api/v1/run-configs/validate", json=parsed.to_dict())
         )
+
+    def import_yaml(self, source: str | Path) -> dict[str, Any]:
+        """Import a complete or partial YAML draft without submitting it.
+
+        ``complete`` is false for a valid draft that still lacks required
+        fields.  Call :meth:`validate_run` or :meth:`submit_yaml` only after
+        the returned ``config`` is complete.
+        """
+
+        if isinstance(source, Path):
+            yaml_content = source.read_text(encoding="utf-8")
+        else:
+            text = str(source or "")
+            candidate = Path(text)
+            try:
+                yaml_content = (
+                    candidate.read_text(encoding="utf-8")
+                    if "\n" not in text and "\r" not in text and candidate.is_file()
+                    else text
+                )
+            except OSError:
+                yaml_content = text
+        return dict(
+            self._request(
+                "POST",
+                "/api/v1/run-configs/import",
+                json={"yaml_content": yaml_content},
+            )
+        )
+
+    def import_run_config_yaml(self, source: str | Path) -> dict[str, Any]:
+        """Named alias for :meth:`import_yaml` used by Skill adapters."""
+
+        return self.import_yaml(source)
+
+    def export_yaml(
+        self,
+        config: UserRunConfig | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Export a complete or partial YAML draft without validating submission readiness."""
+
+        if isinstance(config, UserRunConfig):
+            payload = config.to_dict()
+        elif isinstance(config, Mapping):
+            payload = dict(config)
+        else:
+            raise TypeError("config must be UserRunConfig or a mapping")
+        return dict(
+            self._request(
+                "POST",
+                "/api/v1/run-configs/export",
+                json={"config": payload},
+            )
+        )
+
+    def export_run_config_yaml(
+        self,
+        config: UserRunConfig | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Named alias for :meth:`export_yaml` used by Skill adapters."""
+
+        return self.export_yaml(config)
 
     def submit_run(
         self,

@@ -59,7 +59,10 @@ class SubmitUserRunRequest(BaseModel):
 class ExportUserRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    config: UserRunConfig
+    # Export is a draft/document operation.  It intentionally accepts a
+    # partial mapping; the strict UserRunConfig model is applied by validate
+    # and submit, not by YAML round-trip endpoints.
+    config: dict[str, Any] = Field(default_factory=dict)
 
 
 class CreateArtifactUploadRequest(BaseModel):
@@ -618,7 +621,7 @@ def create_app(
 
     @app.post("/api/v1/run-configs/export")
     def export_run_config(body: ExportUserRunRequest):
-        return service.export_user_run_config_yaml(body.config.to_dict())
+        return service.export_user_run_config_yaml(body.config)
 
     @app.post("/api/v1/run-configs/validate")
     def validate_run_config(request: Request, config: UserRunConfig):

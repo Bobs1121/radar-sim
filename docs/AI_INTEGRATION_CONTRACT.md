@@ -8,15 +8,18 @@ Web、Python SDK、未来 Skill/MCP 只使用同一套 `/api/v1`，不得复制�
 
 首版公共调用闭环：
 
-1. `RadarSimClient.submit_yaml(path, idempotency_key=...)` 提交与 Web 相同的用户 YAML。
-2. `capabilities()` 查询与 Web 右上角相同的 owner-scoped Windows/Cluster 能力。
-3. `prepare_direct_transfers()` / `resume_direct_transfers()` 让 SDK 调用机把可读的 Selena 完整目录、Runtime、MatFilter、Adapter 和 MF4 按同一 `TransferPlan` 直接送到 Cluster 数据面；`get_job_transfer_status()` 查询传输汇总。
-4. `get_job()` / `list_jobs()` 查询任务，`cancel()` / `retry_stage()` 执行与 Web 相同的任务动作。
-5. `watch()` / `wait_job()` 通过可续传事件游标等待任务；默认 `timeout=None` 表示只观察、不设置仿真总时长，业务方需要观察窗口时再显式传入 `timeout`。
-6. `diagnosis()` 获取稳定、脱敏、AI 可理解的业务结论。
-7. `manifest()` 获取运行清单。
-8. `list_results()` / `get_result()` / `download_result()` 获取并校验结果。
-9. `retry_failed_inputs()` 在批量任务为 `partial` 时只重跑失败输入；已成功输入不会重复执行，重跑后的结果会生成新的不可变归档引用。
+1. `import_yaml()` / `export_yaml()` 读写完整或不完整的 YAML 草稿；返回 `complete=false` 时只表示草稿尚未达到提交条件，不会创建 Job。
+2. `RadarSimClient.submit_yaml(path, idempotency_key=...)` 提交与 Web 相同的完整用户 YAML。
+3. `capabilities()` 查询与 Web 右上角相同的 owner-scoped Windows/Cluster 能力。
+4. `prepare_direct_transfers()` / `resume_direct_transfers()` 让 SDK 调用机把可读的 Selena 完整目录、Runtime、MatFilter、Adapter 和 MF4 按同一 `TransferPlan` 直接送到 Cluster 数据面；`get_job_transfer_status()` 查询传输汇总。
+5. `get_job()` / `list_jobs()` 查询任务，`cancel()` / `retry_stage()` 执行与 Web 相同的任务动作。
+6. `watch()` / `wait_job()` 通过可续传事件游标等待任务；默认 `timeout=None` 表示只观察、不设置仿真总时长，业务方需要观察窗口时再显式传入 `timeout`。
+7. `diagnosis()` 获取稳定、脱敏、AI 可理解的业务结论。
+8. `manifest()` 获取运行清单。
+9. `list_results()` / `get_result()` / `download_result()` 获取并校验结果。
+10. `retry_failed_inputs()` 在批量任务为 `partial` 时只重跑失败输入；已成功输入不会重复执行，重跑后的结果会生成新的不可变归档引用。
+
+YAML 草稿和可提交配置是两个明确阶段：导入/导出接口允许只填写 `selena`、只填写数据路径或只填写部分仿真选项，并返回 `missing_fields`/`validation_errors`；`validate_run()`、`submit_run()` 和 Web 的“检查配置/提交任务”仍严格要求完整 `UserRunConfig 2.0`。Skill 不应为了让草稿通过而补猜路径、项目或运行参数。
 
 ### Owner identity
 

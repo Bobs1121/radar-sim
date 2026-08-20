@@ -328,6 +328,41 @@ def test_project_free_run_config_routes_share_one_contract(tmp_path):
     assert imported.json()["config"] == validated.json()["config"]
 
 
+def test_partial_yaml_import_export_is_a_draft_and_submit_validation_stays_strict(tmp_path):
+    client, _services = make_client(tmp_path)
+    partial_yaml = """
+selena:
+  source: build
+  code_path: D:/workspace/byd
+"""
+
+    imported = client.post(
+        "/api/v1/run-configs/import",
+        json={"yaml_content": partial_yaml},
+    )
+
+    assert imported.status_code == 200
+    body = imported.json()
+    assert body["valid"] is True
+    assert body["complete"] is False
+    assert body["config"]["selena"]["code_path"] == "D:/workspace/byd"
+    assert "selena.selena_build_script" in body["missing_fields"]
+    assert "data.path" in body["missing_fields"]
+    assert body["fingerprint"] == ""
+
+    exported = client.post(
+        "/api/v1/run-configs/export",
+        json={"config": body["config"]},
+    )
+    assert exported.status_code == 200
+    assert exported.json()["complete"] is False
+    assert "code_path: D:/workspace/byd" in exported.json()["yaml_content"]
+
+    validation = client.post("/api/v1/run-configs/validate", json=body["config"])
+    assert validation.status_code == 422
+    assert validation.json()["code"] == "invalid_run_config"
+
+
 def test_adapter_and_matfilter_uploads_return_reusable_private_refs(tmp_path):
     api = ApiV1Service(
         control_service_factory=lambda _owner: ControlService(tmp_path / "control.db"),

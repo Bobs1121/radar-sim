@@ -38,7 +38,12 @@ from core.stages import (
     plan_user_environment_requirements,
     plan_user_run_stages,
 )
-from core.user_config import UserRunConfig
+from core.user_config import (
+    PartialUserRunConfig,
+    UserRunConfig,
+    missing_user_run_config_fields,
+    partial_user_run_config_status,
+)
 from core.user import control_db_path_for_user, current_user, normalize_user
 from core.datasets import classify_data_path
 from core.cluster_stage_executor import LINUX_STAGE_AGENT_ID, CLUSTER_GATEWAY_AGENT_ID
@@ -205,7 +210,7 @@ class ApiV1Service:
 
     def import_user_run_config_yaml(self, yaml_content: str) -> dict[str, Any]:
         try:
-            config = UserRunConfig.from_yaml(str(yaml_content or ""))
+            draft = PartialUserRunConfig.from_yaml(str(yaml_content or ""))
         except Exception as exc:
             raise ApiV1Error(
                 "invalid_run_config",
@@ -214,16 +219,62 @@ class ApiV1Service:
                 detail={"error": str(exc)},
                 actions=[{"type": "fix_config", "label": "Fix the YAML fields shown in detail"}],
             ) from exc
+        draft_payload = draft.to_dict()
+        complete_config, validation_errors = partial_user_run_config_status(draft_payload)
+        if complete_config is not None:
+            config_payload = complete_config.to_dict()
+            yaml_output = complete_config.to_yaml()
+            fingerprint = complete_config.fingerprint()
+            missing_fields: list[str] = []
+            complete = True
+        else:
+            config_payload = draft_payload
+            yaml_output = draft.to_yaml()
+            fingerprint = ""
+            missing_fields = missing_user_run_config_fields(draft_payload)
+            complete = False
         return {
             "valid": True,
-            "config": config.to_dict(),
-            "yaml_content": config.to_yaml(),
-            "fingerprint": config.fingerprint(),
+            "complete": complete,
+            "config": config_payload,
+            "yaml_content": yaml_output,
+            "fingerprint": fingerprint,
+            "missing_fields": missing_fields,
+            "validation_errors": [] if complete else validation_errors,
         }
 
     def export_user_run_config_yaml(self, config_payload: dict[str, Any]) -> dict[str, Any]:
-        config = self._parse_user_run_config(config_payload)
-        return {"yaml_content": config.to_yaml(), "fingerprint": config.fingerprint()}
+        try:
+            draft = PartialUserRunConfig.from_dict(dict(config_payload or {}))
+        except Exception as exc:
+            raise ApiV1Error(
+                "invalid_run_config",
+                "Simulation YAML validation failed",
+                status_code=422,
+                detail={"error": str(exc)},
+                actions=[{"type": "fix_config", "label": "Fix the YAML fields shown in detail"}],
+            ) from exc
+        draft_payload = draft.to_dict()
+        complete_config, validation_errors = partial_user_run_config_status(draft_payload)
+        if complete_config is not None:
+            return {
+                "valid": True,
+                "complete": True,
+                "config": complete_config.to_dict(),
+                "yaml_content": complete_config.to_yaml(),
+                "fingerprint": complete_config.fingerprint(),
+                "missing_fields": [],
+                "validation_errors": [],
+            }
+        return {
+            "valid": True,
+            "complete": False,
+            "config": draft_payload,
+            "yaml_content": draft.to_yaml(),
+            "fingerprint": "",
+            "missing_fields": missing_user_run_config_fields(draft_payload),
+            "validation_errors": validation_errors,
+        }
 
     def validate_user_run_config(
         self,

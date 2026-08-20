@@ -480,6 +480,40 @@ function runConfigFromForm() {
   };
 }
 
+function runConfigDraftFromForm() {
+  // Draft export deliberately does not enforce the submit-time required
+  // fields.  The strict runConfigFromForm() remains the only path used by
+  // validate/submit, so saving an incomplete YAML cannot create a Job.
+  const addIfPresent = (target, key, value) => {
+    const text = String(value || "").trim();
+    if (text) target[key] = text;
+  };
+  const selena = { source: byId("selenaSource").value || "build" };
+  addIfPresent(selena, "code_path", byId("codePath").value);
+  addIfPresent(selena, "branch", byId("selenaBranch").value);
+  addIfPresent(selena, "selena_build_script", byId("selenaBuildScript").value);
+  addIfPresent(selena, "package_build_script", byId("packageBuildScript").value);
+  addIfPresent(selena, "existing_path", byId("existingPath").value);
+  addIfPresent(selena, "runtime_xml", byId("runtimeXml").value);
+  const data = {};
+  addIfPresent(data, "path", byId("dataPath").value);
+  const simulation = {};
+  const target = selectedValue("target");
+  addIfPresent(simulation, "target", target);
+  addIfPresent(simulation, "source", byId("radarSource").value);
+  addIfPresent(simulation, "adapter_file", byId("adapterFile").value);
+  addIfPresent(simulation, "mat_filter", byId("matFilter").value);
+  const result = {};
+  addIfPresent(result, "path", byId("resultPath").value);
+  return {
+    schema_version: "2.0",
+    selena,
+    ...(Object.keys(data).length ? { data } : {}),
+    ...(Object.keys(simulation).length ? { simulation } : {}),
+    ...(Object.keys(result).length ? { result } : {}),
+  };
+}
+
 function applyRunConfig(config) {
   byId("dataPath").value = config.data?.path || "";
   byId("selenaSource").value = config.selena?.source || "build";
@@ -704,11 +738,16 @@ async function importYamlFile(file) {
     };
     state.validatedTarget = "";
     applyRunConfig(result.config);
-    showToast(
-      result.config?.selena?.source === "existing"
-        ? "YAML 已导入：请确认 Selena 产物文件夹和 Runtime XML"
-        : "YAML 已导入：当前配置将从本地代码编译 Selena",
-    );
+    if (result.complete === false) {
+      const missing = (result.missing_fields || []).join("、");
+      showToast(`YAML 草稿已导入，仍需补充：${missing || "必填字段"}`);
+    } else {
+      showToast(
+        result.config?.selena?.source === "existing"
+          ? "YAML 已导入：请确认 Selena 产物文件夹和 Runtime XML"
+          : "YAML 已导入：当前配置将从本地代码编译 Selena",
+      );
+    }
   } catch (error) {
     showFormError(error);
   } finally {
@@ -719,10 +758,13 @@ async function importYamlFile(file) {
 async function exportYaml() {
   clearFormError();
   try {
-    const config = runConfigFromForm();
+    const config = runConfigDraftFromForm();
     const result = await api("/run-configs/export", { method: "POST", json: { config } });
     const blob = new Blob([result.yaml_content], { type: "text/yaml;charset=utf-8" });
     triggerBlobDownload(blob, "radar-sim.simulation.yaml");
+    if (result.complete === false) {
+      showToast("已导出当前 YAML 草稿；补全必填字段后才能提交仿真");
+    }
   } catch (error) {
     showFormError(error);
   }

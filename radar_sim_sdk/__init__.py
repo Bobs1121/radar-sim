@@ -1,6 +1,6 @@
 """Public Python SDK for radar-sim V2 `/api/v1`."""
 
-from core.user_config import UserResultConfig, UserRunConfig
+from core.user_config import PartialUserRunConfig, UserResultConfig, UserRunConfig
 
 from radar_sim_sdk.client import RadarSimClient
 from radar_sim_sdk.errors import (
@@ -37,6 +37,7 @@ __all__ = [
     "RadarSimIntegrityError",
     "RadarSimTransportError",
     "RadarSimTransferCancelledError",
+    "PartialUserRunConfig",
     "UserResultConfig",
     "UserRunConfig",
     "RunConfigValidationResult",

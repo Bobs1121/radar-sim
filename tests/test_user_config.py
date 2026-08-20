@@ -1,7 +1,12 @@
 import pytest
 from pydantic import ValidationError
 
-from core.user_config import UserRunConfig
+from core.user_config import (
+    PartialUserRunConfig,
+    UserRunConfig,
+    missing_user_run_config_fields,
+    partial_user_run_config_status,
+)
 
 
 def _build_config(**patch):
@@ -255,3 +260,20 @@ def test_result_path_is_normalized_and_round_trips_as_receiver_hint():
 
     assert parsed.result.path == "D:/RadarSim/results/job-1"
     assert UserRunConfig.from_yaml(parsed.to_yaml()).result.path == parsed.result.path
+
+
+def test_partial_user_config_round_trips_without_relaxing_strict_submission_model():
+    draft = PartialUserRunConfig.from_dict(
+        {"selena": {"source": "build", "code_path": r"D:\\workspace"}}
+    )
+
+    payload = draft.to_dict()
+    assert payload == {
+        "schema_version": "2.0",
+        "selena": {"source": "build", "code_path": "D:/workspace"},
+    }
+    assert "selena.selena_build_script" in missing_user_run_config_fields(payload)
+    assert partial_user_run_config_status(payload)[0] is None
+
+    complete = UserRunConfig.from_dict(_build_config())
+    assert partial_user_run_config_status(complete.to_dict())[0] == complete

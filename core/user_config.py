@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from core.spec.yaml_codec import dump_yaml, load_yaml_mapping
 from core.path_normalization import normalize_path_text
@@ -215,10 +215,201 @@ class UserRunConfig(_Frozen):
         return cls.model_json_schema()
 
 
+class PartialUserSelenaConfig(_Frozen):
+    """A YAML draft section; completeness is checked only at submit/validate."""
+
+    source: Literal["build", "existing"] | None = None
+    code_path: str | None = None
+    branch: str | None = None
+    selena_build_script: str | None = None
+    package_build_script: str | None = None
+    runtime_xml: str | None = None
+    existing_path: str | None = None
+
+    @field_validator(
+        "code_path",
+        "selena_build_script",
+        "package_build_script",
+        "runtime_xml",
+        "existing_path",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_paths(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return _path(value) if isinstance(value, str) else value
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_source(cls, value: Any) -> Any:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        if text not in {"build", "existing"}:
+            raise ValueError("selena.source must be build or existing")
+        return text
+
+    @field_validator("branch", mode="before")
+    @classmethod
+    def _normalize_branch(cls, value: Any) -> Any:
+        return None if value is None else (value.strip() if isinstance(value, str) else value)
+
+
+class PartialUserDataConfig(_Frozen):
+    path: str | None = None
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _normalize_path(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return _path(value) if isinstance(value, str) else value
+
+
+class PartialUserSimulationConfig(_Frozen):
+    target: Literal["auto", "local", "cluster"] | None = None
+    source: str | None = None
+    adapter_file: str | None = None
+    mat_filter: str | None = None
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def _normalize_target(cls, value: Any) -> Any:
+        text = str(value or "").strip().lower()
+        return None if not text else text
+
+    @field_validator("adapter_file", "mat_filter", mode="before")
+    @classmethod
+    def _normalize_paths(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return _path(value) if isinstance(value, str) else value
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_radar_source(cls, value: Any) -> Any:
+        text = str(value or "").strip()
+        if not text or text.casefold() == "auto":
+            return None
+        aliases = {
+            "fc": "RadarFC", "radarfc": "RadarFC",
+            "fl": "RadarFL", "radarfl": "RadarFL",
+            "fr": "RadarFR", "radarfr": "RadarFR",
+            "rl": "RadarRL", "radarrl": "RadarRL",
+            "rr": "RadarRR", "radarrr": "RadarRR",
+        }
+        normalized = aliases.get(text.casefold())
+        if not normalized:
+            raise ValueError(
+                "simulation.source must be empty or one of RadarFC/RadarFL/RadarFR/RadarRL/RadarRR"
+            )
+        return normalized
+
+
+class PartialUserResultConfig(_Frozen):
+    path: str | None = None
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _normalize_path(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return _path(value) if isinstance(value, str) else value
+
+
+class PartialUserRunConfig(_Frozen):
+    """Partial YAML document used only by import/export draft operations.
+
+    It intentionally has no cross-field completeness validator.  The strict
+    :class:`UserRunConfig` remains the only model accepted by validate/submit.
+    """
+
+    schema_version: Literal["2.0"] | None = "2.0"
+    selena: PartialUserSelenaConfig | None = None
+    data: PartialUserDataConfig | None = None
+    simulation: PartialUserSimulationConfig | None = None
+    result: PartialUserResultConfig | None = None
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "PartialUserRunConfig":
+        return cls.model_validate(value)
+
+    @classmethod
+    def from_yaml(cls, source: str | Path) -> "PartialUserRunConfig":
+        return cls.from_dict(load_yaml_mapping(source))
+
+    def to_dict(self) -> dict[str, Any]:
+        value = self.model_dump(
+            mode="python",
+            exclude_unset=True,
+            exclude_none=True,
+        )
+        # Keep the public contract marker even when the user omitted it from
+        # a draft; this makes an exported partial document self-describing.
+        schema_version = value.pop("schema_version", None) or "2.0"
+        return {"schema_version": schema_version, **value}
+
+    def to_yaml(self) -> str:
+        return dump_yaml(self.to_dict())
+
+
+def missing_user_run_config_fields(value: dict[str, Any]) -> list[str]:
+    """Return deterministic fields required to turn a draft into a runnable config."""
+
+    payload = dict(value or {})
+    missing: list[str] = []
+    selena = payload.get("selena")
+    if not isinstance(selena, dict):
+        missing.append("selena")
+        source = ""
+    else:
+        source = str(selena.get("source") or "").strip().lower()
+        if not source:
+            missing.append("selena.source")
+        elif source == "build":
+            for field in ("code_path", "selena_build_script", "runtime_xml"):
+                if not str(selena.get(field) or "").strip():
+                    missing.append(f"selena.{field}")
+        elif source == "existing":
+            for field in ("existing_path", "runtime_xml"):
+                if not str(selena.get(field) or "").strip():
+                    missing.append(f"selena.{field}")
+    data = payload.get("data")
+    if not isinstance(data, dict) or not str(data.get("path") or "").strip():
+        missing.append("data.path")
+    if not isinstance(payload.get("simulation"), dict):
+        missing.append("simulation")
+    return missing
+
+
+def partial_user_run_config_status(
+    payload: dict[str, Any],
+) -> tuple[UserRunConfig | None, list[str]]:
+    """Return strict completeness status without rejecting a valid draft."""
+
+    try:
+        return UserRunConfig.from_dict(payload), []
+    except ValidationError as exc:
+        errors: list[str] = []
+        for item in exc.errors():
+            location = ".".join(str(value) for value in item.get("loc") or ())
+            message = str(item.get("msg") or "invalid value")
+            errors.append(f"{location}: {message}" if location else message)
+        return None, errors
+
+
 __all__ = [
+    "PartialUserDataConfig",
+    "PartialUserResultConfig",
+    "PartialUserRunConfig",
+    "PartialUserSelenaConfig",
+    "PartialUserSimulationConfig",
     "UserDataConfig",
     "UserResultConfig",
     "UserRunConfig",
     "UserSelenaConfig",
     "UserSimulationConfig",
+    "missing_user_run_config_fields",
+    "partial_user_run_config_status",
 ]

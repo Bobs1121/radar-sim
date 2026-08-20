@@ -128,6 +128,13 @@ def test_web_can_retry_a_blocked_cluster_readiness_gate():
     assert "重新检查 Cluster" in source
 
 
+def test_web_yaml_export_uses_a_non_validating_draft_builder():
+    source = Path("radar_sim_web/static/app.js").read_text(encoding="utf-8")
+    assert "function runConfigDraftFromForm()" in source
+    assert 'const config = runConfigDraftFromForm();' in source
+    assert "YAML 草稿已导入" in source
+
+
 def test_connector_installer_migrates_only_generated_legacy_owner():
     source = Path("scripts/bootstrap.ps1").read_text(encoding="utf-8")
     assert "existingOwner" in source

@@ -35,15 +35,15 @@ V2 创建入口：
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | `/api/v1/schema/run-config` | 唯一 YAML/JSON schema |
-| POST | `/api/v1/run-configs/import` | YAML -> canonical V2 |
-| POST | `/api/v1/run-configs/export` | canonical V2 -> YAML |
+| POST | `/api/v1/run-configs/import` | 完整或部分 YAML 草稿 -> 规范化草稿；返回 `complete`/`missing_fields` |
+| POST | `/api/v1/run-configs/export` | 完整或部分配置草稿 -> YAML；不触发提交校验 |
 | POST | `/api/v1/run-configs/validate` | 路由和 readiness 预览 |
 | POST | `/api/v1/run-jobs` | 创建 V2 Job |
 | GET | `/api/v1/capabilities` | `windows`、`cluster`、Connector 版本 |
 
 任务管理继续使用 `/api/v1/jobs/{id}`、events、cancel、retry、manifest、diagnosis、transfers 和 results。`POST /api/v1/jobs`、`POST /api/v1/validate`、`/api/v1/specs/*`、`/api/v1/projects` 和 SimulationSpec schema 已从公共路由删除。
 
-SDK 只提供 `validate_run()`、`submit_run()`、`submit_yaml()` 及任务/传输/结果方法；旧 `validate(SimulationSpec)` 和 `submit(SimulationSpec)` 已删除。
+SDK 提供 `import_yaml()`/`export_yaml()` 草稿方法、`validate_run()`、`submit_run()`、`submit_yaml()` 及任务/传输/结果方法；旧 `validate(SimulationSpec)` 和 `submit(SimulationSpec)` 已删除。草稿方法不创建 Job，提交前仍由严格模型校验。
 
 ## 4. V2 模型
 
