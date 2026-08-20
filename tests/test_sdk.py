@@ -41,6 +41,7 @@ from radar_sim_sdk import (
     RadarSimApiError,
     RadarSimClient,
     RadarSimTransferCancelledError,
+    PartialUserRunConfig,
     UserRunConfig,
 )
 from radar_sim_sdk.client import (
@@ -101,6 +102,10 @@ selena:
     exported = sdk.export_yaml(imported["config"])
     assert exported["complete"] is False
     assert "code_path: D:/workspace/byd" in exported["yaml_content"]
+    exported_model = sdk.export_yaml(
+        PartialUserRunConfig.from_dict(imported["config"])
+    )
+    assert exported_model["complete"] is False
 
     with pytest.raises(ValidationError):
         sdk.validate_run(imported["config"])

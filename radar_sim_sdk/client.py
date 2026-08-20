@@ -27,7 +27,7 @@ from core.direct_transfer import (
     execute_transfer,
 )
 from core.transfer_service import TransferProgress
-from core.user_config import UserRunConfig
+from core.user_config import PartialUserRunConfig, UserRunConfig
 from core.datasets import classify_data_path
 from core.user import USER_HEADER, stable_user_identity
 from radar_sim_sdk.errors import (
@@ -224,11 +224,11 @@ class RadarSimClient:
 
     def export_yaml(
         self,
-        config: UserRunConfig | Mapping[str, Any],
+        config: UserRunConfig | PartialUserRunConfig | Mapping[str, Any],
     ) -> dict[str, Any]:
         """Export a complete or partial YAML draft without validating submission readiness."""
 
-        if isinstance(config, UserRunConfig):
+        if isinstance(config, (UserRunConfig, PartialUserRunConfig)):
             payload = config.to_dict()
         elif isinstance(config, Mapping):
             payload = dict(config)
@@ -244,7 +244,7 @@ class RadarSimClient:
 
     def export_run_config_yaml(
         self,
-        config: UserRunConfig | Mapping[str, Any],
+        config: UserRunConfig | PartialUserRunConfig | Mapping[str, Any],
     ) -> dict[str, Any]:
         """Named alias for :meth:`export_yaml` used by Skill adapters."""
 
