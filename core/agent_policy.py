@@ -93,7 +93,11 @@ WINDOWS_MODES = frozenset({MODE_UNIFIED, MODE_LIGHT, MODE_FULL})
 # v15 records Selena Runtime Bundle branch provenance and forces a full clean
 # build when an existing output belongs to another/unproven branch. Incremental
 # reuse is allowed only for the same branch, mode and entrypoint checksum.
-WINDOWS_CONNECTOR_CONTRACT_VERSION = 15
+# v16 streams native Selena simulation progress and terminates a run promptly
+# after an explicit engine-fatal diagnostic. Older Connectors can otherwise
+# leave users with an opaque long-running Stage, so they must update before
+# claiming the new local-run contract.
+WINDOWS_CONNECTOR_CONTRACT_VERSION = 16
 
 MODE_TO_NODE_KIND = {
     MODE_UNIFIED: NODE_KIND_WINDOWS_FULL,

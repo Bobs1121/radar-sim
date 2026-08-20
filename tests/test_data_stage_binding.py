@@ -172,6 +172,10 @@ def test_successful_agent_data_upload_updates_path_free_resolved_spec(tmp_path: 
     assert "D:/data" not in str(resolved["decisions"]["data"])
     assert next(item for item in completed["stages"] if item["stage_type"] == "prepare_data")["status"] == "succeeded"
 
+    event_count = len(service.list_events(job["job_id"])["events"])
+    complete_data_resolution(service, job["job_id"], stage["stage_id"])
+    assert len(service.list_events(job["job_id"])["events"]) == event_count
+
 
 def test_successful_agent_direct_transfer_updates_path_free_resolved_spec(tmp_path: Path):
     """Direct Windows-to-Cluster copies must not be mistaken for central uploads."""

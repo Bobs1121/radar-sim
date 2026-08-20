@@ -56,6 +56,7 @@ from core.agent_policy import (
     validate_light_capabilities,
 )
 from core.progress_parser import parse_build_percentage, parse_build_progress
+from core.direct_transfer import DEFAULT_TRANSFER_CHUNK_SIZE
 
 
 def _is_retryable_agent_transport(exc: BaseException) -> bool:
@@ -2234,6 +2235,23 @@ def _run_v5_local_stage(
     status = "failed"
     returncode = 1
     result: dict = {"error": "local_stage_failed", "code": "local_stage_failed"}
+    last_progress = [-1.0, 0.0]
+
+    def report_simulation_progress(progress: float, message: str) -> None:
+        """Publish engine progress without turning telemetry into a failure."""
+
+        value = max(0.0, min(float(progress), 0.99))
+        now = time.monotonic()
+        if value <= last_progress[0] and now - last_progress[1] < 5.0:
+            return
+        try:
+            client.report_progress(task_id, value, message=message)
+            last_progress[:] = [max(last_progress[0], value), now]
+        except Exception:
+            # Progress is advisory. Selena's process and terminal result are
+            # authoritative, so telemetry loss cannot abort a healthy run.
+            pass
+
     try:
         response = client.heartbeat(agent_id, status="busy", current_task_id=task_id)
         if response.get("cancel_requested"):
@@ -2242,7 +2260,11 @@ def _run_v5_local_stage(
             result = _execute_v5_local_preflight(task, client=client)
             returncode = 0
         elif stage_type == "run_simulation":
-            result, returncode = _execute_v5_local_simulation(task, cancel_event.is_set)
+            result, returncode = _execute_v5_local_simulation(
+                task,
+                cancel_event.is_set,
+                progress_callback=report_simulation_progress,
+            )
         elif stage_type == "collect_results":
             result = _execute_v5_local_collect(
                 task, client=client, cancel_requested=cancel_event.is_set
@@ -2527,10 +2549,12 @@ def _execute_v5_local_preflight(task: dict, *, client: "_ControlClient | None" =
         # large batch for many hours; cancellation and Agent/process liveness
         # remain the control mechanisms instead of an accidental one-hour cap.
         timeout_seconds=timeout_minutes * 60,
-        # Local input content is verified once more immediately before Selena
-        # starts.  This closes the gap between prepare_data and preflight when
-        # a producer rewrites a file without changing size/mtime.
-        verify_input_checksums=True,
+        # ``prepare_data`` already created the immutable local data lease and
+        # computed its checksums.  Reuse that evidence during preflight; the
+        # local runner still performs the strict checksum verification again
+        # immediately before launching Selena.  This removes one redundant
+        # full read of every large MF4 without weakening the launch boundary.
+        verify_input_checksums=False,
     )
     private = store.get_private(lease["lease_id"])
     # The Runtime/Data port list is already captured during resolution.  Do
@@ -2736,7 +2760,12 @@ def _upload_resolution_config_assets(
     return uploaded
 
 
-def _execute_v5_local_simulation(task: dict, cancel_requested) -> tuple[dict, int]:
+def _execute_v5_local_simulation(
+    task: dict,
+    cancel_requested,
+    *,
+    progress_callback=None,
+) -> tuple[dict, int]:
     from core.agent_local_run import AgentLocalRunLeaseStore, execute_local_run
     from core.local_selena_runner import run_local_selena
 
@@ -2758,6 +2787,7 @@ def _execute_v5_local_simulation(task: dict, cancel_requested) -> tuple[dict, in
         store,
         runner=run_local_selena,
         cancel_requested=cancel_requested,
+        progress_callback=progress_callback,
     )
     result = store.result(lease_ref)
     if returncode == 0 or _is_partial_local_result(result):
@@ -3733,7 +3763,7 @@ class _ControlClient:
         owner: str = "",
         cancel_check=None,
         progress_callback=None,
-        chunk_size: int = 1024 * 1024,
+        chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
         allow_local_test: bool = False,
     ):
         """Copy one signed plan directly and publish only metadata.

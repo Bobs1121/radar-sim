@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from core.direct_transfer import (
+    DEFAULT_TRANSFER_CHUNK_SIZE,
     TransferManifest,
     TransferPlan,
     TransferCancelled,
@@ -610,7 +611,7 @@ class RadarSimClient:
         *,
         progress_callback: Callable[[TransferProgress], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
-        chunk_size: int = 1024 * 1024,
+        chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
         allow_local_test: bool = False,
     ) -> TransferManifest:
         """Execute a signed plan in the caller's data plane.

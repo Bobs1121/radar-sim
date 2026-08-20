@@ -14,13 +14,17 @@ import posixpath
 import re
 import secrets
 import stat
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Optional, Tuple, Union
 
 
 TRANSFER_MODES = frozenset({"shared_copy", "source_to_local", "gateway_upload"})
+DEFAULT_TRANSFER_CHUNK_SIZE = 8 * 1024 * 1024
+DEFAULT_TRANSFER_WORKERS = 2
 SOURCE_ROLES = frozenset(
     {"dataset", "runtime_bundle", "runtime_xml", "mat_filter", "adapter"}
 )
@@ -92,6 +96,7 @@ class _TransferProgressReporter:
         self._last_published: Any | None = None
         self._last_published_at: float | None = None
         self._latest: Any | None = None
+        self._lock = threading.RLock()
 
     @staticmethod
     def _snapshot(progress: Any) -> tuple[str, int, int, str, str, str]:
@@ -132,31 +137,33 @@ class _TransferProgressReporter:
     def emit(self, progress: Any) -> None:
         """Handle one kernel event and notify local callbacks every time."""
 
-        now = float(self._clock())
-        self._latest = progress
-        if self._should_publish(progress, now):
-            # Preserve the adapter's historical ordering: a control-plane
-            # failure aborts the transfer before its local callback is called.
-            self._publish_now(progress, now)
-        if self._local_callback is not None:
-            self._local_callback(progress)
+        with self._lock:
+            now = float(self._clock())
+            self._latest = progress
+            if self._should_publish(progress, now):
+                # Preserve the adapter's historical ordering: a control-plane
+                # failure aborts the transfer before its local callback is called.
+                self._publish_now(progress, now)
+            if self._local_callback is not None:
+                self._local_callback(progress)
 
     def finish(self, progress: Any) -> None:
         """Publish a verified terminal snapshot and notify local listeners once."""
 
-        now = float(self._clock())
-        previous = self._latest
-        self._latest = progress
-        # ``execute_transfer`` normally emits a chunk event at exactly
-        # ``bytes_total``.  Avoid a duplicate local callback in that common
-        # case, while synthesising one for empty/resumed files.  Publish first
-        # so a callback exception cannot prevent terminal control-plane state.
-        self._publish_now(progress, now)
-        if (
-            self._local_callback is not None
-            and (previous is None or self._snapshot(previous) != self._snapshot(progress))
-        ):
-            self._local_callback(progress)
+        with self._lock:
+            now = float(self._clock())
+            previous = self._latest
+            self._latest = progress
+            # ``execute_transfer`` normally emits a chunk event at exactly
+            # ``bytes_total``.  Avoid a duplicate local callback in that common
+            # case, while synthesising one for empty/resumed files.  Publish first
+            # so a callback exception cannot prevent terminal control-plane state.
+            self._publish_now(progress, now)
+            if (
+                self._local_callback is not None
+                and (previous is None or self._snapshot(previous) != self._snapshot(progress))
+            ):
+                self._local_callback(progress)
 
 
 def _digest_token(value: str, length: int = 32) -> str:
@@ -946,7 +953,8 @@ def execute_transfer(
     allow_local_test: bool = False,
     cancel_callback: Optional[Callable[[], bool]] = None,
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
-    chunk_size: int = 1024 * 1024,
+    chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
+    max_workers: int = DEFAULT_TRANSFER_WORKERS,
     now_fn: Optional[Callable[[], float]] = None,
 ) -> TransferManifest:
     """Copy source files directly into the deployment target."""
@@ -987,8 +995,8 @@ def execute_transfer(
     if len(paths) != len(set(paths)):
         raise DirectTransferError("duplicate source paths are not allowed")
     started = clock()
-    entries: list[ManifestEntry] = []
-    for item in sources:
+
+    def copy_one(item: TransferSource) -> ManifestEntry:
         source = source_resolved.joinpath(*item.relative_path.split("/"))
         _assert_no_reparse_components(source_resolved, source)
         # Validate the signed destination before resolving the source. If
@@ -1010,7 +1018,18 @@ def execute_transfer(
         except (OSError, ValueError) as exc:
             raise DirectTransferError("source path escapes source_root") from exc
         report = (lambda processed, total, relative=item.relative_path: progress_callback(relative, processed, total) if progress_callback else None)
-        entries.append(_copy_file_with_resume(resolved, destination, plan=plan, transfer_source=item, cancel_callback=cancel_callback, progress_callback=report, chunk_size=chunk_size, now_fn=clock))
+        return _copy_file_with_resume(resolved, destination, plan=plan, transfer_source=item, cancel_callback=cancel_callback, progress_callback=report, chunk_size=chunk_size, now_fn=clock)
+
+    worker_count = max(1, int(max_workers or 1))
+    if worker_count == 1 or len(sources) == 1:
+        entries = [copy_one(item) for item in sources]
+    else:
+        # Files have already passed the signed relative-path uniqueness and
+        # target-boundary checks.  Copy independent entries concurrently, but
+        # keep ``map``'s input order so Manifest ordering and result naming
+        # remain identical to the historical serial path.
+        with ThreadPoolExecutor(max_workers=min(worker_count, len(sources))) as pool:
+            entries = list(pool.map(copy_one, sources))
     return TransferManifest(
         plan.transfer_id,
         entries,

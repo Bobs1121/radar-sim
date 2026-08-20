@@ -27,6 +27,10 @@ _FRAME_RE = re.compile(
     r"frame[:\s]*(?P<done>\d+)\s*(?:/|of)\s*(?P<total>\d+)",
     re.IGNORECASE,
 )
+_MDF_SCHEDULER_RE = re.compile(
+    r"mdf[-\s]?scheduler[^\d]*(?P<done>\d+)\s*/\s*(?P<total>\d+)",
+    re.IGNORECASE,
+)
 
 
 def parse_build_progress(line: str) -> Optional[tuple[int, int, str]]:
@@ -71,6 +75,8 @@ def parse_sim_progress(line: str) -> Optional[tuple[int, int]]:
     if not line:
         return None
     m = _FRAME_RE.search(line)
+    if not m and "mdf" in line.casefold() and "scheduler" in line.casefold():
+        m = _MDF_SCHEDULER_RE.search(line)
     if not m:
         return None
     done = int(m.group("done"))

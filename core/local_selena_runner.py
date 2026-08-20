@@ -17,6 +17,7 @@ from typing import Callable
 
 from core.agent_local_run import LocalRunOutcome, LocalRunRequest
 from core.config import render_selena_config, render_selena_environment_path
+from core.progress_parser import parse_sim_progress
 from core.simulation import apply_simulation_to_config, build_effective_simulation, get_simulation_config
 
 
@@ -35,6 +36,7 @@ def run_local_selena(
     ):
         return LocalRunOutcome(1, "runner_contract_failed")
     log_files: list[Path] = []
+    progress_paths: list[Path] = []
     try:
         controlled_work.mkdir(parents=True, exist_ok=True)
         paramconfig = controlled_work / f"paramconfig-{request.item_index:04d}.txt"
@@ -77,6 +79,7 @@ def run_local_selena(
             rendered_log_path = Path(rendered_log)
             if _contained(lease_root, rendered_log_path):
                 log_files.append(rendered_log_path)
+        progress_paths = list(dict.fromkeys(log_files))
     except Exception as exc:
         # The lease layer redacts physical paths before publishing diagnostics.
         # Preserve the exception class/message here so a framework-owned
@@ -89,6 +92,64 @@ def run_local_selena(
     started = time.monotonic()
     process = None
     job = None
+    progress_offsets: dict[Path, int] = {}
+    progress_buffers: dict[Path, str] = {}
+    last_progress = -1.0
+    last_progress_report_at = 0.0
+    fatal_engine_line = ""
+
+    def report_simulation_progress() -> None:
+        """Read only newly appended engine lines and report real progress."""
+
+        nonlocal last_progress, last_progress_report_at, fatal_engine_line
+        callback = request.progress_callback
+        for log_path in progress_paths:
+            try:
+                size = int(log_path.stat().st_size)
+                offset = int(progress_offsets.get(log_path, 0))
+                if size < offset:
+                    offset = 0
+                    progress_buffers.pop(log_path, None)
+                if size == offset:
+                    continue
+                with log_path.open("rb") as handle:
+                    handle.seek(offset)
+                    chunk = handle.read()
+                progress_offsets[log_path] = offset + len(chunk)
+                text = progress_buffers.get(log_path, "") + chunk.decode(
+                    "utf-8", errors="replace"
+                )
+                lines = text.splitlines(keepends=True)
+                if lines and not lines[-1].endswith(("\n", "\r")):
+                    progress_buffers[log_path] = lines.pop()
+                else:
+                    progress_buffers.pop(log_path, None)
+                for raw_line in lines:
+                    if _is_fatal_engine_line(raw_line) and not fatal_engine_line:
+                        fatal_engine_line = raw_line.strip()[:2000]
+                    parsed = parse_sim_progress(raw_line)
+                    if parsed is None:
+                        continue
+                    done, total = parsed
+                    percentage = min(100.0, max(0.0, done / total * 100.0))
+                    value = min(0.99, percentage / 100.0)
+                    if callback is None:
+                        continue
+                    now = time.monotonic()
+                    if value <= last_progress and now - last_progress_report_at < 2.0:
+                        continue
+                    last_progress = max(last_progress, value)
+                    last_progress_report_at = now
+                    callback(
+                        value,
+                        f"Selena simulation {percentage:.1f}% ({done}/{total})",
+                    )
+            except (OSError, UnicodeError):
+                # The engine log is advisory.  Process liveness and the final
+                # exit code remain authoritative if a log handle is transiently
+                # unavailable on Windows.
+                continue
+
     try:
         with private_log.open("wb") as log_handle:
             process = subprocess.Popen(
@@ -102,6 +163,18 @@ def run_local_selena(
             )
             job = _WindowsKillJob(process)
             while process.poll() is None:
+                report_simulation_progress()
+                if fatal_engine_line:
+                    # Selena has already reported a terminal engine error but
+                    # may keep the process alive while a recorder/descendant
+                    # drains. Do not wait for an arbitrary wall-clock timeout;
+                    # terminate this known-failed engine run and surface the
+                    # diagnostic immediately.
+                    job.terminate(1)
+                    outcome = LocalRunOutcome(
+                        1, "selena_failed", (fatal_engine_line,)
+                    )
+                    break
                 if cancel_requested():
                     job.terminate(130)
                     outcome = LocalRunOutcome(130, "cancelled")
@@ -112,11 +185,18 @@ def run_local_selena(
                     break
                 time.sleep(0.25)
             else:
-                returncode = int(process.returncode or 0)
-                outcome = LocalRunOutcome(
-                    returncode,
-                    _selena_error_code(returncode),
-                )
+                report_simulation_progress()
+                if fatal_engine_line:
+                    job.terminate(1)
+                    outcome = LocalRunOutcome(
+                        1, "selena_failed", (fatal_engine_line,)
+                    )
+                else:
+                    returncode = int(process.returncode or 0)
+                    outcome = LocalRunOutcome(
+                        returncode,
+                        _selena_error_code(returncode),
+                    )
     except (OSError, subprocess.SubprocessError):
         if job is not None:
             job.terminate(1)
@@ -199,6 +279,21 @@ def _with_private_logs(outcome: LocalRunOutcome, log_files: list[Path]) -> Local
 def _safe_extra_arg(value: str) -> bool:
     text = str(value or "")
     return bool(text) and len(text) <= 256 and "\x00" not in text and "\r" not in text and "\n" not in text
+
+
+def _is_fatal_engine_line(line: str) -> bool:
+    """Recognize explicit Selena terminal-error diagnostics only."""
+
+    text = str(line or "").casefold()
+    return any(
+        marker in text
+        for marker in (
+            "no signal found in channel cache",
+            "simulation was failed",
+            "return value was incorrect",
+            "selena returned a non-zero result",
+        )
+    )
 
 
 def _contained(root: Path, target: Path) -> bool:

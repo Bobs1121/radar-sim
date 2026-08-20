@@ -65,6 +65,7 @@ class LocalRunRequest:
     working_directory: Path
     timeout_seconds: int
     config: dict[str, Any]
+    progress_callback: Callable[[float, str], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -213,8 +214,19 @@ class AgentLocalRunLeaseStore:
         timeout = _positive_timeout(timeout_seconds)
 
         runtime = _verify_runtime_locations(runtime_manifest, runtime_locations)
+        # ``prepare_data`` already computes and persists a checksum for a
+        # local execution lease.  Reuse that immutable evidence during
+        # preflight when it is present; retain the strict fallback for old
+        # leases or callers that do not provide checksums.  The final
+        # ``execute_local_run`` boundary still revalidates the input before
+        # launching Selena, so this removes only a redundant full-file scan.
+        has_input_checksums = bool(data_lease.files) and all(
+            _CHECKSUM_RE.fullmatch(str(item.checksum or ""))
+            for item in data_lease.files
+        )
         inputs = _verify_data_lease(
-            data_lease, verify_checksums=bool(verify_input_checksums)
+            data_lease,
+            verify_checksums=bool(verify_input_checksums) or not has_input_checksums,
         )
         adapter: Path | None = None
         try:
@@ -616,6 +628,7 @@ def execute_local_run(
     *,
     runner: LocalSimulationRunner | None = None,
     cancel_requested: Callable[[], bool] | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> int:
     """Execute a lease using an injected runner and a controlled output contract."""
     store = store or AgentLocalRunLeaseStore()
@@ -806,6 +819,7 @@ def execute_local_run(
                 working_directory=Path(config["_local_run"]["working_directory"]),
                 timeout_seconds=lease["timeout_seconds"],
                 config=config,
+                progress_callback=progress_callback,
             )
             outcome = runner(request, cancel)
             if not isinstance(outcome, LocalRunOutcome):

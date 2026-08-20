@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from core.agent_local_run import LocalRunRequest
 from core.local_selena_runner import run_local_selena
 
@@ -108,6 +110,75 @@ def test_runner_does_not_apply_a_hidden_timeout_when_timeout_is_zero(tmp_path, m
 
     assert observed["started"] is True
     assert outcome.exit_code == 0
+
+
+def test_runner_reports_mdf_scheduler_progress_without_changing_exit_semantics(tmp_path, monkeypatch):
+    request = _request(tmp_path)
+    progress: list[tuple[float, str]] = []
+    request = LocalRunRequest(
+        **{**request.__dict__, "progress_callback": lambda value, message: progress.append((value, message))}
+    )
+
+    class Process:
+        returncode = None
+        _handle = 0
+
+        def __init__(self, _command, **kwargs):
+            self.calls = 0
+            stream = kwargs["stdout"]
+            stream.write(b"MDF-Scheduler running: / 28853/144193 20.00%\n")
+            stream.flush()
+
+        def poll(self):
+            self.calls += 1
+            if self.calls >= 2:
+                self.returncode = 0
+                return 0
+            return None
+
+    monkeypatch.setattr("core.local_selena_runner.subprocess.Popen", Process)
+    outcome = run_local_selena(request, lambda: False)
+
+    assert outcome.exit_code == 0
+    assert progress
+    assert progress[-1][0] == pytest.approx(28853 / 144193, rel=1e-6)
+    assert "28853/144193" in progress[-1][1]
+
+
+def test_runner_stops_after_explicit_engine_failure_instead_of_waiting_for_recorder(
+    tmp_path, monkeypatch
+):
+    request = _request(tmp_path)
+
+    class Process:
+        returncode = None
+        _handle = 0
+
+        def __init__(self, _command, **kwargs):
+            self.calls = 0
+            self.stream = kwargs["stdout"]
+            self.stream.write(
+                b"[error]: no signal found in channel cache for port demo\n"
+            )
+            self.stream.flush()
+
+        def poll(self):
+            self.calls += 1
+            return self.returncode
+
+        def kill(self):
+            self.returncode = 1
+
+        def wait(self, timeout=None):
+            del timeout
+            return self.returncode
+
+    monkeypatch.setattr("core.local_selena_runner.subprocess.Popen", Process)
+    outcome = run_local_selena(request, lambda: False)
+
+    assert outcome.exit_code == 1
+    assert outcome.error_code == "selena_failed"
+    assert "no signal found in channel cache" in "\n".join(outcome.diagnostics)
 
 
 def test_runner_uses_shared_template_when_project_template_is_missing(tmp_path, monkeypatch):

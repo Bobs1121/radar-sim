@@ -14,7 +14,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from pydantic import ValidationError
 
@@ -715,8 +715,11 @@ class ApiV1Service:
             and config.selena.source == "existing"
             and selected_runtime_bundle is None
             and (
-                classify_data_path(str(config.selena.existing_path or "")) == "agent"
-                or "runtime_bundle" in sdk_transfer_roles
+                self._client_transfer_role_required(
+                    "runtime_bundle",
+                    str(config.selena.existing_path or ""),
+                    sdk_transfer_roles,
+                )
             )
         )
         cluster_visible_existing = cluster_visible_existing_selena(
@@ -836,7 +839,18 @@ class ApiV1Service:
                         payload["dispatch_scope"] = "shared_existing_environment"
                         task["payload"] = payload
                 elif stage_type == "prepare_data" and (
-                    not sdk_transfer_roles
+                    (
+                        not self._client_transfer_source_roles(
+                            config,
+                            sdk_transfer_roles,
+                            runtime_bundle_selected=selected_runtime_bundle is not None,
+                        )
+                        # Preserve the established build+shared-data barrier:
+                        # Linux may resolve the shared dataset before the
+                        # Windows build/resource handoff exists.  The later
+                        # resource stages remain responsible for local assets.
+                        or (config.selena.source == "build" and not sdk_transfer_roles)
+                    )
                     and (
                         str(config.data.path).lower().startswith("dataset://")
                         or classify_data_path(config.data.path) in {"shared", "central"}
@@ -971,7 +985,15 @@ class ApiV1Service:
             value = str(value or "").strip()
             if not value:
                 return
-            if classify_data_path(value) == "agent" or role in hinted_roles:
+            # A client may conservatively advertise every readable UNC path
+            # as a transfer candidate.  That hint must not override a
+            # deployment-owned shared namespace: when Linux can see the same
+            # source, copying hundreds of MB through Windows is both slower
+            # and an unnecessary serialization point.  If the shared probe is
+            # unavailable, retain the historical hinted-role transfer path;
+            # this is the fail-safe fallback for a source that is genuinely
+            # local to the SDK/Connector.
+            if self._client_transfer_role_required(role, value, hinted_roles):
                 local_sources.append({"source_role": role, "path": value})
 
         add_local("dataset", data_path)
@@ -1130,6 +1152,87 @@ class ApiV1Service:
         if root is None and probe_configured is None:
             return True
         return bool(str(root or "").strip()) and probe_configured is True
+
+    def _cluster_visible_shared_path(self, value: str) -> bool:
+        """Return whether a shared input is mapped and readable on Linux.
+
+        The public YAML may contain a Windows UNC spelling while the control
+        plane consumes an administrator-owned Linux mount.  A client-side
+        transfer hint is intentionally advisory; a successful deployment
+        probe wins so the same bytes are not copied through a Connector.
+        Any configuration/probe error returns ``False`` and preserves the
+        existing direct-transfer fallback.
+        """
+
+        if classify_data_path(str(value or "")) != "shared":
+            return False
+        try:
+            from core.config import load_cluster_execution_config
+            from core.shared_namespace import SharedNamespaceRegistry
+
+            registry = SharedNamespaceRegistry.from_config(
+                load_cluster_execution_config("run-config-v2")
+            )
+            resolved = registry.resolve(str(value))
+            return Path(resolved.central_probe_path).exists()
+        except (ImportError, OSError, TypeError, ValueError):
+            return False
+
+    def _client_transfer_role_required(
+        self, role: str, value: str, hinted_roles: Iterable[str]
+    ) -> bool:
+        """Decide whether one resource really needs source-side transfer.
+
+        Drive-letter/POSIX caller-local paths keep the existing behavior.  A
+        mapped and readable UNC path is shared-reference data even when a
+        Web/SDK caller advertised that role for a conservative local-path
+        scan.  This normalization is deliberately kept in the server so Web
+        and SDK cannot accidentally choose different data routes.
+        """
+
+        kind = classify_data_path(str(value or ""))
+        if kind == "shared" and self._cluster_visible_shared_path(value):
+            return False
+        return kind == "agent" or str(role or "").strip().lower() in set(hinted_roles)
+
+    def _client_transfer_source_roles(
+        self,
+        config: UserRunConfig,
+        hinted_roles: Iterable[str],
+        *,
+        runtime_bundle_selected: bool = False,
+    ) -> set[str]:
+        """Return resources that still require a source-side Connector.
+
+        A shared dataset plus a local Runtime Bundle still needs the source
+        Connector for the Bundle, so the whole legacy ``prepare_data`` Stage
+        remains source-bound until resource-level transfer stages are
+        introduced.  A fully shared/cached run can be claimed by Linux
+        immediately.
+        """
+
+        candidates: list[tuple[str, str]] = [("dataset", str(config.data.path or ""))]
+        if config.selena.source == "existing" and not runtime_bundle_selected:
+            candidates.extend(
+                [
+                    ("runtime_bundle", str(config.selena.existing_path or "")),
+                    ("runtime_xml", str(config.selena.runtime_xml or "")),
+                ]
+            )
+        elif config.selena.source == "build":
+            candidates.append(("runtime_xml", str(config.selena.runtime_xml or "")))
+        candidates.extend(
+            [
+                ("mat_filter", str(config.simulation.mat_filter or "")),
+                ("adapter", str(config.simulation.adapter_file or "")),
+            ]
+        )
+        hinted = {str(item or "").strip().lower() for item in hinted_roles}
+        return {
+            role
+            for role, value in candidates
+            if value and self._client_transfer_role_required(role, value, hinted)
+        }
 
     @staticmethod
     def _is_control_plane_only_reference(value: str) -> bool:

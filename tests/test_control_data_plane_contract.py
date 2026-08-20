@@ -399,6 +399,123 @@ def test_shared_existing_cluster_skips_windows_resolution_and_registration(tmp_p
     assert stages["prepare_data"]["required_agent_id"] == "linux-v2-stage-executor"
 
 
+def test_shared_unc_inputs_win_over_conservative_client_transfer_hints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A readable deployment UNC stays zero-copy even if Web/SDK hints it."""
+
+    mount = tmp_path / "mnt"
+    selena_root = mount / "loc" / "szh" / "Isilon2" / "Selena"
+    data_root = mount / "loc" / "szh" / "Isilon2" / "data"
+    config_root = mount / "loc" / "szh" / "Isilon2" / "config"
+    selena_root.mkdir(parents=True)
+    data_root.mkdir(parents=True)
+    config_root.mkdir(parents=True)
+    (selena_root / "selena.exe").write_bytes(b"exe")
+    (selena_root / "runtime.dll").write_bytes(b"dll")
+    (selena_root / "Runtime.xml").write_text("<runtime/>", encoding="utf-8")
+    (data_root / "one.MF4").write_bytes(b"mf4")
+    (config_root / "MatFilter.cfg").write_text("signal=*", encoding="utf-8")
+    monkeypatch.setattr(
+        "core.config.load_cluster_execution_config",
+        lambda _project: {
+            "cluster": {
+                "linux_mount_map": {
+                    r"\\abtvdfs2.de.bosch.com\ismdfs": str(mount),
+                }
+            }
+        },
+    )
+    prefix = r"\\abtvdfs2.de.bosch.com\ismdfs"
+    config = {
+        "schema_version": "2.0",
+        "selena": {
+            "source": "existing",
+            "existing_path": prefix + r"\loc\szh\Isilon2\Selena",
+            "runtime_xml": prefix + r"\loc\szh\Isilon2\Selena\Runtime.xml",
+        },
+        "data": {"path": prefix + r"\loc\szh\Isilon2\data\one.MF4"},
+        "simulation": {
+            "target": "cluster",
+            "adapter_file": "",
+            "mat_filter": prefix + r"\loc\szh\Isilon2\config\MatFilter.cfg",
+        },
+    }
+    control = ControlService(tmp_path / "shared-hinted-control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+
+    job = api.submit_user_run(
+        "alice",
+        config_payload=config,
+        client_transfer_roles=("dataset", "runtime_bundle", "runtime_xml", "mat_filter"),
+    )
+    private = control.get_job(job["id"])
+    stages = {item["stage_type"]: item for item in private["stages"]}
+
+    assert stages["resolve_spec"]["skip_reason"] == "existing_selena_is_cluster_visible"
+    assert stages["register_artifact"]["skip_reason"] == "existing_selena_is_cluster_visible"
+    assert stages["environment_check"]["required_agent_id"] == LINUX_STAGE_AGENT_ID
+    assert stages["prepare_data"]["required_agent_id"] == LINUX_STAGE_AGENT_ID
+    assert stages["prepare_data"]["payload"]["dispatch_scope"] == "shared_reference"
+    assert stages["prepare_data"]["payload"]["transfer_required"] is False
+
+
+def test_mixed_shared_dataset_keeps_only_local_runtime_resources_on_connector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mixed route remains source-bound only for resources still local."""
+
+    mount = tmp_path / "mnt"
+    shared_data = mount / "loc" / "szh" / "Isilon2" / "data" / "one.MF4"
+    shared_data.parent.mkdir(parents=True)
+    shared_data.write_bytes(b"mf4")
+    monkeypatch.setattr(
+        "core.config.load_cluster_execution_config",
+        lambda _project: {
+            "cluster": {
+                "linux_mount_map": {
+                    r"\\abtvdfs2.de.bosch.com\ismdfs": str(mount),
+                }
+            }
+        },
+    )
+    prefix = r"\\abtvdfs2.de.bosch.com\ismdfs"
+    config = {
+        "schema_version": "2.0",
+        "selena": {
+            "source": "existing",
+            "existing_path": "D:/alice/Selena",
+            "runtime_xml": "D:/alice/Runtime.xml",
+        },
+        "data": {"path": prefix + r"\loc\szh\Isilon2\data\one.MF4"},
+        "simulation": {
+            "target": "cluster",
+            "adapter_file": "",
+            "mat_filter": "D:/alice/MatFilter.cfg",
+        },
+    }
+    control = ControlService(tmp_path / "mixed-hinted-control.db")
+    api = ApiV1Service(control_service_factory=lambda _owner: control)
+
+    job = api.submit_user_run(
+        "alice",
+        config_payload=config,
+        client_transfer_roles=("dataset", "runtime_bundle", "runtime_xml", "mat_filter"),
+    )
+    private = control.get_job(job["id"])
+    stages = {item["stage_type"]: item for item in private["stages"]}
+    prepare = stages["prepare_data"]
+
+    assert prepare["required_agent_id"] == ""
+    assert prepare["payload"]["dispatch_scope"] == "direct_transfer"
+    assert "dataset" not in prepare["payload"]["source_roles"]
+    assert {item["source_role"] for item in prepare["payload"]["source_paths"]} == {
+        "runtime_bundle",
+        "runtime_xml",
+        "mat_filter",
+    }
+
+
 def test_existing_cluster_direct_transfer_uses_prepare_data_barrier_without_agent_wait(
     tmp_path: Path,
 ) -> None:

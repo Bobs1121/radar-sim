@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 from core.direct_transfer import (
+    DEFAULT_TRANSFER_CHUNK_SIZE,
     DirectTransferError,
     GatewayUnavailableError,
     ManifestEntry,
@@ -695,7 +696,7 @@ def execute_shared_copy(
     source_base: Union[str, Path],
     progress_callback: Optional[Callable[[TransferProgress], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
-    chunk_size: int = 1024 * 1024,
+    chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
     now_fn: Optional[Callable[[], float]] = None,
     allow_local_test_root: bool = False,
 ) -> TransferManifest:

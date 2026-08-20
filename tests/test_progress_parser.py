@@ -69,6 +69,8 @@ def test_parse_build_percentage_no_match(line):
     ("frame 1200/4500", (1200, 4500)),
     ("Frame: 100 of 500", (100, 500)),
     ("[INFO] Frame 0 / 1000 starting", (0, 1000)),
+    ("MDF-Scheduler running: / 28853/144193 20.00%", (28853, 144193)),
+    ("MDF Scheduler running: - 10 / 20", (10, 20)),
 ])
 def test_parse_sim_progress_matches(line, exp):
     assert parse_sim_progress(line) == exp

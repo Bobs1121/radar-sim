@@ -720,6 +720,8 @@ def complete_data_resolution(control: ControlService, job_id: str, data_stage_id
         resolved_spec["status"] = "resolved" if selena_status == "resolved" else "partial"
         resolved_spec.pop("code", None)
         resolved_spec.pop("action", None)
+        if resolved_spec == dict(job.get("resolved_spec") or {}):
+            return job
         return control.update_resolved_spec(job_id, resolved_spec)
     if source_kind == "agent_upload":
         if (
@@ -761,6 +763,8 @@ def complete_data_resolution(control: ControlService, job_id: str, data_stage_id
     resolved_spec["status"] = "resolved" if selena_status == "resolved" else "partial"
     resolved_spec.pop("code", None)
     resolved_spec.pop("action", None)
+    if resolved_spec == dict(job.get("resolved_spec") or {}):
+        return job
     return control.update_resolved_spec(job_id, resolved_spec)
 
 
