@@ -50,6 +50,9 @@ def _files() -> list[Path]:
     required = {
         "rsim.py",
         "setup.py",
+        "cli/agent.py",
+        "core/__init__.py",
+        "core/agent_policy.py",
         "scripts/bootstrap.ps1",
         "scripts/run_hidden.vbs",
         "scripts/start_windows.ps1",

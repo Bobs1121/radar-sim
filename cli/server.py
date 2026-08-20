@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -24,6 +25,8 @@ _DEFAULT_MAINTENANCE_STALE_AFTER_SECONDS = 300.0
 # default; deployments that explicitly want a finite infrastructure retry
 # budget can set RSIM_MAINTENANCE_MAX_ATTEMPTS.
 _DEFAULT_MAINTENANCE_MAX_ATTEMPTS = 0
+_DEFAULT_CLUSTER_READINESS_WAIT_SECONDS = 8.0
+_DEFAULT_CLUSTER_READINESS_CACHE_SECONDS = 15.0
 
 
 def _positive_env_float(name: str, default: float, *, minimum: float = 0.1) -> float:
@@ -78,6 +81,85 @@ def _maintenance_settings() -> tuple[float, float, Optional[int], float]:
                 _DEFAULT_MAINTENANCE_MAX_ATTEMPTS,
             )
     return interval, stale_after, (max_attempts if max_attempts > 0 else None), assignment_grace
+
+
+class _ClusterReadinessCache:
+    """Single-flight, bounded Cluster readiness probe for the HTTP control plane.
+
+    The probe checks deployment-owned paths and the Cluster Manager, so it may
+    block on a CIFS mount or a dead external service.  It must never occupy a
+    Web/SDK request indefinitely or start one identical probe per concurrent
+    user.  A stale result starts one background probe; callers wait only for a
+    bounded observation window and otherwise receive the normal retryable
+    ``cluster_readiness_unavailable`` blocker.
+    """
+
+    def __init__(self, probe: Callable[[], dict[str, Any]]) -> None:
+        self._probe = probe
+        self._condition = threading.Condition()
+        self._result: dict[str, Any] | None = None
+        self._observed_at = 0.0
+        self._generation = 0
+        self._running = False
+        self._wait_seconds = _positive_env_float(
+            "RSIM_CLUSTER_READINESS_WAIT_SECONDS",
+            _DEFAULT_CLUSTER_READINESS_WAIT_SECONDS,
+            minimum=0.5,
+        )
+        self._cache_seconds = _positive_env_float(
+            "RSIM_CLUSTER_READINESS_CACHE_SECONDS",
+            _DEFAULT_CLUSTER_READINESS_CACHE_SECONDS,
+            minimum=0.5,
+        )
+
+    def get(self) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._condition:
+            if self._result is not None and now - self._observed_at <= self._cache_seconds:
+                return dict(self._result)
+            generation = self._generation
+            if not self._running:
+                self._running = True
+                threading.Thread(
+                    target=self._run,
+                    name="cluster-readiness-probe",
+                    daemon=True,
+                ).start()
+            deadline = time.monotonic() + self._wait_seconds
+            while self._running and self._generation == generation:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(timeout=remaining)
+            if self._generation != generation and self._result is not None:
+                return dict(self._result)
+
+        return {
+            "ready": False,
+            "status": "blocked",
+            "code": "cluster_readiness_unavailable",
+            "message": "Cluster 就绪检查仍在进行或暂时无响应，未启动仿真。",
+            "action": "稍后点击重新检查 Cluster；不会重复编译或传输。",
+        }
+
+    def _run(self) -> None:
+        try:
+            result = dict(self._probe())
+        except Exception as exc:  # pragma: no cover - deployment-specific
+            _LOGGER.warning("Cluster readiness probe failed: %s", exc)
+            result = {
+                "ready": False,
+                "status": "blocked",
+                "code": "cluster_readiness_unavailable",
+                "message": "Cluster 就绪检查暂时无法完成，未启动仿真。",
+                "action": "稍后点击重新检查 Cluster；如果持续失败，请检查 Cluster Manager 和共享工作区。",
+            }
+        with self._condition:
+            self._result = result
+            self._observed_at = time.monotonic()
+            self._generation += 1
+            self._running = False
+            self._condition.notify_all()
 
 
 class _MaintenanceLoop:
@@ -503,7 +585,7 @@ def _run_serve_v1(args) -> int:
             required_signals=spec.data.required_signals,
         )
 
-    def cluster_readiness_provider(_run_config):
+    def _run_cluster_readiness_probe():
         """Return a path-free authoritative Cluster dependency snapshot.
 
         Heartbeat capabilities only show that the Linux and gateway roles are
@@ -549,6 +631,11 @@ def _run_serve_v1(args) -> int:
             "action": "修复 Cluster 依赖后重新校验；任务不会在未就绪时启动。",
             "checks": [{"name": name, "ok": False} for name in names],
         }
+
+    cluster_readiness_cache = _ClusterReadinessCache(_run_cluster_readiness_probe)
+
+    def cluster_readiness_provider(_run_config):
+        return cluster_readiness_cache.get()
 
     def cluster_result_roots() -> list[Path]:
         """Return deployment-authorized Cluster workspaces for result archiving."""

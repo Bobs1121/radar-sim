@@ -8,10 +8,12 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 
 import cli.web as web_module
+from cli.server import _ClusterReadinessCache
 import pytest
 
 
@@ -185,6 +187,44 @@ def test_windows_installer_exposes_one_unified_connector_and_keeps_legacy_bounda
     assert "127.0.0.1" not in launcher
     assert "foreach($i in 1..5)" in launcher
     assert "temporarily unavailable; retrying" in launcher
+    assert "Assert-ExpandedPackage" in connector
+    assert "Copy-ApplicationFiles" in connector
+    assert "Remove-ApplicationContents" in connector
+    assert "Connector application copy completed without the required runtime files" in connector
+
+
+def test_cluster_readiness_cache_is_single_flight_and_request_bounded(monkeypatch):
+    monkeypatch.setenv("RSIM_CLUSTER_READINESS_WAIT_SECONDS", "0.5")
+    monkeypatch.setenv("RSIM_CLUSTER_READINESS_CACHE_SECONDS", "5")
+    calls = []
+    release = threading.Event()
+
+    def probe():
+        calls.append(1)
+        release.wait(2)
+        return {"ready": True, "status": "ready", "code": "cluster_ready"}
+
+    cache = _ClusterReadinessCache(probe)
+    started = time.monotonic()
+    first = cache.get()
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.5
+    assert first["ready"] is False
+    assert first["code"] == "cluster_readiness_unavailable"
+    assert len(calls) == 1
+
+    second = cache.get()
+    assert second["ready"] is False
+    assert len(calls) == 1
+
+    release.set()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if cache.get().get("ready") is True:
+            break
+        time.sleep(0.05)
+    assert cache.get()["ready"] is True
+    assert len(calls) == 1
 
 
 def test_hidden_launcher_runs_powershell_and_preserves_spaced_arguments(tmp_path: Path):

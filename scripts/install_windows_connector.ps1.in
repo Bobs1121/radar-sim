@@ -27,9 +27,86 @@ $Expanded = Join-Path $WorkRoot "package"
 $PreviousAppBackup = Join-Path $WorkRoot "previous-app"
 $PreviousConfigBackup = Join-Path $WorkRoot "previous-config"
 $PreviousStateBackedUp = $false
+$script:InstallPhase = "initializing"
+$PackageRequiredFiles = @(
+    "rsim.py",
+    "setup.py",
+    "cli\agent.py",
+    "core\__init__.py",
+    "core\agent_policy.py",
+    "scripts\bootstrap.ps1",
+    "scripts\run_hidden.vbs",
+    "scripts\start_windows.ps1",
+    "scripts\watch_windows_connector.ps1"
+)
 
-function Step([string]$message) { Write-Host "`n==> $message" -ForegroundColor Cyan }
+function Step([string]$message) {
+    $script:InstallPhase = $message
+    Write-Host "`n==> $message" -ForegroundColor Cyan
+}
 function Fail([string]$message) { Write-Host "`nConnection failed: $message" -ForegroundColor Red; exit 1 }
+
+function Assert-ExpandedPackage {
+    foreach ($relative in $PackageRequiredFiles) {
+        $candidate = Join-Path $Expanded $relative
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "Downloaded Connector package is incomplete; missing '$relative'."
+        }
+    }
+    $files = @(Get-ChildItem -LiteralPath $Expanded -Recurse -File -Force -ErrorAction Stop)
+    if ($files.Count -lt $PackageRequiredFiles.Count) {
+        throw "Downloaded Connector package is incomplete; extracted file count is $($files.Count)."
+    }
+}
+
+function Remove-ApplicationContents([string]$Root) {
+    New-Item -ItemType Directory -Force -Path $Root | Out-Null
+    $entries = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction SilentlyContinue)
+    foreach ($entry in $entries) {
+        if ($entry.Name -ieq ".venv") { continue }
+        # A failed transaction or antivirus scan may remove an item between
+        # enumeration and deletion. Treat an already-absent item as removed.
+        if (-not (Test-Path -LiteralPath $entry.FullName)) { continue }
+        Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
+    }
+    $remaining = @(
+        Get-ChildItem -LiteralPath $Root -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ine ".venv" }
+    )
+    if ($remaining.Count -gt 0) {
+        $names = ($remaining | Select-Object -ExpandProperty Name) -join ", "
+        throw "Could not clear the previous Connector app tree; remaining entries: $names"
+    }
+}
+
+function Copy-ApplicationFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$DestinationRoot,
+        [switch]$AllowMissing
+    )
+    $sourceFull = (Resolve-Path -LiteralPath $SourceRoot -ErrorAction Stop).Path.TrimEnd([char[]]"\\/")
+    New-Item -ItemType Directory -Force -Path $DestinationRoot | Out-Null
+    $files = @(Get-ChildItem -LiteralPath $sourceFull -Recurse -File -Force -ErrorAction Stop)
+    $copied = 0
+    foreach ($file in $files) {
+        $relative = $file.FullName.Substring($sourceFull.Length) -replace '^[\\/]+', ''
+        if ($relative -match '^(?:\.venv)(?:[\\/]|$)') { continue }
+        if (-not (Test-Path -LiteralPath $file.FullName -PathType Leaf)) {
+            if ($AllowMissing) { continue }
+            throw "Connector package source disappeared during installation: '$relative'."
+        }
+        $destination = Join-Path $DestinationRoot ($relative -replace '/', '\')
+        $parent = Split-Path -Parent $destination
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        Copy-Item -LiteralPath $file.FullName -Destination $destination -Force -ErrorAction Stop
+        if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+            throw "Connector file copy did not produce '$relative'."
+        }
+        $copied++
+    }
+    return [int]$copied
+}
 
 function Invoke-WithRetry {
     param(
@@ -198,11 +275,7 @@ function Reset-InstalledApplication {
     # file.  Copying over an old tree leaves removed modules and timestamp-
     # valid ``.pyc`` files behind; a one-character contract bump can then run
     # old bytecode even though the visible .py file is current.
-    New-Item -ItemType Directory -Force -Path $AppRoot | Out-Null
-    foreach ($entry in @(Get-ChildItem -LiteralPath $AppRoot -Force -ErrorAction SilentlyContinue)) {
-        if ($entry.Name -ieq ".venv") { continue }
-        Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
-    }
+    Remove-ApplicationContents -Root $AppRoot
 }
 
 function Backup-InstalledState {
@@ -211,10 +284,7 @@ function Backup-InstalledState {
     # new connector source trees and is never removed by Reset-InstalledApplication.
     if (Test-Path -LiteralPath $AppRoot) {
         New-Item -ItemType Directory -Force -Path $PreviousAppBackup | Out-Null
-        foreach ($entry in @(Get-ChildItem -LiteralPath $AppRoot -Force -ErrorAction SilentlyContinue)) {
-            if ($entry.Name -ieq ".venv") { continue }
-            Copy-Item -LiteralPath $entry.FullName -Destination $PreviousAppBackup -Recurse -Force -ErrorAction Stop
-        }
+        [void](Copy-ApplicationFiles -SourceRoot $AppRoot -DestinationRoot $PreviousAppBackup -AllowMissing)
     }
     New-Item -ItemType Directory -Force -Path $PreviousConfigBackup | Out-Null
     foreach ($path in @(
@@ -230,12 +300,8 @@ function Backup-InstalledState {
 
 function Restore-InstalledState {
     if (Test-Path -LiteralPath $PreviousAppBackup) {
-        New-Item -ItemType Directory -Force -Path $AppRoot | Out-Null
-        foreach ($entry in @(Get-ChildItem -LiteralPath $AppRoot -Force -ErrorAction SilentlyContinue)) {
-            if ($entry.Name -ieq ".venv") { continue }
-            Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        Copy-Item -Path (Join-Path $PreviousAppBackup '*') -Destination $AppRoot -Recurse -Force -ErrorAction Stop
+        Remove-ApplicationContents -Root $AppRoot
+        [void](Copy-ApplicationFiles -SourceRoot $PreviousAppBackup -DestinationRoot $AppRoot)
     }
     if (Test-Path -LiteralPath $PreviousConfigBackup) {
         foreach ($name in @("install.json", "credentials.json", "install.backup.json")) {
@@ -341,9 +407,7 @@ try {
         Fail "The downloaded package checksum does not match the service."
     }
     Expand-Archive -LiteralPath $Archive -DestinationPath $Expanded -Force
-    if (-not (Test-Path (Join-Path $Expanded "scripts\bootstrap.ps1"))) {
-        Fail "The downloaded package is incomplete."
-    }
+    Assert-ExpandedPackage
 
     Step "Install and connect this PC"
     $forceRebind = Get-OneClickRebindRequired
@@ -354,7 +418,12 @@ try {
     $PreviousStateBackedUp = $true
     Stop-PreviousConnector
     Reset-InstalledApplication
-    Copy-Item -Path (Join-Path $Expanded '*') -Destination $AppRoot -Recurse -Force
+    $copiedFiles = Copy-ApplicationFiles -SourceRoot $Expanded -DestinationRoot $AppRoot
+    if ($copiedFiles -le 0 -or
+        -not (Test-Path -LiteralPath (Join-Path $AppRoot "core\agent_policy.py") -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $AppRoot "scripts\bootstrap.ps1") -PathType Leaf)) {
+        throw "Connector application copy completed without the required runtime files."
+    }
     $bootstrapPath = Join-Path $AppRoot "scripts\bootstrap.ps1"
     if ($forceRebind) {
         & $bootstrapPath -Mode $Mode -ControlPlane linux `
@@ -373,7 +442,7 @@ try {
     $failureMessage = $_.Exception.Message
     Write-Warning "Installation failed; attempting to restore the previous Connector transaction."
     Restore-PreviousConnector
-    Fail $failureMessage
+    Fail "[$InstallPhase] $failureMessage"
 } finally {
     Remove-Item -LiteralPath $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
