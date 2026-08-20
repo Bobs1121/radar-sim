@@ -1,13 +1,17 @@
 # radar-sim V2
 
-> 当前文档基线：2026-08-13。V2 仍处于发布验收阶段；真实 Cluster、Connector 和多用户证据以最新 handoff 为准。
+> 当前文档基线：2026-08-20。V2 project-free 主链已部署到受信内网；实时发布状态、测试和边界以最新 handoff 为准。
 
 radar-sim 是 Selena 编译与雷达数据仿真的轻量自动化脚手架。它通过 Linux 控制面统一调度 Windows 本地编译、本地仿真和 Cluster 仿真；大文件由源设备直接进入执行目标，不经过 Linux Web/API 端口。
+
+## 文档入口
+
+当前文档从 [`docs/README.md`](docs/README.md) 开始；历史审计和旧部署文档位于 [`docs/archive/`](docs/archive/README.md)。
 
 ## 用户入口
 
 - Web：打开 Linux 服务地址，导入/编辑同一份 YAML，提交和管理任务。
-- Python SDK：后端产品、Linux 用户和未来 AI Skill/MCP 使用的唯一编程入口。
+- Python SDK：后端产品、Linux 用户和未来 AI Skill 使用的唯一编程入口；Skill 不复制调度和状态机。
 - Windows Connector：当配置包含 Windows 本地路径、需要编译或需要本地仿真时，一键安装一次；系统按任务自动准备所需能力。
 
 ## 最小 YAML
@@ -89,6 +93,6 @@ node --check radar_sim_web/static/app.js
 - [PRD](PRD.md)
 - [V2 架构](docs/V2_ARCHITECTURE.md)
 - [详细设计](docs/DETAILED_DESIGN.md)
-- [用户指南](docs/OD25_USER_GUIDE.md)
+- [用户指南](docs/USER_GUIDE.md)
 - [统一 Connector](docs/windows-one-click-connector.md)
 - [当前状态与 handoff](HANDOFF.md)

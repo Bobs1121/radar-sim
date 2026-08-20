@@ -8,7 +8,7 @@ Linux 只运行一个 `serve-v1` 控制面进程，同时提供 Web、REST/SDK�
 
 当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-4f73724`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
 
-普通部署：
+开发或临时 Linux 环境可以用仓库脚本启动一个独立实例：
 
 ```bash
 bash scripts/linux_deploy.sh --yes
@@ -16,7 +16,9 @@ bash scripts/linux_deploy.sh status
 bash scripts/linux_deploy.sh test
 ```
 
-部署参数通过 `RSIM_INSTALL_DIR`、`RSIM_HOME`、`RSIM_PORT`、`RSIM_PUBLIC_URL`、`RSIM_DEPLOYMENT_CONFIG` 和认证环境变量外置。不可变生产发布应创建新 release 目录，候选测试通过且无活动任务后切换用户级 systemd unit；保留上一目录回滚，不在运行目录原地覆盖。
+该脚本默认使用 `~/radar-sim` 和端口 `8878`，不会切换当前 `10.190.171.44:8877` 的生产 user-level systemd release。脚本参数通过 `RSIM_INSTALL_DIR`、`RSIM_HOME`、`RSIM_PORT`、`RSIM_PUBLIC_URL`、`RSIM_DEPLOYMENT_CONFIG` 和认证环境变量外置。
+
+生产发布必须创建新的不可变 release 目录，候选测试通过且无活动任务后，更新 `radar-sim-v1.service` 的 `WorkingDirectory`，执行 `systemctl --user daemon-reload` 和受控重启；保留上一目录作为回滚，不在运行目录原地覆盖。切换后必须重新检查 `active/running`、`NRestarts=0`、health、capabilities、Connector 包和 Job 列表。
 
 ## 2. project-free 硬约束
 

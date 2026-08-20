@@ -1,7 +1,7 @@
 # radar-sim V2 实施与发布计划
 
 > 状态：当前唯一开发计划（V2 单轨）
-> 更新：2026-08-13
+> 更新：2026-08-20
 > 适用：Web、Python SDK/REST API、Linux 控制面、统一 Windows Connector、Cluster 调度
 > 权威合同：[`docs/PRODUCT_CONTRACT.md`](docs/PRODUCT_CONTRACT.md)
 > 架构基线：[`docs/V2_ARCHITECTURE.md`](docs/V2_ARCHITECTURE.md)

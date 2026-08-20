@@ -21,7 +21,7 @@ from radar_sim_sdk import RadarSimClient
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_CONTRACT_DOCS = (
     REPO_ROOT / "docs" / "V2_ARCHITECTURE.md",
-    REPO_ROOT / "docs" / "OD25_USER_GUIDE.md",
+    REPO_ROOT / "docs" / "USER_GUIDE.md",
 )
 
 
@@ -159,4 +159,3 @@ def test_openapi_hides_internal_agent_upload_and_runtime_bundle_routes():
         assert not lowered.startswith(("/api/agents", "/api/tasks"))
         assert "upload" not in lowered
         assert "runtime-bundle" not in lowered
-

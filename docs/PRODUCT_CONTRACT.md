@@ -1,7 +1,7 @@
 # radar-sim 产品合同（开发不可偏移基线）
 
 > 状态：权威、强制
-> 最近确认：2026-08-13
+> 最近确认：2026-08-20
 > 适用范围：Web、Python SDK、REST API、Linux 控制面、统一 Windows Connector、Cluster 调度
 >
 > **V2 单轨收敛声明（2026-08-13）**：本文件是用户侧权威合同。公共配置只有 `user-run-config/2.0`，用户只安装一个统一 Connector；不存在用户可选的运行档位、项目注册、固定产品流程或旧配置迁移。内部数据库遗留字段只能承载匿名 `execution_identity`，不能影响业务路由。MCP/Skill、Cluster 结果反向交付和远端到本地 Windows 的 `source_to_local` 仍是明确缺口，详见 `docs/V2_ARCHITECTURE.md` §10。

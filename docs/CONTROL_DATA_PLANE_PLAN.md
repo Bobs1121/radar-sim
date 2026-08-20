@@ -1,7 +1,7 @@
 # radar-sim 控制面与数据面分离实施计划
 
 > 状态：V2 P0 数据面基线；Cluster `shared_copy` 已实施，`source_to_local`/`gateway_upload`/Cluster 结果反向交付未开放
-> 日期：2026-08-13
+> 日期：2026-08-20
 > 权威上位合同：`docs/PRODUCT_CONTRACT.md`
 >
 > **V2 单轨收敛声明（2026-08-13）**：本文件是控制/数据面实施合同。用户只看到一套配置和一个统一 Connector；旧运行档位、业务项目和旧入口不得回到用户合同。`source_to_local`（输入反向传输）、非 SMB `gateway_upload` 与 Cluster 结果反向交付均未开放，详见 `docs/V2_ARCHITECTURE.md` §10；不得声称已完成。

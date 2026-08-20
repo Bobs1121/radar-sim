@@ -1,7 +1,7 @@
 # radar-sim V2 详细设计
 
 > 状态：V2 唯一代码设计基线
-> 日期：2026-08-11
+> 日期：2026-08-20
 > 产品合同：`docs/PRODUCT_CONTRACT.md`
 > 架构索引：`docs/V2_ARCHITECTURE.md`
 

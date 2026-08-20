@@ -6,6 +6,7 @@
 
 - [`PRODUCT_CONTRACT.md`](PRODUCT_CONTRACT.md)
 - [`V2_ARCHITECTURE.md`](V2_ARCHITECTURE.md)
-- [`../config/user-run.example.yaml`](../config/user-run.example.yaml)
+- [`../config/simulation.example.yaml`](../config/simulation.example.yaml)：本地编译/auto 示例
+- [`../config/simulation.cluster.example.yaml`](../config/simulation.cluster.example.yaml)：Cluster existing 示例
 
 仓库中仍存在的 `config/projects`、`config/platforms`、`config/recipes` 只供未删除的 legacy CLI/测试读取，不得用于新 Web、SDK 或 REST API 业务路由。
