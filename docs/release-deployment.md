@@ -20,6 +20,15 @@ bash scripts/linux_deploy.sh test
 
 生产发布必须创建新的不可变 release 目录，候选测试通过且无活动任务后，更新 `radar-sim-v1.service` 的 `WorkingDirectory`，执行 `systemctl --user daemon-reload` 和受控重启；保留上一目录作为回滚，不在运行目录原地覆盖。切换后必须重新检查 `active/running`、`NRestarts=0`、health、capabilities、Connector 包和 Job 列表。
 
+`--insecure-no-auth` 模式下，`X-Rsim-User` 仍然是 owner 路由标签。检查 Connector 能力和用户 Job 时必须使用与 Web/SDK 相同的稳定 owner，例如：
+
+```bash
+curl -H 'X-Rsim-User: user-<ntid>' http://127.0.0.1:8877/api/v1/capabilities
+curl -H 'X-Rsim-User: user-<ntid>' 'http://127.0.0.1:8877/api/v1/jobs?limit=100'
+```
+
+省略该 header 会按服务进程的 Linux 用户落到另一个 owner，可能把真实在线的 Windows Connector 误显示为 `count=0`；这不是有效的用户侧验收。
+
 ## 2. project-free 硬约束
 
 - Web、YAML、SDK、REST、Job、Stage、TransferPlan 和仿真指令中都没有业务项目选择。
