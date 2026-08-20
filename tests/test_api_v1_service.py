@@ -858,19 +858,11 @@ def test_cluster_readiness_probe_blocks_submit_before_cluster_work(tmp_path):
     } >= {"cluster_environment_unavailable"}
     assert "/private/cluster" not in json.dumps(validation)
 
-    job = api.submit_user_run("alice", config_payload=run_config_dict())
-    stages = {item["stage_type"]: item for item in job["stages"]}
-    assert job["status"] == "needs_input"
-    assert stages["resolve_spec"]["status"] == "blocked"
-    assert stages["resolve_spec"]["error"]["code"] == "cluster_environment_unavailable"
-    assert stages["build_selena"]["status"] == "queued"
-    assert stages["prepare_data"]["status"] == "queued"
-
-    retried = api.retry_stage("alice", job["id"], stages["resolve_spec"]["stage_id"])
-    assert retried["status"] == "queued"
-    assert next(
-        item for item in retried["stages"] if item["stage_type"] == "resolve_spec"
-    )["status"] == "queued"
+    with pytest.raises(ApiV1Error) as exc_info:
+        api.submit_user_run("alice", config_payload=run_config_dict())
+    assert exc_info.value.code == "cluster_environment_unavailable"
+    assert exc_info.value.status_code == 503
+    assert control.list_jobs(owner="alice", limit=20) == []
 
 
 def test_cluster_readiness_probe_is_not_called_by_dry_run(tmp_path):

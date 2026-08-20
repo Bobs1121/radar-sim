@@ -68,6 +68,12 @@ main { max-width: 1500px; margin: 0 auto; padding: 32px 40px 56px; }
 
 .button { min-height: 38px; padding: 8px 15px; border: 1px solid transparent; border-radius: var(--radius); font-weight: 650; white-space: nowrap; transition: background .15s ease, border-color .15s ease, transform .1s ease; }
 .button:active { transform: translateY(1px); }
+.segmented label.is-disabled { opacity: .48; cursor: not-allowed; }
+.segmented label.is-disabled span { text-decoration: line-through; }
+.target-availability { display: block; margin-top: 6px; }
+.target-availability.checking { color: var(--muted); }
+.target-availability.ready { color: var(--success); }
+.target-availability.unavailable { color: var(--warning); }
 .button:disabled { cursor: not-allowed; opacity: .55; }
 .button.primary { color: #f8fcfd; background: var(--accent); border-color: var(--accent); }
 .button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }

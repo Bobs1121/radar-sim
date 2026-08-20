@@ -182,6 +182,10 @@ def test_health_v2_schema_validate_submit_get_cancel_manifest(tmp_path):
     client, _ = make_client(tmp_path)
 
     assert client.get("/api/v1/health").json()["api_version"] == "v1"
+    readiness = client.get("/api/v1/cluster/readiness")
+    assert readiness.status_code == 200
+    assert readiness.json()["ready"] is False
+    assert readiness.json()["code"] == "cluster_readiness_unavailable"
     schema = client.get("/api/v1/schema/run-config").json()
     assert "project" not in schema["properties"]
 

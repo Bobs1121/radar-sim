@@ -17,6 +17,8 @@ const state = {
   jobsRequestInFlight: false,
   capabilitiesRequestInFlight: false,
   capabilities: null,
+  clusterReadiness: null,
+  clusterReadinessObservedAt: 0,
   connectorAwait: null,
   accessToken: sessionStorage.getItem("rsimAccessToken") || "",
   // In the trusted no-auth deployment this is an explicit, durable grouping
@@ -313,6 +315,89 @@ function updateConnectionStates(capabilities = state.capabilities) {
     : configured || updateRequired ? "api-state local-reconnecting" : "api-state local-offline";
 }
 
+function updateExecutionTargetAvailability(readiness = state.clusterReadiness) {
+  const auto = document.querySelector('input[name="target"][value="auto"]');
+  const local = document.querySelector('input[name="target"][value="local"]');
+  const cluster = document.querySelector('input[name="target"][value="cluster"]');
+  const status = byId("targetAvailabilityStatus");
+  if (!auto || !local || !cluster) return;
+
+  const capabilitySnapshot = state.capabilities?.capabilities || state.capabilities;
+  const capabilitiesKnown = Boolean(capabilitySnapshot?.windows);
+  const localReady = !capabilitiesKnown || Boolean(capabilitySnapshot.windows?.available);
+  const clusterKnown = Boolean(readiness && typeof readiness.ready === "boolean");
+  const clusterReady = clusterKnown && readiness.ready === true;
+
+  // Do not expose Cluster as selectable until the deployment-owned readiness
+  // probe has completed. Heartbeat capabilities alone are not a submit gate.
+  cluster.disabled = clusterKnown ? !clusterReady : true;
+  local.disabled = capabilitiesKnown ? !localReady : false;
+  auto.disabled = capabilitiesKnown && clusterKnown && !localReady && !clusterReady;
+  for (const input of [auto, local, cluster]) {
+    const label = input.closest("label");
+    if (label) label.classList.toggle("is-disabled", input.disabled);
+    input.setAttribute("aria-disabled", String(input.disabled));
+  }
+
+  const selected = selectedValue("target") || "auto";
+  const selectedInput = { auto, local, cluster }[selected];
+  if (selectedInput?.disabled) {
+    const fallback = [auto, local, cluster].find((input) => !input.disabled);
+    if (fallback) {
+      fallback.checked = true;
+      state.validatedTarget = "";
+    }
+  }
+
+  if (status) {
+    if (capabilitiesKnown && !localReady && clusterKnown && !clusterReady) {
+      status.textContent = "本地仿真与 Cluster 当前都不可用，已禁止仿真；请先连接 Windows 或等待 Cluster 恢复。";
+      status.className = "target-availability unavailable";
+    } else if (clusterKnown && !clusterReady) {
+      status.textContent = String(readiness.message || "Cluster 当前不可用，已暂时禁用该选项；可改用本地仿真。") + " " + String(readiness.action || "");
+      status.className = "target-availability unavailable";
+    } else if (!clusterKnown) {
+      status.textContent = "正在检查 Cluster readiness；检查完成前不会允许创建 Cluster 任务。";
+      status.className = "target-availability checking";
+    } else if (capabilitiesKnown && !localReady) {
+      status.textContent = "本地仿真需要已连接的 Windows Connector；Cluster 已通过 readiness 检查。";
+      status.className = "target-availability checking";
+    } else {
+      status.textContent = "本地和 Cluster 执行能力可用，提交前仍会再次校验。";
+      status.className = "target-availability ready";
+    }
+  }
+  const submit = byId("submitJob");
+  if (submit && submit.dataset.busy !== "true") {
+    submit.disabled = auto.disabled && local.disabled && cluster.disabled;
+  }
+  updateRouteSummary();
+}
+
+async function refreshClusterReadiness(force = false) {
+  const age = Date.now() - Number(state.clusterReadinessObservedAt || 0);
+  if (!force && state.clusterReadiness && age >= 0 && age < 10000) {
+    updateExecutionTargetAvailability();
+    return state.clusterReadiness;
+  }
+  try {
+    const current = await api("/cluster/readiness");
+    state.clusterReadiness = current;
+    state.clusterReadinessObservedAt = Date.now();
+  } catch (error) {
+    state.clusterReadiness = {
+      ready: false,
+      status: "blocked",
+      code: "cluster_readiness_unavailable",
+      message: error.message || "Cluster readiness 检查失败",
+      action: "稍后重新检查 Cluster。",
+    };
+    state.clusterReadinessObservedAt = Date.now();
+  }
+  updateExecutionTargetAvailability();
+  return state.clusterReadiness;
+}
+
 async function refreshCapabilities() {
   if (state.capabilitiesRequestInFlight) return state.capabilities;
   state.capabilitiesRequestInFlight = true;
@@ -321,6 +406,7 @@ async function refreshCapabilities() {
     const current = await api("/capabilities");
     state.capabilities = current;
     updateConnectionStates(current);
+    await refreshClusterReadiness();
     updateCreateWindowsCallout();
     const waiting = state.connectorAwait;
     if (waiting && !hasWindowsCapability(waiting.mode, previous) && hasWindowsCapability(waiting.mode, current)) {
@@ -680,11 +766,20 @@ async function submitCurrentSpec(event) {
   clearFormError();
   const button = byId("submitJob");
   button.disabled = true;
+  button.dataset.busy = "true";
   button.textContent = "正在提交";
   try {
     const config = runConfigFromForm();
     const validation = await api("/run-configs/validate", { method: "POST", json: config });
     renderExecutionPlan(validation);
+    updateExecutionTargetAvailability(validation.readiness?.cluster || state.clusterReadiness);
+    if (validation.readiness?.can_submit === false) {
+      showFormError(new Error(
+        (validation.readiness.blockers || []).map((item) => `${item.message}${item.action ? ` ${item.action}` : ""}`).join("\n")
+        || "当前没有可用执行目标，未创建任务。",
+      ));
+      return;
+    }
     if (!confirmSubmission(config, validation)) {
       showToast("已取消提交，配置保持不变");
       return;
@@ -721,7 +816,8 @@ async function submitCurrentSpec(event) {
   } catch (error) {
     showFormError(error);
   } finally {
-    button.disabled = false;
+    delete button.dataset.busy;
+    updateExecutionTargetAvailability();
     button.textContent = "提交任务";
   }
 }

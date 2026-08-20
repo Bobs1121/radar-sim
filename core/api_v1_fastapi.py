@@ -615,6 +615,10 @@ def create_app(
     def execution_capabilities(request: Request):
         return service.execution_capabilities(owner(request))
 
+    @app.get("/api/v1/cluster/readiness", include_in_schema=False)
+    def cluster_readiness():
+        return service.cluster_readiness()
+
     @app.post("/api/v1/run-configs/import")
     def import_run_config(body: ImportRunConfigRequest):
         return service.import_user_run_config_yaml(body.yaml_content)

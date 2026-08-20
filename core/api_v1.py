@@ -201,6 +201,25 @@ class ApiV1Service:
     def health(self) -> dict[str, Any]:
         return {"ok": True, "api_version": API_VERSION}
 
+    def cluster_readiness(self) -> dict[str, Any]:
+        """Return the deployment-owned Cluster readiness snapshot.
+
+        This endpoint is intentionally independent of a user YAML document so
+        the Web UI can disable an unavailable Cluster target before a user
+        attempts to create a Job.  The production provider ignores the config
+        argument and reads only deployment-owned infrastructure state.
+        """
+
+        if self.cluster_readiness_provider is None:
+            return {
+                "ready": False,
+                "status": "blocked",
+                "code": "cluster_readiness_unavailable",
+                "message": "Cluster readiness probe is not configured; Cluster simulation is unavailable.",
+                "action": "Contact the service administrator before selecting Cluster.",
+            }
+        return self._cluster_readiness(None)
+
     def simulation_spec_schema(self) -> dict[str, Any]:
         return SimulationSpec.json_schema()
 
@@ -598,25 +617,38 @@ class ApiV1Service:
         resolved_spec = dict(plan.resolved_spec)
         requested_target = config.simulation.target
         selected_target, route_reason = self._select_user_execution_target(owner, config)
-        cluster_probe = (
-            self._cluster_readiness(config)
-            if selected_target == "cluster" and not dry_run
-            else {}
+        readiness = (
+            self._user_run_readiness(owner, config, selected_target)
+            if not dry_run
+            else {"status": "ready", "can_submit": True, "blockers": [], "notices": []}
         )
-        if cluster_probe and not bool(cluster_probe.get("ready")):
-            self._block_cluster_readiness_tasks(
-                task_specs,
-                source=str(config.selena.source or ""),
-                code=str(cluster_probe.get("code") or "cluster_environment_unavailable"),
-                message=str(
-                    cluster_probe.get("message")
-                    or "Cluster 就绪检查未通过，未启动仿真。"
-                ),
-                action=str(
-                    cluster_probe.get("action")
-                    or "稍后重新检查 Cluster 就绪状态。"
-                ),
+        # A production serve-v1 always injects the deployment-owned readiness
+        # provider.  Lightweight unit/test services may intentionally omit
+        # deployment infrastructure and retain their historical waiting
+        # semantics; they must not be mistaken for a production gate.
+        if (
+            self.cluster_readiness_provider is not None
+            and not readiness.get("can_submit", True)
+            and not dry_run
+        ):
+            blocker = dict((readiness.get("blockers") or [{}])[0])
+            code = str(blocker.get("code") or "execution_unavailable")
+            message = str(blocker.get("message") or "当前执行目标不可用，未创建仿真任务。")
+            action = str(blocker.get("action") or "修复执行环境后重新检查配置。")
+            raise ApiV1Error(
+                code,
+                message,
+                status_code=503,
+                detail={
+                    "readiness": {
+                        "status": readiness.get("status"),
+                        "can_submit": False,
+                        "blockers": readiness.get("blockers") or [],
+                    }
+                },
+                actions=[{"type": "retry_readiness", "label": action}],
             )
+        cluster_probe = dict(readiness.get("cluster") or {})
         if selected_target == "local":
             # ``dataset://``/``shared://`` are control-plane logical
             # references, not paths that a Windows-full process can open.  A

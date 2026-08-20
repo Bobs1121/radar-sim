@@ -126,6 +126,9 @@ def test_web_can_retry_a_blocked_cluster_readiness_gate():
     assert 'stage.status === "blocked"' in source
     assert "cluster_environment_unavailable" in source
     assert "重新检查 Cluster" in source
+    assert "updateExecutionTargetAvailability" in source
+    assert "本地仿真与 Cluster 当前都不可用" in source
+    assert 'api("/cluster/readiness")' in source
 
 
 def test_web_yaml_export_uses_a_non_validating_draft_builder():
