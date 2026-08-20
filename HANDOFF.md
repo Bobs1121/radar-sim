@@ -2,9 +2,9 @@
 
 > 更新时间：2026-08-20
 > 当前代码分支：`codex/new-branch`
-> 当前代码 release：`96a7516`
-> 当前 Linux release：`/home/hoz2wx/radar-sim-96a7516`
-> 回滚 release：`/home/hoz2wx/radar-sim-6c59efd`
+> 当前代码 release：`eb62123`
+> 当前 Linux release：`/home/hoz2wx/radar-sim-eb62123`
+> 回滚 release：`/home/hoz2wx/radar-sim-96a7516`
 > 线上地址：`http://10.190.171.44:8877`
 
 这是当前状态的唯一入口。历史审计、旧 handoff 和停用部署文档统一在 [`docs/archive/`](docs/archive/README.md)，不能把归档文档当作当前操作步骤。
@@ -41,6 +41,7 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - 本地 Selena Agent v16 已解析 `MDF-Scheduler done/total` 进度并上报 Stage；明确引擎错误会立即收敛为 `selena_failed`，不会继续等待 DataRecorder；Web 进度展示留到下一轮 UI 工作；
 - 共享 UNC 路径在服务端挂载探测成功时优先走 shared-reference，客户端直传提示不再强制复制同一份数据；直传块默认 8 MiB，多文件传输最多 2 路并发且保持 Manifest 顺序；
 - Web 顶部存在 Connector 必要更新提示；当前只有合同版本过旧才阻断，兼容包更新提示仍是后续增强项。
+- Web 已完成第一轮 Simulation Engineering Workbench 视觉重设计：创建任务使用配置工作区 + 右侧 Inspector，任务中心使用任务列表 + 详情工作区；所有字段 ID、API 调用、SDK 语义和任务状态保持不变；UI 进度展示下一轮继续增强。
 
 ## 测试与线上证据
 
@@ -51,6 +52,7 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - 线上 Web 首页：HTTP `200`；
 - 线上 SDK partial YAML import/export round-trip：通过；完整 YAML round-trip：通过；未创建测试 Job；
 - 线上 Connector 包：`8411392 bytes`，SHA-256 `bc4467562b824510bf900fa1c18a17b18d31ae7c8a194001fb3b6b091ab554a0`，合同 `16`；Range `206` 已复核；
+- UI release `eb62123`：线上浏览器已复核 `styles.css?v=20260820-workbench`、`app.js?v=20260820-workbench`，桌面视口无横向溢出，DOM ID 无重复；UI/API 回归 `88 passed, 1 warning`；
 - 线上真实成功任务：`job_2a147e561d24`，单条 MF4、最终 `succeeded`，Manifest 可用；总耗时约 `1660s`，其中 `run_simulation` 约 `1355s`，成功证据保留；
 - 两个并发 `/api/v1/run-configs/validate` 黑盒请求在 Manager 不可达期间均约 `8.2s` 返回 `200` 和 `cluster_readiness_unavailable`，未创建 Job；Manager 恢复后真实复核 `1.768s` 返回 `200`、`can_submit=true`、`cluster_ready`；
 - 服务器只保留当前 release `6c59efd` 和回滚 release `93947c8`；
