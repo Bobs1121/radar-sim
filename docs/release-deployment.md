@@ -6,7 +6,7 @@
 
 Linux 只运行一个 `serve-v1` 控制面进程，同时提供 Web、REST/SDK、Job/Stage 调度、统一 Windows Connector 接口和 Cluster executor。Linux 不编译 Selena、不执行 Windows 本地仿真，也不接收大文件正文。
 
-当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-6c59efd`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
+当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-96a7516`；回滚 release：`/home/hoz2wx/radar-sim-6c59efd`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
 
 注意：Cluster executor/gateway 心跳在线不等于外部 Cluster 可提交。此次验收曾发现服务机到 `SZHRADAR01:8123` 的 Manager XML-RPC 端口关闭；恢复后真实 readiness 返回 `cluster_ready`、`can_submit=true`。如果 Manager 再次不可达，服务会禁用 Cluster 目标，并在创建 Job 前返回可重试错误，不允许绕过检查。
 
@@ -50,6 +50,10 @@ curl -H 'X-Rsim-User: user-<ntid>' 'http://127.0.0.1:8877/api/v1/jobs?limit=100'
 | 选择本地编译 | Windows + 用户自己的编译环境 | Connector 执行用户给定脚本、确认 Selena.exe 与 DLL，再按目标路由 |
 
 用户只安装一个统一 Connector，不选择能力档位。Web 下载“连接这台电脑”，或 SDK 调用 `download_windows_connector_for_run()`；安装一次后保存稳定 owner、服务地址、登录自启、单实例和断线重连。普通服务端补丁不要求用户重复安装。
+
+当前 Connector 合同版本为 `16`。v16 增加本地 Selena 进度上报和明确引擎错误快速收敛；旧合同 Connector 会被阻止领取新任务，用户沿用现有 Web/SDK 更新入口重新安装一次即可。
+
+当前线上 Connector 包：`8411392 bytes`，SHA-256 `bc4467562b824510bf900fa1c18a17b18d31ae7c8a194001fb3b6b091ab554a0`。
 
 Connector 包端点：
 
