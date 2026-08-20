@@ -80,8 +80,9 @@ Skill 禁止：
 
 ## 当前验证基线
 
-- 代码基线：`ede6a9e`（包含 readiness/取消修复和 YAML 草稿/SDK round-trip）。
+- 代码基线：`4f73724`（包含 readiness/取消修复和 YAML 草稿/SDK round-trip；SDK 也接受 `PartialUserRunConfig` 对象导出）。
 - 最新完整链路全仓回归：`1677 passed, 12 skipped, 1 warning`。
 - 本次 YAML/SDK 定向回归：`36 passed, 1 warning`；Web/SDK/API/身份相关回归：`214 passed, 1 warning`。
-- 线上运行 release：`/home/hoz2wx/radar-sim-ede6a9e`；SDK 线上 partial import/export round-trip、完整 YAML round-trip 均通过，未创建 Job。
-- 线上 Connector 包：`8405295` bytes，SHA-256 `a52179ab8fec59fbc026abf8cff9087739cc90fd39d76a0e438691d41fe56419`。
+- 线上运行 release：`/home/hoz2wx/radar-sim-4f73724`；SDK 线上 partial import/export round-trip、完整 YAML round-trip 均通过，未创建 Job。
+- 线上 Connector 包：`8405313` bytes，SHA-256 `8614834072d8489538e6a9213504f4dea71877caf31350730b0542bc2eadd71f`。
+- 最终提交后的 SDK 类型兼容性定向回归：`2 passed, 1 warning`；完整全仓回归证据对应父提交 `1677 passed, 12 skipped, 1 warning`，本次变更仅为 SDK 导出类型扩展。
