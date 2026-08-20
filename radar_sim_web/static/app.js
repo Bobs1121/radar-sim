@@ -626,6 +626,7 @@ function updateConditionalFields() {
   const source = byId("selenaSource").value;
   const usingExisting = source === "existing";
   byId("buildFields").hidden = false;
+  if ("open" in byId("buildFields")) byId("buildFields").open = !usingExisting;
   byId("existingFields").hidden = !usingExisting;
   byId("existingPath").required = usingExisting;
   byId("existingPath").setAttribute("aria-required", String(usingExisting));

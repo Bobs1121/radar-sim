@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Radar Sim 控制台</title>
-  <link rel="stylesheet" href="/console/styles.css?v=20260804-new-user">
+  <link rel="stylesheet" href="/console/styles.css?v=20260820-workbench">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -14,10 +14,10 @@
       <span class="brand-mark" aria-hidden="true">RS</span>
       <div>
         <strong>Radar Sim</strong>
-        <span>仿真任务控制台</span>
+        <span>Simulation Workbench</span>
       </div>
     </div>
-    <nav aria-label="主要导航">
+    <nav class="primary-nav" aria-label="主要导航">
       <button class="nav-item is-active" data-view="create">新建任务</button>
       <button class="nav-item" data-view="tasks">任务中心</button>
     </nav>
@@ -33,6 +33,7 @@
         <button type="button" class="button secondary" id="saveIdentity">保存</button>
       </div>
       <div class="connection-state-group" aria-label="服务连接状态">
+        <span class="system-label">CONTROL PLANE</span>
         <div class="api-state" id="apiState" role="status">正在连接 Linux 服务</div>
         <div class="api-state local-state" id="windowsState" role="status">正在检查本机连接</div>
       </div>
@@ -51,11 +52,11 @@
       </div>
     </section>
     <section id="createView" class="view is-active" aria-labelledby="createTitle">
-      <div class="page-heading">
+      <div class="page-heading workspace-heading">
         <div>
-          <p class="kicker">一套配置，本地与 Cluster 自动调度</p>
+          <p class="kicker">NEW SIMULATION</p>
           <h1 id="createTitle">创建仿真任务</h1>
-          <p>填写 Selena、数据和三项仿真配置。系统自动识别内部适配方式并生成执行计划。</p>
+          <p class="heading-note">配置输入，检查执行计划，然后提交。</p>
         </div>
         <div class="heading-actions">
           <input id="yamlFile" type="file" accept=".yaml,.yml,text/yaml" hidden>
@@ -68,8 +69,9 @@
         <form id="simulationForm" class="form-stack" novalidate>
           <section class="form-section" aria-labelledby="basicHeading">
             <div class="section-heading">
+              <span class="section-code">EXECUTION</span>
               <h2 id="basicHeading">执行位置</h2>
-              <p>只选择本地或 Cluster，不需要了解项目、环境名或调度节点。</p>
+              <p>选择目标。最终路径以服务端检查结果为准。</p>
             </div>
             <div class="field-grid one">
               <fieldset class="field compact-choice">
@@ -86,20 +88,22 @@
 
           <section class="form-section" aria-labelledby="dataHeading">
             <div class="section-heading">
+              <span class="section-code">INPUT</span>
               <h2 id="dataHeading">仿真数据</h2>
-              <p>系统自动判断本地/共享并按执行目标原地读取或从源端直传。</p>
+              <p>输入路径由执行端解析，数据正文不经过 Web 服务。</p>
             </div>
             <label class="field">
               <span>数据路径</span>
               <input id="dataPath" name="dataPath" required placeholder="D:/measurements、/home/user/data 或 //server/share">
-              <small>系统递归检索输入 MF4。Web 中填写 Windows 本地路径时由一次安装的连接组件读取并直传；Linux 本地路径请在该 Linux 设备上使用同一 SDK；共享路径由执行端原地读取。文件正文不经过本 Linux Web 服务。</small>
+              <small>支持 MF4 文件或目录。可填写 Windows、Linux 或共享路径。</small>
             </label>
           </section>
 
           <section class="form-section" aria-labelledby="selenaHeading">
             <div class="section-heading">
+              <span class="section-code">SELENA</span>
               <h2 id="selenaHeading">Selena 来源</h2>
-              <p>选择编译脚本或已有 Selena 文件夹；产物完整性和内部登记由系统处理。</p>
+              <p>选择当前工作区编译，或使用已有产物。</p>
             </div>
             <label class="field">
               <span>使用方式</span>
@@ -108,8 +112,10 @@
                 <option value="existing">使用已有 Selena 文件夹</option>
               </select>
             </label>
-            <div id="buildFields" class="field-grid two">
-              <small id="workspaceEvidenceHint" class="full">本地编译只要求代码仓和 Selena 编译脚本；系统执行该脚本并从脚本推导产物位置。</small>
+            <details id="buildFields" class="source-evidence" open>
+              <summary>仓库与编译证据 <span>可选线索</span></summary>
+              <div class="field-grid two">
+              <small id="workspaceEvidenceHint" class="full">本地编译需要代码仓和 Selena 编译脚本；软件包脚本可选。</small>
               <label class="field full">
                 <span>代码路径</span>
                 <input id="codePath" name="codePath" placeholder="D:/workspace/selena">
@@ -130,7 +136,8 @@
                 <input id="packageBuildScript" name="packageBuildScript" placeholder="代码仓内的软件包编译脚本">
                 <small>可选；只用于环境依赖诊断，不参与项目识别，也不改变 Selena 编译命令。</small>
               </label>
-            </div>
+              </div>
+            </details>
             <div id="existingFields" class="field-grid one" hidden>
               <label class="field">
                 <span>Selena 产物文件夹（必填）</span>
@@ -147,8 +154,9 @@
 
           <section class="form-section" aria-labelledby="assetsHeading">
             <div class="section-heading">
+              <span class="section-code">RUNTIME</span>
               <h2 id="assetsHeading">仿真配置文件</h2>
-              <p>Adapter 可选；MatFilter 可显式选择，留空时从代码仓自动推导唯一候选。</p>
+              <p>只填写本次运行需要的配置。</p>
             </div>
             <div class="field-grid two">
               <label class="field">
@@ -178,13 +186,14 @@
 
           <section class="form-section" aria-labelledby="resultHeading">
             <div class="section-heading">
+              <span class="section-code">OUTPUT</span>
               <h2 id="resultHeading">仿真结果</h2>
-              <p>可选填写接收端结果保存根目录；每个任务会独立保存到该目录下的 Job 子目录。</p>
+              <p>可选。结果会按任务独立保存。</p>
             </div>
             <label class="field">
               <span>结果保存根目录（可选）</span>
               <input id="resultPath" name="resultPath" placeholder="例如 D:/RadarSim/results 或 /home/user/RadarSim/results">
-              <small>任务结果落在该根目录下的 Job 子目录；留空时由接收端使用默认根目录。浏览器不能保证写入该目录，但仍可下载 ZIP。</small>
+              <small>留空时使用接收端默认目录，结果 ZIP 始终可下载。</small>
             </label>
           </section>
 
@@ -194,7 +203,7 @@
               <h3 id="createWindowsTitle">需要连接这台电脑</h3>
               <strong id="createWindowsCapability">缺少本机文件访问能力</strong>
               <p id="createWindowsReason">当前配置需要读取 Windows 本地路径。</p>
-              <p class="callout-reassurance">只需安装一次，后续开机自动连接；不会要求你配置 Agent、服务地址或令牌。</p>
+              <p class="callout-reassurance">安装一次，后续自动连接。</p>
             </div>
             <div class="windows-connect-actions">
               <button type="button" class="button primary" id="connectWindowsFromCreate">一键连接本机</button>
@@ -216,8 +225,9 @@
 
         <aside class="plan-panel" aria-labelledby="planHeading">
           <div class="plan-sticky">
-            <h2 id="planHeading">执行预览</h2>
-            <p id="planStatus">填写基础配置后检查执行计划。</p>
+            <span class="section-code">INSPECTOR</span>
+            <h2 id="planHeading">执行摘要</h2>
+            <p id="planStatus">等待配置检查。</p>
             <ol id="planStages" class="stage-preview">
               <li><span>1</span><div><strong>解析配置</strong><small>按路径和脚本推导所需资源</small></div></li>
               <li><span>2</span><div><strong>检查环境</strong><small>按选定路径检查依赖</small></div></li>
@@ -225,10 +235,10 @@
               <li><span>4</span><div><strong>运行仿真</strong><small>本地或 Cluster</small></div></li>
             </ol>
             <div class="deployment-note">
-              <strong>统一连接方式</strong>
+              <strong>资源状态</strong>
               <dl>
-                <div><dt>连接本机</dt><dd>同一个 Connector 支持本地编译、本地仿真和直传 Cluster</dd></div>
-                <div><dt>无需部署</dt><dd>已有 Selena 和 Cluster 可读共享数据，直接 Cluster 仿真</dd></div>
+                <div><dt>本地</dt><dd>需要在线 Windows Connector</dd></div>
+                <div><dt>Cluster</dt><dd>使用可达共享资源</dd></div>
               </dl>
             </div>
           </div>
@@ -237,17 +247,22 @@
     </section>
 
     <section id="tasksView" class="view" aria-labelledby="tasksTitle">
-      <div class="page-heading">
-        <div><p class="kicker">统一查看 Web 和 SDK 任务</p><h1 id="tasksTitle">任务中心</h1><p>状态来自结构化 Stage 事件，不从日志文本猜测。</p></div>
-        <button class="button secondary" id="refreshJobs">刷新</button>
-      </div>
-      <div class="task-layout">
-        <section class="task-list-panel" aria-label="任务列表">
-          <div class="task-filters">
+      <div class="page-heading workspace-heading">
+        <div><p class="kicker">TASK WORKSPACE</p><h1 id="tasksTitle">任务中心</h1><p class="heading-note">状态、阶段、日志和结果。</p></div>
+        <div class="task-toolbar">
+          <label class="toolbar-field" for="statusFilter"><span>筛选</span>
             <select id="statusFilter" aria-label="按状态筛选">
               <option value="">全部状态</option><option value="queued">排队中</option><option value="running">运行中</option>
               <option value="needs_input">需要处理</option><option value="succeeded">已完成</option><option value="partial">部分成功</option><option value="failed">失败</option><option value="cancelled">已取消</option>
             </select>
+          </label>
+          <button class="button secondary" id="refreshJobs">刷新</button>
+        </div>
+      </div>
+      <div class="task-layout">
+        <section class="task-list-panel" aria-label="任务列表">
+          <div class="task-filters">
+            <span class="list-label">RECENT RUNS</span>
           </div>
           <div id="jobList" class="job-list"><div class="empty-state">正在加载任务</div></div>
         </section>
@@ -259,6 +274,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" hidden></div>
-  <script src="/console/app.js?v=20260814-owner-device-status" defer></script>
+  <script src="/console/app.js?v=20260820-workbench" defer></script>
 </body>
 </html>
