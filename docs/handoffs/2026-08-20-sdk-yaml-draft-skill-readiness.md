@@ -80,7 +80,8 @@ Skill 禁止：
 
 ## 当前验证基线
 
-- 代码基线：`04e583a`（包含 `30ad4a6` 运行时代码及本次文档/验收记录）。
-- 现有完整链路全仓回归：`1673 passed, 12 skipped, 1 warning`。
-- 本次 YAML/SDK 定向回归：`36 passed, 1 warning`；Web/SDK/API/身份相关回归：`145 passed, 1 warning`。
-- 线上运行 release：`/home/hoz2wx/radar-sim-30ad4a6`；本次 YAML 草稿代码完成后需要重新部署并复验线上 Web/SDK import/export。
+- 代码基线：`ede6a9e`（包含 readiness/取消修复和 YAML 草稿/SDK round-trip）。
+- 最新完整链路全仓回归：`1677 passed, 12 skipped, 1 warning`。
+- 本次 YAML/SDK 定向回归：`36 passed, 1 warning`；Web/SDK/API/身份相关回归：`214 passed, 1 warning`。
+- 线上运行 release：`/home/hoz2wx/radar-sim-ede6a9e`；SDK 线上 partial import/export round-trip、完整 YAML round-trip 均通过，未创建 Job。
+- 线上 Connector 包：`8405295` bytes，SHA-256 `a52179ab8fec59fbc026abf8cff9087739cc90fd39d76a0e438691d41fe56419`。
