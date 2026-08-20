@@ -2,9 +2,9 @@
 
 > 更新时间：2026-08-20
 > 当前代码分支：`codex/new-branch`
-> 当前代码 release：`eb62123`
-> 当前 Linux release：`/home/hoz2wx/radar-sim-eb62123`
-> 回滚 release：`/home/hoz2wx/radar-sim-96a7516`
+> 当前代码 release：`7c78b64`
+> 当前 Linux release：`/home/hoz2wx/radar-sim-7c78b64`
+> 回滚 release：`/home/hoz2wx/radar-sim-eb62123`
 > 线上地址：`http://10.190.171.44:8877`
 
 这是当前状态的唯一入口。历史审计、旧 handoff 和停用部署文档统一在 [`docs/archive/`](docs/archive/README.md)，不能把归档文档当作当前操作步骤。
@@ -38,10 +38,10 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - readiness 探测采用单飞缓存和有界请求等待；外部 Cluster 挂起时返回可重试 blocker，不占住 Web/SDK 提交请求；
 - Cluster 外部 Manager 曾在本次验收中短暂不可达；最新复核已恢复 `SZHRADAR01:8123`，真实 `/api/v1/run-configs/validate` 返回 `cluster_ready`、`can_submit=true`。readiness 单飞缓存和 blocker 降级保护仍保留；不能只依据 executor/gateway 心跳放行；
 - `/api/v1/cluster/readiness` 已作为 Web 目标门禁；Cluster 不 ready 时禁用 Cluster 选项，若本地 Connector 也不可用则自动、本地、Cluster 和提交按钮全部禁用；直接 API/SDK 提交也在创建 Job 前返回 `503`；
-- 本地 Selena Agent v16 已解析 `MDF-Scheduler done/total` 进度并上报 Stage；明确引擎错误会立即收敛为 `selena_failed`，不会继续等待 DataRecorder；Web 进度展示留到下一轮 UI 工作；
+- 本地 Selena Agent v16 已解析 `MDF-Scheduler done/total` 进度并上报 Stage；明确引擎错误会立即收敛为 `selena_failed`，不会继续等待 DataRecorder；Web 现已消费 Job/Stage 进度并显示总进度、阶段进度和状态徽标；
 - 共享 UNC 路径在服务端挂载探测成功时优先走 shared-reference，客户端直传提示不再强制复制同一份数据；直传块默认 8 MiB，多文件传输最多 2 路并发且保持 Manifest 顺序；
 - Web 顶部存在 Connector 必要更新提示；当前只有合同版本过旧才阻断，兼容包更新提示仍是后续增强项。
-- Web 已完成第一轮 Simulation Engineering Workbench 视觉重设计：创建任务使用配置工作区 + 右侧 Inspector，任务中心使用任务列表 + 详情工作区；所有字段 ID、API 调用、SDK 语义和任务状态保持不变；UI 进度展示下一轮继续增强。
+- Web 已完成 Simulation Engineering Workbench 三轮视觉重设计：创建任务使用横向配置工作区 + 固定 Inspector，任务中心使用紧凑 Master-Detail；Inspector 展示执行位置、Dataset、Selena、Runtime、校验状态和主要操作，任务详情展示总进度与逐阶段进度条；所有字段 ID、API 调用、SDK 语义和任务状态保持不变。
 
 ## 测试与线上证据
 
@@ -51,11 +51,11 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - 线上 capability：Windows 1、Cluster 2；
 - 线上 Web 首页：HTTP `200`；
 - 线上 SDK partial YAML import/export round-trip：通过；完整 YAML round-trip：通过；未创建测试 Job；
-- 线上 Connector 包：`8411392 bytes`，SHA-256 `bc4467562b824510bf900fa1c18a17b18d31ae7c8a194001fb3b6b091ab554a0`，合同 `16`；Range `206` 已复核；
-- UI release `eb62123`：线上浏览器已复核 `styles.css?v=20260820-workbench`、`app.js?v=20260820-workbench`，桌面视口无横向溢出，DOM ID 无重复；UI/API 回归 `88 passed, 1 warning`；
+- 线上 Connector 包：`8416294 bytes`，SHA-256 `ed6807651e7313ba7684b1142e0b984d5257c3bf31f2f0bc1c16c63aec302dd5`，合同 `16`；Range `206` 已复核；
+- UI release `7c78b64`：线上浏览器已复核 `styles.css?v=20260820-engineering`、`app.js?v=20260820-engineering`，浅色工程主题、Inspector、任务中心空态和桌面视口无横向溢出；临时任务数据黑盒复核了 Master-Detail、总进度 `64%` 和阶段进度 `100/100/64/0`；UI/API 回归 `88 passed, 1 warning`；
 - 线上真实成功任务：`job_2a147e561d24`，单条 MF4、最终 `succeeded`，Manifest 可用；总耗时约 `1660s`，其中 `run_simulation` 约 `1355s`，成功证据保留；
 - 两个并发 `/api/v1/run-configs/validate` 黑盒请求在 Manager 不可达期间均约 `8.2s` 返回 `200` 和 `cluster_readiness_unavailable`，未创建 Job；Manager 恢复后真实复核 `1.768s` 返回 `200`、`can_submit=true`、`cluster_ready`；
-- 服务器只保留当前 release `6c59efd` 和回滚 release `93947c8`；
+- 服务器当前 release 为 `7c78b64`，保留 `eb62123` 作为 UI 回滚 release；
 - 当前控制库无活动 `queued/running` Job；当前用户需要先从现有 Web 更新提示重新安装 Connector v16，之后才能继续本地仿真；Cluster 目标当前仍可用。
 
 ## 当前文档入口
