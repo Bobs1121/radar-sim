@@ -2,9 +2,9 @@
 
 > 更新时间：2026-08-20
 > 当前代码分支：`codex/new-branch`
-> 当前代码 release：`93947c8`
-> 当前 Linux release：`/home/hoz2wx/radar-sim-93947c8`
-> 回滚 release：`/home/hoz2wx/radar-sim-4f73724`
+> 当前代码 release：`6c59efd`
+> 当前 Linux release：`/home/hoz2wx/radar-sim-6c59efd`
+> 回滚 release：`/home/hoz2wx/radar-sim-93947c8`
 > 线上地址：`http://10.190.171.44:8877`
 
 这是当前状态的唯一入口。历史审计、旧 handoff 和停用部署文档统一在 [`docs/archive/`](docs/archive/README.md)，不能把归档文档当作当前操作步骤。
@@ -37,6 +37,7 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - Cluster readiness 在提交前和 preflight 前均检查；build+Cluster readiness 失败不会继续编译/传输；
 - readiness 探测采用单飞缓存和有界请求等待；外部 Cluster 挂起时返回可重试 blocker，不占住 Web/SDK 提交请求；
 - Cluster 外部 Manager 曾在本次验收中短暂不可达；最新复核已恢复 `SZHRADAR01:8123`，真实 `/api/v1/run-configs/validate` 返回 `cluster_ready`、`can_submit=true`。readiness 单飞缓存和 blocker 降级保护仍保留；不能只依据 executor/gateway 心跳放行；
+- `/api/v1/cluster/readiness` 已作为 Web 目标门禁；Cluster 不 ready 时禁用 Cluster 选项，若本地 Connector 也不可用则自动、本地、Cluster 和提交按钮全部禁用；直接 API/SDK 提交也在创建 Job 前返回 `503`；
 - Web 顶部存在 Connector 必要更新提示；当前只有合同版本过旧才阻断，兼容包更新提示仍是后续增强项。
 
 ## 测试与线上证据
@@ -47,9 +48,9 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - 线上 capability：Windows 1、Cluster 2；
 - 线上 Web 首页：HTTP `200`；
 - 线上 SDK partial YAML import/export round-trip：通过；完整 YAML round-trip：通过；未创建测试 Job；
-- 线上 Connector 包：`8406300 bytes`，SHA-256 `9f604420b4971cb55471edb5e00f5d16861d3a36dfb93168a88671327d6ff710`，合同 `15`；
+- 线上 Connector 包：`8408008 bytes`，SHA-256 `3bc651bdad28104dcdc2471f241e4b31e0f1c097df175f73973ca3fe4695161b`，合同 `15`；
 - 两个并发 `/api/v1/run-configs/validate` 黑盒请求在 Manager 不可达期间均约 `8.2s` 返回 `200` 和 `cluster_readiness_unavailable`，未创建 Job；Manager 恢复后真实复核 `1.768s` 返回 `200`、`can_submit=true`、`cluster_ready`；
-- 服务器只保留当前 release `93947c8` 和回滚 release `4f73724`；
+- 服务器只保留当前 release `6c59efd` 和回滚 release `93947c8`；
 - 当前控制库无 `queued/running` Job；两个真实用户可在各自 Connector/配置通过后重新提交 Cluster 仿真。
 
 ## 当前文档入口
