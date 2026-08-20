@@ -36,7 +36,7 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - SDK 提供 `import_yaml()`/`export_yaml()`、长任务等待、直传恢复、partial 失败输入重试、结果下载；
 - Cluster readiness 在提交前和 preflight 前均检查；build+Cluster readiness 失败不会继续编译/传输；
 - readiness 探测采用单飞缓存和有界请求等待；外部 Cluster 挂起时返回可重试 blocker，不占住 Web/SDK 提交请求；
-- 当前 Cluster 外部状态为 `blocked`：服务机到 `SZHRADAR01:8123` 的 Manager XML-RPC 端口不可达，不能把 executor/gateway 心跳在线解释为可提交；
+- Cluster 外部 Manager 曾在本次验收中短暂不可达；最新复核已恢复 `SZHRADAR01:8123`，真实 `/api/v1/run-configs/validate` 返回 `cluster_ready`、`can_submit=true`。readiness 单飞缓存和 blocker 降级保护仍保留；不能只依据 executor/gateway 心跳放行；
 - Web 顶部存在 Connector 必要更新提示；当前只有合同版本过旧才阻断，兼容包更新提示仍是后续增强项。
 
 ## 测试与线上证据
@@ -48,9 +48,9 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - 线上 Web 首页：HTTP `200`；
 - 线上 SDK partial YAML import/export round-trip：通过；完整 YAML round-trip：通过；未创建测试 Job；
 - 线上 Connector 包：`8406300 bytes`，SHA-256 `9f604420b4971cb55471edb5e00f5d16861d3a36dfb93168a88671327d6ff710`，合同 `15`；
-- 两个并发 `/api/v1/run-configs/validate` 黑盒请求均在约 `8.2s` 内返回 `200` 和 `cluster_readiness_unavailable`，未创建 Job；
+- 两个并发 `/api/v1/run-configs/validate` 黑盒请求在 Manager 不可达期间均约 `8.2s` 返回 `200` 和 `cluster_readiness_unavailable`，未创建 Job；Manager 恢复后真实复核 `1.768s` 返回 `200`、`can_submit=true`、`cluster_ready`；
 - 服务器只保留当前 release `93947c8` 和回滚 release `4f73724`；
-- 当前控制库无 `queued/running` Job；Cluster Manager 未恢复前不得开始 Cluster 实际仿真。
+- 当前控制库无 `queued/running` Job；两个真实用户可在各自 Connector/配置通过后重新提交 Cluster 仿真。
 
 ## 当前文档入口
 

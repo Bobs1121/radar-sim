@@ -3,7 +3,7 @@
 > 更新时间：2026-08-20。实时阻断以 [`../HANDOFF.md`](../HANDOFF.md) 和最新修复 handoff 为准，不沿用历史任务状态。
 
 1. Cluster→用户设备的反向 `source_to_local`/自动解压尚未开放；当前交付 owner-scoped ZIP/引用，SDK 可下载。
-2. 当前部署的 Cluster Manager `SZHRADAR01:8123` 从 Linux 服务机不可达；executor/gateway 心跳在线不代表 Cluster 可提交。Web/SDK 会在提交前返回 `cluster_readiness_unavailable`，不传输、不编译、不创建外部 Cluster 任务，恢复 Manager 后再重试。
+2. Cluster Manager `SZHRADAR01:8123` 是外部依赖；本次验收期间曾短暂不可达，现已恢复。executor/gateway 心跳在线不代表 Cluster 可提交，Web/SDK 必须继续使用真实 readiness；再次不可达时返回 `cluster_readiness_unavailable`，不传输、不编译、不创建外部 Cluster 任务。
 2. 无认证部署仅用于受信内网；`X-Rsim-User` 是路由标签，不是认证。
 3. 独立 MCP Server/Skill 包尚未发布；AI Agent 当前应调用 Python SDK/REST API。
 4. 关机或网络隔离的 Windows 设备不能由服务远程唤醒。
