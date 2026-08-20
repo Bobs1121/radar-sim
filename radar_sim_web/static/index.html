@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="light">
   <title>Radar Sim 控制台</title>
-  <link rel="stylesheet" href="/console/styles.css?v=20260820-workbench">
+  <link rel="stylesheet" href="/console/styles.css?v=20260820-engineering">
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -228,6 +228,32 @@
             <span class="section-code">INSPECTOR</span>
             <h2 id="planHeading">执行摘要</h2>
             <p id="planStatus">等待配置检查。</p>
+            <div class="inspector-facts" aria-label="配置摘要">
+              <div class="inspector-fact">
+                <span>EXECUTION</span>
+                <strong id="inspectorTarget">自动</strong>
+              </div>
+              <div class="inspector-fact">
+                <span>DATASET</span>
+                <code id="inspectorDataset">未填写</code>
+              </div>
+              <div class="inspector-fact">
+                <span>SELENA</span>
+                <code id="inspectorSelena">本地编译</code>
+              </div>
+              <div class="inspector-fact">
+                <span>RUNTIME</span>
+                <code id="inspectorRuntime">未填写</code>
+              </div>
+              <div class="inspector-fact inspector-validation">
+                <span>VALIDATION</span>
+                <strong id="inspectorValidationStatus" class="status queued">待检查</strong>
+              </div>
+            </div>
+            <div class="inspector-actions" aria-label="主要操作">
+              <button type="button" class="button secondary" data-inspector-action="validate">检查配置</button>
+              <button type="button" class="button primary" data-inspector-action="submit">提交任务</button>
+            </div>
             <ol id="planStages" class="stage-preview">
               <li><span>1</span><div><strong>解析配置</strong><small>按路径和脚本推导所需资源</small></div></li>
               <li><span>2</span><div><strong>检查环境</strong><small>按选定路径检查依赖</small></div></li>
@@ -274,6 +300,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" hidden></div>
-  <script src="/console/app.js?v=20260820-workbench" defer></script>
+  <script src="/console/app.js?v=20260820-engineering" defer></script>
 </body>
 </html>

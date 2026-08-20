@@ -704,16 +704,27 @@ def test_v1_web_console_is_same_origin_and_legacy_routes_are_not_shadowed(tmp_pa
     assert "首次使用准备" in index.text
     assert "connectorUpdateBanner" in index.text
     assert "一键更新本机组件" in index.text
+    assert 'meta name="color-scheme" content="light"' in index.text
+    assert "inspector-facts" in index.text
+    assert "data-inspector-action=\"validate\"" in index.text
     assert 'id="resultPath"' in index.text
     assert 'result: { path: resultPath }' in app_js.text
     assert "本机连接暂时中断，正在自动重连" in app_js.text
     assert "无需重新安装或重新提交" in app_js.text
     assert "通常会自动恢复；长时间未连接时可重新连接本机" in app_js.text
     assert 'actionButton("重新连接本机", "secondary"' in app_js.text
+    assert "renderProgressSummary" in app_js.text
+    assert "renderStageProgress" in app_js.text
+    assert 'aria-label", "任务总进度"' in app_js.text
+    assert "updateInspectorSummary" in app_js.text
     styles = client.get("/console/styles.css")
     assert styles.status_code == 200
     assert ".windows-connect-callout" in styles.text
     assert ".connector-update-banner" in styles.text
+    assert ".detail-progress" in styles.text
+    assert ".stage-progress" in styles.text
+    assert "color-scheme: light" in styles.text
+    assert "--accent: #126b91" in styles.text
     assert client.get("/api/v1/health").status_code == 200
     assert client.get("/api/config").status_code == 404
 

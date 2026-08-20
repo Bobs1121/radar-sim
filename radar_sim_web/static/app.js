@@ -620,6 +620,7 @@ function applyRunConfig(config) {
   byId("resultPath").value = config.result?.path || "";
   updateConditionalFields();
   updateRouteSummary();
+  setInspectorValidation("待检查", "queued");
 }
 
 function updateConditionalFields() {
@@ -655,8 +656,56 @@ function updateRouteSummary() {
   }[finalTarget] || "自动（提交前确认）"}`;
   byId("finalSelenaSummary").textContent = `Selena 来源：${source === "existing" ? "已有产物" : "本地编译"}`;
   byId("routeSummary").textContent = `${selenaText}，${targetText}`;
+  updateInspectorSummary();
   updateImportedSelectionWarning(target, source);
   updateCreateWindowsCallout();
+}
+
+function compactInspectorPath(value, maxLength = 52) {
+  const text = String(value || "").trim();
+  if (!text) return "未填写";
+  if (text.length <= maxLength) return text;
+  const head = Math.max(12, Math.floor(maxLength * 0.36));
+  const tail = Math.max(16, maxLength - head - 1);
+  return `${text.slice(0, head)}…${text.slice(-tail)}`;
+}
+
+function setInspectorValue(id, value) {
+  const node = byId(id);
+  if (!node) return;
+  const fullValue = String(value || "").trim() || "未填写";
+  node.textContent = fullValue;
+  node.title = fullValue;
+}
+
+function updateInspectorSummary() {
+  const target = selectedValue("target") || "auto";
+  const source = byId("selenaSource")?.value || "build";
+  const confirmedTarget = state.validatedTarget || (target === "auto" ? "" : target);
+  const targetLabel = targetName(confirmedTarget || target);
+  setInspectorValue(
+    "inspectorTarget",
+    state.validatedTarget ? `${targetLabel} · 已确认` : targetLabel,
+  );
+  setInspectorValue("inspectorDataset", compactInspectorPath(byId("dataPath")?.value));
+  const branch = byId("selenaBranch")?.value.trim() || "";
+  const selenaLabel = source === "existing"
+    ? `已有产物 · ${compactInspectorPath(byId("existingPath")?.value, 38)}`
+    : `本地编译${branch ? ` · ${branch}` : ""}`;
+  setInspectorValue("inspectorSelena", selenaLabel);
+  setInspectorValue("inspectorRuntime", compactInspectorPath(byId("runtimeXml")?.value));
+}
+
+function setInspectorValidation(label, status = "queued") {
+  const node = byId("inspectorValidationStatus");
+  if (!node) return;
+  node.textContent = label;
+  node.className = `status ${status}`;
+}
+
+function markInspectorDirty() {
+  updateRouteSummary();
+  setInspectorValidation("待检查", "queued");
 }
 
 function updateImportedSelectionWarning(target, source) {
@@ -684,6 +733,7 @@ function submissionSourceName(value) {
 function invalidateValidatedTarget() {
   state.validatedTarget = "";
   updateRouteSummary();
+  setInspectorValidation("待检查", "queued");
 }
 
 function confirmSubmission(config, validation) {
@@ -713,6 +763,14 @@ function renderExecutionPlan(result) {
   updateRouteSummary();
   const route = target === "local" ? "Windows 本地" : target === "cluster" ? "Cluster" : "待调度";
   byId("planStatus").textContent = `配置有效，当前将使用 ${route} 路径。`;
+  if (result?.readiness) {
+    setInspectorValidation(
+      result.readiness.can_submit === false ? "需处理" : "校验通过",
+      result.readiness.can_submit === false ? "needs_input" : "succeeded",
+    );
+  } else {
+    setInspectorValidation("计划已生成", "queued");
+  }
   const list = byId("planStages");
   list.replaceChildren();
   stages.forEach((stage, index) => {
@@ -940,6 +998,11 @@ function renderJobs() {
     code.textContent = job.id;
     const progress = document.createElement("div");
     progress.className = "mini-progress";
+    progress.setAttribute("role", "progressbar");
+    progress.setAttribute("aria-label", "任务进度");
+    progress.setAttribute("aria-valuemin", "0");
+    progress.setAttribute("aria-valuemax", "100");
+    progress.setAttribute("aria-valuenow", String(Math.round((job.progress || 0) * 100)));
     const fill = document.createElement("span");
     fill.style.width = `${Math.round((job.progress || 0) * 100)}%`;
     progress.append(fill);
@@ -1162,6 +1225,8 @@ function renderJobDetail(job, events, manifest) {
   }
   header.append(heading, actions);
 
+  const overallProgress = renderProgressSummary(job);
+
   const windowsWaiting = windowsWaitState(job);
   const connectorPanel = windowsWaiting ? renderWindowsConnectionCallout(job, windowsWaiting) : null;
   if (windowsWaiting) state.connectorAwait = { jobId: job.id, mode: windowsWaiting.mode };
@@ -1267,6 +1332,7 @@ function renderJobDetail(job, events, manifest) {
     line.append(time, text); log.append(line);
   });
   root.append(header);
+  root.append(overallProgress);
   if (connectorPanel) root.append(connectorPanel);
   root.append(grid);
   if (failure.childElementCount) root.append(failure);
@@ -1274,6 +1340,33 @@ function renderJobDetail(job, events, manifest) {
   root.append(log);
   root.scrollTop = previousRootTop;
   log.scrollTop = followedLogTail ? log.scrollHeight : Math.min(previousLogTop, log.scrollHeight);
+}
+
+function renderProgressSummary(job) {
+  const section = document.createElement("section");
+  section.className = "detail-progress";
+  const header = document.createElement("div");
+  header.className = "detail-progress-header";
+  const label = document.createElement("span");
+  label.className = "detail-progress-label";
+  label.textContent = stageName(job.current_stage) || statusName(job.status);
+  const value = Math.round(Math.max(0, Math.min(1, Number(job.progress) || 0)) * 100);
+  const percent = document.createElement("strong");
+  percent.className = "detail-progress-value";
+  percent.textContent = `${value}%`;
+  header.append(label, percent);
+  const track = document.createElement("div");
+  track.className = "detail-progress-track";
+  track.setAttribute("role", "progressbar");
+  track.setAttribute("aria-label", "任务总进度");
+  track.setAttribute("aria-valuemin", "0");
+  track.setAttribute("aria-valuemax", "100");
+  track.setAttribute("aria-valuenow", String(value));
+  const fill = document.createElement("span");
+  fill.style.width = `${value}%`;
+  track.append(fill);
+  section.append(header, track);
+  return section;
 }
 
 function renderWindowsConnectionCallout(job, waiting) {
@@ -1401,8 +1494,9 @@ function renderStage(job, stage) {
   const waiting = isBusinessStep ? windowsWaitState(job) : windowsWaitState(job, stage);
   detail.textContent = waiting
     ? `${waiting.reconnecting ? "本机正在自动重连" : "等待连接本机"}：${waiting.capability}`
-    : (isBusinessStep ? `${Math.round((stage.progress || 0) * 100)}%` : friendlyStageDetail(stage));
-  copy.append(title, detail);
+    : (isBusinessStep ? "" : friendlyStageDetail(stage));
+  if (!detail.textContent) detail.hidden = true;
+  copy.append(title, detail, renderStageProgress(stage));
   const actions = document.createElement("div");
   actions.className = "stage-actions";
   const readinessRetry = stage.status === "blocked"
@@ -1422,6 +1516,27 @@ function renderStage(job, stage) {
   }
   row.append(copy, actions);
   return row;
+}
+
+function renderStageProgress(stage) {
+  const value = Math.round(Math.max(0, Math.min(1, Number(stage.progress) || 0)) * 100);
+  const meter = document.createElement("div");
+  meter.className = `stage-progress ${stage.status || "queued"}`;
+  meter.setAttribute("role", "progressbar");
+  meter.setAttribute("aria-label", `${stageName(stage.stage_type || stage.task_type || stage.id)}进度`);
+  meter.setAttribute("aria-valuemin", "0");
+  meter.setAttribute("aria-valuemax", "100");
+  meter.setAttribute("aria-valuenow", String(value));
+  const track = document.createElement("span");
+  track.className = "stage-progress-track";
+  const fill = document.createElement("span");
+  fill.className = "stage-progress-fill";
+  fill.style.width = `${value}%`;
+  track.append(fill);
+  const label = document.createElement("em");
+  label.textContent = `${value}%`;
+  meter.append(track, label);
+  return meter;
 }
 
 function continueWithDataPath(spec) {
@@ -1525,10 +1640,8 @@ function friendlyStageDetail(stage) {
     const action = stage.error?.action || stage.error?.diagnostic?.action || "";
     return action ? `${stage.error.message}；建议：${action}` : stage.error.message;
   }
-  if (stage.status === "running" && Number(stage.progress || 0) <= 0) {
-    return "正在运行，日志持续更新";
-  }
-  return `${Math.round((stage.progress || 0) * 100)}%`;
+  if (["running", "queued", "succeeded", "skipped"].includes(stage.status)) return "";
+  return stage.status || "";
 }
 
 function friendlyEvent(event) {
@@ -1587,7 +1700,11 @@ async function initialize() {
     state.validatedTarget = "";
     updateRouteSummary();
   });
-  byId("simulationForm").addEventListener("input", updateCreateWindowsCallout);
+  byId("simulationForm").addEventListener("input", () => {
+    markInspectorDirty();
+    updateCreateWindowsCallout();
+  });
+  byId("simulationForm").addEventListener("change", markInspectorDirty);
   byId("simulationForm").addEventListener("submit", submitCurrentSpec);
   byId("validateSpec").addEventListener("click", () => validateCurrentSpec().catch(() => {}));
   byId("importYaml").addEventListener("click", () => byId("yamlFile").click());
@@ -1607,6 +1724,10 @@ async function initialize() {
     const status = byId("connectorUpdateStatus");
     downloadWindowsConnector("", "unified", button, status);
   });
+  qa("[data-inspector-action]").forEach((button) => button.addEventListener("click", () => {
+    const targetId = button.dataset.inspectorAction === "validate" ? "validateSpec" : "submitJob";
+    byId(targetId)?.click();
+  }));
   byId("accessToken").addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveAccessToken();
   });

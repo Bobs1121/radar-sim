@@ -311,6 +311,7 @@ progress::-webkit-progress-value { background: var(--accent); transition: width 
    ------------------------------------------------------------------------- */
 
 :root {
+  color-scheme: light;
   --bg: #edf2f4;
   --surface: #f8fafb;
   --surface-subtle: #f0f4f6;
@@ -562,3 +563,267 @@ input::placeholder { color: #7b8991; }
   .segmented { background: #0d151a; }
   input, select, .button.secondary { background: var(--surface-raised); }
 }
+
+/* Second-pass state language: the control itself carries the guidance. */
+.form-section .field small {
+  display: none;
+  margin-top: 2px;
+  padding-left: 1px;
+}
+.form-section .field:focus-within small,
+.form-section .field:hover small {
+  display: block;
+}
+.detail-progress {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 2px;
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.detail-progress-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.detail-progress-label {
+  color: var(--muted);
+  font: 10px var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.detail-progress-value {
+  color: var(--accent);
+  font: 18px/1 var(--mono);
+  letter-spacing: -.04em;
+}
+.detail-progress-track,
+.stage-progress-track {
+  display: block;
+  overflow: hidden;
+  background: var(--border);
+}
+.detail-progress-track { height: 8px; border-radius: 3px; }
+.detail-progress-track > span,
+.stage-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width .24s ease;
+}
+.stage-progress {
+  display: grid;
+  grid-template-columns: minmax(50px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  margin-top: 4px;
+}
+.stage-progress-track { height: 4px; border-radius: 2px; }
+.stage-progress em {
+  color: var(--muted);
+  font: 10px/1 var(--mono);
+  font-style: normal;
+}
+.stage-progress.succeeded .stage-progress-fill,
+.stage-progress.skipped .stage-progress-fill { background: var(--success); }
+.stage-progress.failed .stage-progress-fill,
+.stage-progress.cancelled .stage-progress-fill { background: var(--danger); }
+.stage-progress.queued .stage-progress-fill { background: var(--border-strong); }
+
+@media (prefers-color-scheme: dark) {
+  .detail-progress-track,
+  .stage-progress-track { background: #30434c; }
+  .form-section .field:hover small,
+  .form-section .field:focus-within small { color: #b7c7cd; }
+}
+
+/* The workbench is intentionally light. Keep the canvas stable even when
+   the host OS prefers dark mode; the terminal log remains the one semantic
+   dark surface inside the page. */
+html, body { color-scheme: light; }
+:root {
+  color-scheme: light;
+  --bg: #edf2f4;
+  --surface: #f8fafb;
+  --surface-subtle: #f0f4f6;
+  --surface-raised: #ffffff;
+  --surface-strong: #18262e;
+  --text: #14232b;
+  --muted: #62717a;
+  --border: #d2dce1;
+  --border-strong: #aebdc5;
+  --accent: #0c7187;
+  --accent-hover: #075b6d;
+  --accent-soft: #dceef2;
+  --danger: #af342c;
+  --danger-soft: #fff0ee;
+  --success: #24754c;
+  --warning: #98650c;
+  --focus: #087f9a;
+}
+.topbar { background: #ffffff; }
+.plan-sticky {
+  color: var(--text);
+  background: #ffffff;
+  border-color: var(--border);
+  box-shadow: var(--shadow);
+}
+.plan-sticky .section-code { color: var(--accent); }
+.plan-sticky > p { color: var(--muted); }
+.stage-preview li:not(:last-child)::after { background: var(--border-strong); }
+.stage-preview li > span { border-color: var(--border-strong); color: var(--muted); }
+.stage-preview small { color: var(--muted); }
+.deployment-note { border-top-color: var(--border); }
+.deployment-note > strong, .deployment-note dt { color: var(--text); }
+.deployment-note dd { color: var(--muted); }
+.submit-bar {
+  color: var(--text);
+  background: #ffffff;
+  border-color: var(--border);
+  box-shadow: var(--shadow);
+}
+.submit-bar strong { color: var(--text); }
+.submit-bar span { color: var(--muted); }
+.segmented { background: #e3ebee; }
+input::placeholder { color: #7b8991; }
+.source-evidence, .task-filters { background: var(--surface-subtle); }
+.status.queued { color: #4b5966; background: #e8edf1; }
+.status.running { color: #0d607b; background: #dff1f6; }
+.status.needs_input, .status.partial { color: var(--warning); background: #fff3d9; }
+.status.succeeded { color: var(--success); background: #e5f5eb; }
+.status.failed, .status.cancelled { color: var(--danger); background: var(--danger-soft); }
+.mini-progress, progress, progress::-webkit-progress-bar { background: #dbe3e9; }
+.connector-update-banner, .windows-connect-callout { color: #61420d; background: #fff8e8; border-color: #e4bf71; }
+.connector-update-banner strong, .windows-connect-callout h3 { color: #4f350b; }
+.connector-update-banner p, .connector-update-actions small, .windows-connect-callout p, .windows-connect-actions small { color: #765b2a; }
+.detail-progress-track, .stage-progress-track { background: var(--border); }
+
+/* Compact inspector facts replace repeated prose with values and states. */
+.inspector-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 14px;
+  margin: 8px 0 10px;
+  padding: 8px 0 4px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.inspector-fact {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 7px 0;
+}
+.inspector-fact > span {
+  color: var(--muted);
+  font: 9px/1.2 var(--mono);
+  letter-spacing: .1em;
+}
+.inspector-fact > strong,
+.inspector-fact > code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font: 11px/1.35 var(--mono);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inspector-validation {
+  grid-column: 1 / -1;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+.inspector-validation .status { justify-self: end; }
+.inspector-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.inspector-actions .button { width: 100%; }
+
+/* Keep hierarchy in the section code and controls; secondary guidance lives
+   in placeholders, focused field helpers, badges and validation states. */
+.workspace-heading .heading-note,
+.form-section .section-heading > p,
+.stage-preview li small,
+#workspaceEvidenceHint { display: none; }
+.plan-sticky > p { min-height: 0; margin-bottom: 10px; }
+.stage-preview li { min-height: 44px; }
+.task-layout { box-shadow: none; }
+.task-list-panel .empty-state,
+.job-detail > .empty-state { min-height: 180px; }
+
+/* Third pass: stronger modern engineering rhythm without adding decoration. */
+:root {
+  --accent: #126b91;
+  --accent-hover: #0a526f;
+  --accent-soft: #e1f1f7;
+  --focus: #087da5;
+}
+.topbar {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.brand-mark {
+  border: 1px solid #0b526d;
+  box-shadow: 0 1px 0 rgb(255 255 255 / 22%) inset;
+}
+.nav-item.is-active { box-shadow: inset 0 -2px 0 var(--accent); }
+.field > span, .field legend { letter-spacing: .01em; }
+input, select {
+  border-color: #b9c8cf;
+  background: #ffffff;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+input:hover, select:hover { border-color: #6f9aab; background: #fcfeff; }
+input:focus, select:focus {
+  box-shadow: 0 0 0 3px rgb(8 125 165 / 12%);
+  background: #ffffff;
+}
+.segmented input:checked + span {
+  background: var(--accent-soft);
+  border-color: #9fcbd8;
+  box-shadow: inset 0 -2px 0 var(--accent), 0 1px 2px rgb(26 45 55 / 8%);
+}
+.plan-sticky {
+  border: 1px solid #c6d6dc;
+  border-top: 3px solid var(--accent);
+  box-shadow: 0 8px 24px rgb(26 45 55 / 7%);
+}
+.stage-preview li > span {
+  border-color: #9bbac5;
+  background: #f5fafb;
+}
+.stage-preview li:not(:last-child)::after { background: #b2cbd3; }
+.inspector-actions .button.primary { box-shadow: 0 2px 0 #074b65; }
+.submit-bar {
+  box-shadow: 0 5px 18px rgb(20 35 43 / 14%);
+}
+.submit-bar > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.submit-bar #routeSummary { display: none; }
+.submit-bar #finalSelenaSummary {
+  padding-left: 12px;
+  border-left: 1px solid #4a6873;
+}
+.status::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.job-row.is-active { border-left: 3px solid var(--accent); box-shadow: none; }
+.job-row.is-active:hover { background: var(--accent-soft); }
+.detail-progress { border-top: 2px solid var(--accent); }
