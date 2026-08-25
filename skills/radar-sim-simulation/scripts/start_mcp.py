@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 
 from bootstrap_agent_tools import BootstrapFailure, _default_root, _internal_log, bootstrap
@@ -22,6 +23,25 @@ def _terminal_status(message: str) -> None:
         sys.stderr.flush()
     except (OSError, ValueError):
         return
+
+
+def _run_mcp(command: str, args: list[str], environment: dict[str, str]) -> int:
+    """Run the configured MCP while inheriting the Agent's stdio handles."""
+
+    try:
+        completed = subprocess.run(
+            [command, *args],
+            env=environment,
+            check=False,
+            stdin=None,
+            stdout=None,
+            stderr=None,
+        )
+    except OSError:
+        _internal_log(_default_root(), "MCP process launch failed")
+        print("仿真 MCP 启动失败", file=sys.stderr)
+        return 3
+    return int(completed.returncode)
 
 
 def _existing_mcp_command() -> tuple[str, list[str], dict[str, str]] | None:
@@ -69,13 +89,7 @@ def main() -> int:
     environment.setdefault("RADAR_SIM_ALLOW_CONNECTOR_INSTALL", "1")
     environment.setdefault("RADAR_SIM_AUTO_PREPARE", "1")
     _terminal_status("本地仿真服务已就绪")
-    try:
-        os.execvpe(command, [command, *args], environment)
-    except OSError:
-        _internal_log(_default_root(), "MCP process launch failed")
-        print("仿真 MCP 启动失败", file=sys.stderr)
-        return 3
-    return 0
+    return _run_mcp(command, args, environment)
 
 
 if __name__ == "__main__":
