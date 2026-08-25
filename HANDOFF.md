@@ -1,10 +1,10 @@
 # radar-sim 当前交接
 
 > 更新时间：2026-08-25
-> 当前代码分支：`codex/new-branch`
-> 当前代码 release：`bb71ff8-agenttools-20260821-r11`
-> 当前 Linux release：`/home/hoz2wx/radar-sim-bb71ff8-agenttools-20260821-r11`
-> 回滚 release：`/home/hoz2wx/radar-sim-bb71ff8-agenttools-20260821-r10`
+> 当前代码分支：`main`（`10b6317`）
+> 当前代码 release：`10b6317`，Skill 默认返回校验后的本地结果地址
+> 当前 Linux release：`/home/hoz2wx/radar-sim-10b6317-agenttools-20260825-r13`
+> 回滚 release：无（旧 release 已按最终版本清理）
 > 线上地址：`http://10.190.171.44:8877`
 
 这是当前状态的唯一入口。历史审计、旧 handoff 和停用部署文档统一在 [`docs/archive/`](docs/archive/README.md)，不能把归档文档当作当前操作步骤。
@@ -112,7 +112,7 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 
 本轮 SDK/API/直传/MCP/Agent Tools 定向回归为 `173 passed, 2 skipped, 1 warning`；最终安装器补丁后，Skill validator、Python/PowerShell 安装模板解析、Python compile、`bash -n scripts/linux_deploy.sh` 和 `git diff --check` 通过。全仓最近一次回归为 `1702 passed, 12 skipped, 1 failed, 1 warning`；唯一失败是既有 Web HTML 文案断言 `tests/test_control_data_plane_contract.py::test_web_user_run_never_uploads_task_file_bodies_to_linux`，不属于本轮 SDK/MCP/分发范围，未修改 Web/UI。
 
-线上已切换到不可变 release `/home/hoz2wx/radar-sim-bb71ff8-agenttools-20260821-r11`，systemd `active`、`NRestarts=0`、health `200`。Agent Tools Manifest 当前 release 为 `bb71ff8-agenttools-20260821-r11`，Bundle `56722771 bytes`，SHA-256 `cd736b00ad653f81c6d3993b80b9758c32d7dd42887e33462b7d96eeed784dff`；Connector 包为 `8425051 bytes`，SHA-256 `8cd8472bfc30c43501e4d7730bc9a5a79678e1acee130aa28528122a40640036`。
+线上已切换到最终 release `/home/hoz2wx/radar-sim-10b6317-agenttools-20260825-r13`，systemd `active`、health `200`。Agent Tools Manifest 当前 release 为 `10b6317-agenttools-20260825-r13`，Skill `0.3.0`，Bundle `56737091 bytes`，SHA-256 `e7007cf8b9860804b9a2fbcfa36458eb0eba771aea0dc54267b0d422ddb5c9c5`；Connector 包为 `8431175 bytes`，SHA-256 `4f95d4f0c081257f310fc3815bb93f713b986150ccc36f558c2cda2bac1797a5`。
 
 ## 2026-08-21 Selena 编译策略修正
 
@@ -133,6 +133,16 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 Windows 黑盒验收已通过：从线上地址下载并校验 Bundle；隔离临时根目录创建 Python 3.13 venv，按 wheel tags 离线选择并安装 SDK/MCP/`pywin32`；`radar_sim_sdk`、`radar_sim_mcp`、`mcp` 导入成功；MCP 注册 `26` 个工具，stdio `initialize`/`notifications/initialized`/`tools/list` 握手成功；Skill 文件和稳定启动器状态存在；Token 未写入 `install.json`/`mcp-config.json`；`check_agent_tools` 返回 `installed=true`、`update_available=false`；重复安装返回 `already_current`、`restart_required=false`；模拟旧版本更新返回 `restart_required=true`、`skill_updated=true`。
 
 当前仍未配置外部 PyPI 或固定远程 MCP URL；但用户不下载源码、仅使用 `http://10.190.171.44:8877` 的 `install.py`/`install.ps1` 安装本机 MCP/Skill 已经可用。认证开启部署的 Connector pairing 仍需部署方提供短期配对流程。
+
+## 2026-08-25 最终版本验收
+
+- 远端 `main` 已快进到 `10b6317`；Skill 独立仓 `skillForJob/main` 已发布
+  `42b83d3`，Skill 版本 `0.3.0`；
+- `job_2b9a6b6452b7` 已通过 Cluster retry 完成，Diagnosis=`job_succeeded`，
+  1/1 输入成功，结果 `result:sha256:5f4212527a590b2e9957cb1eb459683016f647f0d3bdb50ba227a292c225ae7f`；
+- 结果 ZIP 已校验，SHA-256=`c8f9cdfba1d65edb5703c40155898e427cd7485e16729541819f597eba6baf4f`；
+- 服务器只保留 r13 和当前 systemd unit；旧 release、旧 unit 备份、r13 的 docs/tests/build/cache 已清理；
+- OpenCode 的 `6152735` 只更新了开发分支 `HANDOFF.md`，未进入 `main`，未改变运行代码或线上服务。
 
 ## 2026-08-25 Skill 真机端到端验收与提效
 
