@@ -191,3 +191,24 @@ SHA-256: c8f9cdfba1d65edb5703c40155898e427cd7485e16729541819f597eba6baf4f
 - 不要把源码工作区中的 `.zcode/`、`tmp-agent-home/` 提交到 Git。
 - 当前分支不是 `main`，正式发布需要 PR/合并；Linux r12 是从该分支源码归档
   构建的临时验收 release。
+
+## 9. Skill-only 黑盒验证
+
+使用 Skill 自带首启脚本，在一个全新的临时 Agent Tools 目录中直接从当前
+Linux 服务安装，未下载 radar-sim 源码：
+
+```text
+release=462e166-agenttools-20260825-r12
+sdk=4.0.0
+mcp=0.1.0
+skill=0.2.0
+auto_prepare=1
+allow_agent_tools=1
+allow_connector=1
+MCP tools=27
+get_simulation_state=true
+quiet Skill rule=true
+```
+
+安装器自动把本次服务元数据绑定到本机 Skill；服务地址仍不是 Skill 逻辑
+代码的一部分。现有安装不受该临时黑盒目录影响。
