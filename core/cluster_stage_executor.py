@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from core.artifact_store import ArtifactStore
 from core.cluster_runs import ClusterResultRef, ClusterRunRef, ClusterRunStore
@@ -346,6 +346,10 @@ class ClusterStageExecutor:
             message = str(exc) if expected else "Cluster stage execution failed"
             code = exc.code if expected else "cluster_stage_failed"
             actions = list(exc.actions) if expected else []
+            diagnostic = {
+                "exception_type": type(exc).__name__,
+                "stable_detail": str(exc) if expected else type(exc).__name__,
+            }
             self.control.append_logs(task_id, [f"[executor] {stage_type} failed"], stream="stderr")
             self.control.submit_task_result(
                 task_id, agent_id=agent_id, status="failed", returncode=-1,
@@ -353,6 +357,7 @@ class ClusterStageExecutor:
                     "error": message,
                     "code": code,
                     "actions": actions,
+                    "diagnostic": diagnostic,
                     "error_json": {"code": code, "message": message, "actions": actions},
                 },
             )
@@ -2168,10 +2173,43 @@ def _dataset_ref_from_transfer_resources(
     dataset_id: str = "",
 ) -> DatasetRef:
     raw_files: list[dict[str, Any]] = []
+    seen_by_path: dict[str, tuple[int, str]] = {}
     for resource in resources:
         for raw in list(resource.get("entries") or []):
-            if isinstance(raw, dict):
-                raw_files.append(raw)
+            if not isinstance(raw, dict):
+                continue
+            relative_path = str(raw.get("relative_path") or "").strip().replace("\\", "/")
+            checksum = str(raw.get("checksum") or raw.get("sha256") or "").strip().lower()
+            if checksum and not checksum.startswith("sha256:"):
+                checksum = "sha256:" + checksum
+            try:
+                size = int(raw.get("size") or 0)
+            except (TypeError, ValueError) as exc:
+                raise ClusterStageExecutionError(
+                    "Dataset transfer manifest contains an invalid file size",
+                    code="CLUSTER_DATA_TRANSFER_INVALID",
+                ) from exc
+            path_key = relative_path.casefold()
+            identity = (size, checksum)
+            previous = seen_by_path.get(path_key)
+            if previous is not None:
+                if previous != identity:
+                    raise ClusterStageExecutionError(
+                        "Dataset transfer manifests contain conflicting files",
+                        code="CLUSTER_DATA_TRANSFER_CONFLICT",
+                    )
+                # A prepare_data/preflight retry can report the same logical
+                # file again with a new isolated transfer ID. Keep one
+                # content-identical entry instead of creating a duplicate
+                # DatasetRef input.
+                continue
+            seen_by_path[path_key] = identity
+            normalized = dict(raw)
+            normalized["relative_path"] = relative_path
+            if checksum:
+                normalized["sha256"] = checksum
+            normalized["size"] = size
+            raw_files.append(normalized)
     metadata = {
         "id": dataset_id,
         "project": project,
@@ -2200,6 +2238,25 @@ def _dataset_radar_metadata(resources: list[dict[str, Any]]) -> dict[str, Any]:
 _TRANSFER_RESOURCE_ROLES = ("dataset", "runtime_bundle", "runtime_xml", "mat_filter", "adapter")
 
 
+def _transfer_resource_signature(resource: Mapping[str, Any]) -> tuple[tuple[str, int, str], ...]:
+    """Return content identity, excluding isolated transfer IDs and roots."""
+
+    entries: list[tuple[str, int, str]] = []
+    for raw in list(resource.get("entries") or []):
+        if not isinstance(raw, dict):
+            continue
+        relative = str(raw.get("relative_path") or "").strip().replace("\\", "/").casefold()
+        checksum = str(raw.get("checksum") or raw.get("sha256") or "").strip().lower()
+        if checksum and not checksum.startswith("sha256:"):
+            checksum = "sha256:" + checksum
+        try:
+            size = int(raw.get("size") or 0)
+        except (TypeError, ValueError):
+            size = -1
+        entries.append((relative, size, checksum))
+    return tuple(sorted(entries))
+
+
 def _transfer_resources(job: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     """Read the bounded ``resolved_spec.decisions.transfers`` shape.
 
@@ -2220,11 +2277,24 @@ def _transfer_resources(job: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     for role in _TRANSFER_RESOURCE_ROLES:
         raw = raw_resources.get(role)
         if isinstance(raw, dict):
-            resources[role] = [dict(raw)]
+            values = [dict(raw)]
         elif isinstance(raw, list):
             values = [dict(item) for item in raw if isinstance(item, dict)]
-            if values:
-                resources[role] = values
+        else:
+            values = []
+        unique: list[dict[str, Any]] = []
+        seen: set[tuple[tuple[str, int, str], ...]] = set()
+        for item in values:
+            signature = _transfer_resource_signature(item)
+            if signature and signature in seen:
+                # A retry can submit an identical manifest under a new
+                # transfer ID.  Keep one physical namespace for execution.
+                continue
+            if signature:
+                seen.add(signature)
+            unique.append(item)
+        if unique:
+            resources[role] = unique
     return resources
 
 

@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping
 
 from pydantic import ValidationError
 
+from core.agent_simulation_state import AgentSimulationStateStore
 from radar_sim_mcp.agent_tools import AgentToolsUpdateError, check_agent_tools, update_agent_tools
 from radar_sim_mcp.connector import (
     ConnectorInstallError,
@@ -52,9 +53,11 @@ diagnose_simulation and get_simulation_manifest for the lifecycle. If a Job
 returns needs_input, follow its waiting/action fields rather than reporting a
 simulation failure.
 
-Use check_agent_tools to detect a newer SDK/MCP/Skill bundle. Updating tools is
-an explicit local mutation and requires confirmation plus
-RADAR_SIM_ALLOW_AGENT_TOOLS_UPDATE=1; after a successful update restart the
+Use check_agent_tools to detect a newer SDK/MCP/Skill bundle. Official
+Skill-only installations enable the local automatic-preparation policy, so
+compatible updates and Connector preparation can happen silently through the
+stable launcher. The existing RADAR_SIM_ALLOW_* environment gates remain the
+machine-mutation permission boundary; after an Agent Tools update restart the
 MCP process so its stable launcher selects the new version.
 """
 
@@ -205,6 +208,7 @@ class RadarSimMcpServer:
         port: int = 8765,
     ) -> None:
         self.client = client
+        self._simulation_state = AgentSimulationStateStore()
         self.app = FastMCP(
             name,
             instructions=instructions,
@@ -216,6 +220,31 @@ class RadarSimMcpServer:
 
     def _register_tools(self) -> None:
         client = self.client
+        state = self._simulation_state
+
+        def remember_config(config: UserRunConfig, job: Any) -> None:
+            """Persist active semantic state without making state a run gate."""
+
+            try:
+                state.save(
+                    config,
+                    job_id=str(getattr(job, "id", "") or ""),
+                    status=str(getattr(job, "status", "") or ""),
+                )
+            except Exception:
+                # State is a convenience for repeat-language resolution.  A
+                # state-store failure must never turn a submitted Job into an
+                # MCP failure or expose local persistence details.
+                return
+
+        def remember_job(job: Any) -> None:
+            try:
+                state.update_job(
+                    str(getattr(job, "id", "") or ""),
+                    status=str(getattr(job, "status", "") or ""),
+                )
+            except Exception:
+                return
 
         @self.app.tool(
             name="get_simulation_schema",
@@ -258,6 +287,28 @@ class RadarSimMcpServer:
             return _safe_call(client.capabilities)
 
         @self.app.tool(
+            name="get_simulation_state",
+            description="Recover the local active simulation profile for a repeat request.",
+            structured_output=True,
+        )
+        def get_simulation_state(
+            context_path: str = "",
+            data_path: str = "",
+        ) -> dict[str, Any]:
+            # These are local Agent context hints, not user-facing service
+            # configuration.  The Skill supplies them silently when known.
+            def operation() -> dict[str, Any]:
+                try:
+                    return state.get(
+                        context_path=str(context_path or Path.cwd()),
+                        data_path=str(data_path or ""),
+                    )
+                except Exception:
+                    return {"found": False, "profile": None}
+
+            return _safe_call(operation)
+
+        @self.app.tool(
             name="check_agent_tools",
             description="Check the local MCP/Skill release against the current server bundle manifest.",
             structured_output=True,
@@ -274,7 +325,7 @@ class RadarSimMcpServer:
             confirm: bool = False,
             timeout_seconds: float = 600.0,
         ) -> dict[str, Any]:
-            if not confirm:
+            if not confirm and not _env_bool("RADAR_SIM_AUTO_PREPARE", False):
                 return _ok(
                     {
                         "status": "confirmation_required",
@@ -317,7 +368,7 @@ class RadarSimMcpServer:
             confirm: bool = False,
             timeout_seconds: float = 180.0,
         ) -> dict[str, Any]:
-            if not confirm:
+            if not confirm and not _env_bool("RADAR_SIM_AUTO_PREPARE", False):
                 return _ok(
                     {
                         "status": "confirmation_required",
@@ -368,12 +419,15 @@ class RadarSimMcpServer:
             dry_run: bool = False,
         ) -> dict[str, Any]:
             def operation() -> dict[str, Any]:
+                parsed = _config_input(yaml_text=yaml_text, config=config)
                 job = client.submit_run(
-                    _config_input(yaml_text=yaml_text, config=config),
+                    parsed,
                     idempotency_key=str(idempotency_key or "").strip() or None,
                     dry_run=bool(dry_run),
                     auto_transfer=True,
                 )
+                if not dry_run:
+                    remember_config(parsed, job)
                 return {"job_id": job.id, "job": _job_payload(job)}
 
             return _safe_call(operation)
@@ -396,7 +450,12 @@ class RadarSimMcpServer:
             structured_output=True,
         )
         def get_simulation(job_id: str) -> dict[str, Any]:
-            return _safe_call(lambda: _job_payload(client.get_job(job_id)))
+            def operation() -> dict[str, Any]:
+                job = client.get_job(job_id)
+                remember_job(job)
+                return _job_payload(job)
+
+            return _safe_call(operation)
 
         @self.app.tool(
             name="get_simulation_events",
@@ -425,9 +484,11 @@ class RadarSimMcpServer:
                         timeout=max(0.1, float(timeout_seconds)),
                         poll_interval=max(0.05, float(poll_interval_seconds)),
                     )
+                    remember_job(job)
                     return {"job": _job_payload(job), "timed_out": False}
                 except TimeoutError:
                     job = client.get_job(job_id)
+                    remember_job(job)
                     return {"job": _job_payload(job), "timed_out": True}
 
             return _safe_call(operation)

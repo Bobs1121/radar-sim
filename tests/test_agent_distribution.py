@@ -67,6 +67,8 @@ def test_agent_tools_manifest_bundle_and_installer_are_public_path_free(tmp_path
     assert "/api/v1/agent-tools/package.zip" in bootstrap.text
     assert "_install_offline_wheels" in bootstrap.text
     assert "parse_wheel_filename" in bootstrap.text
+    assert "_bind_skill_service_profile" in bootstrap.text
+    assert "RADAR_SIM_ALLOW_AGENT_TOOLS_UPDATE" in bootstrap.text
 
 
 def test_agent_tools_routes_fail_closed_when_release_is_not_published(tmp_path: Path):

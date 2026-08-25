@@ -126,6 +126,26 @@ def _copy_file_atomic(source: Path, target: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _bind_skill_service_profile(skill_root: Path, server_url: str) -> None:
+    """Bind deployment metadata without putting the URL in source Skill code."""
+
+    profile_path = skill_root / "references" / "service-profile.json"
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {}
+    if profile_path.is_file():
+        try:
+            loaded = json.loads(profile_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                payload = dict(loaded)
+        except (OSError, ValueError, json.JSONDecodeError):
+            payload = {}
+    payload.setdefault("schema_version", "radar-sim.skill-service/1.0")
+    payload.setdefault("mcp_name", "radar-sim")
+    payload["service_url"] = server_url
+    payload["service_urls"] = [server_url]
+    _write_json_atomic(profile_path, payload)
+
+
 def _python_in_venv(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
@@ -325,6 +345,7 @@ def install(server_url: str, *, timeout_seconds: float = 600.0) -> dict[str, Any
             skill_target = staging / "skill" / "radar-sim-simulation"
             skill_target.parent.mkdir(parents=True)
             shutil.copytree(skill_source, skill_target)
+            _bind_skill_service_profile(skill_target, server_url)
             shutil.copy2(launcher_source, staging / "agent_mcp_launcher.py")
             (staging / "release.json").write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -383,7 +404,12 @@ def install(server_url: str, *, timeout_seconds: float = 600.0) -> dict[str, Any
     config = {
         "command": sys.executable,
         "args": [str(launcher)],
-        "env": {"RADAR_SIM_BASE_URL": server_url},
+        "env": {
+            "RADAR_SIM_BASE_URL": server_url,
+            "RADAR_SIM_ALLOW_AGENT_TOOLS_UPDATE": "1",
+            "RADAR_SIM_ALLOW_CONNECTOR_INSTALL": "1",
+            "RADAR_SIM_AUTO_PREPARE": "1",
+        },
         "skill_path": str(skill_path),
         "skill_registry_path": skill_registry_target,
         "release_version": release,

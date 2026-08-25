@@ -17,36 +17,6 @@ class AgentToolsUpdateError(RuntimeError):
     code = "agent_tools_update_failed"
 
 
-def _add_exact_no_proxy(environment: dict[str, str], client: RadarSimClient) -> None:
-    """Add the configured service host to proxy bypass for stdlib bootstrap.
-
-    Python's urllib does not consistently interpret enterprise patterns such
-    as ``10.*`` in ``no_proxy``. The MCP SDK may still reach the service via
-    its configured HTTP client, while the downloaded stdlib bootstrap hangs
-    on the proxy. Preserve the user's entries and add only the exact host.
-    """
-
-    try:
-        host = str(getattr(getattr(client, "_client", None), "base_url", "").host or "").strip()
-    except AttributeError:
-        host = ""
-    if not host:
-        return
-    entries: list[str] = []
-    for key in ("NO_PROXY", "no_proxy"):
-        entries.extend(
-            item.strip()
-            for item in str(environment.get(key) or "").split(",")
-            if item.strip()
-        )
-    folded = {item.casefold() for item in entries}
-    if host.casefold() not in folded:
-        entries.append(host)
-    value = ",".join(dict.fromkeys(entries))
-    environment["NO_PROXY"] = value
-    environment["no_proxy"] = value
-
-
 def default_agent_tools_root() -> Path:
     override = os.environ.get("RADAR_SIM_MCP_ROOT", "").strip()
     if override:
@@ -125,7 +95,6 @@ def update_agent_tools(
         environment = dict(os.environ)
         environment.update(client._agent_tools_bootstrap_environment())
         environment.setdefault("RADAR_SIM_BASE_URL", "")
-        _add_exact_no_proxy(environment, client)
         completed = subprocess.run(
             [sys.executable, str(script)],
             env=environment,

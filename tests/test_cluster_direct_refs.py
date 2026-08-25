@@ -9,6 +9,8 @@ from core.cluster_stage_executor import (
     ClusterStageExecutionError,
     ClusterStageContext,
     _dataset_worker_root,
+    _dataset,
+    _transfer_resources,
     _validate_transfer_resources,
     execute_cluster_preflight,
     execute_cluster_environment,
@@ -282,6 +284,52 @@ def test_dataset_worker_root_preserves_all_manifest_entries() -> None:
         (_resource("dataset", []), _entry("data/b.MF4", 2, "b"), "//cluster/share/iso/data/b.MF4"),
     ]
     assert _dataset_worker_root(entries) == "//cluster/share/iso"
+
+
+def test_duplicate_dataset_transfer_retry_is_coalesced() -> None:
+    first = _resource("dataset", [_entry("data/one.MF4", 7, "first")])
+    retry = _resource("dataset", [_entry("data/one.MF4", 7, "retry")])
+    job = {
+        "owner": "alice",
+        "resolved_spec": {
+            "decisions": {
+                "transfers": {
+                    "status": "resolved",
+                    "resources": {"dataset": [first, retry]},
+                }
+            }
+        },
+    }
+    context = SimpleNamespace(dataset_catalog=SimpleNamespace())
+
+    assert len(_transfer_resources(job)["dataset"]) == 1
+    dataset = _dataset(context, job, owner="alice")
+
+    assert len(dataset.files) == 1
+    assert dataset.files[0].relative_path == "data/one.MF4"
+
+
+def test_conflicting_duplicate_dataset_transfer_is_rejected() -> None:
+    first = _resource("dataset", [_entry("data/one.MF4", 7, "first")])
+    conflict_entry = _entry("data/one.MF4", 8, "conflict")
+    conflict_entry["sha256"] = "b" * 64
+    conflict = _resource("dataset", [conflict_entry])
+    job = {
+        "owner": "alice",
+        "resolved_spec": {
+            "decisions": {
+                "transfers": {
+                    "status": "resolved",
+                    "resources": {"dataset": [first, conflict]},
+                }
+            }
+        },
+    }
+    context = SimpleNamespace(dataset_catalog=SimpleNamespace())
+
+    with pytest.raises(ClusterStageExecutionError, match="conflicting") as excinfo:
+        _dataset(context, job, owner="alice")
+    assert excinfo.value.code == "CLUSTER_DATA_TRANSFER_CONFLICT"
 
 
 def test_dataset_worker_root_preserves_backslash_unc_for_single_and_multiple_entries() -> None:

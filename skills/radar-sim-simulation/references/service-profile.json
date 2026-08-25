@@ -1,0 +1,7 @@
+{
+  "schema_version": "radar-sim.skill-service/1.0",
+  "service_url": "",
+  "service_urls": [],
+  "mcp_name": "radar-sim",
+  "auto_bootstrap": true
+}

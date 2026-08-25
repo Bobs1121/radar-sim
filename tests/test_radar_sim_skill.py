@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 SCRIPT = Path(__file__).parents[1] / "skills" / "radar-sim-simulation" / "scripts" / "discover_candidates.py"
+BOOTSTRAP_SCRIPT = Path(__file__).parents[1] / "skills" / "radar-sim-simulation" / "scripts" / "bootstrap_agent_tools.py"
+
+
+def _load_bootstrap_module():
+    spec = importlib.util.spec_from_file_location("radar_sim_skill_bootstrap", BOOTSTRAP_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run(root: Path, data_root: Path, *extra: str) -> dict:
@@ -70,3 +82,41 @@ def test_skill_discovery_bound_is_reported_as_unknown(tmp_path: Path):
     assert result["warnings"] == [
         "discovery_bound_reached; unresolved candidates require user confirmation"
     ]
+
+
+def test_source_skill_bootstrap_requires_provider_metadata_but_has_no_deployment_binding(
+    tmp_path: Path, monkeypatch
+):
+    module = _load_bootstrap_module()
+    monkeypatch.setenv("RADAR_SIM_MCP_ROOT", str(tmp_path / "mcp"))
+    monkeypatch.delenv("RADAR_SIM_SERVICE_URL", raising=False)
+    monkeypatch.delenv("RADAR_SIM_BASE_URL", raising=False)
+
+    with pytest.raises(module.BootstrapFailure, match="未包含"):
+        module.resolve_server_url()
+
+
+def test_skill_bootstrap_prefers_agent_override_and_rejects_credentials_in_url(
+    tmp_path: Path, monkeypatch
+):
+    module = _load_bootstrap_module()
+    monkeypatch.setenv("RADAR_SIM_MCP_ROOT", str(tmp_path / "mcp"))
+    monkeypatch.setenv("RADAR_SIM_SERVICE_URL", "https://sim.example.test/radar/")
+
+    url, source = module.resolve_server_url()
+
+    assert url == "https://sim.example.test/radar"
+    assert source == "RADAR_SIM_SERVICE_URL"
+
+    with pytest.raises(module.BootstrapFailure, match="不能包含"):
+        module._normalize_url("https://alice:secret@sim.example.test")
+
+
+def test_source_skill_profile_does_not_bind_a_deployment_host():
+    profile = json.loads(
+        (Path(__file__).parents[1] / "skills" / "radar-sim-simulation" / "references" / "service-profile.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert profile["service_url"] == ""
+    assert profile["service_urls"] == []

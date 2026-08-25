@@ -146,6 +146,7 @@ Diagnosis 不返回用户本地绝对路径、共享盘路径、Agent 标识、�
 | `submit_simulation` | `submit_yaml()` |
 | `get_simulation_readiness` | `cluster_readiness()` |
 | `get_simulation_capabilities` | `capabilities()` |
+| `get_simulation_state` | local active-profile store (no server-side scheduling) |
 | `check_agent_tools` | Agent Tools Manifest + local install state |
 | `update_agent_tools` | versioned local Agent Tools bootstrap |
 | `check_windows_connector` | local MCP Connector check + `capabilities()`/`windows_connector_status()` |
@@ -166,3 +167,9 @@ AI 调用顺序固定为：提交后保存 `job_id`；等待终态；读取 diag
 分块上传会在连接中断或 offset 冲突后先读取服务端 offset 再继续；结果 ZIP 下载会在断流后有限重启并始终做 SHA-256 校验。永久 4xx、证据不匹配和 checksum 错误直接返回，不转换成等待状态。
 
 MCP Server 和 Skill 已作为仓库内正式集成资产提供：`radar_sim_mcp/` 与 `skills/radar-sim-simulation/`。它们只做参数描述、权限适配、Connector 本机安装策略和 SDK 调用转发，不创建第二套调度器。认证开启时 Connector 安装仍需部署方提供短期 pairing。
+
+Skill 的重复运行状态保存在 MCP 主机的用户级 Agent Tools 数据目录中，按
+代码仓/已有 Selena/数据上下文选择 active profile。提交成功后自动保存
+规范化 `UserRunConfig 2.0`、fingerprint、Job ID 和状态；该状态不进入代码
+仓、不上传服务端、不包含文件正文或凭据。用户表达“再仿刚刚的数据”时，
+Skill 优先恢复该 profile，只有不存在或发生明确语义冲突时才询问业务输入。

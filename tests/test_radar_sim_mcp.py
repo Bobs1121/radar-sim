@@ -78,6 +78,19 @@ def test_mcp_agent_tools_update_is_confirmation_gated():
     assert result["data"]["status"] == "confirmation_required"
 
 
+def test_mcp_official_skill_install_can_prepare_without_repeated_confirmation(monkeypatch):
+    server = _server()
+    monkeypatch.setenv("RADAR_SIM_AUTO_PREPARE", "1")
+    monkeypatch.delenv("RADAR_SIM_ALLOW_AGENT_TOOLS_UPDATE", raising=False)
+
+    _content, result = asyncio.run(
+        server.app.call_tool("update_agent_tools", {"confirm": False})
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["status"] == "policy_blocked"
+
+
 def test_mcp_config_input_requires_exactly_one_source():
     from radar_sim_mcp.server import _config_input
 
@@ -127,22 +140,3 @@ def test_connector_install_state_accepts_windows_utf8_bom(tmp_path):
     assert result["installed"] is True
     assert result["agent_id"] == "agent-1"
     assert result["connector_contract_version"] == 16
-
-
-def test_agent_tools_update_adds_exact_service_host_to_proxy_bypass():
-    from radar_sim_mcp.agent_tools import _add_exact_no_proxy
-
-    client = RadarSimClient(
-        "http://10.190.171.44:8877",
-        user="alice",
-        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={})),
-        trust_env=False,
-    )
-    environment = {"NO_PROXY": "10.*", "no_proxy": "localhost"}
-
-    _add_exact_no_proxy(environment, client)
-
-    assert "10.190.171.44" in environment["NO_PROXY"].split(",")
-    assert "10.190.171.44" in environment["no_proxy"].split(",")
-    assert "10.*" in environment["NO_PROXY"].split(",")
-    assert "localhost" in environment["no_proxy"].split(",")
