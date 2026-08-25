@@ -2,13 +2,14 @@
 
 更新时间：2026-08-25（Asia/Shanghai）
 
-## 1. 当前暂停点
+## 1. 当前状态
 
-电脑重启前的工作状态如下：
+本轮工作已完成，当前状态如下：
 
 - radar-sim 源码分支：`codex/new-branch`
 - 已提交并推送：`462e166 fix: make Skill runs silent and retry-safe`
 - 远端：`origin/codex/new-branch` 已包含 `462e166`
+- Handoff 提交：`eec9037 docs: add silent skill and cluster retry handoff`
 - 工作区中未提交的内容只剩本地运行目录：`.zcode/`、`tmp-agent-home/`，不要提交
 - `origin/main` 尚未合并本分支；如需正式主线发布，后续创建 PR/合并
 
@@ -64,10 +65,9 @@ preflight.ok=true
 preflight.diagnostic_ok=true
 ```
 
-注意：这只是目标机上的真实 preflight 验证，还没有通过控制面正式 retry
-原 Job，也没有提交外部 Cluster 仿真。
+随后已通过控制面正式 retry 原 Job，并完成外部 Cluster 仿真。
 
-目标机上为复现创建了一个临时 debug run，待正式 retry 验证后清理：
+目标机上为复现创建过一个临时 debug run，正式 retry 完成后已清理：
 
 ```text
 control_job_id=debug-job-2b9a6b6452b7
@@ -122,51 +122,55 @@ state=prepared
 
 不要把这 7 个环境/基线失败写成 Skill 或 Cluster 去重修复失败。
 
-## 5. 重启后第一件事：正式 retry 原 Job
+## 5. 原 Job 正式 retry 结果
 
-电脑重启后，在 `D:\RamboStar\idea\radar-sim` 执行以下 Python 逻辑，使用同一
-owner `user-hoz2wx`：
+正式 retry 使用同一 owner `user-hoz2wx`，结果如下：
 
-```python
-from radar_sim_sdk import RadarSimClient
-
-job_id = "job_2b9a6b6452b7"
-stage_id = "task_0c4fc3acbbf3"
-with RadarSimClient("http://10.190.171.44:8877", user="hoz2wx", trust_env=False) as client:
-    job = client.retry_stage(job_id, stage_id)
-    print(job.to_dict())
-    while not job.terminal:
-        job = client.wait_until_actionable(job_id, timeout=30, poll_interval=2)
-        print(job.status, job.progress_percent)
-    print(client.diagnosis(job_id).to_dict())
-    if job.status in {"succeeded", "partial"}:
-        print(client.manifest(job_id).to_dict())
+```text
+Job: job_2b9a6b6452b7
+preflight: succeeded (attempt 3)
+run_simulation: succeeded
+collect_results: succeeded
+finalize_manifest: succeeded
+Job status: succeeded
+Diagnosis: job_succeeded
+Cluster run: cluster-run:7d598cf4e0944349ab29dbc102e07489
+Result: result:sha256:5f4212527a590b2e9957cb1eb459683016f647f0d3bdb50ba227a292c225ae7f
+Input: 1/1 succeeded
+Manifest consistency: consistent, warnings=[]
 ```
 
-验收重点：
+结果 ZIP 已下载并通过 SHA-256 校验：
+
+```text
+Local path: C:\Users\HOZ2WX\AppData\Local\Temp\radar-sim-cluster-retry-20260825\radar-sim-result-c8f9cdfba1d6.zip
+Size: 11409011 bytes
+SHA-256: c8f9cdfba1d65edb5703c40155898e427cd7485e16729541819f597eba6baf4f
+```
+
+本次验收确认：
 
 - `preflight` 不再因重复 DatasetRef 失败；
-- 后续 `run_simulation` 能进入 Cluster Gateway；
-- 如果外部 Cluster 本身仍失败，Diagnosis 必须保留新的稳定原因，而不再只
-  返回空泛的 `cluster_stage_failed`；
-- 成功时 Job 必须是 `succeeded`，并有 Manifest/`result_ref`。
+- `run_simulation` 已进入 Cluster Gateway 并成功完成；
+- `collect_results` 和 `finalize_manifest` 已成功；
+- Diagnosis、Manifest、result_ref 和下载 checksum 全部一致。
 
-如果 retry 返回“Cluster run already exists with different resolved inputs”，
-先检查上面的 `cluster-run:7d598...` 是否被手工 preflight 创建；删除该原 Job
-的 prepared row 后再 retry，不要重复提交外部 Cluster。
+## 6. Debug 复现数据清理结果
 
-## 6. 重启后清理 debug 复现数据
-
-确认正式 retry 完成后，再删除本次人工复现创建的精确对象：
+正式 retry 完成后已删除本次人工复现创建的精确对象：
 
 - `cluster_runs.db` 中 `control_job_id=debug-job-2b9a6b6452b7`；
 - Cluster share 下 `run-config-v2/debug-job-2b9a6b6452b7` 对应目录。
 
-不要递归清理整个 `direct-transfer` 或整个 Cluster workspace。
+未清理整个 `direct-transfer` 或整个 Cluster workspace。
 
-## 7. 还未完成的 Skill 独立仓同步
+## 7. Skill 独立仓同步结果
 
-`radar-sim` 源码已推送；但 `skillForJob` 的独立 Skill 仓还没有本次最新变更。
+`skillForJob` 的独立 Skill 仓已完成本次同步并推送到 `main`：
+
+- Skill 功能提交：`1aafe7d feat: make radar simulation skill silent and stateful`
+- 总 README 提交：`51df706 docs: describe silent repeat simulation flow`
+- 远端 `main` 当前指向 `51df706`
 
 当前本地 `D:\RamboStar\idea\skillForJob` 状态：
 
@@ -174,13 +178,9 @@ with RadarSimClient("http://10.190.171.44:8877", user="hoz2wx", trust_env=False)
 - 本地 `main` 比远端 ahead 1 / behind 5；
 - 用户已有修改：
   `solutions/requirements-code-assistant/skill/requirement-code-traceability/SKILL.md`，必须保留；
-- 本次 Skill 文件尚未提交到该仓：`SKILL.md`、`README.md`、`VERSION=0.2.0`、
-  `agents/openai.yaml`、两个 references、`service-profile.json`、
-  `bootstrap_agent_tools.py`、`start_mcp.py`。
-
-重启后用临时 worktree 从远端 `main` 合并/更新，只提交
-`skills/radar-sim-simulation/**` 和该 Skill 的 README，不要覆盖用户已有的
-requirements Skill 修改；然后 push 到 `skillForJob/main`。
+- 本地 clone 仍保留用户已有的 requirement Skill 修改，没有将其覆盖或提交；
+  本地 clone 与远端历史仍有分叉，后续如需同步本地 clone，使用临时 worktree
+  处理，不要直接 reset 用户工作区。
 
 ## 8. 重要边界
 
