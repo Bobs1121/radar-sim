@@ -11,7 +11,7 @@ radar-sim 是 Selena 编译与雷达数据仿真的轻量自动化脚手架。�
 ## 用户入口
 
 - Web：打开 Linux 服务地址，导入/编辑同一份 YAML，提交和管理任务。
-- Python SDK：后端产品、Linux 用户和未来 AI Skill 使用的唯一编程入口；Skill 不复制调度和状态机。
+- Python SDK：后端产品、Linux 用户和 AI Agent/MCP/Skill 使用的唯一编程入口；Skill 不复制调度和状态机。
 - Windows Connector：当配置包含 Windows 本地路径、需要编译或需要本地仿真时，一键安装一次；系统按任务自动准备所需能力。
 
 ## 最小 YAML

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Radar Simulation"
+  short_description: "Configure and run Selena simulations via SDK"
+  default_prompt: "Use $radar-sim-simulation to configure, submit, monitor, diagnose, and retrieve a Selena simulation through the SDK."

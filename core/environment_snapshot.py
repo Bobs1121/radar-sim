@@ -398,6 +398,31 @@ def inspect_selena_build_environment(
         # path-free fingerprint as the public source evidence.
         before = getattr(prepared, "branch_before", None) or getattr(prepared, "before", None)
         workspace = before.to_dict() if before is not None and hasattr(before, "to_dict") else None
+        code_change_status = str(getattr(prepared, "code_change_status", "unknown") or "unknown")
+        code_change_reason = str(getattr(prepared, "code_change_reason", "") or "")
+        if code_change_status in {"changed", "unchanged"}:
+            local_change_check = EnvironmentCheckResult(
+                "workspace_local_changes", "source.workspace.read", "passed",
+                code="selena_code_change_checked",
+                message=(
+                    "已检查所选 Selena 子仓的提交与本地修改；"
+                    + (
+                        "检测到代码变更，将执行增量编译。"
+                        if code_change_status == "changed"
+                        else "未检测到代码变更，若产物指纹一致将跳过编译。"
+                    )
+                ),
+            )
+        else:
+            local_change_check = EnvironmentCheckResult(
+                "workspace_local_changes", "source.workspace.read", "passed",
+                code="workspace_local_changes_not_scanned",
+                message=(
+                    "无法确认本地代码是否变更；为安全起见将执行增量编译，不执行清理。"
+                    if code_change_reason
+                    else "按当前配置不扫描本地 diff 或未跟踪文件；现有本地修改会保留并直接参与编译。"
+                ),
+            )
         checks_list = [
             EnvironmentCheckResult(
                 "workspace_binding", "source.workspace.read", "passed",
@@ -408,11 +433,7 @@ def inspect_selena_build_environment(
                 message="已完成 Selena 子仓分支与提交的有界身份检查。",
             ),
             EnvironmentCheckResult("artifact_local_staging", "artifact.validate", "passed"),
-            EnvironmentCheckResult(
-                "workspace_local_changes", "source.workspace.read", "passed",
-                code="workspace_local_changes_not_scanned",
-                message="按当前配置不扫描本地 diff 或未跟踪文件；现有本地修改会保留并直接参与编译。",
-            ),
+            local_change_check,
         ]
         if adaptation is not None:
             installation = getattr(adaptation, "installation", None)
@@ -447,11 +468,16 @@ def inspect_selena_build_environment(
                 raise AgentBuildStageError(
                     "full rebuild is required but the selected build script has no recognized clean command"
                 )
-            if full_rebuild_required:
+            if bool(getattr(prepared, "skip_build", False)):
+                policy_code = "selena_build_skipped_no_code_changes"
+                policy_message = (
+                    "未检测到 Selena 代码变更且现有产物/构建指纹一致；将跳过 Selena 编译。"
+                )
+            elif full_rebuild_required:
                 policy_code = "selena_full_rebuild_required"
                 policy_message = (
-                    "The existing Selena artifact belongs to a different or unproven branch; "
-                    "a full clean build is required before execution."
+                    "The existing Selena build is positively incompatible with the requested "
+                    "branch or build mode; a full clean build is required before execution."
                 )
             elif suppressed:
                 policy_code = "selena_clean_commands_suppressed"

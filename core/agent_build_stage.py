@@ -101,8 +101,15 @@ class PreparedSelenaBuild:
     full_rebuild_required: bool = False
     full_rebuild_reason: str = ""
     requested_build_branch: str = ""
+    current_workspace_branch: str = ""
+    requested_build_commit: str = ""
     previous_build_branch: str = ""
+    previous_build_commit: str = ""
+    current_artifact_checksum: str = ""
     existing_build_detected: bool = False
+    code_change_status: str = "unknown"
+    code_change_reason: str = ""
+    skip_build: bool = False
 
     def __post_init__(self) -> None:
         _validate_project(self.project)
@@ -122,6 +129,10 @@ class PreparedSelenaBuild:
             raise AgentBuildStageError("full_rebuild_required must be true or false")
         if not isinstance(self.existing_build_detected, bool):
             raise AgentBuildStageError("existing_build_detected must be true or false")
+        if self.code_change_status not in {"unchanged", "changed", "unknown"}:
+            raise AgentBuildStageError("code_change_status is invalid")
+        if not isinstance(self.skip_build, bool):
+            raise AgentBuildStageError("skip_build must be true or false")
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +228,14 @@ def _hash_regular_file(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _toolchain_fingerprint(build_script_checksum: str, build_mode: str) -> str:
+    """Return the private identity of the selected build entrypoint."""
+
+    return "sha256:" + hashlib.sha256(
+        "\0".join((str(build_script_checksum or ""), str(build_mode or ""))).encode("utf-8")
+    ).hexdigest()
+
+
 def _has_existing_build_state(
     artifact_path: Path,
     output_roots: tuple[Path, ...] | list[Path] | tuple[str, ...] | list[str],
@@ -248,7 +267,7 @@ def _has_existing_build_state(
 
 
 def _requested_build_identity(payload: Mapping[str, Any], source_lease: Any) -> tuple[str, str]:
-    """Return the branch/commit selected for this build without reading paths."""
+    """Return the current workspace branch/commit without reading paths."""
 
     if source_lease is not None:
         return (
@@ -266,6 +285,18 @@ def _requested_build_identity(payload: Mapping[str, Any], source_lease: Any) -> 
     )
 
 
+def _expected_build_branch(payload: Mapping[str, Any], source_lease: Any) -> str:
+    """Return the user's expected branch, if one was supplied."""
+
+    if source_lease is not None:
+        return str(getattr(source_lease, "requested_ref", "") or "").strip()
+    return str(
+        payload.get("expected_branch")
+        or payload.get("branch")
+        or ""
+    ).strip()
+
+
 def _branch_rebuild_policy(
     payload: Mapping[str, Any],
     *,
@@ -276,28 +307,51 @@ def _branch_rebuild_policy(
     build_mode: str,
     artifact_path: Path,
     authorized: AuthorizedRoots,
+    branch_repo_path: Path | None = None,
+    build_script_checksum: str = "",
+    requested_clean: bool = False,
 ) -> dict[str, Any]:
-    """Decide whether an existing Selena output may be reused incrementally.
+    """Decide whether Selena is skipped, built incrementally, or rebuilt cleanly.
 
-    A build tree is reusable only when its persisted Runtime Bundle provenance
-    proves the same Selena branch and build mode.  Missing provenance is not
-    treated as "probably the same"; it forces a full build so an old branch's
-    object files cannot contaminate a new branch.
+    The decision is deliberately conservative in the *non-destructive*
+    direction:
+
+    * ``unchanged`` is the only state that may skip the compiler;
+    * ``changed`` and ``unknown`` both execute the selected wrapper
+      incrementally (clean commands remain suppressed);
+    * a full clean is allowed only after a positive branch/build-mode
+      incompatibility is proved.
+
+    In particular, missing historical provenance, an unreadable artifact, or
+    an unavailable Git status is not evidence of a branch mismatch.  Treating
+    those cases as full-clean was the failure mode that deleted a valid
+    nested Selena output before the compiler ran.
     """
 
-    requested_branch, requested_commit = _requested_build_identity(payload, source_lease)
+    current_branch, requested_commit = _requested_build_identity(payload, source_lease)
+    expected_branch = _expected_build_branch(payload, source_lease)
     existing = _has_existing_build_state(artifact_path, authorized.output_roots)
     result: dict[str, Any] = {
         "existing_build_detected": bool(existing),
         "full_rebuild_required": False,
         "full_rebuild_reason": "",
-        "requested_build_branch": requested_branch,
+        "skip_build": False,
+        "code_change_status": "unknown",
+        "code_change_reason": "code_change_not_checked",
+        "requested_build_branch": expected_branch or current_branch,
+        "current_workspace_branch": current_branch,
         "requested_build_commit": requested_commit,
         "previous_build_branch": "",
+        "previous_build_commit": "",
         "previous_build_mode": "",
+        "previous_toolchain_fingerprint": "",
         "previous_entrypoint_checksum": "",
+        "current_artifact_checksum": "",
     }
     if contract != "user-run-config/2.0" or not existing:
+        result["code_change_reason"] = (
+            "no_existing_build_state" if not existing else "legacy_contract_not_evaluated"
+        )
         return result
 
     try:
@@ -311,31 +365,116 @@ def _branch_rebuild_policy(
         previous = None
     if previous:
         result["previous_build_branch"] = str(previous.get("branch") or "").strip()
+        result["previous_build_commit"] = str(previous.get("commit") or "").strip().lower()
         result["previous_build_mode"] = str(previous.get("build_mode") or "").strip()
+        result["previous_toolchain_fingerprint"] = str(
+            previous.get("toolchain_fingerprint") or ""
+        ).strip().lower()
         result["previous_entrypoint_checksum"] = str(
             previous.get("entrypoint_checksum") or ""
         ).strip().lower()
 
-    reason = ""
     if not previous:
-        reason = "existing_artifact_provenance_unavailable"
-    elif not requested_branch or not result["previous_build_branch"]:
-        reason = "selena_branch_identity_unavailable"
-    elif requested_branch.casefold() != result["previous_build_branch"].casefold():
-        reason = "selena_branch_changed"
-    elif result["previous_build_mode"] and result["previous_build_mode"].casefold() != str(build_mode).casefold():
-        reason = "selena_build_mode_changed"
-    elif not result["previous_entrypoint_checksum"]:
-        reason = "existing_artifact_provenance_incomplete"
-    else:
-        current_checksum = _hash_regular_file(artifact_path)
-        if not current_checksum:
-            reason = "existing_artifact_location_unverified"
-        elif current_checksum != result["previous_entrypoint_checksum"]:
-            reason = "existing_artifact_content_changed"
-    if reason:
+        result["code_change_reason"] = "build_provenance_unavailable_incremental_fallback"
+        return result
+
+    previous_branch = str(result["previous_build_branch"] or "")
+    previous_mode = str(result["previous_build_mode"] or "")
+    previous_commit = str(result["previous_build_commit"] or "")
+    previous_toolchain = str(result["previous_toolchain_fingerprint"] or "")
+    previous_entrypoint = str(result["previous_entrypoint_checksum"] or "")
+    current_checksum = _hash_regular_file(artifact_path)
+    result["current_artifact_checksum"] = current_checksum
+
+    # A branch mismatch is a positive incompatibility signal.  It is the one
+    # normal case in which stale object files must not be reused.
+    if expected_branch and previous_branch and expected_branch.casefold() != previous_branch.casefold():
         result["full_rebuild_required"] = True
-        result["full_rebuild_reason"] = reason
+        result["full_rebuild_reason"] = "selena_expected_branch_mismatch"
+        result["code_change_status"] = "changed"
+        result["code_change_reason"] = "selena_expected_branch_mismatch"
+        return result
+
+    # If the live workspace moved away from the branch represented by the
+    # previous artifact, reuse is unsafe even when the user's expectation is
+    # absent or happens to match the old artifact.  The framework still does
+    # not checkout/reset; it only refuses to reuse stale objects.
+    if current_branch and previous_branch and current_branch.casefold() != previous_branch.casefold():
+        result["full_rebuild_required"] = True
+        result["full_rebuild_reason"] = "selena_branch_changed"
+        result["code_change_status"] = "changed"
+        result["code_change_reason"] = "selena_branch_changed"
+        return result
+
+    # A build-mode mismatch changes compiler/configuration identity even when
+    # the source branch is unchanged.  It is also a positive incompatibility.
+    if previous_mode and previous_mode.casefold() != str(build_mode).casefold():
+        result["full_rebuild_required"] = True
+        result["full_rebuild_reason"] = "selena_build_mode_changed"
+        result["code_change_status"] = "changed"
+        result["code_change_reason"] = "selena_build_mode_changed"
+        return result
+
+    current_toolchain = _toolchain_fingerprint(build_script_checksum, build_mode)
+    toolchain_matches = bool(previous_toolchain and previous_toolchain == current_toolchain)
+
+    # First compare immutable Git commits.  A changed commit is a known code
+    # change, but it is exactly the case where the requested behavior is an
+    # incremental compile rather than an automatic clean.
+    if requested_commit and previous_commit and requested_commit != previous_commit:
+        result["code_change_status"] = "changed"
+        result["code_change_reason"] = "selena_commit_changed_incremental"
+    elif requested_commit and previous_commit and requested_commit == previous_commit:
+        # A matching HEAD is not enough: uncommitted edits may be part of the
+        # user's current build.  Inspect only the selected Selena repository;
+        # if it cannot be inspected, remain conservative and compile
+        # incrementally instead of claiming that the source is unchanged.
+        if branch_repo_path is None:
+            result["code_change_reason"] = "selected_repo_unavailable_incremental_fallback"
+        else:
+            try:
+                current_source = inspect_workspace(branch_repo_path)
+            except (RepoSourceError, OSError):
+                result["code_change_reason"] = "code_change_inspection_failed_incremental_fallback"
+            else:
+                # Internal-only handoff to prepare_selena_build.  It is
+                # removed from public result dictionaries before they leave
+                # this module.
+                result["_branch_snapshot"] = current_source
+                if current_source.dirty:
+                    result["code_change_status"] = "changed"
+                    result["code_change_reason"] = "selena_worktree_dirty_incremental"
+                else:
+                    result["code_change_status"] = "unchanged"
+                    result["code_change_reason"] = "selena_commit_and_worktree_unchanged"
+    else:
+        result["code_change_reason"] = "commit_identity_unavailable_incremental_fallback"
+
+    if previous_toolchain and not toolchain_matches and result["code_change_status"] != "changed":
+        result["code_change_status"] = "changed"
+        result["code_change_reason"] = "selena_build_script_changed_incremental"
+
+    # A missing historical toolchain or artifact checksum prevents a safe
+    # no-op decision, but does not justify deleting the build tree.  Compile
+    # incrementally and let final artifact validation remain authoritative.
+    can_skip = (
+        not requested_clean
+        and bool(existing)
+        and result["code_change_status"] == "unchanged"
+        and bool(current_checksum)
+        and bool(previous_entrypoint)
+        and current_checksum == previous_entrypoint
+        and toolchain_matches
+    )
+    if can_skip:
+        result["skip_build"] = True
+        result["skip_reason"] = "selena_code_unchanged_artifact_and_toolchain_match"
+    elif result["code_change_status"] == "unchanged":
+        result["code_change_reason"] = (
+            "provenance_incomplete_incremental_fallback"
+            if not toolchain_matches or not previous_entrypoint or not current_checksum
+            else "artifact_checksum_changed_incremental"
+        )
     return result
 
 
@@ -367,6 +506,8 @@ def _build_policy_mode_label(prepared: PreparedSelenaBuild) -> str:
     incremental reuse of anything: label it ``fresh`` and record the fact
     instead of advertising it as a default-incremental build.
     """
+    if prepared.skip_build:
+        return "skipped"
     if prepared.full_rebuild_required:
         return "full"
     if not prepared.existing_build_detected:
@@ -399,6 +540,42 @@ def _resolve_artifact_path(exe_path: str, authorized: AuthorizedRoots) -> Path:
     # Must be under an authorized output root.
     if not authorized.contains_output(resolved):
         raise AgentBuildStageError("artifact path is outside authorized output roots")
+
+    # Generic UserRunConfig cannot know every Selena wrapper's final layout.
+    # A number of valid builds place the executable below a configuration
+    # directory's ``bin`` folder, while the inferred pattern points at its
+    # parent.  If the expected path is absent, reuse the one unique existing
+    # Selena executable under the already-authorized output roots.  This is
+    # the common Web/SDK/MCP path: it prevents a same-branch build from being
+    # classified as a full rebuild solely because the wrapper layout differs.
+    if not _is_regular_non_symlink(resolved):
+        candidates: list[Path] = []
+        inspected = 0
+        scan_exhausted = False
+        for output_root in authorized.output_roots:
+            try:
+                for item in output_root.rglob("*"):
+                    inspected += 1
+                    if inspected > 2048:
+                        # Reaching the bound means artifact discovery is
+                        # unknown, not that the build environment is invalid.
+                        # Leave the inferred path in place so the caller can
+                        # apply the normal incremental fallback and let
+                        # post-build discovery/validation remain authoritative.
+                        scan_exhausted = True
+                        break
+                    if item.name.casefold() != "selena.exe" or not _is_regular_non_symlink(item):
+                        continue
+                    candidate = item.resolve(strict=True)
+                    if authorized.contains_output(candidate):
+                        candidates.append(candidate)
+            except OSError:
+                continue
+            if scan_exhausted:
+                break
+        unique = {os.path.normcase(str(item)): item for item in candidates}
+        if len(unique) == 1:
+            resolved = next(iter(unique.values()))
 
     # Also verify realpath doesn't escape via symlinks (defense in depth).
     real = Path(os.path.realpath(str(resolved)))
@@ -867,6 +1044,13 @@ def prepare_selena_build(
 
     artifact_path = _resolve_artifact_path(exe_path, authorized)
 
+    # Resolve the selected Selena repository before deciding whether an
+    # unchanged build may be skipped.  The identity-only snapshot remains the
+    # cheap default; the policy performs a full status check only when the
+    # previous commit matches and a no-op decision is otherwise possible.
+    branch_repo_path, branch_before = _resolve_branch_repo_snapshot(
+        payload.get("branch_repo_ref"), authorized, identity_only=identity_only,
+    )
     branch_policy = _branch_rebuild_policy(
         payload,
         contract=contract,
@@ -876,12 +1060,25 @@ def prepare_selena_build(
         build_mode=build_mode,
         artifact_path=artifact_path,
         authorized=authorized,
+        branch_repo_path=branch_repo_path,
+        build_script_checksum=script_checksum,
+        requested_clean=clean,
     )
     full_rebuild_required = bool(branch_policy.get("full_rebuild_required"))
     full_rebuild_reason = str(branch_policy.get("full_rebuild_reason") or "")
     requested_build_branch = str(branch_policy.get("requested_build_branch") or "")
+    current_workspace_branch = str(branch_policy.get("current_workspace_branch") or "")
+    requested_build_commit = str(branch_policy.get("requested_build_commit") or "")
     previous_build_branch = str(branch_policy.get("previous_build_branch") or "")
+    previous_build_commit = str(branch_policy.get("previous_build_commit") or "")
+    current_artifact_checksum = str(branch_policy.get("current_artifact_checksum") or "")
     existing_build_detected = bool(branch_policy.get("existing_build_detected"))
+    code_change_status = str(branch_policy.get("code_change_status") or "unknown")
+    code_change_reason = str(branch_policy.get("code_change_reason") or "")
+    skip_build = bool(branch_policy.get("skip_build"))
+    detailed_branch_snapshot = branch_policy.get("_branch_snapshot")
+    if isinstance(detailed_branch_snapshot, WorkspaceFingerprint):
+        branch_before = detailed_branch_snapshot
     if full_rebuild_required:
         clean = True
 
@@ -948,10 +1145,6 @@ def prepare_selena_build(
         raise AgentBuildStageError(
             "workspace identity check failed" if identity_only else str(exc)
         ) from exc
-    branch_repo_path, branch_before = _resolve_branch_repo_snapshot(
-        payload.get("branch_repo_ref"), authorized, identity_only=identity_only,
-    )
-
     return PreparedSelenaBuild(
         project=project,
         binding_id=binding_id,
@@ -975,12 +1168,25 @@ def prepare_selena_build(
         source_commit=source_commit,
         branch_repo_path=branch_repo_path,
         branch_before=branch_before,
-        workspace_identity_mode="branch_head_only" if identity_only else "full",
+        workspace_identity_mode=(
+            "branch_full"
+            if branch_repo_path is not None and isinstance(detailed_branch_snapshot, WorkspaceFingerprint)
+            else "branch_head_only"
+            if identity_only
+            else "full"
+        ),
         full_rebuild_required=full_rebuild_required,
         full_rebuild_reason=full_rebuild_reason,
         requested_build_branch=requested_build_branch,
+        current_workspace_branch=current_workspace_branch,
+        requested_build_commit=requested_build_commit,
         previous_build_branch=previous_build_branch,
+        previous_build_commit=previous_build_commit,
+        current_artifact_checksum=current_artifact_checksum,
         existing_build_detected=existing_build_detected,
+        code_change_status=code_change_status,
+        code_change_reason=code_change_reason,
+        skip_build=skip_build,
     )
 
 
@@ -1019,7 +1225,8 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
     try:
         after = (
             _uninspected_workspace_evidence()
-            if prepared.workspace_identity_mode == "branch_head_only" and prepared.branch_before is not None
+            if prepared.workspace_identity_mode in {"branch_head_only", "branch_full"}
+            and prepared.branch_before is not None
             else inspect_workspace_identity(prepared.authorized.workspace_root)
             if prepared.workspace_identity_mode == "branch_head_only"
             else capture_source_snapshot(prepared.authorized.workspace_root, prepared.authorized)
@@ -1085,6 +1292,8 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
     }
     if prepared.workspace_identity_mode == "branch_head_only":
         source_change_evidence["local_changes_checked"] = False
+    elif prepared.workspace_identity_mode == "branch_full":
+        source_change_evidence["local_changes_checked"] = True
     result: dict[str, Any] = {
         "project": prepared.project,
         "workspace_binding_id": prepared.binding_id,
@@ -1094,11 +1303,19 @@ def finish_selena_build(prepared: PreparedSelenaBuild) -> dict[str, Any]:
             "full_rebuild_required": prepared.full_rebuild_required,
             "reason": prepared.full_rebuild_reason,
             "requested_branch": prepared.requested_build_branch,
+            "current_workspace_branch": prepared.current_workspace_branch,
+            "requested_commit": prepared.requested_build_commit,
             "previous_branch": prepared.previous_build_branch,
+            "previous_commit": prepared.previous_build_commit,
+            "current_artifact_checksum": prepared.current_artifact_checksum,
             "fresh_start": not prepared.existing_build_detected,
             "incremental_reused": (
                 not prepared.full_rebuild_required and prepared.existing_build_detected
             ),
+            "compiler_executed": not prepared.skip_build,
+            "skip_build": prepared.skip_build,
+            "code_change_status": prepared.code_change_status,
+            "code_change_reason": prepared.code_change_reason,
         },
         "before": before_public,
         "after": after_public,
@@ -1150,9 +1367,7 @@ def stage_runtime_bundle_from_build(
     before = dict(build_result.get("before") or {})
     dirty = bool(before.get("dirty"))
     dirty_fingerprint = "sha256:" + str(before.get("sha256") or "") if dirty else ""
-    toolchain = "sha256:" + hashlib.sha256(
-        "\0".join((prepared.build_script_checksum, prepared.build_mode)).encode("utf-8")
-    ).hexdigest()
+    toolchain = _toolchain_fingerprint(prepared.build_script_checksum, prepared.build_mode)
     source = RuntimeSourceEvidence(
         branch=str(before.get("branch") or ""),
         commit=str(before.get("commit") or ""),

@@ -4,7 +4,7 @@
 > 最近确认：2026-08-20
 > 适用范围：Web、Python SDK、REST API、Linux 控制面、统一 Windows Connector、Cluster 调度
 >
-> **V2 单轨收敛声明（2026-08-13）**：本文件是用户侧权威合同。公共配置只有 `user-run-config/2.0`，用户只安装一个统一 Connector；不存在用户可选的运行档位、项目注册、固定产品流程或旧配置迁移。内部数据库遗留字段只能承载匿名 `execution_identity`，不能影响业务路由。MCP/Skill、Cluster 结果反向交付和远端到本地 Windows 的 `source_to_local` 仍是明确缺口，详见 `docs/V2_ARCHITECTURE.md` §10。
+> **V2 单轨收敛声明（2026-08-13）**：本文件是用户侧权威合同。公共配置只有 `user-run-config/2.0`，用户只安装一个统一 Connector；不存在用户可选的运行档位、项目注册、固定产品流程或旧配置迁移。内部数据库遗留字段只能承载匿名 `execution_identity`，不能影响业务路由。MCP/Skill 现在作为 SDK 的正式薄封装提供；Cluster 结果反向交付和远端到本地 Windows 的 `source_to_local` 仍是明确边界，详见 `docs/V2_ARCHITECTURE.md` §10。
 >
 > 当前 P0 实施边界（2026-08-13）：Cluster 方向的 `shared_copy` 已实现；远端资源无法被本地仿真 Windows 原地读取时，必须返回稳定 `source_to_local_unavailable`，不得把 Cluster staging 冒充本地缓存。Cluster 结果当前通过 owner 隔离的 ZIP/引用交付；是否已完成真实部署和外部 Cluster 验收，以最新 handoff 为准。
 

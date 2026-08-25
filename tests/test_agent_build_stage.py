@@ -143,6 +143,263 @@ def test_v2_branch_change_forces_full_rebuild_from_existing_artifact(local_bindi
     assert same["full_rebuild_required"] is False
 
 
+def test_missing_provenance_falls_back_to_incremental_not_full_clean(local_binding, monkeypatch):
+    artifact = local_binding.output / "selena.exe"
+    artifact.write_bytes(b"existing-selena")
+    authorized = local_binding.store.resolve_authorized_roots(
+        local_binding.binding.binding_id,
+        project="demo",
+    )
+
+    class FakeLeaseStore:
+        def latest_build_provenance(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(
+        "core.agent_runtime_bundle_lease.AgentRuntimeBundleLeaseStore",
+        FakeLeaseStore,
+    )
+    policy = build_stage._branch_rebuild_policy(
+        {"actual_branch": "feature/current", "actual_commit": "c" * 40},
+        contract="user-run-config/2.0",
+        source_lease=None,
+        project="demo",
+        binding_id=local_binding.binding.binding_id,
+        build_mode="Release",
+        artifact_path=artifact,
+        authorized=authorized,
+    )
+
+    assert policy["full_rebuild_required"] is False
+    assert policy["skip_build"] is False
+    assert policy["code_change_status"] == "unknown"
+    assert "incremental" in policy["code_change_reason"]
+
+
+def test_expected_branch_mismatch_forces_full_rebuild(local_binding, monkeypatch):
+    artifact = local_binding.output / "selena.exe"
+    artifact.write_bytes(b"existing-selena")
+    authorized = local_binding.store.resolve_authorized_roots(
+        local_binding.binding.binding_id,
+        project="demo",
+    )
+    checksum = build_stage._hash_regular_file(artifact)
+
+    class FakeLeaseStore:
+        def latest_build_provenance(self, **_kwargs):
+            return {
+                "branch": "feature/artifact",
+                "commit": "a" * 40,
+                "build_mode": "Release",
+                "entrypoint_checksum": checksum,
+            }
+
+    monkeypatch.setattr(
+        "core.agent_runtime_bundle_lease.AgentRuntimeBundleLeaseStore",
+        FakeLeaseStore,
+    )
+    policy = build_stage._branch_rebuild_policy(
+        {
+            "actual_branch": "feature/workspace",
+            "expected_branch": "feature/expected",
+            "actual_commit": "b" * 40,
+        },
+        contract="user-run-config/2.0",
+        source_lease=None,
+        project="demo",
+        binding_id=local_binding.binding.binding_id,
+        build_mode="Release",
+        artifact_path=artifact,
+        authorized=authorized,
+    )
+
+    assert policy["full_rebuild_required"] is True
+    assert policy["full_rebuild_reason"] == "selena_expected_branch_mismatch"
+    assert policy["requested_build_branch"] == "feature/expected"
+    assert policy["current_workspace_branch"] == "feature/workspace"
+
+
+def test_changed_commit_falls_back_to_incremental_not_full_clean(local_binding, monkeypatch):
+    artifact = local_binding.output / "selena.exe"
+    artifact.write_bytes(b"existing-selena")
+    authorized = local_binding.store.resolve_authorized_roots(
+        local_binding.binding.binding_id,
+        project="demo",
+    )
+    checksum = build_stage._hash_regular_file(artifact)
+
+    class FakeLeaseStore:
+        def latest_build_provenance(self, **_kwargs):
+            return {
+                "branch": "feature/current",
+                "commit": "a" * 40,
+                "build_mode": "Release",
+                "entrypoint_checksum": checksum,
+                "toolchain_fingerprint": build_stage._toolchain_fingerprint("", "Release"),
+            }
+
+    monkeypatch.setattr(
+        "core.agent_runtime_bundle_lease.AgentRuntimeBundleLeaseStore",
+        FakeLeaseStore,
+    )
+    policy = build_stage._branch_rebuild_policy(
+        {"actual_branch": "feature/current", "actual_commit": "b" * 40},
+        contract="user-run-config/2.0",
+        source_lease=None,
+        project="demo",
+        binding_id=local_binding.binding.binding_id,
+        build_mode="Release",
+        artifact_path=artifact,
+        authorized=authorized,
+        build_script_checksum="",
+    )
+
+    assert policy["full_rebuild_required"] is False
+    assert policy["skip_build"] is False
+    assert policy["code_change_status"] == "changed"
+    assert policy["code_change_reason"] == "selena_commit_changed_incremental"
+
+
+def test_unchanged_code_and_artifact_can_skip_compile(local_binding, monkeypatch):
+    artifact = local_binding.output / "selena.exe"
+    artifact.write_bytes(b"existing-selena")
+    authorized = local_binding.store.resolve_authorized_roots(
+        local_binding.binding.binding_id,
+        project="demo",
+    )
+    checksum = build_stage._hash_regular_file(artifact)
+    script_checksum = build_stage._hash_script(local_binding.script)
+
+    class FakeLeaseStore:
+        def latest_build_provenance(self, **_kwargs):
+            return {
+                "branch": "feature/current",
+                "commit": "a" * 40,
+                "build_mode": "Release",
+                "entrypoint_checksum": checksum,
+                "toolchain_fingerprint": build_stage._toolchain_fingerprint(
+                    script_checksum, "Release"
+                ),
+            }
+
+    monkeypatch.setattr(
+        "core.agent_runtime_bundle_lease.AgentRuntimeBundleLeaseStore",
+        FakeLeaseStore,
+    )
+    monkeypatch.setattr(
+        build_stage,
+        "inspect_workspace",
+        lambda _path: snapshot(commit="a" * 40, branch="feature/current", dirty=False),
+    )
+    policy = build_stage._branch_rebuild_policy(
+        {"actual_branch": "feature/current", "actual_commit": "a" * 40},
+        contract="user-run-config/2.0",
+        source_lease=None,
+        project="demo",
+        binding_id=local_binding.binding.binding_id,
+        build_mode="Release",
+        artifact_path=artifact,
+        authorized=authorized,
+        branch_repo_path=local_binding.workspace,
+        build_script_checksum=script_checksum,
+    )
+
+    assert policy["full_rebuild_required"] is False
+    assert policy["code_change_status"] == "unchanged"
+    assert policy["skip_build"] is True
+
+
+def test_code_change_detection_failure_falls_back_to_incremental(local_binding, monkeypatch):
+    artifact = local_binding.output / "selena.exe"
+    artifact.write_bytes(b"existing-selena")
+    authorized = local_binding.store.resolve_authorized_roots(
+        local_binding.binding.binding_id,
+        project="demo",
+    )
+    checksum = build_stage._hash_regular_file(artifact)
+
+    class FakeLeaseStore:
+        def latest_build_provenance(self, **_kwargs):
+            return {
+                "branch": "feature/current",
+                "commit": "a" * 40,
+                "build_mode": "Release",
+                "entrypoint_checksum": checksum,
+                "toolchain_fingerprint": build_stage._toolchain_fingerprint("", "Release"),
+            }
+
+    monkeypatch.setattr(
+        "core.agent_runtime_bundle_lease.AgentRuntimeBundleLeaseStore",
+        FakeLeaseStore,
+    )
+    monkeypatch.setattr(
+        build_stage,
+        "inspect_workspace",
+        lambda _path: (_ for _ in ()).throw(build_stage.RepoSourceError("status unavailable")),
+    )
+    policy = build_stage._branch_rebuild_policy(
+        {"actual_branch": "feature/current", "actual_commit": "a" * 40},
+        contract="user-run-config/2.0",
+        source_lease=None,
+        project="demo",
+        binding_id=local_binding.binding.binding_id,
+        build_mode="Release",
+        artifact_path=artifact,
+        authorized=authorized,
+        branch_repo_path=local_binding.workspace,
+        build_script_checksum="",
+    )
+
+    assert policy["full_rebuild_required"] is False
+    assert policy["skip_build"] is False
+    assert policy["code_change_status"] == "unknown"
+    assert "incremental" in policy["code_change_reason"]
+
+
+def test_resolve_artifact_path_reuses_unique_nested_selena_executable(local_binding):
+    nested = (
+        local_binding.output
+        / "dc_tools"
+        / "selena"
+        / "core"
+        / "RelWithDebInfo"
+        / "bin"
+        / "selena.exe"
+    )
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"existing-selena")
+    authorized = local_binding.store.resolve_authorized_roots(
+        local_binding.binding.binding_id,
+        project="demo",
+    )
+
+    expected = local_binding.output / "dc_tools" / "selena" / "core" / "RelWithDebInfo" / "selena.exe"
+
+    resolved = build_stage._resolve_artifact_path(str(expected), authorized)
+
+    assert resolved == nested.resolve()
+
+
+def test_resolve_artifact_path_scan_bound_is_incremental_fallback(local_binding, monkeypatch):
+    authorized = local_binding.store.resolve_authorized_roots(
+        local_binding.binding.binding_id,
+        project="demo",
+    )
+    expected = local_binding.output / "missing" / "selena.exe"
+
+    monkeypatch.setattr(
+        Path,
+        "rglob",
+        lambda self, _pattern: (
+            local_binding.output / f"uninspected-{index}.obj" for index in range(2050)
+        ),
+    )
+
+    resolved = build_stage._resolve_artifact_path(str(expected), authorized)
+
+    assert resolved == expected.resolve()
+
+
 def test_v2_branch_change_forces_full_rebuild_when_exe_is_nested_in_output_tree(
     local_binding, monkeypatch
 ):
@@ -409,6 +666,27 @@ def test_finish_marks_incremental_reuse_when_existing_state_matches(local_bindin
     assert policy["mode"] == "incremental"
     assert policy["fresh_start"] is False
     assert policy["incremental_reused"] is True
+
+
+def test_finish_labels_proven_no_code_change_as_skipped(local_binding, monkeypatch):
+    prepared = prepare(local_binding, monkeypatch)
+    prepared = build_stage.PreparedSelenaBuild(
+        **{
+            **prepared.__dict__,
+            "existing_build_detected": True,
+            "skip_build": True,
+            "code_change_status": "unchanged",
+            "code_change_reason": "selena_commit_and_worktree_unchanged",
+        },
+    )
+    (local_binding.output / "selena.exe").write_bytes(b"binary")
+    result = build_stage.finish_selena_build(prepared)
+
+    policy = result["build_policy"]
+    assert policy["mode"] == "skipped"
+    assert policy["skip_build"] is True
+    assert policy["compiler_executed"] is False
+    assert policy["code_change_status"] == "unchanged"
 
 
 def test_finish_keeps_nested_branch_evidence_consistent(local_binding, monkeypatch):

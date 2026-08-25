@@ -269,6 +269,16 @@ def register(subparsers):
         action="store_true",
         help="Disable the built-in Linux/Gateway v2 Cluster Stage executor.",
     )
+    serve_v1.add_argument(
+        "--agent-tools-bundle",
+        default="",
+        help="Path to the no-source SDK/MCP/Skill Agent Tools bundle ZIP.",
+    )
+    serve_v1.add_argument(
+        "--agent-tools-manifest",
+        default="",
+        help="Path to the Agent Tools sidecar manifest JSON.",
+    )
 
     create = server_sub.add_parser("create-job", help="Create a control job in the local control DB")
     create.add_argument("job_type", help="Job type, e.g. local.check or local.run_sim")
@@ -696,6 +706,18 @@ def _run_serve_v1(args) -> int:
         cluster_readiness_provider=cluster_readiness_provider,
     )
     app_kwargs = {"api_service": api_service}
+    agent_tools_bundle = str(
+        getattr(args, "agent_tools_bundle", "")
+        or os.environ.get("RSIM_AGENT_TOOLS_BUNDLE", "")
+    ).strip()
+    agent_tools_manifest = str(
+        getattr(args, "agent_tools_manifest", "")
+        or os.environ.get("RSIM_AGENT_TOOLS_MANIFEST", "")
+    ).strip()
+    if agent_tools_bundle:
+        app_kwargs["agent_tools_bundle"] = agent_tools_bundle
+    if agent_tools_manifest:
+        app_kwargs["agent_tools_manifest"] = agent_tools_manifest
     if authenticator is not None:
         app_kwargs["authenticator"] = authenticator
     app = create_app(**app_kwargs)

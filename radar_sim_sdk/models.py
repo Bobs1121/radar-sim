@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from core.user_config import UserRunConfig
@@ -37,6 +37,31 @@ class Job:
         """Expose the REST/Web name while preserving the historic ``id``."""
 
         return self.id
+
+    @property
+    def terminal(self) -> bool:
+        """Whether the public Job outcome is final."""
+
+        return self.status.strip().lower() in {"succeeded", "partial", "failed", "cancelled"}
+
+    @property
+    def needs_input(self) -> bool:
+        """Whether the caller must perform an action before execution continues."""
+
+        return self.status.strip().lower() == "needs_input" or bool(self.waiting)
+
+    @property
+    def progress_percent(self) -> float:
+        """Progress in the 0..100 range for user-facing Agent output."""
+
+        return max(0.0, min(100.0, float(self.progress or 0.0) * 100.0))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe snapshot suitable for MCP/Skill responses."""
+
+        payload = asdict(self)
+        payload["job_id"] = self.id
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Job":
@@ -100,6 +125,9 @@ class Event:
             action=list(data.get("action") or payload.get("action") or []),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(frozen=True)
 class EventsPage:
@@ -119,6 +147,11 @@ class EventsPage:
             terminal=bool(data.get("terminal", False)),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["events"] = [event.to_dict() for event in self.events]
+        return payload
+
 
 @dataclass(frozen=True)
 class ManifestResponse:
@@ -134,6 +167,9 @@ class ManifestResponse:
             available=bool(data.get("available", False)),
             manifest=dict(manifest) if isinstance(manifest, dict) else None,
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -171,6 +207,9 @@ class JobDiagnosis:
             consistency=dict(data.get("consistency") or {}),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(frozen=True)
 class RunConfigValidationResult:
@@ -193,6 +232,17 @@ class RunConfigValidationResult:
             readiness=dict(data.get("readiness") or {}),
             execution_plan=[dict(item) for item in data.get("execution_plan") or []],
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "valid": self.valid,
+            "config": self.config.to_dict(),
+            "fingerprint": self.fingerprint,
+            "environment_plan": dict(self.environment_plan),
+            "execution": dict(self.execution),
+            "readiness": dict(self.readiness),
+            "execution_plan": [dict(item) for item in self.execution_plan],
+        }
 
 
 @dataclass(frozen=True)
@@ -223,6 +273,9 @@ class ArtifactUpload:
             chunk_size=int(data.get("chunk_size") or 0),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(frozen=True)
 class ArtifactUploadResult:
@@ -238,6 +291,13 @@ class ArtifactUploadResult:
             reused=bool(data.get("reused", False)),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session": self.session.to_dict(),
+            "artifact": dict(self.artifact),
+            "reused": self.reused,
+        }
+
 
 @dataclass(frozen=True)
 class RuntimeBundleUploadResult:
@@ -252,6 +312,13 @@ class RuntimeBundleUploadResult:
             runtime_bundle=dict(data.get("runtime_bundle") or {}),
             reused=bool(data.get("reused", False)),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session": self.session.to_dict(),
+            "runtime_bundle": dict(self.runtime_bundle),
+            "reused": self.reused,
+        }
 
 
 @dataclass(frozen=True)
@@ -273,6 +340,9 @@ class DatasetUploadFile:
             received_bytes=int(data.get("received_bytes") or 0),
             status=str(data.get("status") or ""),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -297,6 +367,11 @@ class DatasetUpload:
             files=tuple(DatasetUploadFile.from_dict(item) for item in data.get("files") or []),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["files"] = [item.to_dict() for item in self.files]
+        return payload
+
 
 @dataclass(frozen=True)
 class DatasetUploadResult:
@@ -313,3 +388,11 @@ class DatasetUploadResult:
             data_path=str(data.get("data_path") or ""),
             reused=bool(data.get("reused", False)),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session": self.session.to_dict(),
+            "dataset": dict(self.dataset),
+            "data_path": self.data_path,
+            "reused": self.reused,
+        }

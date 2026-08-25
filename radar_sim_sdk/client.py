@@ -120,9 +120,21 @@ class RadarSimClient:
         """Check server health and API version."""
         return dict(self._request("GET", "/api/v1/health"))
 
+    def user_run_config_schema(self) -> dict[str, Any]:
+        """Return the public ``UserRunConfig 2.0`` JSON Schema used by Web."""
+        return dict(self._request("GET", "/api/v1/schema/run-config"))
+
+    def run_config_schema(self) -> dict[str, Any]:
+        """Short alias for :meth:`user_run_config_schema`."""
+        return self.user_run_config_schema()
+
     def capabilities(self) -> dict[str, Any]:
         """Return the path-free execution capability snapshot for this user."""
         return dict(self._request("GET", "/api/v1/capabilities"))
+
+    def cluster_readiness(self) -> dict[str, Any]:
+        """Return the deployment-owned Cluster readiness gate used by Web."""
+        return dict(self._request("GET", "/api/v1/cluster/readiness"))
 
     def download_windows_connector(
         self,
@@ -180,11 +192,175 @@ class RadarSimClient:
             ).strip().lower()
         return self.download_windows_connector(destination, mode="unified")
 
+    def agent_tools_manifest(self) -> dict[str, Any]:
+        """Return the public no-source SDK/MCP/Skill release manifest."""
+
+        return dict(self._request("GET", "/api/v1/agent-tools/manifest"))
+
+    def _agent_tools_bootstrap_environment(self) -> dict[str, str]:
+        """Return ephemeral identity values needed by the local bootstrap.
+
+        The SDK client may have been configured with ``user=``/``token=``
+        instead of process environment variables.  Agent Tools updates run a
+        separate stdlib bootstrap process, so propagate the same in-memory
+        Bearer token and owner header to that process.  The bootstrap only
+        writes the non-secret owner value to ``mcp-config.json``; the token
+        remains an environment value and is never persisted by the installer.
+        """
+
+        environment: dict[str, str] = {}
+        headers = self._client.headers
+        authorization = next(
+            (
+                str(value)
+                for key, value in headers.items()
+                if str(key).casefold() == "authorization"
+            ),
+            "",
+        )
+        if authorization.casefold().startswith("bearer "):
+            token = authorization[7:].strip()
+            if token:
+                environment["RADAR_SIM_TOKEN"] = token
+        owner = next(
+            (
+                str(value)
+                for key, value in headers.items()
+                if str(key).casefold() == USER_HEADER.casefold()
+            ),
+            "",
+        ).strip()
+        if owner:
+            environment["RADAR_SIM_USER"] = owner
+        return environment
+
+    def download_agent_tools_installer(self, destination: str | Path) -> Path:
+        """Download the same-origin Windows Agent Tools bootstrap script."""
+
+        target = Path(destination).expanduser()
+        if target.exists() and target.is_dir():
+            target = target / "install-radar-sim-agent.ps1"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + f".part.{uuid.uuid4().hex}")
+        try:
+            with self._client.stream("GET", "/api/v1/agent-tools/install.ps1") as response:
+                self._raise_for_status(response)
+                with temporary.open("wb") as handle:
+                    for chunk in response.iter_bytes():
+                        handle.write(chunk)
+            temporary.replace(target)
+            return target
+        except httpx.TransportError as exc:
+            raise RadarSimTransportError(str(exc)) from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def download_agent_tools_bootstrap(self, destination: str | Path) -> Path:
+        """Download the cross-platform stdlib Agent Tools bootstrap script."""
+
+        target = Path(destination).expanduser()
+        if target.exists() and target.is_dir():
+            target = target / "install-radar-sim-agent.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + f".part.{uuid.uuid4().hex}")
+        try:
+            with self._client.stream("GET", "/api/v1/agent-tools/install.py") as response:
+                self._raise_for_status(response)
+                with temporary.open("wb") as handle:
+                    for chunk in response.iter_bytes():
+                        handle.write(chunk)
+            temporary.replace(target)
+            return target
+        except httpx.TransportError as exc:
+            raise RadarSimTransportError(str(exc)) from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def download_agent_tools_bundle(
+        self,
+        destination: str | Path,
+        *,
+        retries: int = 2,
+    ) -> Path:
+        """Download and verify the no-source SDK/MCP/Skill bundle."""
+
+        manifest = self.agent_tools_manifest()
+        bundle = dict(manifest.get("bundle") or {})
+        expected = str(bundle.get("sha256") or "").strip().lower()
+        expected_size = int(bundle.get("size") or 0)
+        if not expected.startswith("sha256:"):
+            raise RadarSimIntegrityError(
+                "agent_tools_manifest_invalid",
+                "Agent Tools manifest does not advertise a SHA-256 bundle checksum",
+                resource="agent-tools",
+            )
+        target = Path(destination).expanduser()
+        if target.exists() and target.is_dir():
+            target = target / "radar-sim-agent-tools.zip"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + f".part.{uuid.uuid4().hex}")
+        attempts = max(1, int(retries) + 1)
+        last_error: httpx.TransportError | None = None
+        try:
+            for attempt in range(attempts):
+                digest = hashlib.sha256()
+                try:
+                    with self._client.stream("GET", "/api/v1/agent-tools/package.zip") as response:
+                        self._raise_for_status(response)
+                        with temporary.open("wb") as handle:
+                            for chunk in response.iter_bytes():
+                                handle.write(chunk)
+                                digest.update(chunk)
+                    actual = "sha256:" + digest.hexdigest()
+                    if (expected_size and temporary.stat().st_size != expected_size) or actual != expected:
+                        raise RadarSimIntegrityError(
+                            "agent_tools_checksum_mismatch",
+                            "downloaded Agent Tools bundle checksum does not match manifest",
+                            resource="agent-tools",
+                        )
+                    temporary.replace(target)
+                    return target
+                except RadarSimIntegrityError:
+                    raise
+                except httpx.TransportError as exc:
+                    last_error = exc
+                    temporary.unlink(missing_ok=True)
+                    if attempt + 1 >= attempts:
+                        break
+                    time.sleep(0.5 * (2**attempt))
+            assert last_error is not None
+            raise RadarSimTransportError(str(last_error)) from last_error
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+    def windows_connector_status(self, agent_id: str) -> dict[str, Any]:
+        """Return exact owner/device status for a persisted Windows Connector.
+
+        The Web UI normally consumes the aggregate ``capabilities()`` view.
+        A local Agent/MCP installer additionally needs to verify that the
+        computer it just updated, rather than another computer of the same
+        owner, is registered with the current contract.
+        """
+
+        value = str(agent_id or "").strip()
+        if not value:
+            raise ValueError("agent_id is required")
+        return dict(
+            self._request(
+                "GET",
+                "/api/v1/windows-connector/status",
+                params={"agent_id": value},
+            )
+        )
+
     def validate_run(self, config: UserRunConfig | dict[str, Any]) -> RunConfigValidationResult:
         """Validate the project-free YAML contract used by the Web console."""
-        parsed = _with_inferred_mat_filter(
-            UserRunConfig.from_dict(self._run_config_payload(config))
-        )
+        # Keep the submitted UserRunConfig canonical with Web. An omitted
+        # MatFilter may still be discovered locally for a direct transfer,
+        # but that source-side discovery must not change the public YAML or
+        # fingerprint returned by the control plane.
+        parsed = UserRunConfig.from_dict(self._run_config_payload(config))
         return RunConfigValidationResult.from_dict(
             self._request("POST", "/api/v1/run-configs/validate", json=parsed.to_dict())
         )
@@ -262,9 +438,10 @@ class RadarSimClient:
         progress_callback: Callable[[TransferProgress], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> Job:
-        parsed = _with_inferred_mat_filter(
-            UserRunConfig.from_dict(self._run_config_payload(config))
-        )
+        # Web sends the same canonical UserRunConfig. Do not inject local
+        # resource discoveries into the public submission or its idempotency
+        # hash; local transfer discovery is handled separately below.
+        parsed = UserRunConfig.from_dict(self._run_config_payload(config))
         payload, prepared_bundle_id = self._prepare_user_run(parsed, dry_run=bool(dry_run))
         client_transfer_roles = (
             []
@@ -343,9 +520,7 @@ class RadarSimClient:
         ``submit_run`` uses one attempt; callers can resume with bounded retries
         while a newly-created Job is still persisting its ``prepare_data`` Stage.
         """
-        parsed = _with_inferred_mat_filter(
-            UserRunConfig.from_dict(self._run_config_payload(config))
-        )
+        parsed = UserRunConfig.from_dict(self._run_config_payload(config))
         current = job if isinstance(job, Job) else self.get_job(str(job))
         selected_target = str(
             ((current.resolved_spec.get("decisions") or {}).get("execution") or {}).get(
@@ -684,7 +859,7 @@ class RadarSimClient:
 
     def submit_yaml(
         self,
-        yaml_path: str | Path,
+        yaml_source: str | Path,
         *,
         dry_run: bool = False,
         idempotency_key: str | None = None,
@@ -693,9 +868,15 @@ class RadarSimClient:
         progress_callback: Callable[[TransferProgress], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> Job:
-        """Submit any supported build/existing and local/Cluster YAML in one call."""
+        """Submit YAML text or a YAML file in one call.
+
+        MCP/Skill callers commonly receive YAML as a bounded text argument,
+        while CLI callers usually pass a file path. ``UserRunConfig`` already
+        supports both forms; keeping that behavior here avoids forcing an
+        Agent adapter to create a temporary file.
+        """
         return self.submit_run(
-            UserRunConfig.from_yaml(Path(yaml_path)),
+            UserRunConfig.from_yaml(yaml_source),
             dry_run=dry_run,
             idempotency_key=idempotency_key,
             auto_transfer=auto_transfer,
@@ -827,6 +1008,7 @@ class RadarSimClient:
         poll_interval: float = 1.0,
         backoff_factor: float = 0.0,
         max_poll_interval: float = 30.0,
+        stop_on_needs_input: bool = False,
     ) -> Iterator[Event]:
         deadline = None if timeout is None else time.monotonic() + float(timeout)
         next_cursor = int(cursor or 0)
@@ -842,12 +1024,16 @@ class RadarSimClient:
                     if event.id is not None:
                         next_cursor = max(next_cursor, event.id)
                     yield event
-            except RadarSimTransportError:
+            except (RadarSimTransportError, RadarSimApiError) as exc:
+                if not _is_retryable_poll_exception(exc):
+                    raise
                 had_transport_error = True
 
             try:
                 page = self.events(job_id, since=next_cursor)
-            except RadarSimTransportError:
+            except (RadarSimTransportError, RadarSimApiError) as exc:
+                if not _is_retryable_poll_exception(exc):
+                    raise
                 had_transport_error = True
                 page = None
             if had_transport_error and page is None:
@@ -870,6 +1056,20 @@ class RadarSimClient:
             next_cursor = max(next_cursor, page.next_cursor)
             if page.terminal:
                 return
+            if stop_on_needs_input and page.status.strip().lower() == "needs_input":
+                return
+            if stop_on_needs_input:
+                # The public event page intentionally omits physical waiting
+                # details. One bounded Job refresh lets an Agent stop at a
+                # resumable Connector/path wait instead of polling forever.
+                try:
+                    snapshot = self.get_job(job_id)
+                except (RadarSimTransportError, RadarSimApiError) as exc:
+                    if not _is_retryable_poll_exception(exc):
+                        raise
+                    snapshot = None
+                if snapshot is not None and snapshot.needs_input:
+                    return
             sleep_for = float(poll_interval)
             if deadline is not None:
                 sleep_for = min(sleep_for, max(deadline - time.monotonic(), 0.0))
@@ -903,6 +1103,7 @@ class RadarSimClient:
         backoff_factor: float = 0.0,
         max_poll_interval: float = 30.0,
         on_event: Callable[[Event], None] | None = None,
+        stop_on_needs_input: bool = False,
     ) -> Job:
         for event in self.watch(
             job_id,
@@ -910,6 +1111,7 @@ class RadarSimClient:
             poll_interval=poll_interval,
             backoff_factor=backoff_factor,
             max_poll_interval=max_poll_interval,
+            stop_on_needs_input=stop_on_needs_input,
         ):
             if on_event is not None:
                 on_event(event)
@@ -924,6 +1126,7 @@ class RadarSimClient:
         backoff_factor: float = 0.0,
         max_poll_interval: float = 30.0,
         on_event: Callable[[Event], None] | None = None,
+        stop_on_needs_input: bool = False,
     ) -> Job:
         """Wait adaptively for a Job to reach a terminal state.
 
@@ -940,6 +1143,36 @@ class RadarSimClient:
             backoff_factor=backoff_factor,
             max_poll_interval=max_poll_interval,
             on_event=on_event,
+            stop_on_needs_input=stop_on_needs_input,
+        )
+
+    def wait_until_actionable(
+        self,
+        job_id: str,
+        *,
+        timeout: float | None = None,
+        poll_interval: float = 1.0,
+        backoff_factor: float = 0.0,
+        max_poll_interval: float = 30.0,
+        on_event: Callable[[Event], None] | None = None,
+    ) -> Job:
+        """Wait until a Job is terminal or needs a caller action.
+
+        This is the Agent/MCP-friendly variant of :meth:`wait_job`. A normal
+        ``wait_job`` intentionally waits through a temporary Connector wait;
+        this method returns the path-free ``Job.waiting`` and
+        ``available_actions`` as soon as the server exposes a resumable
+        ``needs_input`` state.
+        """
+
+        return self.wait_job(
+            job_id,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            backoff_factor=backoff_factor,
+            max_poll_interval=max_poll_interval,
+            on_event=on_event,
+            stop_on_needs_input=True,
         )
 
     def cancel(self, job_id: str) -> Job:
@@ -1611,6 +1844,16 @@ def _is_retryable_direct_transfer_exception(exc: BaseException, *, code: str) ->
     }
 
 
+def _is_retryable_poll_exception(exc: BaseException) -> bool:
+    """Classify transient status/event polling failures for long Jobs."""
+
+    if isinstance(exc, RadarSimTransportError):
+        return True
+    if isinstance(exc, RadarSimApiError):
+        return exc.status_code >= 500 or exc.status_code in {408, 429}
+    return False
+
+
 def _is_retryable_upload_exception(exc: BaseException) -> bool:
     """Return whether one resumable upload attempt may be reconciled/retried."""
 
@@ -1657,10 +1900,15 @@ def _sdk_local_transfer_sources(config: UserRunConfig) -> list[tuple[str, Path]]
     candidates: list[tuple[str, str]] = [("dataset", str(config.data.path or ""))]
     if config.selena.source == "existing":
         candidates.append(("runtime_bundle", str(config.selena.existing_path or "")))
+    mat_filter = str(config.simulation.mat_filter or "")
+    if not mat_filter:
+        inferred = _infer_local_mat_filter(config)
+        if inferred is not None:
+            mat_filter = str(inferred)
     candidates.extend(
         [
             ("runtime_xml", str(config.selena.runtime_xml or "")),
-            ("mat_filter", str(config.simulation.mat_filter or "")),
+            ("mat_filter", mat_filter),
             ("adapter", str(config.simulation.adapter_file or "")),
         ]
     )
@@ -1699,28 +1947,40 @@ def _sdk_local_transfer_sources(config: UserRunConfig) -> list[tuple[str, Path]]
 def _with_inferred_mat_filter(config: UserRunConfig) -> UserRunConfig:
     """Resolve an omitted MatFilter when this SDK can read the repository."""
 
-    if str(config.simulation.mat_filter or "").strip():
+    inferred = _infer_local_mat_filter(config)
+    if inferred is None:
         return config
+    simulation = config.simulation.model_copy(
+        update={"mat_filter": str(inferred).replace("\\", "/")}
+    )
+    return config.model_copy(update={"simulation": simulation})
+
+
+def _infer_local_mat_filter(config: UserRunConfig) -> Path | None:
+    """Find an omitted MatFilter only for source-side transfer discovery.
+
+    The result is deliberately not inserted into the submitted config. Web
+    and SDK therefore produce the same canonical fingerprint, while a local
+    SDK process can still send the inferred file through the required
+    ``mat_filter`` TransferPlan role.
+    """
+
+    if str(config.simulation.mat_filter or "").strip():
+        return None
     from core.mat_filter_resolver import MatFilterResolutionError, resolve_mat_filter
 
     try:
-        resolved = resolve_mat_filter(
+        return resolve_mat_filter(
             code_path=config.selena.code_path,
             existing_path=config.selena.existing_path,
             selena_build_script=config.selena.selena_build_script,
             runtime_xml=config.selena.runtime_xml,
-        )
-    except MatFilterResolutionError as exc:
+        ).path
+    except MatFilterResolutionError:
         # A remote SDK may intentionally submit paths owned by a different
-        # Connector.  Only a locally derived repository may make this SDK
-        # authoritative; otherwise leave discovery to that source node.
-        if exc.code == "mat_filter_repository_unavailable":
-            return config
-        raise
-    simulation = config.simulation.model_copy(
-        update={"mat_filter": str(resolved.path).replace("\\", "/")}
-    )
-    return config.model_copy(update={"simulation": simulation})
+        # Connector. Leave discovery to that source node when this process
+        # cannot derive a readable repository.
+        return None
 
 
 def _scan_sdk_transfer_items(

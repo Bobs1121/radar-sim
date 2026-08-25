@@ -255,6 +255,9 @@ class AgentRuntimeBundleLeaseStore:
                 "branch": str(manifest.source.branch or "").strip(),
                 "commit": str(manifest.source.commit or "").strip(),
                 "build_mode": str(manifest.source.build_mode or "").strip(),
+                "toolchain_fingerprint": str(
+                    manifest.source.toolchain_fingerprint or ""
+                ).strip().lower(),
                 "entrypoint_checksum": str(entrypoint.checksum if entrypoint else ""),
                 "entrypoint_size": int(entrypoint.size if entrypoint else 0),
                 "created_at": float(row["created_at"] or 0.0),

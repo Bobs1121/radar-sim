@@ -55,6 +55,16 @@ Web 在任意页面顶部显示全局更新横幅，不要求用户先提交一�
 
 SDK 只是 Linux 控制面的调用客户端，不会把编译器或 Selena 仿真引擎偷偷安装到调用机。依赖按调用位置区分：
 
+### 本地 Agent/MCP 自动检查与更新
+
+仓库内的 `radar_sim_mcp` 适配器可以在用户本机执行两阶段 Connector 管理：
+
+1. `check_windows_connector` 自动读取本机安装元数据，并通过 `windows_connector_status()` 验证 exact-device 状态；
+2. 用户明确授权且 MCP 进程设置 `RADAR_SIM_ALLOW_CONNECTOR_INSTALL=1` 后，`install_or_update_windows_connector(confirm=true)` 下载并运行当前服务签发的同源 `connect.cmd`；
+3. 安装器退出后，适配器继续轮询能力和 exact-device 状态，只有当前电脑合同版本正确且在线才返回成功。
+
+Web 逻辑不变：浏览器仍只下载脚本，不静默执行本地程序。认证开启的服务如果返回 `connector_pairing_required`，MCP 也必须停止并交给部署方提供短期设备配对，不得把长期 Token 写进脚本。
+
 | SDK 调用位置 | `existing + cluster` 且输入可访问 | 需要本机 Windows 路径/编译/本地仿真 |
 |---|---|---|
 | Linux/服务器 | `python -m pip install "radar-sim[sdk]"`；共享路径或 Linux 可读路径即可，完全不需要 Windows 组件。SDK 进程会按 TransferPlan 从 Linux 调用机直接写 Cluster 数据面 | Linux 不读取 `C:/`、`D:/`；若输入只在 Windows，本任务应从存放文件的 Windows 电脑一次性连接统一组件，或先放到 Cluster 可访问共享位置 |

@@ -767,8 +767,18 @@ def _safe_target_path(base: Path, relative_path: str) -> Path:
             raise DirectTransferError("target path escapes its trusted root") from exc
     else:
         try:
-            candidate.resolve(strict=False).relative_to(base.resolve(strict=False))
-        except ValueError as exc:
+            # ``Path.resolve()`` can return an extended-length ``\\?\\C:``
+            # spelling for an existing Windows directory while returning a
+            # normal ``C:`` spelling for a not-yet-created child. Comparing
+            # those two strings makes a valid nested destination look like a
+            # traversal, especially when the SDK target path is long. The
+            # reparse checks above already reject symlink/junction components;
+            # use one lexical absolute spelling for the containment check.
+            base_text = os.path.normcase(os.path.abspath(str(base)))
+            candidate_text = os.path.normcase(os.path.abspath(str(candidate)))
+            if os.path.commonpath([base_text, candidate_text]) != base_text:
+                raise DirectTransferError("target path escapes its trusted root")
+        except (OSError, ValueError) as exc:
             raise DirectTransferError("target path escapes its trusted root") from exc
     return candidate
 

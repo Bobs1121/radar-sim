@@ -12,7 +12,8 @@
 #
 # Optional environment overrides:
 #   RSIM_INSTALL_DIR, RSIM_HOME, RSIM_PORT, RSIM_OWNER, RSIM_AGENT_ID,
-#   RSIM_REPO_URL, RSIM_AUTH_FILE, RSIM_INSECURE_NO_AUTH
+#   RSIM_REPO_URL, RSIM_AUTH_FILE, RSIM_INSECURE_NO_AUTH,
+#   RSIM_AGENT_TOOLS_RELEASE
 
 set -eu
 
@@ -72,11 +73,50 @@ install_runtime() {
     "$VENV_PY" -m pip install --quiet --upgrade pip
     (
         cd "$INSTALL_DIR"
-        "$VENV_PY" -m pip install --quiet -e ".[v5-server]"
+        "$VENV_PY" -m pip install --quiet -e ".[v5-server,mcp]"
     ) || die "安装 serve-v1 依赖失败"
     "$VENV_PY" "$INSTALL_DIR/scripts/build_windows_connector_bundle.py" \
         --out "$INSTALL_DIR/dist/rsim-windows-connector.zip" \
         || die "构建 Windows 一键连接包失败"
+    agent_wheels="$(mktemp -d)"
+    release_version="${RSIM_AGENT_TOOLS_RELEASE:-$(git -C "$INSTALL_DIR" rev-parse --short HEAD)}"
+    (
+        cd "$INSTALL_DIR"
+        "$VENV_PY" -m pip wheel --quiet --no-cache-dir \
+            --wheel-dir "$agent_wheels" \
+            ".[mcp]"
+    ) || die "构建 SDK/MCP Agent Tools wheel 集失败"
+    # pip resolves environment markers against this Linux build host. Add the
+    # Windows target wheels explicitly so the same source-free Bundle can be
+    # installed by Windows CPython 3.10-3.13, including pywin32 used by MCP.
+    for pyver in 3.10 3.11 3.12 3.13; do
+        "$VENV_PY" -m pip download --quiet --no-cache-dir \
+            --dest "$agent_wheels" --only-binary=:all: \
+            --platform win_amd64 --python-version "$pyver" --implementation cp \
+            "PyYAML>=6.0" "httpx==0.28.1" "pydantic==2.13.4" \
+            "mcp>=1.28,<2" "pywin32>=310" \
+            || die "下载 Windows Python ${pyver} Agent Tools wheel 集失败"
+    done
+    sdk_version="$($VENV_PY -c 'from importlib.metadata import version; print(version("radar-sim"))')"
+    mcp_version="$($VENV_PY -c 'import radar_sim_mcp; print(radar_sim_mcp.__version__)')"
+    mcp_dependency_version="$($VENV_PY -c 'from importlib.metadata import version; print(version("mcp"))')"
+    connector_contract="$($VENV_PY -c 'from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION; print(WINDOWS_CONNECTOR_CONTRACT_VERSION)')"
+    "$VENV_PY" "$INSTALL_DIR/scripts/build_agent_tools_bundle.py" \
+        --wheel-dir "$agent_wheels" \
+        --skill-dir "$INSTALL_DIR/skills/radar-sim-simulation" \
+        --output "$INSTALL_DIR/dist/agent-tools.zip" \
+        --release-version "$release_version" \
+        --sdk-version "$sdk_version" \
+        --mcp-version "$mcp_version" \
+        --mcp-dependency-version "$mcp_dependency_version" \
+        --skill-version "$release_version" \
+        --connector-contract-version "$connector_contract" \
+        || die "构建 Agent Tools 分发包失败"
+    "$VENV_PY" -c \
+        'from core.agent_distribution import AgentToolsDistribution; import sys; AgentToolsDistribution.from_files(sys.argv[1], sys.argv[2])' \
+        "$INSTALL_DIR/dist/agent-tools.zip" "$INSTALL_DIR/dist/agent-tools.json" \
+        || die "Agent Tools 分发包校验失败"
+    rm -rf "$agent_wheels"
     c_green "serve-v1 运行环境就绪"
 }
 

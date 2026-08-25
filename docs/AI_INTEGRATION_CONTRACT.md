@@ -1,6 +1,6 @@
 # Web、SDK 与 AI 集成契约
 
-> **V2 单轨收敛声明（2026-08-18）**：本文件是 Web/SDK/AI 集成合同，继续有效。V2 单轨收敛索引见 `docs/V2_ARCHITECTURE.md`，该文件在其之上收敛 Web/SDK 同能力、唯一 `user-run-config/2.0` 与明确删除清单（用户可见 project/profile/recipe/light/full/legacy 概念全部移除）。本文件下文“未来 Skill/MCP”仍是明确缺口：仓库目前无可安装的 radar-sim MCP Server 或 Skill 包，本文件只定义未来薄封装合同，不得对外宣称“安装 MCP/Skill 即可使用”。Cluster 结果归档、Manifest、Web/SDK 下载已经由统一结果接口提供。
+> **V2 单轨收敛声明（2026-08-18）**：本文件是 Web/SDK/AI 集成合同，继续有效。V2 单轨收敛索引见 `docs/V2_ARCHITECTURE.md`，该文件在其之上收敛 Web/SDK 同能力、唯一 `user-run-config/2.0` 与明确删除清单（用户可见 project/profile/recipe/light/full/legacy 概念全部移除）。仓库现在提供可分发的 radar-sim MCP Server 和 Skill 包；它们只能薄封装 SDK，不得复制调度、传输或结果判断。Cluster 结果归档、Manifest、Web/SDK/MCP 下载已经由统一结果接口提供。
 
 ## 结论
 
@@ -9,15 +9,17 @@ Web、Python SDK、未来 Skill/MCP 只使用同一套 `/api/v1`，不得复制�
 首版公共调用闭环：
 
 1. `import_yaml()` / `export_yaml()` 读写完整或不完整的 YAML 草稿；返回 `complete=false` 时只表示草稿尚未达到提交条件，不会创建 Job。
-2. `RadarSimClient.submit_yaml(path, idempotency_key=...)` 提交与 Web 相同的完整用户 YAML。
-3. `capabilities()` 查询与 Web 右上角相同的 owner-scoped Windows/Cluster 能力。
+2. `RadarSimClient.submit_yaml(source, idempotency_key=...)` 提交与 Web 相同的完整用户 YAML；`source` 可以是 YAML 文本或本地 YAML 文件路径，MCP 不需要为了提交而创建临时文件。
+3. `user_run_config_schema()` / `cluster_readiness()` / `capabilities()` 查询 Web 使用的公开配置合同、Cluster 提交门禁和 owner-scoped Windows/Cluster 能力。
 4. `prepare_direct_transfers()` / `resume_direct_transfers()` 让 SDK 调用机把可读的 Selena 完整目录、Runtime、MatFilter、Adapter 和 MF4 按同一 `TransferPlan` 直接送到 Cluster 数据面；`get_job_transfer_status()` 查询传输汇总。
 5. `get_job()` / `list_jobs()` 查询任务，`cancel()` / `retry_stage()` 执行与 Web 相同的任务动作。
-6. `watch()` / `wait_job()` 通过可续传事件游标等待任务；默认 `timeout=None` 表示只观察、不设置仿真总时长，业务方需要观察窗口时再显式传入 `timeout`。
+6. `watch()` / `wait_job()` 通过可续传事件游标等待任务；默认 `timeout=None` 表示只观察、不设置仿真总时长，业务方需要观察窗口时再显式传入 `timeout`。Agent 若不应在 Connector/path 等待上无限阻塞，使用 `wait_until_actionable()`；它会在终态或 `needs_input`/可恢复等待状态返回。
 7. `diagnosis()` 获取稳定、脱敏、AI 可理解的业务结论。
 8. `manifest()` 获取运行清单。
 9. `list_results()` / `get_result()` / `download_result()` 获取并校验结果。
 10. `retry_failed_inputs()` 在批量任务为 `partial` 时只重跑失败输入；已成功输入不会重复执行，重跑后的结果会生成新的不可变归档引用。
+
+`Job`、`Event`、`EventsPage`、`RunConfigValidationResult`、`JobDiagnosis` 和 `ManifestResponse` 均提供 `to_dict()`；返回值只包含控制面 JSON、用户配置路径和逻辑引用，不含 MF4/Selena/结果文件正文，适合直接作为 MCP/Skill 的 JSON 结果。`Job.terminal`、`Job.needs_input` 和 `Job.progress_percent` 可用于统一终态、动作等待和进度展示判断。
 
 YAML 草稿和可提交配置是两个明确阶段：导入/导出接口允许只填写 `selena`、只填写数据路径或只填写部分仿真选项，并返回 `missing_fields`/`validation_errors`；`validate_run()`、`submit_run()` 和 Web 的“检查配置/提交任务”仍严格要求完整 `UserRunConfig 2.0`。Skill 不应为了让草稿通过而补猜路径、项目或运行参数。
 
@@ -54,6 +56,10 @@ Web 与 SDK 的差别只在源端执行者：浏览器不能从路径文本读�
 
 本地仿真中，本机可达输入原地使用；远端输入不可原地读取时可由源端直达统一 Windows Connector。Cluster 仿真中，共享输入原地引用，本地输入直达 Cluster。两类数据流都不经过 Linux 控制面。完整产品合同见 `docs/PRODUCT_CONTRACT.md`，实施合同见 `docs/CONTROL_DATA_PLANE_PLAN.md`。
 
+## SDK 的配置一致性与本地发现
+
+SDK/Connector 可以在源端读取 `simulation.mat_filter` 为空时的高置信候选，并把该文件作为 `mat_filter` 直传资源；SDK 不会把这个源端发现结果写回提交的 `UserRunConfig`。因此同一份 YAML 经过 Web 与 SDK 时，用户配置、`spec_hash`、幂等请求和 Stage DAG 保持一致；源端传输计划仍可携带实际需要的 MatFilter 文件。
+
 ## Diagnosis 契约
 
 HTTP：`GET /api/v1/jobs/{job_id}/diagnosis`
@@ -76,6 +82,19 @@ SDK：`RadarSimClient.diagnosis(job_id)`
 | `result_ref` | 路径无关的 `result:sha256:*` 引用 |
 | `evidence` | 只含状态、Stage 类型、稳定错误码等安全证据 |
 | `consistency` | 历史 Job 与 Manifest 不一致时返回 warning |
+
+### MCP/Skill 异常处理
+
+调用方只需按稳定类型处理，不解析日志或自然语言：
+
+| 异常 | 含义 | 建议动作 |
+|---|---|---|
+| `RadarSimApiError` | 服务端合同、权限、能力或任务动作失败；保留 `code`、`status_code`、`detail`、`actions`、`request_id` | 根据 `code/actions` 补输入、连接 Connector、重试 Stage 或报告失败 |
+| `RadarSimTransportError` | HTTP 连接/读取失败，服务端是否已提交可能未知 | 保留同一个 `idempotency_key` 重放提交；读取 `get_job()`/`list_jobs()` 恢复状态 |
+| `RadarSimTransferCancelledError` | 调用方明确取消了源到目标传输 | 不自动重试；由用户重新选择继续或取消任务 |
+| `RadarSimIntegrityError` | 结果 ZIP 校验值不一致 | 丢弃临时文件并重新下载；持续失败时报告结果完整性异常 |
+| `TimeoutError` | 仅表示本次 SDK 观察窗口结束，不会取消服务器 Job | 继续 `get_job()`/`diagnosis()`，不要把它当作仿真失败 |
+| 本地 `ValidationError`/`ValueError` | MCP 输入不是完整的 `UserRunConfig 2.0` 或 YAML/结果参数非法 | 先使用 `import_yaml()` 的 `complete`、`missing_fields`、`validation_errors`，不要猜路径或项目 |
 
 Stage 失败码也遵循同一归类，不需要 Skill/MCP 识别项目或解析堆栈：
 
@@ -117,14 +136,20 @@ Cluster 会建立只包含待重试 MF4 的新包，并在最终 Manifest 中合
 
 Diagnosis 不返回用户本地绝对路径、共享盘路径、Agent 标识、服务端物理位置、密钥、任意原始错误消息或堆栈。
 
-## 未来 Skill/MCP 的最薄封装
+## Skill/MCP 正式薄封装
 
 建议只暴露以下工具，并逐项调用 SDK：
 
 | Skill/MCP 工具 | SDK |
 |---|---|
+| `get_simulation_schema` | `user_run_config_schema()` |
 | `submit_simulation` | `submit_yaml()` |
+| `get_simulation_readiness` | `cluster_readiness()` |
 | `get_simulation_capabilities` | `capabilities()` |
+| `check_agent_tools` | Agent Tools Manifest + local install state |
+| `update_agent_tools` | versioned local Agent Tools bootstrap |
+| `check_windows_connector` | local MCP Connector check + `capabilities()`/`windows_connector_status()` |
+| `install_or_update_windows_connector` | local MCP installer + exact-device verification |
 | `resume_simulation_transfer` | `resume_direct_transfers()` |
 | `get_simulation_transfer` | `get_job_transfer_status()` |
 | `get_simulation` | `get_job()` |
@@ -140,4 +165,4 @@ AI 调用顺序固定为：提交后保存 `job_id`；等待终态；读取 diag
 `client.last_submission_key` 暴露最近一次提交键，便于响应丢失后安全重放。Artifact/Runtime Bundle
 分块上传会在连接中断或 offset 冲突后先读取服务端 offset 再继续；结果 ZIP 下载会在断流后有限重启并始终做 SHA-256 校验。永久 4xx、证据不匹配和 checksum 错误直接返回，不转换成等待状态。
 
-暂不实现独立 MCP Server。等 Linux Web/SDK 全流程稳定后，MCP 仅做参数描述、权限适配和 SDK 调用转发。
+MCP Server 和 Skill 已作为仓库内正式集成资产提供：`radar_sim_mcp/` 与 `skills/radar-sim-simulation/`。它们只做参数描述、权限适配、Connector 本机安装策略和 SDK 调用转发，不创建第二套调度器。认证开启时 Connector 安装仍需部署方提供短期 pairing。

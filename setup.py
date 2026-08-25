@@ -8,13 +8,17 @@ setup(
     version="4.0.0",
     description="雷达仿真辅助与数据分析工具 — 编译辅助 + MF4分析 + AI问答",
     author="radar-sim team",
-    python_requires=">=3.9",
+    # The public SDK/MCP code uses Python 3.10 type syntax and the MCP
+    # dependency is not released for the legacy 3.9 runtime. Keep package
+    # metadata aligned with the Agent Tools bundle.
+    python_requires=">=3.10",
     packages=find_packages(),
     include_package_data=True,
     package_data={"radar_sim_web": ["static/*.html", "static/*.css", "static/*.js"]},
     entry_points={
         "console_scripts": [
             "rsim=rsim:main",
+            "radar-sim-mcp=radar_sim_mcp.server:main",
         ],
     },
     # Only PyYAML is needed by the core config layer; heavy deps (asammdf for
@@ -33,9 +37,8 @@ setup(
         "v5-spec": [
             "pydantic==2.13.4",
         ],
-        # v5 /api/v1 server stack. Kept out of install_requires so legacy
-        # Python 3.9/control-plane imports remain PyYAML-only; these packages
-        # require Python 3.10+ and pip will fail clearly on unsupported Python.
+        # v5 /api/v1 server stack. Kept out of install_requires so the base
+        # SDK install remains PyYAML-only; these packages require Python 3.10+.
         "v5-server": [
             "fastapi==0.139.0",
             "uvicorn==0.50.2",
@@ -48,6 +51,12 @@ setup(
         "sdk": [
             "httpx==0.28.1",
             "pydantic==2.13.4",
+        ],
+        # Agent-facing MCP adapter. The SDK remains usable without MCP.
+        "mcp": [
+            "httpx==0.28.1",
+            "pydantic==2.13.4",
+            "mcp>=1.28,<2",
         ],
         "v5": [
             "fastapi==0.139.0",
@@ -70,7 +79,6 @@ setup(
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",

@@ -88,9 +88,11 @@ V2 YAML
 
 - Windows Connector 在授权工作区中运行用户给定脚本，命令语义固定为 `cmd /c <script>`；
 - 不注入 Xpeng/BYD/GAC 等产品参数；脚本拥有自身参数和环境；
-- `branch` 仅做分支差异提示，默认编译当前工作区，不检查 diff、不清仓、不 reset；
+- `branch` 参与历史 Selena 产物分支核对，不 checkout/reset；产物分支与用户预期分支不一致时全量，当前分支与历史产物一致时才允许增量/跳过；
 - 优先从脚本推导输出目录并验证 `Selena.exe`，编译完成以实际产物、DLL 和 Runtime 形成 Bundle；
 - `package_build_script` 只提供环境依赖诊断线索，不替代用户的 VS/本地仿真环境。
+
+公共编译决策为三态代码检测：明确无变更且全部 provenance 与实际产物匹配时跳过；明确有变更时增量编译；无法检测时也增量编译。只有正向证明 Selena 分支或构建模式不兼容时才恢复已识别的 clean 命令执行全量编译。历史 Bundle provenance 缺失、嵌套 `Selena.exe` 路径、checksum 无法确认都不能单独触发清理。
 
 ## 6. 数据面路由
 
@@ -136,7 +138,7 @@ MatFilter 采用“用户显式值最高优先；否则在 `code_path`、已有 
 
 ### 尚未完成，不得对外宣称
 
-- 可安装的 radar-sim MCP Server/Skill；未来只能薄封装当前 SDK；
+- MCP Server/Skill 已作为薄封装包提供；不得复制当前 SDK 的 DAG、传输和结果判断逻辑；
 - Cluster 结果自动反向直传并解压到任意用户设备；
 - 远端资源到本地 Windows 的通用 `source_to_local`；
 - 操作系统关机状态下远程唤醒 Connector。

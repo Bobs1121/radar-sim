@@ -40,6 +40,7 @@ from radar_sim_sdk import (
     Job,
     RadarSimApiError,
     RadarSimClient,
+    RadarSimIntegrityError,
     RadarSimTransferCancelledError,
     PartialUserRunConfig,
     UserRunConfig,
@@ -124,6 +125,130 @@ def test_sdk_downloads_one_time_windows_connector_for_current_scope(tmp_path):
 
     with pytest.raises(ValueError, match="unified"):
         sdk.download_windows_connector(tmp_path, mode="light")
+
+
+def test_sdk_exposes_web_readiness_and_public_run_config_schema(tmp_path):
+    sdk, _ = make_sdk(tmp_path)
+
+    readiness = sdk.cluster_readiness()
+    schema = sdk.user_run_config_schema()
+
+    assert readiness["ready"] is False
+    assert readiness["code"] == "cluster_readiness_unavailable"
+    assert schema["title"]
+    assert "selena" in schema["properties"]
+    assert sdk.run_config_schema() == schema
+
+
+def test_sdk_reads_exact_windows_connector_status():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "agent_id": "agent-1",
+                "configured": True,
+                "available": True,
+                "contract_current": True,
+                "reason": "",
+            },
+        )
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    status = sdk.windows_connector_status("agent-1")
+
+    assert status["available"] is True
+    assert "agent_id=agent-1" in seen[0]
+
+
+def test_sdk_downloads_and_verifies_agent_tools_bundle_and_installer(tmp_path):
+    import json
+
+    bundle = b"agent-tools-bundle"
+    checksum = "sha256:" + hashlib.sha256(bundle).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/agent-tools/manifest":
+            return httpx.Response(
+                200,
+                json={
+                    "release_version": "4.0.0-agent.1",
+                    "bundle": {"sha256": checksum, "size": len(bundle)},
+                },
+            )
+        if request.url.path == "/api/v1/agent-tools/package.zip":
+            return httpx.Response(200, content=bundle)
+        if request.url.path == "/api/v1/agent-tools/install.ps1":
+            return httpx.Response(200, text="Write-Output radar-sim")
+        if request.url.path == "/api/v1/agent-tools/install.py":
+            return httpx.Response(200, text="print('radar-sim')")
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    installer = sdk.download_agent_tools_installer(tmp_path)
+    bootstrap = sdk.download_agent_tools_bootstrap(tmp_path)
+    downloaded = sdk.download_agent_tools_bundle(tmp_path)
+
+    assert installer.read_text(encoding="utf-8") == "Write-Output radar-sim"
+    assert bootstrap.read_text(encoding="utf-8") == "print('radar-sim')"
+    assert downloaded.read_bytes() == bundle
+    json.dumps(sdk.agent_tools_manifest())
+
+
+def test_sdk_preserves_agent_tools_identity_for_bootstrap_process():
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        token="secret-token",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={})),
+        trust_env=False,
+    )
+
+    environment = sdk._agent_tools_bootstrap_environment()
+
+    assert environment == {
+        "RADAR_SIM_TOKEN": "secret-token",
+        "RADAR_SIM_USER": "user-alice",
+    }
+
+
+def test_sdk_rejects_corrupt_agent_tools_bundle(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/manifest"):
+            return httpx.Response(
+                200,
+                json={"bundle": {"sha256": "sha256:" + "a" * 64, "size": 5}},
+            )
+        if request.url.path.endswith("/package.zip"):
+            return httpx.Response(200, content=b"wrong")
+        return httpx.Response(404, json={"code": "not_found", "message": "not found"})
+
+    sdk = RadarSimClient(
+        "http://testserver",
+        user="alice",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    with pytest.raises(RadarSimIntegrityError) as caught:
+        sdk.download_agent_tools_bundle(tmp_path)
+
+    assert getattr(caught.value, "code", "") == "agent_tools_checksum_mismatch"
+    assert not list(tmp_path.glob("*.part.*"))
 
 
 def test_sdk_without_explicit_user_gets_stable_os_login_identity(monkeypatch):
@@ -476,6 +601,16 @@ def test_sdk_submit_yaml_accepts_every_user_run_combination(tmp_path):
     assert job.type == "simulation.run_config.v2.dry_run"
 
 
+def test_sdk_submit_yaml_accepts_yaml_text_for_mcp_callers(tmp_path):
+    sdk, _ = make_sdk(tmp_path)
+    config = UserRunConfig.from_dict(run_config_dict())
+
+    job = sdk.submit_yaml(config.to_yaml(), dry_run=True, idempotency_key="yaml-text")
+
+    assert job.spec == config.to_dict()
+    assert job.spec_hash == config.fingerprint()
+
+
 def test_sdk_submit_run_keeps_local_data_path_for_direct_transfer(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     data = tmp_path / "measurements"
@@ -488,6 +623,59 @@ def test_sdk_submit_run_keeps_local_data_path_for_direct_transfer(tmp_path, monk
 
     assert job.spec["data"] == {"path": data.as_posix()}
     assert "project" not in job.spec
+
+
+def test_sdk_local_mat_filter_discovery_does_not_change_web_config_fingerprint(tmp_path):
+    sdk, services = make_sdk(tmp_path)
+    web_client = TestClient(
+        create_app(control_service_factory=lambda owner: services.setdefault(
+            owner, ControlService(tmp_path / f"{owner}.db")
+        ))
+    )
+    repository = tmp_path / "repo"
+    (repository / ".git").mkdir(parents=True)
+    filter_path = (
+        repository
+        / "tools"
+        / "selena"
+        / "matlab_transport_cfg"
+        / "matlab_swx_plotreco.mdf.mat.filter"
+    )
+    filter_path.parent.mkdir(parents=True)
+    filter_path.write_text("filter", encoding="utf-8")
+    build_script = repository / "build_selena.bat"
+    build_script.write_text("@echo off\n", encoding="utf-8")
+    runtime_xml = repository / "Runtime.xml"
+    runtime_xml.write_text("<Runtime />", encoding="utf-8")
+
+    config_payload = run_config_dict()
+    config_payload["selena"].update(
+        {
+            "code_path": str(repository),
+            "selena_build_script": str(build_script),
+            "runtime_xml": str(runtime_xml),
+        }
+    )
+    config_payload["simulation"]["mat_filter"] = ""
+    config = UserRunConfig.from_dict(config_payload)
+
+    web_validation = web_client.post(
+        "/api/v1/run-configs/validate",
+        json=config.to_dict(),
+        headers={"X-Rsim-User": "alice"},
+    ).json()
+    validation = sdk.validate_run(config)
+    dry_run = sdk.submit_run(config, dry_run=True, idempotency_key="mat-filter-parity")
+
+    # The Web request keeps the optional field empty, so the canonical hash
+    # and Job spec must remain unchanged even though the SDK can read the
+    # inferred file for a later direct-transfer plan.
+    assert web_validation["config"] == config.to_dict()
+    assert validation.config.to_dict() == web_validation["config"]
+    assert validation.fingerprint == web_validation["fingerprint"]
+    assert dry_run.spec == config.to_dict()
+    assert dry_run.spec_hash == config.fingerprint()
+    assert ("mat_filter", filter_path.resolve()) in _sdk_local_transfer_sources(config)
 
 
 def test_sdk_keeps_readable_local_path_even_when_posix_syntax_is_central(tmp_path, monkeypatch):
@@ -1085,6 +1273,31 @@ def test_sdk_wait_job_is_the_documented_adaptive_wait_entry_point(tmp_path):
     assert terminal.status == "cancelled"
 
 
+def test_sdk_wait_until_actionable_returns_connector_wait_without_hanging(tmp_path):
+    sdk, _ = make_sdk(tmp_path)
+    job = sdk.submit_run(run_config_dict())
+
+    actionable = sdk.wait_until_actionable(job.id, timeout=2.0, poll_interval=0.01)
+
+    assert actionable.id == job.id
+    assert actionable.needs_input is True
+    assert actionable.waiting["reason"] == "windows_connection_required"
+    assert actionable.waiting["action"]["type"] == "connect_windows"
+
+
+def test_sdk_typed_models_are_json_safe_for_agent_adapters(tmp_path):
+    sdk, _ = make_sdk(tmp_path)
+    job = sdk.submit_run(run_config_dict(), dry_run=True, idempotency_key="json-safe")
+    validation = sdk.validate_run(run_config_dict())
+
+    import json
+
+    json.dumps(job.to_dict())
+    json.dumps(validation.to_dict())
+    assert job.to_dict()["job_id"] == job.id
+    assert validation.to_dict()["config"] == validation.config.to_dict()
+
+
 def test_sdk_watch_backoff_grows_delay_on_repeated_transport_errors(monkeypatch):
     from radar_sim_sdk.client import RadarSimClient
 
@@ -1207,6 +1420,36 @@ def test_sdk_watch_continuous_transport_failure_times_out():
     sdk = RadarSimClient("http://testserver", transport=httpx.MockTransport(handler))
     with pytest.raises(TimeoutError):
         list(sdk.watch("job_1", timeout=0.05, poll_interval=0.01))
+
+
+def test_sdk_watch_retries_transient_api_poll_errors(monkeypatch):
+    state = {"stream": 0, "events": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "stream=true" in url:
+            state["stream"] += 1
+            if state["stream"] == 1:
+                return httpx.Response(503, json={"code": "service_unavailable", "message": "retry"})
+            return httpx.Response(200, text="", headers={"content-type": "text/event-stream"})
+        state["events"] += 1
+        if state["events"] == 1:
+            return httpx.Response(503, json={"code": "service_unavailable", "message": "retry"})
+        return httpx.Response(
+            200,
+            json={"job_id": "job-api-retry", "status": "cancelled", "events": [], "next_cursor": 0, "terminal": True},
+        )
+
+    monkeypatch.setattr("radar_sim_sdk.client.time.sleep", lambda _seconds: None)
+    sdk = RadarSimClient(
+        "http://testserver",
+        transport=httpx.MockTransport(handler),
+        user="alice",
+        trust_env=False,
+    )
+
+    assert list(sdk.watch("job-api-retry", timeout=1.0, poll_interval=0.01)) == []
+    assert state == {"stream": 2, "events": 2}
 
 
 def test_sdk_direct_transfer_adapter_uses_metadata_only_control_requests(tmp_path):

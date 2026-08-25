@@ -1,0 +1,590 @@
+"""Thin MCP adapter over :mod:`radar_sim_sdk`.
+
+The server deliberately owns no scheduler, database, file-transfer kernel or
+Selena logic.  It exposes stable JSON tool envelopes and delegates every
+operation to an injected ``RadarSimClient``.  The default process entry point
+reads connection settings from environment variables so different Agents and
+different code repositories can reuse the same server binary without putting
+credentials in tool arguments.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from pydantic import ValidationError
+
+from radar_sim_mcp.agent_tools import AgentToolsUpdateError, check_agent_tools, update_agent_tools
+from radar_sim_mcp.connector import (
+    ConnectorInstallError,
+    check_connector,
+    install_or_update_connector,
+)
+from radar_sim_sdk import (
+    RadarSimApiError,
+    RadarSimClient,
+    RadarSimError,
+    RadarSimIntegrityError,
+    RadarSimTransferCancelledError,
+    RadarSimTransportError,
+    UserRunConfig,
+)
+
+try:  # Keep the SDK install independent from the optional MCP extra.
+    from mcp.server.fastmcp import FastMCP
+except ImportError as exc:  # pragma: no cover - exercised in environments without [mcp]
+    raise RuntimeError(
+        "radar-sim MCP requires the optional dependency; install with "
+        "pip install 'radar-sim[mcp]'"
+    ) from exc
+
+
+SERVER_INSTRUCTIONS = """Use this server to operate radar-sim Selena simulations.
+
+The MCP server is a thin adapter over the radar-sim Python SDK. Use the public
+UserRunConfig 2.0 contract. Do not invent project/profile/recipe fields, do
+not send MF4/Selena/Runtime/ZIP file bodies through tool arguments, and do not
+reimplement scheduling or path-transfer logic. A successful submit returns a
+job_id; use get_simulation, get_simulation_events, wait_simulation,
+diagnose_simulation and get_simulation_manifest for the lifecycle. If a Job
+returns needs_input, follow its waiting/action fields rather than reporting a
+simulation failure.
+
+Use check_agent_tools to detect a newer SDK/MCP/Skill bundle. Updating tools is
+an explicit local mutation and requires confirmation plus
+RADAR_SIM_ALLOW_AGENT_TOOLS_UPDATE=1; after a successful update restart the
+MCP process so its stable launcher selects the new version.
+"""
+
+
+def _ok(data: Any) -> dict[str, Any]:
+    return {"ok": True, "data": data}
+
+
+def _error_payload(exc: BaseException) -> dict[str, Any]:
+    """Convert SDK exceptions into one stable, model-friendly envelope."""
+
+    if isinstance(exc, RadarSimApiError):
+        return {
+            "type": "api_error",
+            "code": str(exc.code or "api_error"),
+            "message": str(exc.message or str(exc)),
+            "status_code": int(exc.status_code),
+            "retryable": bool(exc.status_code >= 500 or exc.status_code in {408, 429}),
+            "detail": exc.detail,
+            "actions": list(exc.actions),
+            "request_id": str(exc.request_id or ""),
+        }
+    if isinstance(exc, RadarSimTransportError):
+        return {
+            "type": "transport_error",
+            "code": "transport_error",
+            "message": str(exc),
+            "retryable": True,
+            "actions": [
+                {
+                    "type": "recover_status",
+                    "label": "Reuse the same idempotency key and query the Job status",
+                }
+            ],
+        }
+    if isinstance(exc, RadarSimIntegrityError):
+        return {
+            "type": "integrity_error",
+            "code": str(exc.code or "result_integrity_error"),
+            "message": str(exc.message or str(exc)),
+            "retryable": True,
+            "resource": str(exc.resource or ""),
+            "actions": [{"type": "retry_download", "label": "Retry the result download"}],
+        }
+    if isinstance(exc, RadarSimTransferCancelledError):
+        return {
+            "type": "transfer_cancelled",
+            "code": "transfer_cancelled",
+            "message": str(exc),
+            "retryable": False,
+            "actions": [{"type": "user_decision", "label": "Choose whether to resume or cancel"}],
+        }
+    if isinstance(exc, ConnectorInstallError):
+        return {
+            "type": "connector_install_error",
+            "code": str(getattr(exc, "code", "") or "connector_install_failed"),
+            "message": str(exc),
+            "retryable": True,
+            "actions": [
+                {
+                    "type": "inspect_connector_install",
+                    "label": "Inspect the visible Connector installer output and retry",
+                }
+            ],
+        }
+    if isinstance(exc, AgentToolsUpdateError):
+        return {
+            "type": "agent_tools_update_error",
+            "code": str(getattr(exc, "code", "") or "agent_tools_update_failed"),
+            "message": str(exc),
+            "retryable": True,
+            "actions": [
+                {
+                    "type": "retry_agent_tools_update",
+                    "label": "Retry the Agent Tools update; the previous installation was preserved",
+                }
+            ],
+        }
+    if isinstance(exc, ValidationError):
+        return {
+            "type": "validation_error",
+            "code": "invalid_run_config",
+            "message": "The run configuration does not satisfy UserRunConfig 2.0.",
+            "retryable": False,
+            "detail": {"errors": exc.errors()},
+            "actions": [{"type": "fix_config", "label": "Fix the reported configuration fields"}],
+        }
+    if isinstance(exc, TimeoutError):
+        return {
+            "type": "observation_timeout",
+            "code": "observation_timeout",
+            "message": "The observation window ended; the server-side Job was not cancelled.",
+            "retryable": True,
+            "actions": [{"type": "get_simulation", "label": "Query the Job again"}],
+        }
+    if isinstance(exc, (ValueError, RadarSimError)):
+        return {
+            "type": "client_error",
+            "code": str(getattr(exc, "code", "") or "client_error"),
+            "message": str(exc),
+            "retryable": False,
+            "actions": [],
+        }
+    return {
+        "type": "unexpected_error",
+        "code": "unexpected_error",
+        "message": f"{type(exc).__name__}: {exc}",
+        "retryable": False,
+        "actions": [],
+    }
+
+
+def _safe_call(operation: Callable[[], Any]) -> dict[str, Any]:
+    try:
+        return _ok(operation())
+    except Exception as exc:  # MCP must return a structured result, not a traceback.
+        return {"ok": False, "error": _error_payload(exc)}
+
+
+def _config_input(
+    *,
+    yaml_text: str = "",
+    config: Mapping[str, Any] | None = None,
+) -> UserRunConfig:
+    has_yaml = bool(str(yaml_text or "").strip())
+    has_config = config is not None
+    if has_yaml == has_config:
+        raise ValueError("provide exactly one of yaml_text or config")
+    if has_yaml:
+        return UserRunConfig.from_yaml(str(yaml_text))
+    return UserRunConfig.from_dict(dict(config or {}))
+
+
+def _job_payload(job: Any) -> dict[str, Any]:
+    return job.to_dict() if hasattr(job, "to_dict") else dict(job)
+
+
+class RadarSimMcpServer:
+    """Build a reusable MCP server around one configured SDK client."""
+
+    def __init__(
+        self,
+        client: RadarSimClient,
+        *,
+        name: str = "radar-sim",
+        instructions: str = SERVER_INSTRUCTIONS,
+        host: str = "127.0.0.1",
+        port: int = 8765,
+    ) -> None:
+        self.client = client
+        self.app = FastMCP(
+            name,
+            instructions=instructions,
+            host=host,
+            port=int(port),
+            streamable_http_path="/mcp",
+        )
+        self._register_tools()
+
+    def _register_tools(self) -> None:
+        client = self.client
+
+        @self.app.tool(
+            name="get_simulation_schema",
+            description="Return the public UserRunConfig 2.0 JSON Schema used by Web and SDK.",
+            structured_output=True,
+        )
+        def get_simulation_schema() -> dict[str, Any]:
+            return _safe_call(client.user_run_config_schema)
+
+        @self.app.tool(
+            name="import_simulation_yaml",
+            description="Normalize complete or partial YAML without creating a Job.",
+            structured_output=True,
+        )
+        def import_simulation_yaml(yaml_text: str) -> dict[str, Any]:
+            return _safe_call(lambda: client.import_yaml(yaml_text))
+
+        @self.app.tool(
+            name="export_simulation_yaml",
+            description="Export a complete or partial UserRunConfig mapping to canonical YAML.",
+            structured_output=True,
+        )
+        def export_simulation_yaml(config: dict[str, Any]) -> dict[str, Any]:
+            return _safe_call(lambda: client.export_yaml(config))
+
+        @self.app.tool(
+            name="get_simulation_readiness",
+            description="Return the deployment-owned Cluster readiness gate.",
+            structured_output=True,
+        )
+        def get_simulation_readiness() -> dict[str, Any]:
+            return _safe_call(client.cluster_readiness)
+
+        @self.app.tool(
+            name="get_simulation_capabilities",
+            description="Return owner-scoped Windows, Cluster and Connector capabilities.",
+            structured_output=True,
+        )
+        def get_simulation_capabilities() -> dict[str, Any]:
+            return _safe_call(client.capabilities)
+
+        @self.app.tool(
+            name="check_agent_tools",
+            description="Check the local MCP/Skill release against the current server bundle manifest.",
+            structured_output=True,
+        )
+        def check_agent_tools_tool() -> dict[str, Any]:
+            return _safe_call(lambda: check_agent_tools(client))
+
+        @self.app.tool(
+            name="update_agent_tools",
+            description="Install the current SDK/MCP/Skill bundle side-by-side; restart the MCP process afterward.",
+            structured_output=True,
+        )
+        def update_agent_tools_tool(
+            confirm: bool = False,
+            timeout_seconds: float = 600.0,
+        ) -> dict[str, Any]:
+            if not confirm:
+                return _ok(
+                    {
+                        "status": "confirmation_required",
+                        "message": "Updating the local SDK/MCP/Skill installation requires explicit confirmation.",
+                    }
+                )
+            if os.environ.get("RADAR_SIM_ALLOW_AGENT_TOOLS_UPDATE", "").strip().casefold() not in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                return _ok(
+                    {
+                        "status": "policy_blocked",
+                        "message": "Set RADAR_SIM_ALLOW_AGENT_TOOLS_UPDATE=1 in the local MCP process environment to permit updates.",
+                    }
+                )
+            return _safe_call(
+                lambda: update_agent_tools(
+                    client,
+                    timeout_seconds=max(30.0, min(float(timeout_seconds), 1800.0)),
+                )
+            )
+
+        @self.app.tool(
+            name="check_windows_connector",
+            description="Check the Connector installed on this MCP host and verify its exact server-side device status.",
+            structured_output=True,
+        )
+        def check_windows_connector() -> dict[str, Any]:
+            return _safe_call(lambda: check_connector(client))
+
+        @self.app.tool(
+            name="install_or_update_windows_connector",
+            description="Optionally run the current Connector installer/update on this local Windows host.",
+            structured_output=True,
+        )
+        def install_or_update_windows_connector(
+            confirm: bool = False,
+            timeout_seconds: float = 180.0,
+        ) -> dict[str, Any]:
+            if not confirm:
+                return _ok(
+                    {
+                        "status": "confirmation_required",
+                        "message": "Installing or updating the local Connector changes this computer; call again with confirm=true after user authorization.",
+                    }
+                )
+            if os.environ.get("RADAR_SIM_ALLOW_CONNECTOR_INSTALL", "").strip().casefold() not in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                return _ok(
+                    {
+                        "status": "policy_blocked",
+                        "message": "Set RADAR_SIM_ALLOW_CONNECTOR_INSTALL=1 in the local MCP process environment to permit installer execution.",
+                    }
+                )
+            return _safe_call(
+                lambda: install_or_update_connector(
+                    client,
+                    timeout_seconds=max(10.0, min(float(timeout_seconds), 600.0)),
+                )
+            )
+
+        @self.app.tool(
+            name="validate_simulation",
+            description="Validate a complete UserRunConfig and return route, readiness and Stage plan.",
+            structured_output=True,
+        )
+        def validate_simulation(
+            yaml_text: str = "",
+            config: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            return _safe_call(
+                lambda: client.validate_run(_config_input(yaml_text=yaml_text, config=config)).to_dict()
+            )
+
+        @self.app.tool(
+            name="submit_simulation",
+            description="Create an idempotent Selena simulation Job from YAML text or a config mapping.",
+            structured_output=True,
+        )
+        def submit_simulation(
+            yaml_text: str = "",
+            config: dict[str, Any] | None = None,
+            idempotency_key: str = "",
+            dry_run: bool = False,
+        ) -> dict[str, Any]:
+            def operation() -> dict[str, Any]:
+                job = client.submit_run(
+                    _config_input(yaml_text=yaml_text, config=config),
+                    idempotency_key=str(idempotency_key or "").strip() or None,
+                    dry_run=bool(dry_run),
+                    auto_transfer=True,
+                )
+                return {"job_id": job.id, "job": _job_payload(job)}
+
+            return _safe_call(operation)
+
+        @self.app.tool(
+            name="list_simulations",
+            description="List owner-scoped simulation Jobs.",
+            structured_output=True,
+        )
+        def list_simulations(status: str = "", limit: int = 50) -> dict[str, Any]:
+            def operation() -> dict[str, Any]:
+                jobs = client.list_jobs(status=status, limit=max(1, min(int(limit), 100)))
+                return {"jobs": [_job_payload(job) for job in jobs], "count": len(jobs)}
+
+            return _safe_call(operation)
+
+        @self.app.tool(
+            name="get_simulation",
+            description="Get one owner-scoped Job snapshot, including progress, waiting and actions.",
+            structured_output=True,
+        )
+        def get_simulation(job_id: str) -> dict[str, Any]:
+            return _safe_call(lambda: _job_payload(client.get_job(job_id)))
+
+        @self.app.tool(
+            name="get_simulation_events",
+            description="Read a bounded event page for logs, Stage progress and status changes.",
+            structured_output=True,
+        )
+        def get_simulation_events(job_id: str, since: int = 0, limit: int = 200) -> dict[str, Any]:
+            return _safe_call(
+                lambda: client.events(job_id, since=max(0, int(since)), limit=max(1, min(int(limit), 1000))).to_dict()
+            )
+
+        @self.app.tool(
+            name="wait_simulation",
+            description="Wait until terminal or needs_input, returning a snapshot even when the observation window expires.",
+            structured_output=True,
+        )
+        def wait_simulation(
+            job_id: str,
+            timeout_seconds: float = 30.0,
+            poll_interval_seconds: float = 1.0,
+        ) -> dict[str, Any]:
+            def operation() -> dict[str, Any]:
+                try:
+                    job = client.wait_until_actionable(
+                        job_id,
+                        timeout=max(0.1, float(timeout_seconds)),
+                        poll_interval=max(0.05, float(poll_interval_seconds)),
+                    )
+                    return {"job": _job_payload(job), "timed_out": False}
+                except TimeoutError:
+                    job = client.get_job(job_id)
+                    return {"job": _job_payload(job), "timed_out": True}
+
+            return _safe_call(operation)
+
+        @self.app.tool(
+            name="get_simulation_transfer",
+            description="Get aggregate direct-transfer status and plan summaries for one Job.",
+            structured_output=True,
+        )
+        def get_simulation_transfer(job_id: str) -> dict[str, Any]:
+            return _safe_call(lambda: client.get_job_transfer_status(job_id))
+
+        @self.app.tool(
+            name="resume_simulation_transfer",
+            description="Resume source-to-Cluster direct transfer for a previously submitted Job.",
+            structured_output=True,
+        )
+        def resume_simulation_transfer(
+            job_id: str,
+            yaml_text: str = "",
+            config: dict[str, Any] | None = None,
+            retries: int = 3,
+        ) -> dict[str, Any]:
+            def operation() -> dict[str, Any]:
+                job = client.resume_direct_transfers(
+                    job_id,
+                    _config_input(yaml_text=yaml_text, config=config),
+                    retries=max(0, min(int(retries), 5)),
+                )
+                return _job_payload(job)
+
+            return _safe_call(operation)
+
+        @self.app.tool(
+            name="download_windows_connector",
+            description="Download the unified Windows Connector launcher for a user-preinstallation step.",
+            structured_output=True,
+        )
+        def download_windows_connector(destination: str) -> dict[str, Any]:
+            return _safe_call(lambda: {"path": str(client.download_windows_connector(Path(destination)))})
+
+        @self.app.tool(
+            name="cancel_simulation",
+            description="Request cancellation of one simulation Job.",
+            structured_output=True,
+        )
+        def cancel_simulation(job_id: str) -> dict[str, Any]:
+            return _safe_call(lambda: _job_payload(client.cancel(job_id)))
+
+        @self.app.tool(
+            name="retry_simulation_stage",
+            description="Retry a failed or cancelled Stage identified by the Job action contract.",
+            structured_output=True,
+        )
+        def retry_simulation_stage(job_id: str, stage_id: str) -> dict[str, Any]:
+            return _safe_call(lambda: _job_payload(client.retry_stage(job_id, stage_id)))
+
+        @self.app.tool(
+            name="retry_failed_inputs",
+            description="Retry selected failed inputs of a partial simulation without rerunning successes.",
+            structured_output=True,
+        )
+        def retry_failed_inputs(job_id: str, input_paths: list[str] | None = None) -> dict[str, Any]:
+            return _safe_call(
+                lambda: _job_payload(client.retry_failed_inputs(job_id, input_paths or ()))
+            )
+
+        @self.app.tool(
+            name="diagnose_simulation",
+            description="Return the stable, path-free business diagnosis for a Job.",
+            structured_output=True,
+        )
+        def diagnose_simulation(job_id: str) -> dict[str, Any]:
+            return _safe_call(lambda: client.diagnosis(job_id).to_dict())
+
+        @self.app.tool(
+            name="get_simulation_manifest",
+            description="Return the result Manifest if it is available.",
+            structured_output=True,
+        )
+        def get_simulation_manifest(job_id: str) -> dict[str, Any]:
+            return _safe_call(lambda: client.manifest(job_id).to_dict())
+
+        @self.app.tool(
+            name="list_simulation_results",
+            description="List owner-scoped result archives.",
+            structured_output=True,
+        )
+        def list_simulation_results() -> dict[str, Any]:
+            return _safe_call(lambda: {"items": client.list_results()})
+
+        @self.app.tool(
+            name="get_simulation_result",
+            description="Get metadata for one owner-scoped result reference.",
+            structured_output=True,
+        )
+        def get_simulation_result(result_ref: str) -> dict[str, Any]:
+            return _safe_call(lambda: client.get_result(result_ref))
+
+        @self.app.tool(
+            name="download_simulation_result",
+            description="Download and checksum-verify a result ZIP to the MCP host; never return file bytes.",
+            structured_output=True,
+        )
+        def download_simulation_result(
+            job_id: str,
+            destination: str = "",
+        ) -> dict[str, Any]:
+            def operation() -> dict[str, Any]:
+                path = client.download_job_result(job_id, destination or None)
+                return {"path": str(path)}
+
+            return _safe_call(operation)
+
+    def run(self, transport: str = "stdio") -> None:
+        """Run the configured FastMCP transport."""
+
+        if transport not in {"stdio", "sse", "streamable-http"}:
+            raise ValueError("transport must be stdio, sse, or streamable-http")
+        self.app.run(transport=transport)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().casefold() not in {"0", "false", "no", "off"}
+
+
+def client_from_environment() -> RadarSimClient:
+    """Build the SDK client from MCP process configuration."""
+
+    base_url = os.environ.get("RADAR_SIM_BASE_URL", "").strip()
+    if not base_url:
+        raise RuntimeError("RADAR_SIM_BASE_URL is required")
+    return RadarSimClient(
+        base_url,
+        user=os.environ.get("RADAR_SIM_USER", "").strip(),
+        token=os.environ.get("RADAR_SIM_TOKEN", "").strip(),
+        verify=_env_bool("RADAR_SIM_VERIFY", True),
+    )
+
+
+def create_mcp_server(client: RadarSimClient | None = None) -> RadarSimMcpServer:
+    """Create a server for tests, embedding, or the standalone entry point."""
+
+    return RadarSimMcpServer(
+        client or client_from_environment(),
+        host=os.environ.get("RADAR_SIM_MCP_HOST", "127.0.0.1"),
+        port=int(os.environ.get("RADAR_SIM_MCP_PORT", "8765")),
+    )
+
+
+def main() -> None:
+    transport = os.environ.get("RADAR_SIM_MCP_TRANSPORT", "stdio").strip().lower()
+    create_mcp_server().run(transport=transport)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

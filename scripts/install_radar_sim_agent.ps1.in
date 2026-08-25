@@ -1,0 +1,46 @@
+<#
+  Windows wrapper for the source-free, versioned Agent Tools bootstrap.
+  The Python bootstrap owns checksum verification, side-by-side installation,
+  restart-safe activation and Skill/MCP state. This wrapper only obtains it
+  from the same radar-sim service and invokes the user's Python runtime.
+#>
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = "Stop"
+$ServerUrl = "__RSIM_SERVER_URL__".TrimEnd('/')
+$Base = if ($env:TEMP) { $env:TEMP } else { [IO.Path]::GetTempPath() }
+$Bootstrap = Join-Path $Base ("radar-sim-agent-tools-" + [Guid]::NewGuid().ToString("N") + ".py")
+
+try {
+    $headers = @{}
+    if ($env:RADAR_SIM_TOKEN) { $headers["Authorization"] = "Bearer " + $env:RADAR_SIM_TOKEN }
+    Invoke-WebRequest -UseBasicParsing `
+        -Uri ($ServerUrl + "/api/v1/agent-tools/install.py") `
+        -Headers $headers `
+        -OutFile $Bootstrap `
+        -TimeoutSec 60
+
+    $python = $null
+    foreach ($commandName in @("python", "py")) {
+        $candidate = Get-Command $commandName -ErrorAction SilentlyContinue
+        if (-not $candidate) { continue }
+        $versionText = (& $candidate.Source --version 2>&1 | Out-String)
+        if ($versionText -match "Python\s+(\d+)\.(\d+)") {
+            $major = [int]$Matches[1]
+            $minor = [int]$Matches[2]
+            if (($major -gt 3) -or (($major -eq 3) -and ($minor -ge 10))) {
+                $python = $candidate
+                break
+            }
+        }
+    }
+    if (-not $python) { throw "Python 3.10+ is required for the local MCP installation." }
+    & $python.Source $Bootstrap --server-url $ServerUrl
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+finally {
+    if (Test-Path -LiteralPath $Bootstrap) {
+        Remove-Item -LiteralPath $Bootstrap -Force -ErrorAction SilentlyContinue
+    }
+}

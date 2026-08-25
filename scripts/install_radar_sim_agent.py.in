@@ -1,0 +1,451 @@
+"""No-source, versioned radar-sim Agent Tools installer.
+
+The Linux service renders only ``__RSIM_SERVER_URL__``.  The bootstrap uses
+stdlib networking and ``venv`` so it can install the bundled wheel set without
+requiring a source checkout or an external package index.  It never persists
+RADAR_SIM_TOKEN.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Any, Optional
+import urllib.request
+import uuid
+import zipfile
+
+
+SERVER_URL = "__RSIM_SERVER_URL__"
+MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
+
+
+class InstallFailure(RuntimeError):
+    pass
+
+
+def _root() -> Path:
+    override = os.environ.get("RADAR_SIM_MCP_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA", "").strip() or str(Path.home() / "AppData" / "Local")
+    else:
+        base = os.environ.get("XDG_DATA_HOME", "").strip() or str(Path.home() / ".local" / "share")
+    return (Path(base) / "radar-sim-mcp").resolve()
+
+
+def _headers() -> dict[str, str]:
+    token = os.environ.get("RADAR_SIM_TOKEN", "").strip()
+    return {"Authorization": "Bearer " + token} if token else {}
+
+
+def _fetch(
+    url: str,
+    destination: Optional[Path] = None,
+    *,
+    max_bytes: int = MAX_DOWNLOAD_BYTES,
+) -> bytes:
+    request = urllib.request.Request(url, headers=_headers())
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            advertised = str(response.headers.get("Content-Length") or "").strip()
+            if advertised:
+                try:
+                    if int(advertised) > max_bytes:
+                        raise InstallFailure("Agent Tools download is too large")
+                except ValueError:
+                    pass
+            if destination is not None:
+                total = 0
+                with destination.open("wb") as handle:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise InstallFailure("Agent Tools download is too large")
+                        handle.write(chunk)
+                return b""
+            body = response.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                raise InstallFailure("Agent Tools download is too large")
+    except Exception as exc:
+        if isinstance(exc, InstallFailure):
+            raise
+        raise InstallFailure("Agent Tools download failed") from exc
+    return body
+
+
+def _safe_extract(archive: Path, destination: Path) -> None:
+    destination = destination.resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive) as handle:
+        for member in handle.infolist():
+            target = (destination / member.filename).resolve()
+            try:
+                target.relative_to(destination)
+            except ValueError as exc:
+                raise InstallFailure("Agent Tools bundle contains an unsafe path") from exc
+            unix_mode = (member.external_attr >> 16) & 0o170000
+            if unix_mode == 0o120000:
+                raise InstallFailure("Agent Tools bundle contains a symlink")
+        handle.extractall(destination)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    temporary = path.with_name(path.name + ".part." + uuid.uuid4().hex)
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _copy_file_atomic(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".part." + uuid.uuid4().hex)
+    try:
+        shutil.copy2(source, temporary)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _python_in_venv(venv: Path) -> Path:
+    return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _install_offline_wheels(
+    venv_python: Path,
+    wheel_dir: Path,
+    *,
+    timeout_seconds: float,
+) -> None:
+    """Install the compatible wheel set without invoking pip resolution."""
+
+    selector = r'''
+import pathlib
+import sys
+import sysconfig
+import zipfile
+
+from pip._vendor.packaging.tags import sys_tags
+from pip._vendor.packaging.utils import canonicalize_name, parse_wheel_filename
+
+wheel_dir = pathlib.Path(sys.argv[1]).resolve()
+supported = {tag: index for index, tag in enumerate(sys_tags())}
+selected = {}
+for wheel in sorted(wheel_dir.glob("*.whl")):
+    try:
+        distribution, _version, _build, tags = parse_wheel_filename(wheel.name)
+    except Exception:
+        continue
+    scores = [supported[tag] for tag in tags if tag in supported]
+    if not scores:
+        continue
+    key = canonicalize_name(str(distribution))
+    score = min(scores)
+    previous = selected.get(key)
+    if previous is None or score < previous[0]:
+        selected[key] = (score, wheel)
+
+required = {"radar-sim", "mcp", "pydantic", "httpx", "pyyaml"}
+if sys.platform == "win32":
+    required.add("pywin32")
+missing = sorted(required.difference(selected))
+if missing:
+    raise SystemExit("no compatible Agent Tools wheels: " + ", ".join(missing))
+
+target_root = pathlib.Path(sysconfig.get_paths()["purelib"]).resolve()
+target_root.mkdir(parents=True, exist_ok=True)
+for _score, wheel in sorted(selected.values(), key=lambda item: item[1].name):
+    with zipfile.ZipFile(wheel) as archive:
+        for member in archive.infolist():
+            target = (target_root / member.filename).resolve()
+            try:
+                target.relative_to(target_root)
+            except ValueError as exc:
+                raise SystemExit("wheel contains an unsafe path: " + member.filename) from exc
+            mode = (member.external_attr >> 16) & 0o170000
+            if mode == 0o120000:
+                raise SystemExit("wheel contains a symlink: " + member.filename)
+            if member.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, target.open("wb") as destination:
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    destination.write(chunk)
+print("installed compatible wheels: " + ", ".join(sorted(selected)))
+'''
+    subprocess.run(
+        [str(venv_python), "-c", selector, str(wheel_dir)],
+        check=True,
+        timeout=timeout_seconds,
+    )
+
+
+def install(server_url: str, *, timeout_seconds: float = 600.0) -> dict[str, Any]:
+    if sys.version_info < (3, 10):
+        raise InstallFailure("Agent Tools requires Python 3.10 or newer")
+    server_url = str(server_url or "").strip().rstrip("/")
+    if not server_url.startswith(("http://", "https://")):
+        raise InstallFailure("RADAR_SIM_BASE_URL must use http or https")
+    root = _root()
+    versions = root / "versions"
+    root.mkdir(parents=True, exist_ok=True)
+    versions.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="radar-sim-agent-tools-") as temporary:
+        temporary_root = Path(temporary)
+        try:
+            manifest = json.loads(
+                _fetch(
+                    server_url + "/api/v1/agent-tools/manifest",
+                    max_bytes=4 * 1024 * 1024,
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise InstallFailure("Agent Tools public manifest is invalid") from exc
+        if not isinstance(manifest, dict):
+            raise InstallFailure("Agent Tools public manifest is invalid")
+        bundle_value = manifest.get("bundle")
+        if not isinstance(bundle_value, dict):
+            raise InstallFailure("Agent Tools public manifest has no bundle metadata")
+        bundle_info = dict(bundle_value)
+        expected = str(bundle_info.get("sha256") or "").removeprefix("sha256:").lower()
+        try:
+            expected_size = int(bundle_info.get("size") or 0)
+        except (TypeError, ValueError) as exc:
+            raise InstallFailure("Agent Tools manifest has an invalid bundle size") from exc
+        if len(expected) != 64:
+            raise InstallFailure("Agent Tools manifest has no valid bundle checksum")
+        package = temporary_root / "agent-tools.zip"
+        if expected_size <= 0 or expected_size > MAX_DOWNLOAD_BYTES:
+            raise InstallFailure("Agent Tools manifest has an invalid bundle size")
+        _fetch(
+            server_url + "/api/v1/agent-tools/package.zip",
+            package,
+            max_bytes=min(MAX_DOWNLOAD_BYTES, expected_size + 1),
+        )
+        if (expected_size and package.stat().st_size != expected_size) or _sha256(package) != expected:
+            raise InstallFailure("Agent Tools bundle checksum mismatch")
+        extracted = temporary_root / "package"
+        _safe_extract(package, extracted)
+        embedded_manifest_path = extracted / "manifest.json"
+        try:
+            embedded_manifest = json.loads(embedded_manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise InstallFailure("Agent Tools bundle manifest is unavailable") from exc
+        if not isinstance(embedded_manifest, dict):
+            raise InstallFailure("Agent Tools bundle manifest is invalid")
+        for key in (
+            "schema_version",
+            "release_version",
+            "sdk_version",
+            "mcp_version",
+            "skill_version",
+            "mcp_tool_contract_version",
+            "mcp_dependency_version",
+            "api_version",
+            "config_schema_version",
+            "connector_contract_version",
+            "python_requires",
+        ):
+            if str(embedded_manifest.get(key) or "") != str(manifest.get(key) or ""):
+                raise InstallFailure("Agent Tools bundle manifest does not match the public release manifest")
+        wheel_dir = extracted / "wheels"
+        skill_source = extracted / "skill" / "radar-sim-simulation"
+        launcher_source = extracted / "runtime" / "agent_mcp_launcher.py"
+        sdk_wheels = sorted(wheel_dir.glob("radar_sim-*.whl"))
+        if len(sdk_wheels) != 1 or not (skill_source / "SKILL.md").is_file() or not launcher_source.is_file():
+            raise InstallFailure("Agent Tools bundle is incomplete")
+
+        release = str(manifest.get("release_version") or "").strip()
+        if not release:
+            raise InstallFailure("Agent Tools manifest has no release version")
+        safe_release = "".join(char if char.isalnum() or char in "._-" else "_" for char in release)
+        version_key = safe_release + "-" + expected[:12]
+        final = versions / version_key
+        state_path = root / "install.json"
+        previous: dict[str, Any] = {}
+        if state_path.is_file():
+            try:
+                previous = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                previous = {}
+        if previous.get("version_key") == version_key and Path(str(previous.get("venv_python") or "")).is_file():
+            return {
+                "status": "already_current",
+                "release_version": release,
+                "sdk_version": manifest.get("sdk_version", ""),
+                "mcp_version": manifest.get("mcp_version", ""),
+                "skill_version": manifest.get("skill_version", ""),
+                "mcp_tool_contract_version": manifest.get("mcp_tool_contract_version", ""),
+                "mcp_dependency_version": manifest.get("mcp_dependency_version", ""),
+                "restart_required": False,
+                "skill_path": str(previous.get("skill_path") or ""),
+            }
+
+        staging = versions / (version_key + ".staging." + uuid.uuid4().hex)
+        staging.mkdir(parents=True)
+        try:
+            venv = staging / "venv"
+            subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=120)
+            venv_python = _python_in_venv(venv)
+            if not venv_python.is_file():
+                raise InstallFailure("Agent Tools virtual environment was not created")
+            _install_offline_wheels(
+                venv_python,
+                wheel_dir,
+                timeout_seconds=timeout_seconds,
+            )
+            subprocess.run(
+                [str(venv_python), "-c", "import radar_sim_sdk, radar_sim_mcp"],
+                check=True,
+                timeout=30,
+            )
+            skill_target = staging / "skill" / "radar-sim-simulation"
+            skill_target.parent.mkdir(parents=True)
+            shutil.copytree(skill_source, skill_target)
+            shutil.copy2(launcher_source, staging / "agent_mcp_launcher.py")
+            (staging / "release.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            if final.exists():
+                # The same version key is content-addressed. Preserve an
+                # unexpected/incomplete directory for diagnostics instead of
+                # deleting the only previous activation evidence.
+                final.rename(versions / (version_key + ".invalid." + uuid.uuid4().hex))
+            staging.replace(final)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+    launcher = root / "run_mcp.py"
+    _copy_file_atomic(final / "agent_mcp_launcher.py", launcher)
+    venv_python = _python_in_venv(final / "venv")
+    skill_path = final / "skill" / "radar-sim-simulation"
+    skill_registry_target = ""
+    configured_skill_root = os.environ.get("RADAR_SIM_SKILL_ROOT", "").strip()
+    if configured_skill_root:
+        registry_root = Path(configured_skill_root).expanduser().resolve()
+        registry_root.mkdir(parents=True, exist_ok=True)
+        registry_target = registry_root / "radar-sim-simulation"
+        registry_staging = registry_root / (".radar-sim-simulation." + uuid.uuid4().hex)
+        shutil.copytree(skill_path, registry_staging)
+        registry_backup = None
+        if registry_target.exists():
+            registry_backup = registry_root / ("radar-sim-simulation.previous." + uuid.uuid4().hex)
+            registry_target.rename(registry_backup)
+        try:
+            registry_staging.replace(registry_target)
+        except Exception:
+            shutil.rmtree(registry_staging, ignore_errors=True)
+            if registry_backup is not None and registry_backup.exists() and not registry_target.exists():
+                registry_backup.rename(registry_target)
+            raise
+        skill_registry_target = str(registry_target)
+    state = {
+        "schema_version": "radar-sim.agent-tools-install/1.0",
+        "version_key": version_key,
+        "release_version": release,
+        "sdk_version": manifest.get("sdk_version", ""),
+        "mcp_version": manifest.get("mcp_version", ""),
+        "skill_version": manifest.get("skill_version", ""),
+        "mcp_tool_contract_version": manifest.get("mcp_tool_contract_version", ""),
+        "mcp_dependency_version": manifest.get("mcp_dependency_version", ""),
+        "bundle_sha256": "sha256:" + expected,
+        "venv_python": str(venv_python),
+        "skill_path": str(skill_path),
+        "skill_registry_path": skill_registry_target,
+        "launcher_path": str(launcher),
+        "updated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _write_json_atomic(root / "install.json", state)
+    config = {
+        "command": sys.executable,
+        "args": [str(launcher)],
+        "env": {"RADAR_SIM_BASE_URL": server_url},
+        "skill_path": str(skill_path),
+        "skill_registry_path": skill_registry_target,
+        "release_version": release,
+    }
+    if os.environ.get("RADAR_SIM_USER", "").strip():
+        config["env"]["RADAR_SIM_USER"] = os.environ["RADAR_SIM_USER"].strip()
+    config_path = root / "mcp-config.json"
+    _write_json_atomic(config_path, config)
+    return {
+        "status": "installed",
+        "release_version": release,
+        "sdk_version": manifest.get("sdk_version", ""),
+        "mcp_version": manifest.get("mcp_version", ""),
+        "skill_version": manifest.get("skill_version", ""),
+        "mcp_tool_contract_version": manifest.get("mcp_tool_contract_version", ""),
+        "mcp_dependency_version": manifest.get("mcp_dependency_version", ""),
+        "restart_required": True,
+        "mcp_config_path": str(config_path),
+        "skill_path": str(skill_path),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--server-url", default=SERVER_URL)
+    parser.add_argument("--timeout-seconds", type=float, default=600.0)
+    args = parser.parse_args()
+    try:
+        result = install(
+            args.server_url or os.environ.get("RADAR_SIM_BASE_URL", ""),
+            timeout_seconds=args.timeout_seconds,
+        )
+    except InstallFailure as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error": {"code": "agent_tools_install_failed", "message": str(exc)},
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    except Exception:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "error": {
+                        "code": "agent_tools_install_failed",
+                        "message": "Agent Tools installation failed due to an unexpected local error",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 3
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

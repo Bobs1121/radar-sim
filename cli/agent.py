@@ -495,6 +495,10 @@ class _TaskExecutionCancelled(RuntimeError):
     """Internal control flow for cancellation before a child is started."""
 
 
+class _TaskBuildSkipped(RuntimeError):
+    """Internal control flow for a proven no-code-change Selena build."""
+
+
 def _run_task(
     client: "_ControlClient",
     agent_id: str,
@@ -828,7 +832,9 @@ def _run_task(
     if is_v5_build:
         start_logs.append("[agent] authorized Selena build command prepared")
         build_policy_mode = (
-            "full"
+            "skipped"
+            if bool(getattr(prepared_build, "skip_build", False))
+            else "full"
             if bool(getattr(prepared_build, "full_rebuild_required", False))
             else (
                 "fresh"
@@ -837,7 +843,9 @@ def _run_task(
             )
         )
         build_policy_reason = str(
-            getattr(prepared_build, "full_rebuild_reason", "") or "default_incremental"
+            getattr(prepared_build, "full_rebuild_reason", "")
+            or getattr(prepared_build, "code_change_reason", "")
+            or "default_incremental"
         )
         start_logs.append(
             f"[agent] Selena build policy: {build_policy_mode} ({build_policy_reason})"
@@ -865,6 +873,14 @@ def _run_task(
         elif build_payload.get("actual_branch"):
             start_logs.append(
                 f"[agent] compiling current workspace on branch '{build_payload.get('actual_branch')}'"
+            )
+        if bool(getattr(prepared_build, "skip_build", False)):
+            start_logs.append(
+                "[agent] Selena compiler will be skipped: "
+                + str(
+                    getattr(prepared_build, "code_change_reason", "")
+                    or "code unchanged and artifact provenance matches"
+                )
             )
     else:
         start_logs.append(f"[agent] command: {_quote_command(command)}")
@@ -953,6 +969,26 @@ def _run_task(
                 )
         if prepared_build is not None:
             _verify_v5_selena_build(prepared_build)
+        if prepared_build is not None and bool(getattr(prepared_build, "skip_build", False)):
+            _safe_append_logs(
+                client,
+                task_id,
+                [
+                    "[agent] Selena compile skipped after lock recheck: "
+                    + str(
+                        getattr(prepared_build, "code_change_reason", "")
+                        or "code unchanged and artifact provenance matches"
+                    )
+                ],
+            )
+            client.report_progress(
+                task_id,
+                1.0,
+                message="Selena compile skipped; existing artifact is unchanged",
+            )
+            status = "succeeded"
+            returncode = 0
+            raise _TaskBuildSkipped()
         proc = subprocess.Popen(
             command,
             cwd=str(command_cwd),
@@ -1094,6 +1130,11 @@ def _run_task(
         # Cancellation while waiting for the workspace lock is terminal for
         # this attempt, but it is not a compiler failure and no child exists
         # to terminate.
+        pass
+    except _TaskBuildSkipped:
+        # The existing artifact was revalidated while holding the build lock;
+        # finalization below still creates a fresh immutable Runtime Bundle
+        # lease and performs the normal artifact integrity checks.
         pass
     except Exception as exc:
         if "proc" in locals() and proc.poll() is None:

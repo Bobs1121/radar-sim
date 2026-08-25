@@ -34,12 +34,13 @@ V2 创建入口：
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/api/v1/schema/run-config` | 唯一 YAML/JSON schema |
+| GET | `/api/v1/schema/run-config` | 唯一 YAML/JSON schema；SDK `user_run_config_schema()` |
 | POST | `/api/v1/run-configs/import` | 完整或部分 YAML 草稿 -> 规范化草稿；返回 `complete`/`missing_fields` |
 | POST | `/api/v1/run-configs/export` | 完整或部分配置草稿 -> YAML；不触发提交校验 |
 | POST | `/api/v1/run-configs/validate` | 路由和 readiness 预览 |
 | POST | `/api/v1/run-jobs` | 创建 V2 Job |
-| GET | `/api/v1/capabilities` | `windows`、`cluster`、Connector 版本 |
+| GET | `/api/v1/capabilities` | `windows`、`cluster`、Connector 版本；SDK `capabilities()` |
+| GET | `/api/v1/cluster/readiness` | Cluster 提交门禁；SDK `cluster_readiness()` |
 
 任务管理继续使用 `/api/v1/jobs/{id}`、events、cancel、retry、manifest、diagnosis、transfers 和 results。`POST /api/v1/jobs`、`POST /api/v1/validate`、`/api/v1/specs/*`、`/api/v1/projects` 和 SimulationSpec schema 已从公共路由删除。
 
@@ -121,7 +122,19 @@ SDK 提供 `import_yaml()`/`export_yaml()` 草稿方法、`validate_run()`、`su
 - 命令为 `cmd /c <authorized script>`；
 - injected args 为空；
 - package script 只做存在性/依赖诊断；
-- branch mismatch 写 warning，不切换、不检查 diff。
+- branch mismatch 写 warning，不切换、不 reset；历史产物分支与用户预期分支不一致时进入 full，代码变更检测仅作用于用户选中的 Selena 子仓。
+
+编译策略由 `core.agent_build_stage._branch_rebuild_policy()` 统一执行：
+
+1. `unchanged`：当前提交与历史 Bundle 相同、选中子仓无 dirty 修改、编译入口/构建模式/实际 `Selena.exe` 指纹一致时，Connector 不启动编译子进程；
+2. `changed`：提交或本地代码发生变化时，执行用户脚本的增量编译；
+3. `unknown`：无法访问 Git 状态、历史 provenance 不完整或产物指纹不能确认时，同样执行增量编译；
+4. `full`：仅分支或构建模式被明确证明不兼容时设置 `clean=true`，并要求脚本存在可识别的 clean 命令；
+5. 增量策略会屏蔽脚本中的 `R2D2 --clean`、CMake/MSBuild clean 和受支持的输出删除命令，避免编译脚本自行清空已有产物。
+
+`build_policy` 是 path-free 的结构化证据，包含 `mode`、`compiler_executed`、
+`skip_build`、`code_change_status`、`code_change_reason`、请求/历史 branch/commit
+和决策时的 artifact checksum。Web、SDK、MCP 和 Skill 不得复制或改写这套规则。
 
 ### 7.3 产物确认
 

@@ -24,6 +24,11 @@ from starlette.responses import FileResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 
 from core.api_v1 import ApiV1Error, ApiV1Service, format_error_envelope, iter_sse, make_json_safe
+from core.agent_distribution import (
+    AgentToolsDistribution,
+    AgentToolsDistributionError,
+    render_agent_tools_installer,
+)
 from core.control_service import ControlService
 from core.agent_policy import WINDOWS_CONNECTOR_CONTRACT_VERSION
 from core.http_auth import AuthPrincipal, HttpAuthError, HttpTokenAuthenticator
@@ -250,6 +255,8 @@ def create_app(
     web_root: str | Path | None = None,
     authenticator: HttpTokenAuthenticator | None = None,
     windows_connector_bundle: str | Path | None = None,
+    agent_tools_bundle: str | Path | None = None,
+    agent_tools_manifest: str | Path | None = None,
     transfer_service: TransferService | None = None,
 ) -> FastAPI:
     """Create the FastAPI app for V2 `/api/v1` routes."""
@@ -258,6 +265,7 @@ def create_app(
         transfer_service=transfer_service,
     )
     app = FastAPI(title="radar-sim API", version="v1")
+    agent_tools_cache: dict[str, Any] = {"signature": None, "distribution": None}
 
     async def read_upload_chunk(
         request: Request,
@@ -428,6 +436,136 @@ def create_app(
     @app.get("/api/v1/health")
     def health():
         return {**service.health(), "authentication_required": authenticator is not None}
+
+    def agent_tools_distribution() -> AgentToolsDistribution:
+        bundle = Path(agent_tools_bundle).resolve() if agent_tools_bundle else (
+            Path(__file__).resolve().parent.parent / "dist" / "agent-tools.zip"
+        ).resolve()
+        manifest = (
+            Path(agent_tools_manifest).resolve()
+            if agent_tools_manifest
+            else bundle.with_suffix(".json")
+        )
+        try:
+            bundle_stat = bundle.stat()
+            manifest_stat = manifest.stat()
+            signature = (
+                str(bundle),
+                int(bundle_stat.st_mtime_ns),
+                int(bundle_stat.st_size),
+                str(manifest),
+                int(manifest_stat.st_mtime_ns),
+                int(manifest_stat.st_size),
+            )
+        except OSError:
+            signature = None
+        if signature is not None and agent_tools_cache.get("signature") == signature:
+            cached = agent_tools_cache.get("distribution")
+            if isinstance(cached, AgentToolsDistribution):
+                return cached
+        try:
+            distribution = AgentToolsDistribution.from_files(bundle, manifest)
+            if signature is not None:
+                agent_tools_cache["signature"] = signature
+                agent_tools_cache["distribution"] = distribution
+            return distribution
+        except AgentToolsDistributionError as exc:
+            raise ApiV1Error(
+                str(getattr(exc, "code", "") or "agent_tools_unavailable"),
+                str(exc),
+                status_code=503,
+                actions=[
+                    {
+                        "type": "contact_operator",
+                        "label": "Ask the service administrator to publish the current Agent Tools bundle",
+                    }
+                ],
+            ) from exc
+
+    def agent_tools_public_url(request: Request) -> str:
+        try:
+            return public_server_url(str(request.base_url))
+        except WindowsConnectorError as exc:
+            raise ApiV1Error(
+                "agent_tools_public_url_invalid",
+                "Agent Tools public URL is not configured correctly",
+                status_code=503,
+            ) from exc
+
+    @app.get("/api/v1/agent-tools/manifest", include_in_schema=False)
+    def agent_tools_manifest_route(request: Request):
+        # The package is generic, but an authenticated service must still
+        # authenticate the caller before allowing a release download.
+        owner(request)
+        distribution = agent_tools_distribution()
+        return distribution.public_manifest(base_url=agent_tools_public_url(request))
+
+    @app.get("/api/v1/agent-tools/package.zip", include_in_schema=False)
+    def agent_tools_package(request: Request):
+        owner(request)
+        distribution = agent_tools_distribution()
+        return FileResponse(
+            distribution.bundle_path,
+            media_type="application/zip",
+            filename="radar-sim-agent-tools.zip",
+            headers={
+                "X-Content-SHA256": "sha256:" + distribution.bundle_sha256,
+                "X-Agent-Tools-Version": distribution.release_version,
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    @app.get("/api/v1/agent-tools/install.ps1", include_in_schema=False)
+    def agent_tools_installer(request: Request):
+        owner(request)
+        root = Path(__file__).resolve().parent.parent
+        distribution = agent_tools_distribution()
+        try:
+            script = render_agent_tools_installer(
+                template=root / "scripts" / "install_radar_sim_agent.ps1.in",
+                base_url=agent_tools_public_url(request),
+            )
+        except AgentToolsDistributionError as exc:
+            raise ApiV1Error(
+                str(getattr(exc, "code", "") or "agent_tools_unavailable"),
+                str(exc),
+                status_code=503,
+            ) from exc
+        return Response(
+            content=script,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="install-radar-sim-agent.ps1"',
+                "X-Agent-Tools-Version": distribution.release_version,
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.get("/api/v1/agent-tools/install.py", include_in_schema=False)
+    def agent_tools_python_installer(request: Request):
+        owner(request)
+        root = Path(__file__).resolve().parent.parent
+        distribution = agent_tools_distribution()
+        try:
+            script = render_agent_tools_installer(
+                template=root / "scripts" / "install_radar_sim_agent.py.in",
+                base_url=agent_tools_public_url(request),
+            )
+        except AgentToolsDistributionError as exc:
+            raise ApiV1Error(
+                str(getattr(exc, "code", "") or "agent_tools_unavailable"),
+                str(exc),
+                status_code=503,
+            ) from exc
+        return Response(
+            content=script,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="install-radar-sim-agent.py"',
+                "X-Agent-Tools-Version": distribution.release_version,
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.get("/api/v1/windows-connector/install.ps1", include_in_schema=False)
     def download_windows_connector_installer(

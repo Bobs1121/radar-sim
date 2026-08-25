@@ -50,8 +50,16 @@ def test_linux_and_docker_release_entry_is_unified_serve_v1():
     assert "--auth-file" in deploy
     assert "RSIM_INSECURE_NO_AUTH" in deploy
     assert "--insecure-no-auth" in deploy
+    assert "build_agent_tools_bundle.py" in deploy
+    assert "AgentToolsDistribution.from_files" in deploy
+    assert "--platform win_amd64" in deploy
+    assert "pywin32>=310" in deploy
     assert "rsim web" not in deploy
     assert 'CMD ["sh", "-c", "exec rsim server serve-v1' in dockerfile
+    assert "build_agent_tools_bundle.py" in dockerfile
+    assert "AgentToolsDistribution.from_files" in dockerfile
+    assert "--platform win_amd64" in dockerfile
+    assert "pywin32>=310" in dockerfile
     assert "EXPOSE 8878" in dockerfile
 
 

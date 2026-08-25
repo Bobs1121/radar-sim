@@ -22,6 +22,7 @@ from core.direct_transfer import (
     generate_owner_scope,
     make_storage_ref,
     resolve_storage_ref,
+    _safe_target_path,
     validate_transfer_root,
 )
 
@@ -68,6 +69,18 @@ def _target(plan: TransferPlan, root: Path, relative_path: str, *, exists: bool 
         allow_local_test=True,
         require_exists=exists,
     )
+
+
+def test_safe_target_path_accepts_existing_nested_windows_destination(tmp_path: Path) -> None:
+    """Existing target directories must not trip over Windows path prefixes."""
+
+    base = tmp_path / ("target-" + "x" * 80)
+    nested = base / "nested"
+    nested.mkdir(parents=True)
+
+    candidate = _safe_target_path(base, "nested/Selena.dll")
+
+    assert candidate == nested / "Selena.dll"
 
 
 def test_plan_requires_exact_owner_job_transfer_isolation(tmp_path: Path) -> None:

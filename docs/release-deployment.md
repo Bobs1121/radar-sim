@@ -6,9 +6,11 @@
 
 Linux 只运行一个 `serve-v1` 控制面进程，同时提供 Web、REST/SDK、Job/Stage 调度、统一 Windows Connector 接口和 Cluster executor。Linux 不编译 Selena、不执行 Windows 本地仿真，也不接收大文件正文。
 
-当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-7c78b64`；回滚 release：`/home/hoz2wx/radar-sim-eb62123`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
+当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-bb71ff8-agenttools-20260821-r11`；回滚 release：`/home/hoz2wx/radar-sim-bb71ff8-agenttools-20260821-r10`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
 
 注意：Cluster executor/gateway 心跳在线不等于外部 Cluster 可提交。此次验收曾发现服务机到 `SZHRADAR01:8123` 的 Manager XML-RPC 端口关闭；恢复后真实 readiness 返回 `cluster_ready`、`can_submit=true`。如果 Manager 再次不可达，服务会禁用 Cluster 目标，并在创建 Job 前返回可重试错误，不允许绕过检查。
+
+Agent Tools 分发是本轮新增的发布物料，不会从源码目录临时拼装。发布阶段必须在可信包源/证书已配置的环境中构建 `dist/agent-tools.zip` 及旁边的 `dist/agent-tools.json`，同时下载 Windows CPython 3.10-3.13 和 `pywin32` wheel，并让 `serve-v1` 读取它们；缺失或校验不一致时四个 `/api/v1/agent-tools/*` 入口必须 fail-closed。当前线上 release 的真实安装已在 Windows 临时隔离根目录复核通过。
 
 开发或临时 Linux 环境可以用仓库脚本启动一个独立实例：
 
@@ -53,7 +55,7 @@ curl -H 'X-Rsim-User: user-<ntid>' 'http://127.0.0.1:8877/api/v1/jobs?limit=100'
 
 当前 Connector 合同版本为 `16`。v16 增加本地 Selena 进度上报和明确引擎错误快速收敛；旧合同 Connector 会被阻止领取新任务，用户沿用现有 Web/SDK 更新入口重新安装一次即可。
 
-当前线上 Connector 包：`8416294 bytes`，SHA-256 `ed6807651e7313ba7684b1142e0b984d5257c3bf31f2f0bc1c16c63aec302dd5`。
+当前线上 Connector 包：`8425051 bytes`，SHA-256 `8cd8472bfc30c43501e4d7730bc9a5a79678e1acee130aa28528122a40640036`。
 
 Connector 包端点：
 
@@ -89,4 +91,4 @@ TransferPlan 只保存 owner、Job/Stage、资源角色、相对路径、大小�
 
 当前 `--insecure-no-auth` 仅限受信内网；`X-Rsim-User` 是可伪造的 owner 路由标签，不是认证。对不受信用户开放前必须启用 Bearer/SSO 并验证跨 owner 拒绝。
 
-首版未发布：远端输入到本地的 `source_to_local`、Cluster 结果反向直传并解压到任意用户设备、独立 MCP/Skill 包、关机或睡眠设备远程唤醒。当前 SDK 和 owner-scoped ZIP 是后续 AI 接入的稳定底座。
+首版仍未开放：远端输入到本地的 `source_to_local`、Cluster 结果反向直传并解压到任意用户设备、关机或睡眠设备远程唤醒。SDK、owner-scoped ZIP 以及仓库内的 MCP/Skill 薄封装是当前 AI 接入底座。
