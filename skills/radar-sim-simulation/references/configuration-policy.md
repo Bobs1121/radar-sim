@@ -26,6 +26,19 @@ Skill 先判断用户意图，再填写 `selena.source`；它不在 YAML 中伪�
 
 以下动作属于内部自动处理，不发送确认问题：MCP/SDK/Skill 首启或兼容更新、Connector 检查/启动/更新、能力和 readiness 检查、YAML 导入导出、幂等重试、等待超时后的继续轮询、可重试传输/Stage 恢复，以及根据分支和产物证据选择跳过/增量/全量。只有没有可用数据候选、显式业务字段冲突、服务端要求用户作业务选择，或宿主安全策略拒绝必要机器变更时，才允许中断并给出一个抽象的可行动提示。
 
+### 输入闭环闸门
+
+Skill 必须先完成一次只读输入预检，再开始任何 Connector 更新、数据传输、
+Selena 编译或 Job 提交。输入预检必须同时覆盖：
+
+1. active profile/上一 Job 配置恢复；
+2. 代码仓、Selena 子仓、编译脚本、Runtime XML、已有产物和数据候选发现；
+3. `import_simulation_yaml` 返回的全部 `missing_fields`、冲突和候选歧义。
+
+存在任意未决字段时，只发送一次合并问题；不能先运行若干 Stage、再单独
+询问 Runtime XML 或 MatFilter。用户回答后合并配置并重新 import/validate，
+只有完整且语义确认的 YAML 才能进入能力准备和提交。
+
 ## 最小决策顺序
 
 先形成候选，再确认四件事：
