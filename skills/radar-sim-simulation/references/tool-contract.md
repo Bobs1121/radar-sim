@@ -141,6 +141,11 @@ Skill 应把以下工具调用视为一次仿真任务的自动准备步骤，�
 
 用户不需要提供服务器 URL、Connector 路径、Agent ID、Stage ID、TransferPlan、Runtime Bundle ID 或 Cluster 内部参数。工具返回的内部字段由 Skill 消化；只有 `job_id`、状态、进度、等待动作、Diagnosis、Manifest 和结果路径对用户有意义。
 
+输入闭环是提交前门禁：Skill 必须先调用状态恢复、环境发现和
+`import_simulation_yaml`，一次性收集所有业务缺失项。任何缺失/歧义未解决
+时不得调用 Connector 安装、数据传输、编译、`submit_simulation` 或等待
+Stage；不得在仿真进行中追加 Runtime/MatFilter 等输入问题。
+
 每次非 dry-run `submit_simulation` 成功后，MCP 自动把确认过的 YAML、配置
 fingerprint、代码/产物/数据上下文、Job ID 和最近状态写入本机 active
 profile；`get_simulation`/`wait_simulation` 自动更新状态。该文件不进入代码

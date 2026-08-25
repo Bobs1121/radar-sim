@@ -63,6 +63,16 @@ Use the active profile or complete YAML directly without rescanning. Otherwise
 create the standard public config described in
 [configuration-policy.md](references/configuration-policy.md).
 
+### Input closure gate
+
+Complete input collection before any simulation-side mutation. In one internal
+preflight pass, recover state, discover all candidates, import the partial YAML,
+and collect every missing/ambiguous business field. If anything is unresolved,
+ask one consolidated question and stop there. Do not update Connector, transfer
+data, build Selena, submit a Job, or ask a new question after those phases start.
+After the answer, merge it, import/validate again, and require a complete
+configuration before capability preparation or submission.
+
 Ask one consolidated question only for unresolved business meaning, such as:
 
 - which data to use when multiple candidates exist;
@@ -91,6 +101,11 @@ never ask routine confirmation again. MCP/SDK/Connector preparation is automatic
 
 Execute these phases without progress narration. Show progress only when the
 user explicitly asks for it.
+
+Never launch MCP with `python -`, `python -c` wrappers, heredocs, or an inline
+stdio client. Use the generated stable launcher/configuration or
+`scripts/start_mcp.py`; the local terminal may show only the launcher status
+and reader-friendly progress lines on stderr.
 
 ## Final reply
 

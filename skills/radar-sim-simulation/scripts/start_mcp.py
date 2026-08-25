@@ -16,6 +16,14 @@ import sys
 from bootstrap_agent_tools import BootstrapFailure, _default_root, _internal_log, bootstrap
 
 
+def _terminal_status(message: str) -> None:
+    try:
+        sys.stderr.write(f"[radar-sim] {message}\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        return
+
+
 def _existing_mcp_command() -> tuple[str, list[str], dict[str, str]] | None:
     path = _default_root() / "mcp-config.json"
     if not path.is_file():
@@ -36,6 +44,7 @@ def _existing_mcp_command() -> tuple[str, list[str], dict[str, str]] | None:
 
 
 def main() -> int:
+    _terminal_status("准备本地仿真服务")
     try:
         bootstrap_result = bootstrap()
     except BootstrapFailure as exc:
@@ -59,6 +68,7 @@ def main() -> int:
     environment.setdefault("RADAR_SIM_ALLOW_AGENT_TOOLS_UPDATE", "1")
     environment.setdefault("RADAR_SIM_ALLOW_CONNECTOR_INSTALL", "1")
     environment.setdefault("RADAR_SIM_AUTO_PREPARE", "1")
+    _terminal_status("本地仿真服务已就绪")
     try:
         os.execvpe(command, [command, *args], environment)
     except OSError:
