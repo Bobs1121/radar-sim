@@ -2,8 +2,8 @@
 
 > 更新时间：2026-08-25
 > 当前代码分支：`main`（`10b6317`）
-> 当前代码 release：`10b6317`，Skill 默认返回校验后的本地结果地址
-> 当前 Linux release：`/home/hoz2wx/radar-sim-10b6317-agenttools-20260825-r13`
+> 当前代码 release：`a51f54c`，Skill 默认返回校验后的本地结果地址
+> 当前 Linux release：`/home/hoz2wx/radar-sim-a51f54c-agenttools-20260825-r14`
 > 回滚 release：无（旧 release 已按最终版本清理）
 > 线上地址：`http://10.190.171.44:8877`
 
@@ -133,6 +133,18 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 Windows 黑盒验收已通过：从线上地址下载并校验 Bundle；隔离临时根目录创建 Python 3.13 venv，按 wheel tags 离线选择并安装 SDK/MCP/`pywin32`；`radar_sim_sdk`、`radar_sim_mcp`、`mcp` 导入成功；MCP 注册 `26` 个工具，stdio `initialize`/`notifications/initialized`/`tools/list` 握手成功；Skill 文件和稳定启动器状态存在；Token 未写入 `install.json`/`mcp-config.json`；`check_agent_tools` 返回 `installed=true`、`update_available=false`；重复安装返回 `already_current`、`restart_required=false`；模拟旧版本更新返回 `restart_required=true`、`skill_updated=true`。
 
 当前仍未配置外部 PyPI 或固定远程 MCP URL；但用户不下载源码、仅使用 `http://10.190.171.44:8877` 的 `install.py`/`install.ps1` 安装本机 MCP/Skill 已经可用。认证开启部署的 Connector pairing 仍需部署方提供短期配对流程。
+
+## 2026-08-25 r14 最终交互修复
+
+- 最新 main：`a51f54c`；Linux 服务：`a51f54c-agenttools-20260825-r14`，
+  health `200`，Skill `0.4.0`；
+- MCP 使用稳定 `run_mcp.py`/Agent launcher，不使用 `python -` 交互式 stdin；
+  人类可读进度只写 stderr，stdout 保留 MCP JSON-RPC；
+- Skill 增加输入闭环闸门：所有数据、Runtime、构建来源等业务字段先一次收齐，
+  未闭环前不执行 Connector、传输、编译或提交；
+- Skill 仓库：`skillForJob/main=62d735d`，本地 Skill 已同步到 r14 内容；
+- 本地和服务器旧 MCP/release 已清理；`.zcode/`、`tmp-agent-home/`、运行数据和
+  最终结果文件保留。
 
 ## 2026-08-25 最终版本验收
 
