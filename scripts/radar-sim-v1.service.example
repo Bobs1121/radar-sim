@@ -1,0 +1,21 @@
+# Copy this file to ~/.config/systemd/user/radar-sim-v1.service and replace
+# the release/data paths for the deployment.  Keep the deployment overlay and
+# EnvironmentFile separate from user simulation YAML and source control.
+
+[Unit]
+Description=radar-sim V1 control-plane service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/radar-sim-release
+Environment=RSIM_HOME=%h/rsim_data
+Environment=RSIM_DEPLOYMENT_CONFIG=%h/rsim_data/config/deployment.yaml
+EnvironmentFile=-%h/.config/radar-sim/cluster.env
+ExecStart=%h/radar-sim-release/.venv/bin/python rsim.py server serve-v1 --host 0.0.0.0 --port 8877 --insecure-no-auth
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

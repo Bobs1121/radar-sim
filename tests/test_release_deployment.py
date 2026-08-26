@@ -44,6 +44,7 @@ def test_compat_web_reports_local_sim_only_for_windows_full(monkeypatch):
 
 def test_linux_and_docker_release_entry_is_unified_serve_v1():
     deploy = (ROOT / "scripts" / "linux_deploy.sh").read_text(encoding="utf-8")
+    systemd_unit = (ROOT / "scripts" / "radar-sim-v1.service.example").read_text(encoding="utf-8")
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert "rsim.py server serve-v1" in deploy
@@ -52,6 +53,11 @@ def test_linux_and_docker_release_entry_is_unified_serve_v1():
     assert "--insecure-no-auth" in deploy
     assert "build_agent_tools_bundle.py" in deploy
     assert "AgentToolsDistribution.from_files" in deploy
+    assert "RSIM_DEPLOYMENT_CONFIG" in deploy
+    assert "Environment=RSIM_HOME=%h/rsim_data" in systemd_unit
+    assert "Environment=RSIM_DEPLOYMENT_CONFIG=%h/rsim_data/config/deployment.yaml" in systemd_unit
+    assert "EnvironmentFile=-%h/.config/radar-sim/cluster.env" in systemd_unit
+    assert "rsim.py server serve-v1" in systemd_unit
     assert "--platform win_amd64" in deploy
     assert "pywin32>=310" in deploy
     assert "rsim web" not in deploy
