@@ -1386,25 +1386,21 @@ def test_sdk_watch_retries_initial_sse_transport_failure_with_cursor():
 
 
 def test_sdk_watch_retries_polling_transport_failure_without_duplicate_events():
-    state = {"stream_calls": 0, "poll_calls": 0}
+    state = {"poll_calls": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        url = str(request.url)
-        if "stream=true" in url:
-            state["stream_calls"] += 1
-            if state["stream_calls"] == 1:
-                return httpx.Response(
-                    200,
-                    text='id: 1\nevent: log\ndata: {"id": 1, "event": "log", "message": "once", "data": {"message": "once"}}\n\n',
-                    headers={"content-type": "text/event-stream"},
-                )
-            return httpx.Response(200, text="", headers={"content-type": "text/event-stream"})
         state["poll_calls"] += 1
         if state["poll_calls"] == 1:
             raise httpx.ReadError("poll down", request=request)
         return httpx.Response(
             200,
-            json={"job_id": "job_1", "status": "cancelled", "events": [], "next_cursor": 1, "terminal": True},
+            json={
+                "job_id": "job_1",
+                "status": "cancelled",
+                "events": [{"id": 1, "event": "log", "message": "once", "data": {"message": "once"}}],
+                "next_cursor": 1,
+                "terminal": True,
+            },
         )
 
     sdk = RadarSimClient("http://testserver", transport=httpx.MockTransport(handler))
@@ -1423,15 +1419,9 @@ def test_sdk_watch_continuous_transport_failure_times_out():
 
 
 def test_sdk_watch_retries_transient_api_poll_errors(monkeypatch):
-    state = {"stream": 0, "events": 0}
+    state = {"events": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        url = str(request.url)
-        if "stream=true" in url:
-            state["stream"] += 1
-            if state["stream"] == 1:
-                return httpx.Response(503, json={"code": "service_unavailable", "message": "retry"})
-            return httpx.Response(200, text="", headers={"content-type": "text/event-stream"})
         state["events"] += 1
         if state["events"] == 1:
             return httpx.Response(503, json={"code": "service_unavailable", "message": "retry"})
@@ -1449,7 +1439,7 @@ def test_sdk_watch_retries_transient_api_poll_errors(monkeypatch):
     )
 
     assert list(sdk.watch("job-api-retry", timeout=1.0, poll_interval=0.01)) == []
-    assert state == {"stream": 2, "events": 2}
+    assert state == {"events": 2}
 
 
 def test_sdk_direct_transfer_adapter_uses_metadata_only_control_requests(tmp_path):

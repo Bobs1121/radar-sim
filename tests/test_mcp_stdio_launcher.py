@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 from pathlib import Path
 import sys
@@ -10,6 +11,15 @@ import sys
 import pytest
 
 from scripts import agent_mcp_launcher
+
+
+def _start_mcp_module():
+    script_dir = Path(__file__).parents[1] / "skills" / "radar-sim-simulation" / "scripts"
+    sys.path.insert(0, str(script_dir))
+    try:
+        return importlib.import_module("start_mcp")
+    finally:
+        sys.path.pop(0)
 
 
 def test_stable_launcher_runs_server_as_child_with_inherited_stdio(monkeypatch, tmp_path: Path):
@@ -52,6 +62,21 @@ def test_installer_registers_the_versioned_server_directly():
     assert '"command": str(venv_python)' in source
     assert '"args": ["-m", "radar_sim_mcp.server"]' in source
     assert '"args": [str(launcher)]' not in source
+
+
+def test_start_mcp_uses_existing_install_without_bootstrap(monkeypatch):
+    module = _start_mcp_module()
+    existing = (sys.executable, ["-m", "radar_sim_mcp.server"], {})
+    called: list[tuple[str, list[str], dict[str, str]]] = []
+
+    monkeypatch.setattr(module, "_existing_mcp_command", lambda: existing)
+    monkeypatch.setattr(module, "bootstrap", lambda: (_ for _ in ()).throw(AssertionError("bootstrap was called")))
+    monkeypatch.setattr(module, "_run_mcp", lambda command, args, environment: (called.append((command, args, environment)) or 23))
+
+    result = module.main()
+
+    assert result == 23
+    assert called and called[0][0:2] == existing[0:2]
 
 
 def test_versioned_server_completes_mcp_initialize_over_stdio():

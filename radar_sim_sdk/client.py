@@ -10,10 +10,14 @@ import json
 import hashlib
 import re
 import ssl
+import stat
+import shutil
 import tempfile
 import time
 import uuid
+import zipfile
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Callable, Iterator, Mapping
 from urllib.parse import urlsplit
 
@@ -1019,16 +1023,13 @@ class RadarSimClient:
             if deadline is not None and time.monotonic() > deadline:
                 raise TimeoutError(f"watch timed out after {timeout} seconds")
             had_transport_error = False
-            try:
-                for event in self.stream_events(job_id, since=next_cursor):
-                    if event.id is not None:
-                        next_cursor = max(next_cursor, event.id)
-                    yield event
-            except (RadarSimTransportError, RadarSimApiError) as exc:
-                if not _is_retryable_poll_exception(exc):
-                    raise
-                had_transport_error = True
-
+            # The v1 server's stream=true endpoint returns a materialized SSE
+            # snapshot and closes immediately; it is not a long-lived stream.
+            # Calling it and then calling events() duplicates every observation
+            # request. The canonical events page already carries events,
+            # cursor, status, and terminal state, so use one request per loop.
+            # stream_events() remains public for callers that explicitly need
+            # the raw SSE representation.
             try:
                 page = self.events(job_id, since=next_cursor)
             except (RadarSimTransportError, RadarSimApiError) as exc:
@@ -1222,6 +1223,7 @@ class RadarSimClient:
         destination: str | Path | None = None,
         *,
         download_retries: int = 2,
+        extract: bool = False,
     ) -> Path:
         """Fetch a Job Manifest and download its owner-scoped result ZIP.
 
@@ -1229,13 +1231,14 @@ class RadarSimClient:
         file) for this manual ZIP download. If it is omitted, a non-empty
         ``result.path`` from the Job spec is treated as a result root and the
         archive is written below ``<result.path>/<job_id>``; an empty path uses
-        ``Path.home()/RadarSim/results/<job_id>``. The execution contract puts
-        decompressed files and the Manifest in that same Job directory, while
-        this ZIP remains a parallel retention artifact. The existing ZIP
-        archive and checksum verification remain unchanged; no physical path
-        is ever added to the public Manifest. If this SDK process is not the
-        receiving device named by the configuration, pass ``destination``
-        explicitly instead of relying on the configured root.
+        ``Path.home()/RadarSim/results/<job_id>``. When ``extract=True``, the
+        verified archive is materialized into that Job directory and retained
+        below its internal ``.radar-sim`` directory. The default
+        ``extract=False`` preserves the SDK ZIP behavior; Agent-facing MCP
+        callers should request extraction. No physical path is ever added to
+        the public Manifest. If this SDK process is not the receiving device
+        named by the configuration, pass ``destination`` explicitly instead
+        of relying on the configured root.
         """
 
         current = job if isinstance(job, Job) else self.get_job(str(job))
@@ -1271,12 +1274,103 @@ class RadarSimClient:
             )
             target = root / _safe_job_path_component(job_id)
         # Preserve the low-level ``download_result(ref, file_path)`` API for
-        # callers that need an exact file name, while this Job helper treats
-        # ordinary destinations as directories and keeps the checksum-derived
-        # ZIP name.
-        if target.suffix.casefold() != ".zip":
+        # callers that need an exact file name.  A caller opts into directory
+        # materialization explicitly so existing SDK ZIP consumers remain
+        # compatible.
+        if target.suffix.casefold() != ".zip" and not extract:
             target.mkdir(parents=True, exist_ok=True)
-        return self.download_result(result_ref, target, retries=download_retries)
+        if target.suffix.casefold() == ".zip" or not extract:
+            return self.download_result(result_ref, target, retries=download_retries)
+        metadata = self.get_result(result_ref)
+        return self._download_and_extract_result(
+            result_ref,
+            metadata,
+            target,
+            job_id=job_id,
+            retries=download_retries,
+        )
+
+    def _download_and_extract_result(
+        self,
+        result_ref: str,
+        metadata: dict[str, Any],
+        destination: Path,
+        *,
+        job_id: str,
+        retries: int,
+    ) -> Path:
+        """Download, verify, and atomically materialize one result directory."""
+
+        target = destination.expanduser()
+        if target.exists() and not target.is_dir():
+            raise ValueError("result destination must be a directory")
+        if target.exists() and _result_directory_is_valid(
+            target, metadata, job_id=job_id, result_ref=result_ref
+        ):
+            return target
+        if target.exists() and any(target.iterdir()):
+            raise ValueError(
+                "result_destination_conflict: destination is not an untouched result directory"
+            )
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging = target.parent / f".{target.name}.part.{uuid.uuid4().hex}"
+        archive_checksum = str(metadata.get("archive_checksum") or "").removeprefix("sha256:")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", archive_checksum):
+            raise RadarSimIntegrityError(
+                "result_archive_metadata_invalid",
+                "result archive checksum metadata is invalid",
+                resource=result_ref,
+            )
+        archive_dir = staging / ".radar-sim"
+        archive_path = archive_dir / "result.zip"
+        try:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            downloaded = self._download_result_with_metadata(
+                result_ref,
+                archive_path,
+                metadata,
+                retries=retries,
+            )
+            _extract_verified_result_archive(
+                downloaded,
+                staging,
+                metadata,
+                result_ref=result_ref,
+            )
+            marker = {
+                "schema_version": "radar-sim.result-directory/1.0",
+                "job_id": job_id,
+                "result_ref": result_ref,
+                "archive_checksum": str(metadata.get("archive_checksum") or ""),
+                "archive_size": int(metadata.get("archive_size") or 0),
+                "files": [
+                    dict(item)
+                    for item in metadata.get("files") or []
+                    if isinstance(item, dict)
+                ],
+            }
+            (archive_dir / "manifest.json").write_text(
+                json.dumps(marker, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            if target.exists():
+                # Only an untouched empty directory can be replaced. Never
+                # remove user files or an older unverified result.
+                target.rmdir()
+            staging.replace(target)
+            return target
+        except (RadarSimIntegrityError, ValueError):
+            raise
+        except (OSError, zipfile.BadZipFile, KeyError, TypeError) as exc:
+            raise RadarSimIntegrityError(
+                "result_extraction_failed",
+                "verified result archive could not be materialized",
+                resource=result_ref,
+            ) from exc
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
 
     def diagnosis(self, job_id: str) -> JobDiagnosis:
         """Return the shared path-free diagnosis used by Web and AI adapters."""
@@ -1300,6 +1394,23 @@ class RadarSimClient:
     ) -> Path:
         """Download one owner-scoped result ZIP with bounded restart recovery."""
         metadata = self.get_result(result_ref)
+        return self._download_result_with_metadata(
+            result_ref,
+            destination,
+            metadata,
+            retries=retries,
+        )
+
+    def _download_result_with_metadata(
+        self,
+        result_ref: str,
+        destination: str | Path,
+        metadata: Mapping[str, Any],
+        *,
+        retries: int = 2,
+    ) -> Path:
+        """Download a result using already-fetched catalog metadata."""
+
         target = Path(destination)
         if target.exists() and target.is_dir():
             digest = str(metadata.get("archive_checksum") or "").removeprefix("sha256:")[:12]
@@ -1319,6 +1430,13 @@ class RadarSimClient:
                                 handle.write(chunk)
                                 digest.update(chunk)
                     checksum = "sha256:" + digest.hexdigest()
+                    expected_size = int(metadata.get("archive_size") or 0)
+                    if expected_size > 0 and temporary.stat().st_size != expected_size:
+                        raise RadarSimIntegrityError(
+                            "result_archive_size_mismatch",
+                            "downloaded result size does not match catalog",
+                            resource=result_ref,
+                        )
                     if checksum != str(metadata.get("archive_checksum") or ""):
                         raise RadarSimIntegrityError(
                             "result_checksum_mismatch",
@@ -2235,3 +2353,189 @@ def _safe_job_path_component(job_id: str) -> str:
         return value
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
     return f"job-{digest}"
+
+
+_RESULT_DIRECTORY_METADATA_DIR = ".radar-sim"
+_RESULT_DIRECTORY_MARKER = "manifest.json"
+
+
+def _safe_result_member(name: str) -> str | None:
+    """Normalize a ZIP member and reject traversal, drive, and empty paths."""
+
+    raw = str(name or "").replace("\\", "/")
+    if "\x00" in raw:
+        raise ValueError("result archive contains a NUL path")
+    directory = raw.endswith("/")
+    raw = raw.rstrip("/")
+    if not raw:
+        return None if directory else ""
+    path = PurePosixPath(raw)
+    parts = path.parts
+    if (
+        path.is_absolute()
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(len(part) == 2 and part[1] == ":" for part in parts)
+        or parts[0].casefold() == _RESULT_DIRECTORY_METADATA_DIR.casefold()
+    ):
+        raise ValueError("result archive contains an unsafe path")
+    normalized = path.as_posix()
+    return None if directory else normalized
+
+
+def _result_file_metadata(metadata: Mapping[str, Any]) -> dict[str, tuple[str, int, str]]:
+    """Return case-insensitive expected result files from catalog metadata."""
+
+    expected: dict[str, tuple[str, int, str]] = {}
+    raw_files = metadata.get("files")
+    if not isinstance(raw_files, list) or not raw_files:
+        raise RadarSimIntegrityError(
+            "result_file_metadata_invalid",
+            "result file metadata is missing",
+            resource=str(metadata.get("ref") or ""),
+        )
+    for raw in raw_files:
+        if not isinstance(raw, Mapping):
+            raise RadarSimIntegrityError(
+                "result_file_metadata_invalid",
+                "result file metadata is invalid",
+                resource=str(metadata.get("ref") or ""),
+            )
+        relative = _safe_result_member(str(raw.get("relative_path") or ""))
+        checksum = str(raw.get("checksum") or "").strip().lower()
+        try:
+            size = int(raw.get("size"))
+        except (TypeError, ValueError) as exc:
+            raise RadarSimIntegrityError(
+                "result_file_metadata_invalid",
+                "result file size metadata is invalid",
+                resource=str(metadata.get("ref") or ""),
+            ) from exc
+        if not relative or size < 0 or not re.fullmatch(r"sha256:[0-9a-f]{64}", checksum):
+            raise RadarSimIntegrityError(
+                "result_file_metadata_invalid",
+                "result file metadata is invalid",
+                resource=str(metadata.get("ref") or ""),
+            )
+        key = relative.casefold()
+        if key in expected:
+            raise RadarSimIntegrityError(
+                "result_file_metadata_invalid",
+                "result file paths are not unique",
+                resource=str(metadata.get("ref") or ""),
+            )
+        expected[key] = (relative, size, checksum)
+    return expected
+
+
+def _extract_verified_result_archive(
+    archive: Path,
+    destination: Path,
+    metadata: Mapping[str, Any],
+    *,
+    result_ref: str,
+) -> None:
+    """Extract only cataloged files and verify every file while writing."""
+
+    try:
+        expected = _result_file_metadata(metadata)
+    except RadarSimIntegrityError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise RadarSimIntegrityError(
+            "result_file_metadata_invalid",
+            "result file metadata contains an unsafe path",
+            resource=result_ref,
+        ) from exc
+    seen: set[str] = set()
+    root = destination.resolve()
+    try:
+        with zipfile.ZipFile(archive, "r") as payload:
+            for info in payload.infolist():
+                relative = _safe_result_member(info.filename)
+                if relative is None:
+                    continue
+                mode = (int(info.external_attr) >> 16) & 0o170000
+                if stat.S_ISLNK(mode):
+                    raise ValueError("result archive contains a symbolic link")
+                key = relative.casefold()
+                if key in seen:
+                    raise ValueError("result archive contains duplicate file paths")
+                item = expected.get(key)
+                if item is None:
+                    raise ValueError("result archive contains an unexpected file")
+                expected_relative, expected_size, expected_checksum = item
+                if int(info.file_size) != expected_size:
+                    raise RadarSimIntegrityError(
+                        "result_file_size_mismatch",
+                        "result file size does not match catalog",
+                        resource=result_ref,
+                    )
+                target = (destination / expected_relative).resolve()
+                try:
+                    target.relative_to(root)
+                except ValueError as exc:
+                    raise ValueError("result archive path escapes destination") from exc
+                target.parent.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256()
+                written = 0
+                with payload.open(info, "r") as source, target.open("wb") as output:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        output.write(chunk)
+                        digest.update(chunk)
+                        written += len(chunk)
+                actual = "sha256:" + digest.hexdigest()
+                if written != expected_size or actual != expected_checksum:
+                    raise RadarSimIntegrityError(
+                        "result_file_checksum_mismatch",
+                        "extracted result file does not match catalog",
+                        resource=result_ref,
+                    )
+                seen.add(key)
+    except RadarSimIntegrityError:
+        raise
+    except (OSError, ValueError, zipfile.BadZipFile, KeyError) as exc:
+        raise RadarSimIntegrityError(
+            "result_extraction_failed",
+            "result archive contains invalid or unsafe content",
+            resource=result_ref,
+        ) from exc
+    if seen != set(expected):
+        raise RadarSimIntegrityError(
+            "result_file_set_mismatch",
+            "result archive does not contain the cataloged file set",
+            resource=result_ref,
+        )
+
+
+def _result_directory_is_valid(
+    directory: Path,
+    metadata: Mapping[str, Any],
+    *,
+    job_id: str,
+    result_ref: str,
+) -> bool:
+    """Validate a previous extracted result before reusing it."""
+
+    marker_path = directory / _RESULT_DIRECTORY_METADATA_DIR / _RESULT_DIRECTORY_MARKER
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        if not isinstance(marker, Mapping):
+            return False
+        if (
+            str(marker.get("job_id") or "") != job_id
+            or str(marker.get("result_ref") or "") != result_ref
+            or str(marker.get("archive_checksum") or "")
+            != str(metadata.get("archive_checksum") or "")
+        ):
+            return False
+        for relative, size, checksum in _result_file_metadata(metadata).values():
+            path = (directory / relative).resolve()
+            try:
+                path.relative_to(directory.resolve())
+            except ValueError:
+                return False
+            if not path.is_file() or path.stat().st_size != size or _sha256_path(path) != checksum:
+                return False
+        return True
+    except (OSError, TypeError, ValueError, json.JSONDecodeError, RadarSimIntegrityError):
+        return False

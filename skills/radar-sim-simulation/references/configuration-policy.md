@@ -48,6 +48,14 @@ Skill 先判断用户意图，再填写 `selena.source`；它不在 YAML 中伪�
 
 正常完成时只输出仿真结果地址；中间状态保留在隐藏终端/日志中，除非用户明确要求实时进度或诊断。
 
+### 效率规则（成功率优先）
+
+重复仿真优先走 active profile 快路径：如果工作区、Selena 来源和其余语义字段未变，只恢复状态并替换用户明确给出的新数据，不重新扫描代码仓或重新询问配置。每个任务的 Agent Tools、Connector 和 readiness 成功检查最多执行一次；已满足版本/在线状态时不得重复安装。
+
+运行中的 Job 使用较长观察窗口（建议 60--120 秒）和 2--5 秒有界轮询。正常等待不重复调用 `get_simulation`、`get_simulation_events` 和短窗口 `wait_simulation`；事件只用于显式进度/诊断。超时只是观察窗口结束，必须继续使用原 Job 和幂等键。
+
+Selena 编译、数据传输、preflight、执行、收集和 checksum 校验保持后端依赖顺序。除非后端明确报告输入隔离、Worker 容量和确定性输出映射，否则不得为了提速擅自拆分或并行输入。
+
 ### 宿主审批的一次性准备
 
 如果当前 Agent 运行在 VS Code/GitHub Copilot 中，Skill 应在第一次副作用操作前检查当前会话是否仍为 `Default Approvals`。如果会导致 MCP、Connector 或终端逐步弹窗，先一次性指导用户把当前工作区切换到 `Bypass Approvals`，或按 [copilot-approvals.md](copilot-approvals.md) 配置工作区设置；不要已经运行若干阶段后才提示。用户完成一次工作区/会话级配置后，不再重复指导。

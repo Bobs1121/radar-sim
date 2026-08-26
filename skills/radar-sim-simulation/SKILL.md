@@ -153,6 +153,29 @@ Ask one consolidated question only for unresolved business meaning, such as:
 After the user confirms a configuration, save/use it as the active profile and
 never ask routine confirmation again. MCP/SDK/Connector preparation is automatic.
 
+## Efficiency without semantic shortcuts
+
+Use the shortest safe path for repeated work:
+
+- If the active profile matches the current workspace and the user supplies no
+  new configuration meaning, recover state, replace only an explicitly new
+  data path, then import/validate. Do not call schema, candidate discovery,
+  export, capabilities, or readiness tools again unless the route or a missing
+  field requires them.
+- Within one simulation request, call Agent Tools and Connector checks at most
+  once. Do not reinstall a component that is already current/online, and do not
+  repeat a successful readiness check before submission unless the server asks
+  for it or a prior operation changed the environment.
+- Observe a running Job with `wait_simulation` using a 60–120 second
+  observation window and a 2–5 second poll interval. Do not combine repeated
+  `get_simulation`, `get_simulation_events`, and short waits; use events only
+  for diagnosis or an explicit progress request. A timeout is an observation
+  boundary, not a reason to submit again.
+- Keep Selena build, data transfer, preflight, execution, collection, and
+  checksum verification under the backend's dependency order. Never split or
+  parallelize inputs merely to reduce wall time unless the backend explicitly
+  reports isolated worker capacity and preserves deterministic output mapping.
+
 ## Run automatically
 
 1. Silently call `check_agent_tools`; update/reload incompatible tools.
@@ -160,23 +183,26 @@ never ask routine confirmation again. MCP/SDK/Connector preparation is automatic
    automatically install/update through the official local policy.
 3. Validate with `import_simulation_yaml` and `validate_simulation`.
 4. Submit exactly once with a durable `idempotency_key`.
-5. Poll `wait_simulation` until terminal. A timeout only ends one observation
-   window; continue polling automatically.
+5. Call `wait_simulation` with a long observation window and adaptive bounded
+   polling until terminal. A timeout only ends one observation window; continue
+   polling automatically with the same Job/key.
 6. Retry only actions marked retryable, reusing the same Job/key. Never create a
    duplicate Job because a response or observation was lost.
 7. On failure call `diagnose_simulation`; on success/partial call
    `get_simulation_manifest`.
 8. When artifacts are available, automatically call `download_simulation_result`
-   and return the verified local result path and checksum. Do this by default;
-   do not wait for the user to ask for a download.
+   with `extract=true` and return the verified local result directory. The
+   archive remains an internal recovery artifact; do not return its path as the
+   normal result address. Do this by default; do not wait for the user to ask
+   for a download.
 
 Execute these phases without progress narration. Show progress only when the
 user explicitly asks for it.
 
 Never launch MCP with `python -`, `python -c` wrappers, heredocs, or an inline
-stdio client. Use the generated stable launcher/configuration or
-`scripts/start_mcp.py`; the local terminal may show only the launcher status
-and reader-friendly progress lines on stderr.
+stdio client. Use the generated direct versioned-Python MCP configuration; use
+`scripts/start_mcp.py` only for first-run bootstrap/fallback. The local terminal
+may show only the launcher status and reader-friendly progress lines on stderr.
 
 ## Final reply
 
@@ -184,7 +210,7 @@ For success, keep the normal final reply to:
 
 ```text
 仿真完成
-结果地址：<verified local result path>
+结果地址：<verified local extracted result directory>
 ```
 
 Add `job_id` or checksum only when useful or requested. For partial results,
