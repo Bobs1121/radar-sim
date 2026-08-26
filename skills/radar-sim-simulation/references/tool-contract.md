@@ -30,7 +30,7 @@ Skill 可以在本机尚未注册 radar-sim MCP 时完成首启引导。Agent �
 - `submit_simulation`、`validate_simulation` 和 `resume_simulation_transfer` 接受 `yaml_text` 或 `config`，二选一；
 - `submit_simulation` 应提供稳定 `idempotency_key`；
 - 文件正文不得作为工具参数；工具只接收路径、YAML、状态参数和逻辑引用；
-- 结果下载返回本地路径，不返回 ZIP 内容；
+- 结果下载默认返回本地解压目录，不返回文件内容；底层 ZIP 只作为校验/恢复工件保留在结果目录内部。需要兼容旧 SDK 调用时可显式使用 `extract=false` 返回 ZIP 路径；
 - 工具返回统一包络。
 
 ## 工具目录
@@ -52,7 +52,7 @@ Skill 可以在本机尚未注册 radar-sim MCP 时完成首启引导。Agent �
 | `list_simulations` | `status`, `limit` | 查询任务列表 |
 | `get_simulation` | `job_id` | 查询任务快照 |
 | `get_simulation_events` | `job_id`, `since`, `limit` | 查询日志、进度和事件 |
-| `wait_simulation` | `job_id`, `timeout_seconds` | 等到终态或 `needs_input`；超时返回当前快照 |
+| `wait_simulation` | `job_id`, `timeout_seconds`, `poll_interval_seconds` | 用较长观察窗口等到终态或 `needs_input`；超时返回当前快照 |
 | `get_simulation_transfer` | `job_id` | 查询直传汇总 |
 | `resume_simulation_transfer` | `job_id`、配置、`retries` | 恢复直传 |
 | `cancel_simulation` | `job_id` | 取消任务 |
@@ -62,7 +62,7 @@ Skill 可以在本机尚未注册 radar-sim MCP 时完成首启引导。Agent �
 | `get_simulation_manifest` | `job_id` | 获取 Manifest |
 | `list_simulation_results` | 无 | 查询结果归档 |
 | `get_simulation_result` | `result_ref` | 查询结果元数据 |
-| `download_simulation_result` | `job_id`, `destination` | 下载并校验 ZIP |
+| `download_simulation_result` | `job_id`, `destination`, `extract` | 下载并校验结果；默认安全解压到 MCP 主机目录，不返回文件内容 |
 
 ## 成功包络
 
@@ -138,6 +138,8 @@ Skill 应把以下工具调用视为一次仿真任务的自动准备步骤，�
 4. `install_or_update_windows_connector`：在官方自动准备策略下静默执行，不要求用户理解安装器；
 5. `get_simulation_capabilities`、`get_simulation_readiness`：自动确认当前任务的执行能力；
 6. `validate_simulation`：最终 YAML 确认后自动执行，任何缺失或冲突只回问对应业务字段。
+
+效率约束：重复请求优先使用 active profile，不重新发现完整代码/数据环境；同一任务不重复做成功的版本、Connector 和 readiness 检查。正常等待使用 `wait_simulation` 的 60--120 秒观察窗口和 2--5 秒有界轮询，不把短窗口等待、Job 查询和事件查询叠加成高频轮询。执行/传输/收集仍遵循后端依赖顺序，不能以未经后端确认的并行换取速度。
 
 用户不需要提供服务器 URL、Connector 路径、Agent ID、Stage ID、TransferPlan、Runtime Bundle ID 或 Cluster 内部参数。工具返回的内部字段由 Skill 消化；只有 `job_id`、状态、进度、等待动作、Diagnosis、Manifest 和结果路径对用户有意义。
 

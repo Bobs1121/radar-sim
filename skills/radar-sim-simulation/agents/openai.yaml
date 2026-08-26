@@ -1,4 +1,4 @@
 interface:
   display_name: "Radar Simulation"
-  short_description: "Run Selena simulations with automatic MCP bootstrap"
-  default_prompt: "Use $radar-sim-simulation to run the requested data, recover the last configuration when possible, and return the verified simulation result address."
+  short_description: "Run Selena simulations hands-off after one input check"
+  default_prompt: "Use $radar-sim-simulation to collect all missing business inputs once, run the requested Selena simulation hands-off, and return the verified simulation result address."

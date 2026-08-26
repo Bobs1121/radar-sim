@@ -2,6 +2,15 @@
 
 本文件只处理仿真语义、重复运行意图和当前代码环境发现。Connector、MCP/SDK 版本、能力探测、任务调度和传输由 Skill 按主流程自动处理，不要求用户理解或填写。首次确认后的重复运行不得再次询问同一配置。
 
+## 分发与用户环境隔离
+
+Skill 是面向不同用户和代码仓分发的公共接口，禁止在 Skill、references、脚本或示例中写死用户名、机器名、Agent ID、Token、服务器 IP/URL、UNC 路径、绝对工作区路径、结果路径或安装版本目录。
+
+- 工作区、代码、数据和结果路径从当前 Agent 工作区、用户显式输入和本机标准目录发现；不能复用发布者的路径。
+- 服务地址按以下顺序解析：安装器/本地 MCP 配置或环境变量 `RADAR_SIM_SERVICE_URL`、`RADAR_SIM_BASE_URL`，再到服务提供方生成的本机 profile。公开分发的 `service-profile.json` 必须为空地址，由安装过程在本机生成配置。
+- 用户路由标签使用 `RADAR_SIM_USER`，未设置时才使用当前操作系统登录名；这不是身份认证，也不能在 Skill 中写入固定用户。
+- `mcp-config.json`、credentials、Agent ID、服务 profile 和结果 catalog 都是本机安装状态，不能打包进公共 Skill，也不能作为其他用户的默认值。
+
 如果用户已经给出完整 `UserRunConfig 2.0` YAML，或当前会话已有一份已确认 YAML，直接进入规范化/校验；不要为了重复确认而重新扫描整个代码仓。
 
 如果用户只说“再仿一次”“用刚才配置重跑”或“我改了这里，帮我重新仿一下”，先查当前会话的最后一份已确认配置；如果会话没有该配置，再只读查找用户明确允许的保存配置（优先 `.radar-sim/simulation.yaml`）。找不到保存配置时才进入环境发现。不能把“当前目录存在 Selena.exe”当成保存配置，也不能把旧 Job 的内部 resolved spec 直接当成新的用户 YAML。
@@ -25,6 +34,33 @@ Skill 先判断用户意图，再填写 `selena.source`；它不在 YAML 中伪�
 第一次配置时可以把多个业务歧义合并为一次确认。确认后，Skill 应把规范化 YAML 和用户选择记录为当前 Agent/task 的 active profile；再次收到“再仿一次”“我改了这里，重新验证”“继续跑”时直接复用，不重新询问 Selena 来源、Runtime、target、Radar source 或结果目录。
 
 以下动作属于内部自动处理，不发送确认问题：MCP/SDK/Skill 首启或兼容更新、Connector 检查/启动/更新、能力和 readiness 检查、YAML 导入导出、幂等重试、等待超时后的继续轮询、可重试传输/Stage 恢复，以及根据分支和产物证据选择跳过/增量/全量。只有没有可用数据候选、显式业务字段冲突、服务端要求用户作业务选择，或宿主安全策略拒绝必要机器变更时，才允许中断并给出一个抽象的可行动提示。
+
+### Copilot 无感运行规则
+
+输入确认完成后，仿真流程必须作为一个连续的 hands-off 操作执行：
+
+- 用户说“开始仿真/再仿一次/修改后重新验证”，即视为同意本 Skill 范围内的常规准备、启动、更新、提交、轮询、可重试恢复和结果下载；不得逐步询问“是否允许”“是否继续”“是否更新”“是否下载”。
+- 不把 MCP、Connector、SDK、Stage、Transfer、readiness、自检或重试状态转成用户问题，也不要要求用户点击 `Allow`、`Confirm`、`Continue`、`Run`、`Trust` 或 `Approve`。
+- 优先调用 MCP 的 readiness/bootstrap 能力；必须使用本地进程时，只启动一次稳定的非交互入口，隐藏运行并输出可读进度，禁止 REPL、`python -`、内联客户端和等待键盘输入的命令。
+- 任何缺失的业务输入必须在开始 Connector 更新、数据传输、编译或 Job 提交前一次性收齐。闭环之后不得因为发现了内部技术字段而二次打断用户。
+- 宿主强制的安全审批属于 Agent 平台边界，Skill 不得伪造点击或绕过安全策略；只有宿主确实拒绝必要操作时，才返回一次简短阻塞原因和所需的宿主级动作，不能重复触发同一请求。
+- 该规则不授权修改用户代码仓、任意下载、清理文件或其他无关外部操作；自动变更只能发生在 radar-sim 官方安装、运行时和结果目录内。
+
+正常完成时只输出仿真结果地址；中间状态保留在隐藏终端/日志中，除非用户明确要求实时进度或诊断。
+
+### 效率规则（成功率优先）
+
+重复仿真优先走 active profile 快路径：如果工作区、Selena 来源和其余语义字段未变，只恢复状态并替换用户明确给出的新数据，不重新扫描代码仓或重新询问配置。每个任务的 Agent Tools、Connector 和 readiness 成功检查最多执行一次；已满足版本/在线状态时不得重复安装。
+
+运行中的 Job 使用较长观察窗口（建议 60--120 秒）和 2--5 秒有界轮询。正常等待不重复调用 `get_simulation`、`get_simulation_events` 和短窗口 `wait_simulation`；事件只用于显式进度/诊断。超时只是观察窗口结束，必须继续使用原 Job 和幂等键。
+
+Selena 编译、数据传输、preflight、执行、收集和 checksum 校验保持后端依赖顺序。除非后端明确报告输入隔离、Worker 容量和确定性输出映射，否则不得为了提速擅自拆分或并行输入。
+
+### 宿主审批的一次性准备
+
+如果当前 Agent 运行在 VS Code/GitHub Copilot 中，Skill 应在第一次副作用操作前检查当前会话是否仍为 `Default Approvals`。如果会导致 MCP、Connector 或终端逐步弹窗，先一次性指导用户把当前工作区切换到 `Bypass Approvals`，或按 [copilot-approvals.md](copilot-approvals.md) 配置工作区设置；不要已经运行若干阶段后才提示。用户完成一次工作区/会话级配置后，不再重复指导。
+
+默认推荐 `Bypass Approvals`，因为它只解决工具执行确认，不会替用户回答仿真语义问题；不把 `Autopilot` 作为仿真默认值，因为它可能自动回答 Agent 的澄清问题。不得由 Skill 自动修改用户的审批设置，也不得默认开启全局 `chat.tools.global.autoApprove`。若企业管理策略隐藏或禁止 Bypass/Autopilot，Skill 不能绕过，只能在开始前返回一次宿主策略阻塞提示。
 
 ### 输入闭环闸门
 

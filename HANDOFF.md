@@ -1,10 +1,10 @@
 # radar-sim 当前交接
 
 > 更新时间：2026-08-25
-> 当前代码分支：`main`（`10b6317`）
-> 当前代码 release：`a51f54c`，Skill 默认返回校验后的本地结果地址
-> 当前 Linux release：`/home/hoz2wx/radar-sim-a51f54c-agenttools-20260825-r14`
-> 回滚 release：无（旧 release 已按最终版本清理）
+> 当前代码分支：`main`（本次正式合并候选）
+> 当前代码 release：`766c2f6`，Skill 默认返回校验后的本地结果地址
+> 当前 Linux release：`/home/hoz2wx/radar-sim-a51f54c-agenttools-20260825-r16`
+> 回滚 release：`/home/hoz2wx/radar-sim-a51f54c-agenttools-20260825-r14`
 > 线上地址：`http://10.190.171.44:8877`
 
 这是当前状态的唯一入口。历史审计、旧 handoff 和停用部署文档统一在 [`docs/archive/`](docs/archive/README.md)，不能把归档文档当作当前操作步骤。
@@ -42,6 +42,8 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - 共享 UNC 路径在服务端挂载探测成功时优先走 shared-reference，客户端直传提示不再强制复制同一份数据；直传块默认 8 MiB，多文件传输最多 2 路并发且保持 Manifest 顺序；
 - Web 顶部存在 Connector 必要更新提示；当前只有合同版本过旧才阻断，兼容包更新提示仍是后续增强项。
 - Web 已完成 Simulation Engineering Workbench 三轮视觉重设计：创建任务使用横向配置工作区 + 固定 Inspector，任务中心使用紧凑 Master-Detail；Inspector 展示执行位置、Dataset、Selena、Runtime、校验状态和主要操作，任务详情展示总进度与逐阶段进度条；所有字段 ID、API 调用、SDK 语义和任务状态保持不变。
+- Skill 已实现静默执行与 active profile：`get_simulation_state` 静默恢复上次配置，`check_agent_tools`/`check_windows_connector` 自动准备能力，成功时不向用户展示 `allow`、版本、服务地址或自查日志；`scripts/start_mcp.py` 保持 stdout 仅用于 MCP JSON-RPC，日志写入 `agent-tools.log`。
+- Cluster 重试去重：`cluster_stage_executor` 对同 role/同内容重复 transfer manifest 去重，`DatasetRef` 层按路径/大小/checksum 去重，冲突时返回 `CLUSTER_DATA_TRANSFER_CONFLICT` 并保留稳定诊断，不再压缩为无信息 `cluster_stage_failed`。
 
 ## 测试与线上证据
 
@@ -55,8 +57,10 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - UI release `7c78b64`：线上浏览器已复核 `styles.css?v=20260820-engineering`、`app.js?v=20260820-engineering`，浅色工程主题、Inspector、任务中心空态和桌面视口无横向溢出；临时任务数据黑盒复核了 Master-Detail、总进度 `64%` 和阶段进度 `100/100/64/0`；UI/API 回归 `88 passed, 1 warning`；
 - 线上真实成功任务：`job_2a147e561d24`，单条 MF4、最终 `succeeded`，Manifest 可用；总耗时约 `1660s`，其中 `run_simulation` 约 `1355s`，成功证据保留；
 - 两个并发 `/api/v1/run-configs/validate` 黑盒请求在 Manager 不可达期间均约 `8.2s` 返回 `200` 和 `cluster_readiness_unavailable`，未创建 Job；Manager 恢复后真实复核 `1.768s` 返回 `200`、`can_submit=true`、`cluster_ready`；
-- 服务器当前 release 为 `7c78b64`，保留 `eb62123` 作为 UI 回滚 release；
-- 当前控制库无活动 `queued/running` Job；当前用户需要先从现有 Web 更新提示重新安装 Connector v16，之后才能继续本地仿真；Cluster 目标当前仍可用。
+- 服务器当前 release 为 `462e166-agenttools-20260825-r12`（`MainPID=4133932`，`active`，`health 200`），保留 `bb71ff8-agenttools-20260821-r11` 作为回滚 release；能力 `windows 1` / `cluster 2`（executor 2 / gateway 2），合同 `16`；
+- Agent Tools Bundle：`c3eff7e29cbf68b4c78ca7334cc2e3b37ed3d1f4d5836a62c3bceafb2d730a02`，Connector 包：`4f95d4f0c081257f310fc3815bb93f713b986150ccc36f558c2cda2bac1797a5`；SDK `4.0.0` / MCP `0.1.0` / Skill `0.2.0`；
+- 线上真实成功任务：`job_2a147e561d24`（历史）、`job_651a7887b5ab`（Skill 真机 `537269680 bytes`）、`job_2b9a6b6452b7`（Cluster 重试后 `succeeded`，见下）；
+- 当前控制库无活动 `queued/running` Job；Cluster 外部 Manager `SZHRADAR01:8123` 已恢复，`/api/v1/cluster/readiness` 返回 `cluster_ready`/`can_submit=true`。
 
 ## 当前文档入口
 
@@ -167,3 +171,20 @@ Windows 黑盒验收已通过：从线上地址下载并校验 Bundle；隔离�
 - Selena 实际进度：`144193` 条输入，最终 `100%`，`returncode=0`；Diagnosis=`job_succeeded`；Manifest 1 个输入成功结果，结果文件 `537269680` bytes；
 - 结果下载：通过 MCP 下载并校验 ZIP，SHA-256 `04827B6737C6976ABDE1CFC739B50E75EC0C427ED222B186C8FD591087F01880`，ZIP 内容可读；
 - Skill validator 通过，发现脚本测试 `3 passed`，Agent Tools/MCP/Skill 分发回归 `6 passed, 7 skipped, 1 warning`；最终 Skill 包包含 5 个必要文件，无 `pyc/__pycache__`。
+
+## 2026-08-25 静默 Skill 与 Cluster 重试验收（r12）
+
+本轮对 `job_2b9a6b6452b7` 的 `DatasetError: dataset file paths must be case-insensitively unique` 根因已修复并在线上验证通过。
+
+- 现象：Skill 自动 retry 后同一 MF4 产生两个不同 `transfer_id` 的相同 manifest，Cluster preflight 将其判为重复输入而失败；旧代码将异常压缩为无信息 `cluster_stage_failed`。
+- 修复：`core/cluster_stage_executor.py` 同 role 去重 + `DatasetRef` 去重，冲突时 `CLUSTER_DATA_TRANSFER_CONFLICT`；`core/agent_simulation_state.py` 新增 active profile（`simulation-state.json`），`radar_sim_mcp/server.py` 新增 `get_simulation_state`，`skills/radar-sim-simulation` 实现静默能力准备与重复运行自动恢复；`scripts/start_mcp.py` 静默启动。
+- 线上验证（`user-hoz2wx`）：
+  - `job_2b9a6b6452b7` 当前 `succeeded`，`cluster_run_ref=cluster-run:7d598cf4e0944349ab29dbc102e07489`，`state=succeeded`，`external_job_id=1`；
+  - 事件：`preflight` 连续两次 `failed` 后第三次 `succeeded`，随后 `run_simulation`/`collect_results`/`finalize_manifest` 全部 `succeeded`；
+  - `diagnosis`：`job_succeeded`，`manifest_available=true`，`result_ref=result:sha256:5f4212527a590b2e9957cb1eb459683016f647f0d3bdb50ba227a292c225ae7f`，1 输入成功；
+  - Manifest 文件 `OUT_.../Gen5_*.MF4out.MF4`、`logfile.txt.zip`、`result.ini` 等 9 文件，`fail_count=0`；
+  - 无需再手工 `retry_stage`；`cluster_runs` 仅 2 行，无 `debug-job-2b9a6b6452b7` 残留，预留的 `cluster-run:d972...` 未持久化，无需清理；共享路径 `//abtvdfs2.../run-config-v2/job_2b9a6b6452b7` 为正式结果目录，保留。
+- 服务：`http://10.190.171.44:8877` health `200`，capabilities `windows 1`/`cluster 2`，readiness `cluster_ready`，`/mnt/cluster` 挂载正常。
+- 回归：定向 `33 passed, 1 warning`（active profile/去重/direct refs/MCP/Skill）；全量 `1705 passed, 19 skipped, 7 failed`（`6` 为缺 `asammdf`，`1` 为既有 Web 文案断言，非本轮引入）。
+- Skill 10b6317（`feat: return simulation result address by default`）：将 `SKILL.md` 从 309 行精简至 112 行，默认在 `artifacts_available` 时自动调用 `download_simulation_result` 并返回校验后的本地结果路径与 checksum；`agents/openai.yaml` 同步更新触发描述；该 Skill 变更为纯客户端逻辑，无需服务端重新部署，已同步至独立仓。
+- Skill 独立仓：`skillForJob` 远端 `origin/main` 当前 `6cb66b4`，已包含 `1aafe7d`/`51df706` 及 `10b6317` 的 Skill 精简（`SKILL.md` 112 行、`openai.yaml` 新描述）；`solutions/requirements-code-assistant` 的 `provenance/validation` 扩展（`3b9f10b`）已保留并推送；`bosch-data-transfert` 已恢复，`service-profile.json` 在独立仓为部署绑定示例、源码为通用空值，二者已对齐。

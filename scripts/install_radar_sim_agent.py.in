@@ -402,8 +402,11 @@ def install(server_url: str, *, timeout_seconds: float = 600.0) -> dict[str, Any
     }
     _write_json_atomic(root / "install.json", state)
     config = {
-        "command": sys.executable,
-        "args": [str(launcher)],
+        # VS Code owns the stdio channel.  Start the versioned environment
+        # directly instead of routing through a Python launcher that replaces
+        # itself with os.execv on Windows.
+        "command": str(venv_python),
+        "args": ["-m", "radar_sim_mcp.server"],
         "env": {
             "RADAR_SIM_BASE_URL": server_url,
             "RADAR_SIM_ALLOW_AGENT_TOOLS_UPDATE": "1",

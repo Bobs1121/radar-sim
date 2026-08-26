@@ -506,8 +506,8 @@ class RadarSimMcpServer:
         )
         def wait_simulation(
             job_id: str,
-            timeout_seconds: float = 30.0,
-            poll_interval_seconds: float = 1.0,
+            timeout_seconds: float = 60.0,
+            poll_interval_seconds: float = 2.0,
         ) -> dict[str, Any]:
             def operation() -> dict[str, Any]:
                 try:
@@ -624,16 +624,24 @@ class RadarSimMcpServer:
 
         @self.app.tool(
             name="download_simulation_result",
-            description="Download and checksum-verify a result ZIP to the MCP host; never return file bytes.",
+            description="Download, checksum-verify, and by default extract a result to a local directory; never return file bytes.",
             structured_output=True,
         )
         def download_simulation_result(
             job_id: str,
             destination: str = "",
+            extract: bool = True,
         ) -> dict[str, Any]:
             def operation() -> dict[str, Any]:
-                path = client.download_job_result(job_id, destination or None)
-                return {"path": str(path)}
+                path = client.download_job_result(
+                    job_id,
+                    destination or None,
+                    extract=bool(extract),
+                )
+                return {
+                    "path": str(path),
+                    "format": "directory" if path.is_dir() else "zip",
+                }
 
             return _safe_call(operation)
 
