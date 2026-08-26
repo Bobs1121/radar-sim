@@ -6,7 +6,7 @@
 
 Linux 只运行一个 `serve-v1` 控制面进程，同时提供 Web、REST/SDK、Job/Stage 调度、统一 Windows Connector 接口和 Cluster executor。Linux 不编译 Selena、不执行 Windows 本地仿真，也不接收大文件正文。
 
-当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-d26cefb-agenttools-20260826-main`；回滚 release：`/home/hoz2wx/radar-sim-a51f54c-agenttools-20260825-r16`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
+当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-28d5b14-agenttools-20260826-main`；回滚 release：`/home/hoz2wx/radar-sim-d26cefb-agenttools-20260826-main`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
 
 注意：Cluster executor/gateway 心跳在线不等于外部 Cluster 可提交。此次验收曾发现服务机到 `SZHRADAR01:8123` 的 Manager XML-RPC 端口关闭；恢复后真实 readiness 返回 `cluster_ready`、`can_submit=true`。如果 Manager 再次不可达，服务会禁用 Cluster 目标，并在创建 Job 前返回可重试错误，不允许绕过检查。
 

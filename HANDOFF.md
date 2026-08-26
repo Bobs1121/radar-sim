@@ -1,10 +1,10 @@
 # radar-sim 当前交接
 
 > 更新时间：2026-08-26
-> 当前代码分支：`main`（`d26cefb`）
-> 当前正式 release：`d26cefb-agenttools-20260826-r17`，Skill 默认返回校验后的本地结果地址
-> 当前 Linux release：`/home/hoz2wx/radar-sim-d26cefb-agenttools-20260826-main`
-> 回滚 release：`/home/hoz2wx/radar-sim-a51f54c-agenttools-20260825-r16`
+> 当前代码分支：`main`（运行基线 `28d5b14`）
+> 当前正式 release：`28d5b14-agenttools-20260826-r18`，Skill 默认返回校验后的本地结果地址
+> 当前 Linux release：`/home/hoz2wx/radar-sim-28d5b14-agenttools-20260826-main`
+> 回滚 release：`/home/hoz2wx/radar-sim-d26cefb-agenttools-20260826-main`
 > 线上地址：`http://10.190.171.44:8877`
 
 这是当前状态的唯一入口。历史审计、旧 handoff 和停用部署文档统一在 [`docs/archive/`](docs/archive/README.md)，不能把归档文档当作当前操作步骤。
@@ -57,8 +57,8 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 - UI release `7c78b64`：线上浏览器已复核 `styles.css?v=20260820-engineering`、`app.js?v=20260820-engineering`，浅色工程主题、Inspector、任务中心空态和桌面视口无横向溢出；临时任务数据黑盒复核了 Master-Detail、总进度 `64%` 和阶段进度 `100/100/64/0`；UI/API 回归 `88 passed, 1 warning`；
 - 线上真实成功任务：`job_2a147e561d24`，单条 MF4、最终 `succeeded`，Manifest 可用；总耗时约 `1660s`，其中 `run_simulation` 约 `1355s`，成功证据保留；
 - 两个并发 `/api/v1/run-configs/validate` 黑盒请求在 Manager 不可达期间均约 `8.2s` 返回 `200` 和 `cluster_readiness_unavailable`，未创建 Job；Manager 恢复后真实复核 `1.768s` 返回 `200`、`can_submit=true`、`cluster_ready`；
-- 服务器当前 release 为 `d26cefb-agenttools-20260826-r17`（user-level systemd `active`，`NRestarts=0`，`health 200`），保留 `a51f54c-agenttools-20260825-r16` 作为回滚 release；能力 `windows 0` / `cluster 2`（executor 2 / gateway 2），合同 `16`；
-- Agent Tools Bundle：`a7ddde6b24930b5434928978aa17f0c3b92428aaf209c2d317f8f26c0e7a33b8`，Connector 包：`2a3862e4b18a91e083c45aca90d2e12d68248ad4e6bd1a6a2e53d9d0f75329a6`；SDK `4.0.0` / MCP `0.1.0` / Skill `0.4.2`；
+- 服务器当前 release 为 `28d5b14-agenttools-20260826-r18`（user-level systemd `active`，`NRestarts=0`，`health 200`），保留 `d26cefb-agenttools-20260826-r17` 作为回滚 release；能力 `windows 0` / `cluster 2`（executor 2 / gateway 2），合同 `16`；
+- Agent Tools Bundle：`da5974076f25873a4365de98d3a6a8fc9ba44a7e4d013cd9bea925682bdf5e2e`，Connector 包：`2a3862e4b18a91e083c45aca90d2e12d68248ad4e6bd1a6a2e53d9d0f75329a6`；SDK `4.0.0` / MCP `0.1.0` / Skill `0.4.2`；
 - 线上真实成功任务：`job_2a147e561d24`（历史）、`job_651a7887b5ab`（Skill 真机 `537269680 bytes`）、`job_2b9a6b6452b7`（Cluster 重试后 `succeeded`，见下）；
 - 当前控制库无活动 `queued/running` Job；Cluster 外部 Manager `SZHRADAR01:8123` 已恢复，`/api/v1/cluster/readiness` 返回 `cluster_ready`/`can_submit=true`。
 
