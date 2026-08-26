@@ -241,6 +241,7 @@ print("installed compatible wheels: " + ", ".join(sorted(selected)))
 '''
     subprocess.run(
         [str(venv_python), "-c", selector, str(wheel_dir)],
+        stdin=subprocess.DEVNULL,
         check=True,
         timeout=timeout_seconds,
     )

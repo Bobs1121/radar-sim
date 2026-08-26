@@ -275,6 +275,7 @@ def bootstrap(server_url: str = "", *, timeout_seconds: float = DEFAULT_TIMEOUT_
                 [sys.executable, str(installer), "--server-url", url],
                 env=environment,
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 check=False,
                 timeout=max(30.0, float(timeout_seconds) + 30.0),

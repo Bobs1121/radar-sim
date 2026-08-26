@@ -142,6 +142,7 @@ def update_agent_tools(
             [sys.executable, str(script)],
             env=environment,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             check=False,
             timeout=max(30.0, min(float(timeout_seconds), 1800.0)),
