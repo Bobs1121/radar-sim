@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import getpass
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -26,7 +27,7 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request, ProxyHandler, build_opener, urlopen
 import uuid
 
 
@@ -125,6 +126,51 @@ def _normalize_url(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
+def _bypass_proxy_for_url(url: str) -> bool:
+    """Bypass inherited proxies only for literal local/private service hosts."""
+
+    hostname = (urlsplit(str(url or "")).hostname or "").strip()
+    if not hostname or hostname.casefold() == "localhost":
+        return hostname.casefold() == "localhost"
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return bool(address.is_private or address.is_loopback or address.is_link_local)
+
+
+def _open_url(request: Request, *, timeout: float):
+    if _bypass_proxy_for_url(request.full_url):
+        return build_opener(ProxyHandler({})).open(request, timeout=timeout)
+    return urlopen(request, timeout=timeout)
+
+
+def _append_service_no_proxy(environment: dict[str, str], url: str) -> None:
+    """Pass an exact private service host through to the downloaded installer."""
+
+    hostname = (urlsplit(str(url or "")).hostname or "").strip()
+    if not hostname or not _bypass_proxy_for_url(url):
+        return
+    entries: list[str] = []
+    for key in ("NO_PROXY", "no_proxy"):
+        entries.extend(
+            item.strip()
+            for item in str(environment.get(key) or "").split(",")
+            if item.strip()
+        )
+    lowered_host = hostname.casefold()
+    if not any(
+        item == "*"
+        or item.casefold() == lowered_host
+        or (item.startswith(".") and lowered_host.endswith(item.casefold()))
+        for item in entries
+    ):
+        entries.append(hostname)
+    merged = ",".join(dict.fromkeys(entries))
+    environment["NO_PROXY"] = merged
+    environment["no_proxy"] = merged
+
+
 def resolve_server_url(explicit: str = "") -> tuple[str, str]:
     """Resolve the provider URL without asking the user for infrastructure data."""
 
@@ -159,7 +205,7 @@ def _download_installer(url: str, destination: Path, timeout_seconds: float) -> 
         method="GET",
     )
     try:
-        with urlopen(request, timeout=max(10.0, float(timeout_seconds))) as response:
+        with _open_url(request, timeout=max(10.0, float(timeout_seconds))) as response:
             advertised = str(response.headers.get("Content-Length") or "").strip()
             if advertised:
                 try:
@@ -224,6 +270,7 @@ def bootstrap(server_url: str = "", *, timeout_seconds: float = DEFAULT_TIMEOUT_
             _download_installer(url, installer, timeout_seconds)
             environment = dict(os.environ)
             environment.setdefault("RADAR_SIM_USER", _stable_user())
+            _append_service_no_proxy(environment, url)
             completed = subprocess.run(
                 [sys.executable, str(installer), "--server-url", url],
                 env=environment,

@@ -3,18 +3,60 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 from typing import Any
+from urllib.parse import urlsplit
 
 from radar_sim_sdk import RadarSimClient
 
 
 class AgentToolsUpdateError(RuntimeError):
     code = "agent_tools_update_failed"
+
+
+def _private_or_local_service_host(base_url: str) -> str:
+    """Return a literal private/local host that must bypass enterprise proxies."""
+
+    hostname = (urlsplit(str(base_url or "")).hostname or "").strip()
+    if not hostname or hostname.casefold() == "localhost":
+        return hostname if hostname.casefold() == "localhost" else ""
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return ""
+    return hostname if address.is_private or address.is_loopback or address.is_link_local else ""
+
+
+def _append_service_no_proxy(environment: dict[str, str], base_url: str) -> None:
+    """Make the installer use the same direct path as the SDK for lab hosts."""
+
+    hostname = _private_or_local_service_host(base_url)
+    if not hostname:
+        return
+    entries: list[str] = []
+    for key in ("NO_PROXY", "no_proxy"):
+        entries.extend(
+            item.strip()
+            for item in str(environment.get(key) or "").split(",")
+            if item.strip()
+        )
+    lowered_host = hostname.casefold()
+    covered = any(
+        item == "*"
+        or item.casefold() == lowered_host
+        or (item.startswith(".") and lowered_host.endswith(item.casefold()))
+        for item in entries
+    )
+    if not covered:
+        entries.append(hostname)
+    merged = ",".join(dict.fromkeys(entries))
+    environment["NO_PROXY"] = merged
+    environment["no_proxy"] = merged
 
 
 def default_agent_tools_root() -> Path:
@@ -94,6 +136,7 @@ def update_agent_tools(
         script = client.download_agent_tools_bootstrap(Path(temporary))
         environment = dict(os.environ)
         environment.update(client._agent_tools_bootstrap_environment())
+        _append_service_no_proxy(environment, str(client._client.base_url))
         environment.setdefault("RADAR_SIM_BASE_URL", "")
         completed = subprocess.run(
             [sys.executable, str(script)],
