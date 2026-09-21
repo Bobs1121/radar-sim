@@ -77,7 +77,7 @@ python -m pip install -e "D:\RamboStar\idea\radar-sim[mcp]"
 from radar_sim_sdk import RadarSimClient
 
 client = RadarSimClient(
-    "http://10.190.171.44:8877",
+    "http://10.190.181.243:8877",
     user="user-your-ntid",       # 可信内网无认证模式
     # token="...",               # 正式 Bearer 认证模式
 )
@@ -541,7 +541,7 @@ python -m pip install -e "D:\RamboStar\idea\radar-sim[mcp]"
 stdio 运行：
 
 ```powershell
-$env:RADAR_SIM_BASE_URL = "http://10.190.171.44:8877"
+$env:RADAR_SIM_BASE_URL = "http://10.190.181.243:8877"
 $env:RADAR_SIM_USER = "user-your-ntid"
 $env:RADAR_SIM_MCP_TRANSPORT = "stdio"
 radar-sim-mcp

@@ -1,8 +1,20 @@
 # radar-sim V2
 
-> 当前文档基线：2026-08-20。V2 project-free 主链已部署到受信内网；实时发布状态、测试和边界以最新 handoff 为准。
+> 当前文档基线：2026-09-21。生产环境已迁移到 `10.190.181.243`；实时发布状态、测试和边界以最新 handoff 为准。
 
 radar-sim 是 Selena 编译与雷达数据仿真的轻量自动化脚手架。它通过 Linux 控制面统一调度 Windows 本地编译、本地仿真和 Cluster 仿真；大文件由源设备直接进入执行目标，不经过 Linux Web/API 端口。
+
+## 线上服务
+
+| 项 | 当前值 |
+|---|---|
+| 服务地址 | `http://10.190.181.243:8877`（Web 与 `/api/v1` 同源） |
+| 部署机 | Linux `hoz2wx@10.190.181.243` |
+| 运行方式 | user-level systemd `radar-sim-v1.service`（`serve-v1`，端口 8877） |
+| 当前 release | `/home/hoz2wx/radar-sim-main`（单一正式 release 目录） |
+| 数据根 | `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`，部署配置 `config/deployment.yaml` |
+
+服务器目录规范：`~/radar-sim-main` 是唯一正式 release；历史版本目录与旧日志已清理。升级时按 `docs/release-deployment.md` 新建不可变 release 目录，验收通过后把 `radar-sim-main` 指向新版本并保留旧目录一个发布周期作回滚。
 
 ## 文档入口
 
@@ -48,7 +60,7 @@ result:
 ```python
 from radar_sim_sdk import RadarSimClient, UserRunConfig
 
-with RadarSimClient("http://10.190.171.44:8877") as client:
+with RadarSimClient("http://10.190.181.243:8877") as client:
     config = UserRunConfig.from_yaml("radar-sim.yaml")
     validation = client.validate_run(config)
     job = client.submit_run(config)
@@ -68,6 +80,23 @@ with RadarSimClient("http://10.190.171.44:8877") as client:
 
 已有 Selena 与全部输入都在 Cluster 可读共享路径时不需要安装 Connector。Linux 用户的私有本地文件通过 Linux 上的 Python SDK 直传，首版没有浏览器 Linux Connector。
 
+## 仓库结构
+
+```
+cli/            命令行入口（rsim.py server / web / agent ...）
+core/           控制面、API v1、调度、传输、状态机
+radar_sim_sdk/  Python SDK（唯一编程入口）
+radar_sim_mcp/  MCP Server（SDK 薄封装）
+radar_sim_web/  Web 静态资源（打包随服务分发，服务端 /console 提供）
+platforms/      Gen5 Selena 平台适配
+plugins/        分析插件
+scripts/        部署 / 打包脚本
+skills/         radar-sim-simulation Skill
+docs/           当前文档；docs/archive/ 历史审计与旧 handoff
+tests/          自动化测试
+vendor/         Windows Connector 离线 wheel
+```
+
 ## 设计边界
 
 - 编译命令：`cmd /c <用户选择的 Selena 脚本>`，不加项目参数；
@@ -79,10 +108,14 @@ with RadarSimClient("http://10.190.171.44:8877") as client:
 
 ## 开发与验收
 
-```powershell
+```bash
+# 本地快速回归（Windows 开发机）
 python -m pytest -q tests/test_api_v1_fastapi.py tests/test_sdk.py tests/test_user_config.py
 python -m py_compile core/api_v1.py core/api_v1_fastapi.py radar_sim_sdk/client.py
 node --check radar_sim_web/static/app.js
+
+# 发布门禁：全仓测试零失败
+python -m pytest -q tests/
 ```
 
 自动测试不能替代真实验收。发布前必须在目标 Linux 和新 Windows 用户上验证 existing/build + local/cluster 四组合、两用户隔离、直传和结果。

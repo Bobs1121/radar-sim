@@ -6,7 +6,7 @@
 
 Linux 只运行一个 `serve-v1` 控制面进程，同时提供 Web、REST/SDK、Job/Stage 调度、统一 Windows Connector 接口和 Cluster executor。Linux 不编译 Selena、不执行 Windows 本地仿真，也不接收大文件正文。
 
-当前受信内网验收地址：`http://10.190.171.44:8877`。当前不可变 release：`/home/hoz2wx/radar-sim-9f1f070-agenttools-20260826-main`；回滚 release：`/home/hoz2wx/radar-sim-e7fda82-agenttools-20260826-main`；用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
+当前受信内网验收地址：`http://10.190.181.243:8877`。当前正式 release 目录：`/home/hoz2wx/radar-sim-main`（服务器上唯一保留的 release；历史版本目录与旧日志已清理）。用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
 
 注意：Cluster executor/gateway 心跳在线不等于外部 Cluster 可提交。此次验收曾发现服务机到 `SZHRADAR01:8123` 的 Manager XML-RPC 端口关闭；恢复后真实 readiness 返回 `cluster_ready`、`can_submit=true`。如果 Manager 再次不可达，服务会禁用 Cluster 目标，并在创建 Job 前返回可重试错误，不允许绕过检查。
 
@@ -20,9 +20,9 @@ bash scripts/linux_deploy.sh status
 bash scripts/linux_deploy.sh test
 ```
 
-该脚本默认使用 `~/radar-sim` 和端口 `8878`，不会切换当前 `10.190.171.44:8877` 的生产 user-level systemd release。脚本参数通过 `RSIM_INSTALL_DIR`、`RSIM_HOME`、`RSIM_PORT`、`RSIM_PUBLIC_URL`、`RSIM_DEPLOYMENT_CONFIG` 和认证环境变量外置。
+该脚本默认使用 `~/radar-sim` 和端口 `8878`，不会切换当前 `10.190.181.243:8877` 的生产 user-level systemd release。脚本参数通过 `RSIM_INSTALL_DIR`、`RSIM_HOME`、`RSIM_PORT`、`RSIM_PUBLIC_URL`、`RSIM_DEPLOYMENT_CONFIG` 和认证环境变量外置。
 
-生产发布必须创建新的不可变 release 目录，候选测试通过且无活动任务后，按 [`scripts/radar-sim-v1.service.example`](../scripts/radar-sim-v1.service.example) 保留 `RSIM_HOME`、`RSIM_DEPLOYMENT_CONFIG` 和部署环境文件，只更新 `WorkingDirectory`/`ExecStart` 的 release 路径，执行 `systemctl --user daemon-reload` 和受控重启；保留上一目录作为回滚，不在运行目录原地覆盖。切换后必须重新检查 `active/running`、`NRestarts=0`、health、capabilities、Connector 包和 Job 列表。
+生产发布必须创建新的不可变 release 目录，候选测试通过且无活动任务后，按 [`scripts/radar-sim-v1.service.example`](../scripts/radar-sim-v1.service.example) 保留 `RSIM_HOME`、`RSIM_DEPLOYMENT_CONFIG` 和部署环境文件，只更新 `WorkingDirectory`/`ExecStart` 的 release 路径，执行 `systemctl --user daemon-reload` 和受控重启；验收通过后把 `~/radar-sim-main` 指向新版本目录（`mv`/软链），保留被替换目录一个发布周期作回滚，不在运行目录原地覆盖。切换后必须重新检查 `active/running`、`NRestarts=0`、health、capabilities、Connector 包和 Job 列表。
 
 `--insecure-no-auth` 模式下，`X-Rsim-User` 仍然是 owner 路由标签。检查 Connector 能力和用户 Job 时必须使用与 Web/SDK 相同的稳定 owner，例如：
 

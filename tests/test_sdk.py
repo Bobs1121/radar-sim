@@ -510,7 +510,7 @@ def test_light_agent_mf4_reader_preserves_acquisition_group_order(tmp_path: Path
 
 
 def test_sdk_bypasses_environment_proxy_for_private_control_plane():
-    assert _trust_environment_proxy("http://10.190.171.44:8877") is False
+    assert _trust_environment_proxy("http://10.190.181.243:8877") is False
     assert _trust_environment_proxy("http://127.0.0.1:8877") is False
     assert _trust_environment_proxy("http://[::1]:8877") is False
     assert _trust_environment_proxy("https://public.example.com") is True

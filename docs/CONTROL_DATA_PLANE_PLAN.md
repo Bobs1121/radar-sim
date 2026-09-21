@@ -155,7 +155,7 @@ Web 和 SDK 展示相同状态、进度、重试/取消动作。传输失败只�
 
 ### P0-D：部署与端到端门禁
 
-- 在 `10.190.171.44` 部署一次。
+- 在 `10.190.181.243` 部署一次。
 - 用至少一个大 MF4 验证客户端到 Cluster 共享目录的字节计数，Linux API 入站字节不随 MF4 大小增长。
 - 传输期间并发验证新用户 Web、SDK、Agent 心跳和任务列表。
 - 验证 build+cluster、existing+cluster、build+local、existing+local 四条路径。

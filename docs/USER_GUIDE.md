@@ -35,7 +35,7 @@
 from radar_sim_sdk import RadarSimClient
 
 client = RadarSimClient(
-    "http://10.190.171.44:8877",
+    "http://10.190.181.243:8877",
     user="user-your-ntid",  # 无认证内网模式；正式模式改用 token
 )
 

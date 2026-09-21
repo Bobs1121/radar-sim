@@ -14,7 +14,7 @@
 
 1. 用户入口只有两种：Web 和后端 Python SDK / REST API。
 2. Web 只是 SDK/API 的前台表达；两者提交完全相同的一份 YAML/JSON 配置，调用同一个调度核心。
-3. Linux 服务器是唯一中央入口和控制面，当前目标服务器是 `10.190.171.44`，但部署参数必须外置，后续可迁移到其他 Linux 服务器。
+3. Linux 服务器是唯一中央入口和控制面，当前目标服务器是 `10.190.181.243`，但部署参数必须外置，后续可迁移到其他 Linux 服务器。
 4. Linux 只负责控制面：接收配置、解析意图、编排 Stage、分配执行节点、签发传输目标、登记逻辑引用、调度 Cluster、汇总状态和结果。Linux API 进程和 Linux 本地磁盘不得成为用户大文件的上传中转站。
 5. Linux 不编译 Selena，也不执行本地仿真。Selena 编译和本地仿真只能发生在授权 Windows 电脑；Cluster 仿真由 Linux 调度 Cluster 执行面。
 6. Cluster 任务在数据、Selena 目录及配置就绪后，不再依赖用户 Windows 电脑在线。
@@ -177,7 +177,7 @@ Web 和 SDK 必须能读取同样的 Job/Stage/Event。Web 至少展示：当前
 - Windows Web、Windows SDK、Linux SDK 的本地文件直传，以及共享路径零复制均有合同测试；
 - Linux 节点无法领取 Selena 编译或本地仿真 Stage；统一 Connector 只领取其真实声明且服务端允许的本机能力；
 - 真实失败能停在正确 Stage，不能再出现由内部默认值造成的 `output_root must be narrower than workspace_root`；
-- 在 `10.190.171.44` 完成 Linux 部署、Web/SDK 健康检查和至少一条目标环境 Cluster 烟测；
+- 在 `10.190.181.243` 完成 Linux 部署、Web/SDK 健康检查和至少一条目标环境 Cluster 烟测；
 - `HANDOFF.md` 如实记录代码证据、测试证据、外部环境未验收项和已知限制。
 
 ## 7. 防漂移规则

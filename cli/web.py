@@ -28,8 +28,10 @@ from core.cluster import (
 from core.config import list_projects, load_config
 
 
+from radar_sim_web import static_root as _static_root
+
 ROOT = Path(__file__).resolve().parent.parent
-WEB_ROOT = ROOT / "web"
+WEB_ROOT = Path(str(_static_root()))
 
 
 def register(subparsers):
@@ -41,7 +43,7 @@ def register(subparsers):
     p.add_argument("--no-control", action="store_true",
                    help="Disable the embedded control server+agent (use legacy BuildTaskRegistry)")
     p.add_argument("--server-url", default="",
-                   help="Remote control server URL (e.g. http://10.190.171.44:8877). "
+                   help="Remote control server URL (e.g. http://10.190.181.243:8877). "
                         "When set, web forwards task ops to the remote server instead of starting an embedded one.")
     p.add_argument("--user", default="",
                    help="User identity for the remote server (default: RSIM_USER env or OS user). "

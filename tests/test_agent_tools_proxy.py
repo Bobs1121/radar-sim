@@ -27,9 +27,9 @@ def _load_skill_bootstrap():
 def test_mcp_update_adds_only_private_service_to_no_proxy():
     environment = {"NO_PROXY": "existing.example", "no_proxy": "existing.example"}
 
-    _append_service_no_proxy(environment, "http://10.190.171.44:8877")
+    _append_service_no_proxy(environment, "http://10.190.181.243:8877")
 
-    assert environment["NO_PROXY"].split(",")[-1] == "10.190.171.44"
+    assert environment["NO_PROXY"].split(",")[-1] == "10.190.181.243"
     assert environment["no_proxy"] == environment["NO_PROXY"]
 
 
@@ -44,7 +44,7 @@ def test_mcp_update_keeps_proxy_for_public_service():
 def test_skill_bootstrap_bypasses_private_literal_host_only():
     module = _load_skill_bootstrap()
 
-    assert module._bypass_proxy_for_url("http://10.190.171.44:8877") is True
+    assert module._bypass_proxy_for_url("http://10.190.181.243:8877") is True
     assert module._bypass_proxy_for_url("http://127.0.0.1:8877") is True
     assert module._bypass_proxy_for_url("https://sim.example.com") is False
 
@@ -69,7 +69,7 @@ def test_mcp_update_detaches_installer_from_stdio(monkeypatch, tmp_path):
     calls = []
 
     class FakeClient:
-        _client = type("HttpClient", (), {"base_url": "http://10.190.171.44:8877"})()
+        _client = type("HttpClient", (), {"base_url": "http://10.190.181.243:8877"})()
 
         def download_agent_tools_bootstrap(self, _destination):
             return installer

@@ -25,7 +25,6 @@ SOURCE_DIRS = (
     "plugins",
     "radar_sim_sdk",
     "radar_sim_web",
-    "web",
     "config",
     "scripts",
     "vendor/windows-wheels",

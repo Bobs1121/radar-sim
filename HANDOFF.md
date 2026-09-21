@@ -1,11 +1,16 @@
 # radar-sim 当前交接
 
-> 更新时间：2026-08-26
-> 当前代码分支：`main`（运行基线 `9f1f070`）
-> 当前正式 release：`9f1f070-agenttools-20260826-r20`，Skill 默认返回校验后的本地结果地址
-> 当前 Linux release：`/home/hoz2wx/radar-sim-9f1f070-agenttools-20260826-main`
-> 回滚 release：`/home/hoz2wx/radar-sim-e7fda82-agenttools-20260826-main`
-> 线上地址：`http://10.190.171.44:8877`
+> 更新时间：2026-09-21
+> 当前代码分支：`main`（服务迁移与仓库整理基线，见下「2026-09-21 服务器迁移与仓库整理」）
+> 当前正式 release：`/home/hoz2wx/radar-sim-main`（单一正式 release 目录）
+> 线上地址：`http://10.190.181.243:8877`
+
+## 2026-09-21 服务器迁移与仓库整理
+
+- 生产服务器由 `10.190.171.44` 迁移到 `10.190.181.243`，全部非归档文档、SDK 示例、测试和 CLI 帮助文案已同步；`docs/archive/` 历史审计保留原始 IP 不改写。
+- 服务器目录规范化：`~/radar-sim-main` 为唯一正式 release；旧版本目录 `radar-sim-9f1f070-*`、`radar-sim-e7fda82-*` 与旧日志 `radar-sim-r15/r16-server.log` 已清理。
+- 仓库清理：删除旧版 Web 控制台 `web/`（`cli/web.py` 改为直接使用 `radar_sim_web/static`）；`scripts/build_windows_connector_bundle.py` 同步移除该目录；删除失效备份 `CLAUDE.md.bak.instruction-debt-20260907`。
+- 全仓回归通过（详见「测试与线上证据」）；`tests/test_control_data_plane_contract.py` 曾有的 UI 文案断言失败已随 HTML 文案对齐修复。
 
 这是当前状态的唯一入口。历史审计、旧 handoff 和停用部署文档统一在 [`docs/archive/`](docs/archive/README.md)，不能把归档文档当作当前操作步骤。
 
@@ -136,7 +141,7 @@ radar-sim 是 Selena 编译与仿真的外围自动化框架，不实现 Selena 
 
 Windows 黑盒验收已通过：从线上地址下载并校验 Bundle；隔离临时根目录创建 Python 3.13 venv，按 wheel tags 离线选择并安装 SDK/MCP/`pywin32`；`radar_sim_sdk`、`radar_sim_mcp`、`mcp` 导入成功；MCP 注册 `26` 个工具，stdio `initialize`/`notifications/initialized`/`tools/list` 握手成功；Skill 文件和稳定启动器状态存在；Token 未写入 `install.json`/`mcp-config.json`；`check_agent_tools` 返回 `installed=true`、`update_available=false`；重复安装返回 `already_current`、`restart_required=false`；模拟旧版本更新返回 `restart_required=true`、`skill_updated=true`。
 
-当前仍未配置外部 PyPI 或固定远程 MCP URL；但用户不下载源码、仅使用 `http://10.190.171.44:8877` 的 `install.py`/`install.ps1` 安装本机 MCP/Skill 已经可用。认证开启部署的 Connector pairing 仍需部署方提供短期配对流程。
+当前仍未配置外部 PyPI 或固定远程 MCP URL；但用户不下载源码、仅使用 `http://10.190.181.243:8877` 的 `install.py`/`install.ps1` 安装本机 MCP/Skill 已经可用。认证开启部署的 Connector pairing 仍需部署方提供短期配对流程。
 
 ## 2026-08-25 r14 最终交互修复
 
@@ -184,7 +189,7 @@ Windows 黑盒验收已通过：从线上地址下载并校验 Bundle；隔离�
   - `diagnosis`：`job_succeeded`，`manifest_available=true`，`result_ref=result:sha256:5f4212527a590b2e9957cb1eb459683016f647f0d3bdb50ba227a292c225ae7f`，1 输入成功；
   - Manifest 文件 `OUT_.../Gen5_*.MF4out.MF4`、`logfile.txt.zip`、`result.ini` 等 9 文件，`fail_count=0`；
   - 无需再手工 `retry_stage`；`cluster_runs` 仅 2 行，无 `debug-job-2b9a6b6452b7` 残留，预留的 `cluster-run:d972...` 未持久化，无需清理；共享路径 `//abtvdfs2.../run-config-v2/job_2b9a6b6452b7` 为正式结果目录，保留。
-- 服务：`http://10.190.171.44:8877` health `200`，capabilities `windows 1`/`cluster 2`，readiness `cluster_ready`，`/mnt/cluster` 挂载正常。
+- 服务：`http://10.190.181.243:8877` health `200`，capabilities `windows 1`/`cluster 2`，readiness `cluster_ready`，`/mnt/cluster` 挂载正常。
 - 回归：定向 `33 passed, 1 warning`（active profile/去重/direct refs/MCP/Skill）；全量 `1705 passed, 19 skipped, 7 failed`（`6` 为缺 `asammdf`，`1` 为既有 Web 文案断言，非本轮引入）。
 - Skill 10b6317（`feat: return simulation result address by default`）：将 `SKILL.md` 从 309 行精简至 112 行，默认在 `artifacts_available` 时自动调用 `download_simulation_result` 并返回校验后的本地结果路径与 checksum；`agents/openai.yaml` 同步更新触发描述；该 Skill 变更为纯客户端逻辑，无需服务端重新部署，已同步至独立仓。
 - Skill 独立仓：`skillForJob` 远端 `origin/main` 当前 `6cb66b4`，已包含 `1aafe7d`/`51df706` 及 `10b6317` 的 Skill 精简（`SKILL.md` 112 行、`openai.yaml` 新描述）；`solutions/requirements-code-assistant` 的 `provenance/validation` 扩展（`3b9f10b`）已保留并推送；`bosch-data-transfert` 已恢复，`service-profile.json` 在独立仓为部署绑定示例、源码为通用空值，二者已对齐。
