@@ -2,16 +2,29 @@
 
 > 更新时间：2026-10-20
 > 当前代码分支：`main`
-> 当前正式 release：`/home/hoz2wx/radar-sim-main`（单一正式 release 目录）
+> 当前正式 release：`/home/hoz2wx/radar-sim-main` → `/home/hoz2wx/radar-sim-20261020`
 > 线上地址：`http://wx-c-001qm.wx8.apac.bosch.com:8877`
 
 ## 2026-10-20 服务器地址改为稳定主机名与仓库清理
 
 - 生产机 IP 由 DHCP 分配，`10.190.181.243` 已失效（该地址 ping 与 22 端口均不可达），当前租约是 `10.190.167.13`。全部非归档文档、SDK 示例、CLI 帮助文案与测试改为使用稳定主机名 `wx-c-001qm.wx8.apac.bosch.com`；`docs/archive/` 历史原文不改写。
-- 服务状态核实：`radar-sim-v1.service` 为 `active/running`，`enabled` + `Linger=yes`，已连续运行 4 周；主机名与当前 IP 的健康检查均返回 `{"ok":true}`。
+- 服务状态核实：`radar-sim-v1.service` 为 `active/running`，`enabled` + `Linger=yes`，重启前已连续运行 4 周；主机名与当前 IP 的健康检查均返回 `{"ok":true}`。
 - SDK、MCP 与 Skill bootstrap 的代理判断此前只识别字面内网 IP，内网主机名会被当作公网而走企业代理，导致大文件上传/下载卡住。现改为先解析主机名再判定内网，并补充对应测试。
 - 仓库清理：删除本地构建产物与缓存（`.acceptance/`、`results/`、`build/`、`dist/`、`radar_sim.egg-info/`、`.pytest_cache/`、`.playwright-cli/`、`tmp-agent-home/`、`__pycache__`），它们均已在 `.gitignore` 覆盖范围内。
 - 根目录过期文档归档到 `docs/archive/`：`RESEARCH.md`、`ADAPTIVITY.md`、`SIMULATION_WORKFLOW.md`、`HANDOFF-2026-08-25-silent-skill-cluster.md`、`taskboard.json`。
+
+### 发布物料修复与新 release 上线
+
+切换前线上 `dist/` 为空，导致 `/api/v1/windows-connector/package.zip` 与 `/api/v1/agent-tools/*` 全部返回 `503`，用户无法获取 Connector 或 Agent Tools。
+
+- 新建不可变 release `/home/hoz2wx/radar-sim-20261020`（含本次主机名与代理修复），独立 venv + `pip install -e .`，在 8879 端口冒烟通过后切换。
+- 在该 release 内构建发布物料并写入 `dist/`：`rsim-windows-connector.zip`（8415187 bytes，178 files，`sha256:b50f4530…d901ff`）与 `agent-tools.zip`（16482527 bytes，`sha256` 见 `dist/agent-tools.json`），wheel 集含 `radar_sim-4.0.0`、`mcp 1.30.0`、`pywin32` 及 CPython 3.10 Windows x64 二进制 wheel。
+- 切换后验收：`active/running`、`NRestarts=0`；`/api/v1/health`、`/api/v1/agent-tools/manifest`、`/api/v1/agent-tools/package.zip`、`/api/v1/windows-connector/package.zip` 全部 `200`；两个 ZIP 下载后的 SHA-256 与 manifest 一致；Job 列表仍可读；`radar-sim-main` 软链已指向新目录，旧目录保留为 `radar-sim-main.old-20261020`。
+- 服务器内 `_trust_environment_proxy("http://wx-c-001qm…:8877")` 返回 `False`、公网地址返回 `True`，代理修复已在线生效。
+
+### 未解决：Cluster CIFS 挂载失败（既有问题）
+
+`/mnt/cluster`、`/mnt/cluster_sw` 自 2026-09-22 03:03 开机起即为 `failed`，`mount` 返回 `error(13) Permission denied`，`/etc/rsim/smb-creds` 仍为 2026-07-08 的凭据。`/api/v1/cluster/readiness` 因此返回 `blocked`（缺 client.py/manager.py 等 Cluster 依赖）。该故障早于本次改动，需部署方更新 SMB 凭据后重新挂载，服务本身不做绕过。
 
 ## 2026-09-21 服务器迁移与仓库整理
 

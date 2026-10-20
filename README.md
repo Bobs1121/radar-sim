@@ -1,6 +1,6 @@
 # radar-sim V2
 
-> 当前文档基线：2026-09-21。生产环境已迁移到 `wx-c-001qm.wx8.apac.bosch.com`；实时发布状态、测试和边界以最新 handoff 为准。
+> 当前文档基线：2026-10-20。生产环境地址是 `wx-c-001qm.wx8.apac.bosch.com`（机器 IP 为 DHCP 租约，不要写具体 IP）；实时发布状态、测试和边界以最新 handoff 为准。
 
 radar-sim 是 Selena 编译与雷达数据仿真的轻量自动化脚手架。它通过 Linux 控制面统一调度 Windows 本地编译、本地仿真和 Cluster 仿真；大文件由源设备直接进入执行目标，不经过 Linux Web/API 端口。
 
@@ -10,11 +10,12 @@ radar-sim 是 Selena 编译与雷达数据仿真的轻量自动化脚手架。�
 |---|---|
 | 服务地址 | `http://wx-c-001qm.wx8.apac.bosch.com:8877`（Web 与 `/api/v1` 同源） |
 | 部署机 | Linux `hoz2wx@wx-c-001qm.wx8.apac.bosch.com` |
-| 运行方式 | user-level systemd `radar-sim-v1.service`（`serve-v1`，端口 8877） |
-| 当前 release | `/home/hoz2wx/radar-sim-main`（单一正式 release 目录） |
+| 运行方式 | user-level systemd `radar-sim-v1.service`（`serve-v1`，端口 8877，`enabled` + `Linger=yes`） |
+| 当前 release | `/home/hoz2wx/radar-sim-main` → `/home/hoz2wx/radar-sim-20261020` |
 | 数据根 | `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`，部署配置 `config/deployment.yaml` |
+| 发布物料 | `dist/rsim-windows-connector.zip`、`dist/agent-tools.zip` + `.json`（缺失时相关下载入口返回 503） |
 
-服务器目录规范：`~/radar-sim-main` 是唯一正式 release；历史版本目录与旧日志已清理。升级时按 `docs/release-deployment.md` 新建不可变 release 目录，验收通过后把 `radar-sim-main` 指向新版本并保留旧目录一个发布周期作回滚。
+服务器目录规范：`~/radar-sim-main` 是指向当前正式 release 的软链；升级时按 `docs/release-deployment.md` 新建不可变 release 目录，验收通过后把 `radar-sim-main` 指向新版本并保留旧目录一个发布周期作回滚。
 
 ## 文档入口
 
