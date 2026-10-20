@@ -41,12 +41,38 @@ def test_mcp_update_keeps_proxy_for_public_service():
     assert environment == {"NO_PROXY": "existing.example"}
 
 
+def test_mcp_update_bypasses_proxy_for_internal_hostname(monkeypatch):
+    import radar_sim_mcp.agent_tools as module
+
+    monkeypatch.setattr(
+        module,
+        "_private_or_local_host",
+        lambda host: host == "wx-c-001qm.wx8.apac.bosch.com",
+    )
+    environment = {"NO_PROXY": "existing.example"}
+
+    _append_service_no_proxy(environment, "http://wx-c-001qm.wx8.apac.bosch.com:8877")
+
+    assert environment["NO_PROXY"].split(",")[-1] == "wx-c-001qm.wx8.apac.bosch.com"
+
+
 def test_skill_bootstrap_bypasses_private_literal_host_only():
     module = _load_skill_bootstrap()
 
     assert module._bypass_proxy_for_url("http://10.190.181.243:8877") is True
     assert module._bypass_proxy_for_url("http://127.0.0.1:8877") is True
     assert module._bypass_proxy_for_url("https://sim.example.com") is False
+
+
+def test_skill_bootstrap_resolves_internal_hostname(monkeypatch):
+    module = _load_skill_bootstrap()
+
+    def fake_getaddrinfo(host, port, **kwargs):
+        return [(2, 1, 6, "", ("10.190.167.13", 0))]
+
+    monkeypatch.setattr(module.socket, "getaddrinfo", fake_getaddrinfo)
+
+    assert module._bypass_proxy_for_url("http://wx-c-001qm.wx8.apac.bosch.com:8877") is True
 
 
 def test_mcp_update_detaches_installer_from_stdio(monkeypatch, tmp_path):

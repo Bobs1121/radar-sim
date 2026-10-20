@@ -1,6 +1,6 @@
 # radar-sim V2
 
-> 当前文档基线：2026-09-21。生产环境已迁移到 `10.190.181.243`；实时发布状态、测试和边界以最新 handoff 为准。
+> 当前文档基线：2026-09-21。生产环境已迁移到 `wx-c-001qm.wx8.apac.bosch.com`；实时发布状态、测试和边界以最新 handoff 为准。
 
 radar-sim 是 Selena 编译与雷达数据仿真的轻量自动化脚手架。它通过 Linux 控制面统一调度 Windows 本地编译、本地仿真和 Cluster 仿真；大文件由源设备直接进入执行目标，不经过 Linux Web/API 端口。
 
@@ -8,8 +8,8 @@ radar-sim 是 Selena 编译与雷达数据仿真的轻量自动化脚手架。�
 
 | 项 | 当前值 |
 |---|---|
-| 服务地址 | `http://10.190.181.243:8877`（Web 与 `/api/v1` 同源） |
-| 部署机 | Linux `hoz2wx@10.190.181.243` |
+| 服务地址 | `http://wx-c-001qm.wx8.apac.bosch.com:8877`（Web 与 `/api/v1` 同源） |
+| 部署机 | Linux `hoz2wx@wx-c-001qm.wx8.apac.bosch.com` |
 | 运行方式 | user-level systemd `radar-sim-v1.service`（`serve-v1`，端口 8877） |
 | 当前 release | `/home/hoz2wx/radar-sim-main`（单一正式 release 目录） |
 | 数据根 | `RSIM_HOME=/home/hoz2wx/.rsim-v1-git-smoke`，部署配置 `config/deployment.yaml` |
@@ -60,7 +60,7 @@ result:
 ```python
 from radar_sim_sdk import RadarSimClient, UserRunConfig
 
-with RadarSimClient("http://10.190.181.243:8877") as client:
+with RadarSimClient("http://wx-c-001qm.wx8.apac.bosch.com:8877") as client:
     config = UserRunConfig.from_yaml("radar-sim.yaml")
     validation = client.validate_run(config)
     job = client.submit_run(config)
@@ -122,6 +122,7 @@ python -m pytest -q tests/
 
 ## 文档
 
+- [文档总入口](docs/README.md)
 - [产品合同](docs/PRODUCT_CONTRACT.md)
 - [PRD](PRD.md)
 - [V2 架构](docs/V2_ARCHITECTURE.md)
@@ -129,3 +130,4 @@ python -m pytest -q tests/
 - [用户指南](docs/USER_GUIDE.md)
 - [统一 Connector](docs/windows-one-click-connector.md)
 - [当前状态与 handoff](HANDOFF.md)
+- [历史归档](docs/archive/README.md)

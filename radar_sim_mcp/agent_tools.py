@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import ipaddress
 import os
 from pathlib import Path
 import subprocess
@@ -13,6 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from radar_sim_sdk import RadarSimClient
+from radar_sim_sdk.client import _private_or_local_host
 
 
 class AgentToolsUpdateError(RuntimeError):
@@ -20,16 +20,12 @@ class AgentToolsUpdateError(RuntimeError):
 
 
 def _private_or_local_service_host(base_url: str) -> str:
-    """Return a literal private/local host that must bypass enterprise proxies."""
+    """Return a local/private host that must bypass enterprise proxies."""
 
     hostname = (urlsplit(str(base_url or "")).hostname or "").strip()
-    if not hostname or hostname.casefold() == "localhost":
-        return hostname if hostname.casefold() == "localhost" else ""
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
+    if not hostname:
         return ""
-    return hostname if address.is_private or address.is_loopback or address.is_link_local else ""
+    return hostname if _private_or_local_host(hostname) else ""
 
 
 def _append_service_no_proxy(environment: dict[str, str], base_url: str) -> None:

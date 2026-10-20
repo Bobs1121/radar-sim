@@ -9,6 +9,7 @@ import ipaddress
 import json
 import hashlib
 import re
+import socket
 import ssl
 import stat
 import shutil
@@ -2272,8 +2273,46 @@ def _quote_path_token(value: str) -> str:
     return quote(text, safe="")
 
 
+def _private_or_local_host(hostname: str) -> bool:
+    """Report whether a service host is local or lab-private.
+
+    Literal addresses are classified directly.  Internal DNS names such as
+    ``wx-c-001qm.wx8.apac.bosch.com`` are resolved first: the deployment
+    address is a DHCP lease behind internal DNS, so the hostname is stable
+    while the address is not, and a lab hostname routed through the
+    enterprise proxy stalls multi-GB uploads the same way a literal private
+    address did.
+    """
+    host = (hostname or "").strip().rstrip(".").casefold()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None:
+        return bool(address.is_private or address.is_loopback or address.is_link_local)
+    try:
+        resolved = {
+            info[4][0] for info in socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        }
+    except (OSError, UnicodeError):
+        return False
+    addresses = []
+    for item in resolved:
+        try:
+            addresses.append(ipaddress.ip_address(item))
+        except ValueError:
+            return False
+    return bool(addresses) and all(
+        item.is_private or item.is_loopback or item.is_link_local for item in addresses
+    )
+
+
 def _trust_environment_proxy(base_url: str) -> bool:
-    """Use enterprise proxy settings except for literal local/private hosts.
+    """Use enterprise proxy settings except for local/private service hosts.
 
     Corporate environments commonly export HTTP_PROXY without adding every
     lab subnet to NO_PROXY.  Sending multi-GB MF4 uploads through that proxy
@@ -2283,11 +2322,7 @@ def _trust_environment_proxy(base_url: str) -> bool:
     hostname = (urlsplit(str(base_url or "")).hostname or "").strip()
     if not hostname:
         return True
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        return hostname.casefold() not in {"localhost"}
-    return not (address.is_private or address.is_loopback or address.is_link_local)
+    return not _private_or_local_host(hostname)
 
 
 def _should_upload_client_data(

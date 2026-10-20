@@ -20,6 +20,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -127,16 +128,41 @@ def _normalize_url(value: str) -> str:
 
 
 def _bypass_proxy_for_url(url: str) -> bool:
-    """Bypass inherited proxies only for literal local/private service hosts."""
+    """Bypass inherited proxies for local/lab-private service hosts.
 
-    hostname = (urlsplit(str(url or "")).hostname or "").strip()
-    if not hostname or hostname.casefold() == "localhost":
-        return hostname.casefold() == "localhost"
+    Literal addresses are classified directly; internal DNS names are
+    resolved first, because the deployment address is a DHCP lease while the
+    hostname is stable.  Routing a lab host through the enterprise proxy
+    stalls large downloads the same way a literal private address does.
+    """
+
+    hostname = (urlsplit(str(url or "")).hostname or "").strip().rstrip(".").casefold()
+    if not hostname:
+        return False
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return True
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
+        address = None
+    if address is not None:
+        return bool(address.is_private or address.is_loopback or address.is_link_local)
+    try:
+        resolved = {
+            info[4][0]
+            for info in socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        }
+    except (OSError, UnicodeError):
         return False
-    return bool(address.is_private or address.is_loopback or address.is_link_local)
+    addresses = []
+    for item in resolved:
+        try:
+            addresses.append(ipaddress.ip_address(item))
+        except ValueError:
+            return False
+    return bool(addresses) and all(
+        item.is_private or item.is_loopback or item.is_link_local for item in addresses
+    )
 
 
 def _open_url(request: Request, *, timeout: float):

@@ -516,6 +516,17 @@ def test_sdk_bypasses_environment_proxy_for_private_control_plane():
     assert _trust_environment_proxy("https://public.example.com") is True
 
 
+def test_sdk_resolves_internal_hostname_before_trusting_proxy(monkeypatch):
+    import radar_sim_sdk.client as client_module
+
+    def fake_getaddrinfo(host, port, **kwargs):
+        return [(2, 1, 6, "", ("10.190.167.13", 0))]
+
+    monkeypatch.setattr(client_module.socket, "getaddrinfo", fake_getaddrinfo)
+
+    assert _trust_environment_proxy("http://wx-c-001qm.wx8.apac.bosch.com:8877") is False
+
+
 def test_sdk_selects_unified_connector_for_local_simulation(tmp_path, monkeypatch):
     sdk, _ = make_sdk(tmp_path)
     config = run_config_dict()

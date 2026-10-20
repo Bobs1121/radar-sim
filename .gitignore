@@ -33,3 +33,10 @@ venv/
 
 # Offline wheel staging (optional, not committed).
 third_party/python-wheels/*.whl
+
+# Local agent-tooling scratch state (ZCode/Codex run artifacts, never shared).
+/.zcode/
+/.agents/
+/.codex/
+tmp-agent-home/
+.acceptance/
