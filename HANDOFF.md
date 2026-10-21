@@ -1,9 +1,28 @@
 # radar-sim 当前交接
 
-> 更新时间：2026-10-20
+> 更新时间：2026-10-21
 > 当前代码分支：`main`
 > 当前正式 release：`/home/hoz2wx/radar-sim-main` → `/home/hoz2wx/radar-sim-20261020`
 > 线上地址：`http://wx-c-001qm.wx8.apac.bosch.com:8877`
+
+## 2026-10-21 Cluster 仿真链路修复
+
+Cluster 此前完全不可用，根因不是仿真服务器故障，而是三类问题叠加：
+
+1. **挂载凭据过期。** `/mnt/cluster`、`/mnt/cluster_sw` 自 2026-09-22 开机起 `failed`。诊断确认 SMB 端口 445 全部可达、Kerberos 票据有效，`smbclient` 返回 `NT_STATUS_LOGON_FAILURE` —— 是 `/etc/rsim/smb-creds` 里 2026-07-08 的密码已失效，不是网络或集群故障。
+2. **代码在 Linux 上把 UNC 路径当本地路径校验。** `core/cluster.py`、`core/cluster_stage_executor.py`、`cli/server.py` 三处用 `startswith` 比较 UNC 前缀，但配置已规范化为正斜杠 `//host/share`，而 `linux_mount_map` 用反斜杠，永远匹配不上。表现是资产全部 "not found"、结果目录被判 "escapes its controlled root"。
+3. **Config.cfg 写出了 Windows 无法解析的路径。** 公开配置是 `//host/share`，但 Config.cfg 由 Windows worker 消费，必须 `\\host\share`。这导致 Selena 以 `Returncode = -1` 启动失败。
+
+修复与持久化：
+
+- 挂载改为 Kerberos：`/usr/local/sbin/rsim-mount-cluster.sh` 用主机 keytab 取票并挂载，由 `rsim-cluster-mount.service`（`enabled`，`RemainAfterExit`）在开机执行；fstab 中两条失效的密码挂载已注释并保留原文。`rsim-cluster-healthcheck.timer` 每 15 分钟续票并探测，失效则自动重挂。healthcheck 以 root 运行，续票后会把 ccache 还原为 `hoz2wx` 所有，否则用户失去票据读权限。
+- 三处路径比较改为分隔符无关；`_worker_path()` 在写 Config.cfg 时把 `//` 还原为 `\\`。新增 4 个回归测试锁定这三类问题。
+- 清理了指向已删除目录、每 5 秒失败重启的废弃 `rsim-server.service` / `rsim-web.service`。
+- 旧 release `radar-sim-main.old-20261020` 已按"只保留最新"删除。
+
+验收证据：`/api/v1/cluster/readiness` 连续返回 `cluster_ready`；真实提交 `job_bb69505f6fcd` 时 `prepare_data`、`preflight`、`run_simulation`、`collect_results` 全部 `succeeded`，Cluster 在 `szhradar07` 上实际执行了 Selena 并产出 `result.ini` / `selena.log` / `*out.MF4`。全仓测试 1735 passed / 0 failed。
+
+**仍需注意**：该验证任务的 `finalize_manifest` 报 `simulation_failed`，原因是所用 smoke 数据与 Selena 构建不匹配（`selena.log` 报 `no signal found in channel cache for port g_Golf_Fct_Hmi_RunnableHmi_internalstates`）。这是测试数据选择问题，不是部署缺陷；用与目标 Selena 版本匹配的 MF4 即可。**Cluster 提交与收集链路本身已打通。**
 
 ## 2026-10-20 服务器地址改为稳定主机名与仓库清理
 
@@ -25,6 +44,8 @@
 ### 未解决：Cluster CIFS 挂载失败（既有问题）
 
 `/mnt/cluster`、`/mnt/cluster_sw` 自 2026-09-22 03:03 开机起即为 `failed`，`mount` 返回 `error(13) Permission denied`，`/etc/rsim/smb-creds` 仍为 2026-07-08 的凭据。`/api/v1/cluster/readiness` 因此返回 `blocked`（缺 client.py/manager.py 等 Cluster 依赖）。该故障早于本次改动，需部署方更新 SMB 凭据后重新挂载，服务本身不做绕过。
+
+> 已于 2026-10-21 修复，改用 Kerberos keytab 挂载，见上节。
 
 ## 2026-09-21 服务器迁移与仓库整理
 

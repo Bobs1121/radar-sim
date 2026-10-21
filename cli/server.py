@@ -848,9 +848,15 @@ def _deployment_cluster_result_roots() -> list[Path]:
             load_cluster_execution_config("run-config-v2")
         )
         workspace = str(cluster.get("workspace_root") or "").strip()
+        # Normalized config uses forward slashes while linux_mount_map is
+        # written with backslashes; a literal prefix test never matched and the
+        # result catalog then rejected every collected Cluster result as
+        # escaping its controlled root.
+        candidate = workspace.replace("\\", "/")
         for unc_prefix, mount in dict(cluster.get("linux_mount_map") or {}).items():
-            if workspace.lower().startswith(str(unc_prefix).lower()):
-                workspace = str(mount) + workspace[len(str(unc_prefix)):].replace("\\", "/")
+            prefix = str(unc_prefix or "").replace("\\", "/").rstrip("/")
+            if prefix and candidate.casefold().startswith(prefix.casefold()):
+                workspace = str(mount or "").rstrip("/") + candidate[len(prefix):]
                 break
         root = Path(workspace).expanduser()
         return [root] if workspace and root.is_dir() else []

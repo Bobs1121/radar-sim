@@ -6,9 +6,11 @@
 
 Linux 只运行一个 `serve-v1` 控制面进程，同时提供 Web、REST/SDK、Job/Stage 调度、统一 Windows Connector 接口和 Cluster executor。Linux 不编译 Selena、不执行 Windows 本地仿真，也不接收大文件正文。
 
-当前受信内网验收地址：`http://wx-c-001qm.wx8.apac.bosch.com:8877`。服务机 IP 由 DHCP 分配（`10.190.181.243` 已失效，2026-10-20 租约为 `10.190.167.13`），因此文档、SDK 示例和 CLI 帮助一律使用主机名，不要写租约地址。当前正式 release 目录：`/home/hoz2wx/radar-sim-main`（软链到 `/home/hoz2wx/radar-sim-20261020`；上一版保留在 `radar-sim-main.old-20261020` 供回滚）。用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`、`enabled` 且 `Linger=yes`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
+当前受信内网验收地址：`http://wx-c-001qm.wx8.apac.bosch.com:8877`。服务机 IP 由 DHCP 分配（`10.190.181.243` 已失效，2026-10-20 租约为 `10.190.167.13`），因此文档、SDK 示例和 CLI 帮助一律使用主机名，不要写租约地址。当前正式 release 目录：`/home/hoz2wx/radar-sim-main`（软链到 `/home/hoz2wx/radar-sim-20261020`）。用户级 `radar-sim-v1.service` 为 `active/running`、`NRestarts=0`、`enabled` 且 `Linger=yes`。结果水位已显式配置为 `RSIM_RESULT_MIN_FREE_BYTES=1073741824`。
 
-已知部署故障（2026-10-20 复核）：`/mnt/cluster` 与 `/mnt/cluster_sw` 的 CIFS 挂载自 2026-09-22 开机起即为 failed，`mount` 返回 `error(13) Permission denied`，`/etc/rsim/smb-creds` 仍是 2026-07-08 的凭据。此时 `/api/v1/cluster/readiness` 返回 `blocked`，Cluster 任务无法提交。修复需要更新 SMB 凭据后重新挂载，属于部署方环境动作。
+Cluster 共享盘挂载（2026-10-21 起）：`/mnt/cluster` 与 `/mnt/cluster_sw` 使用 Kerberos，不再使用密码。`rsim-cluster-mount.service`（`enabled`）在开机时由 `/usr/local/sbin/rsim-mount-cluster.sh` 从 `/etc/krb5.keytab` 取主机票据并挂载；`rsim-cluster-healthcheck.timer` 每 15 分钟续票并探测，失效时自动重挂。原先 fstab 中的 `credentials=/etc/rsim/smb-creds` 两条已注释保留（该密码 2026-07-08 后失效，`mount` 报 `error(13)`）。
+
+排障要点：如果 Cluster 报 `not found` 或 `escapes its controlled root`，先确认 `/mnt/cluster` 可读；UNC 比较必须分隔符无关（配置是 `//host/share`，挂载映射是 `\\host\share`），且 Config.cfg 必须写回 `\\host\share` 给 Windows worker。
 
 注意：Cluster executor/gateway 心跳在线不等于外部 Cluster 可提交。此次验收曾发现服务机到 `SZHRADAR01:8123` 的 Manager XML-RPC 端口关闭；恢复后真实 readiness 返回 `cluster_ready`、`can_submit=true`。如果 Manager 再次不可达，服务会禁用 Cluster 目标，并在创建 Job 前返回可重试错误，不允许绕过检查。
 

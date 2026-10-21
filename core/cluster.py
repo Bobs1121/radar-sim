@@ -227,11 +227,14 @@ def check_cluster_environment(config: dict[str, Any], *, profile: str = "") -> l
     is_windows = sys.platform.startswith("win")
 
     def _local(p: str) -> str:
+        """Resolve a UNC path to its Linux mount, tolerating either separator."""
         if not p or is_windows or not mount_map:
             return p
+        candidate = str(p).replace("\\", "/")
         for unc_prefix, mount in mount_map.items():
-            if p.lower().startswith(unc_prefix.lower()):
-                return mount + p[len(unc_prefix):].replace("\\", "/")
+            prefix = str(unc_prefix or "").replace("\\", "/").rstrip("/")
+            if prefix and candidate.casefold().startswith(prefix.casefold()):
+                return str(mount or "").rstrip("/") + candidate[len(prefix):]
         return p
 
     software_path = Path(_local(str(cluster["software_path"])))
@@ -1241,12 +1244,21 @@ def _validate_submit_package(config_path: Path, mount_map: dict[str, str] | None
             errors.append(f"Missing Config.cfg key: {key}")
 
     def _local(p: str) -> str:
-        """Resolve a UNC path to local mount for existence checks (Linux)."""
+        """Resolve a UNC path to local mount for existence checks (Linux).
+
+        Config values are normalized to forward slashes (``//host/share/...``)
+        while the deployment mount map is written with backslashes, so compare
+        both sides separator-insensitively.  A plain prefix test left every
+        asset looking missing on the Linux executor even though the Cluster
+        workers could read it.
+        """
         if not p or not mount_map or sys.platform.startswith("win"):
             return p
+        candidate = str(p).replace("\\", "/")
         for unc_prefix, mount in mount_map.items():
-            if p.lower().startswith(unc_prefix.lower()):
-                return mount + p[len(unc_prefix):].replace("\\", "/")
+            prefix = str(unc_prefix or "").replace("\\", "/").rstrip("/")
+            if prefix and candidate.casefold().startswith(prefix.casefold()):
+                return str(mount or "").rstrip("/") + candidate[len(prefix):]
         return p
 
     script = cfg.get("simulation", "")
@@ -1648,6 +1660,20 @@ def _quote_cfg(value: Any) -> str:
     return '"' + str(value).replace('"', '\\"') + '";'
 
 
+def _worker_path(value: Any) -> str:
+    """Render a path for Cluster Windows workers.
+
+    Public config is normalized to forward slashes, but Config.cfg is consumed
+    by the Windows Cluster worker, which resolves only UNC form.  Emitting
+    ``//host/share`` made Selena start with Returncode -1 even though the
+    share was readable, so every worker-consumed path is converted here.
+    """
+    text = str(value or "")
+    if text.startswith("//"):
+        return "\\\\" + text[2:].replace("/", "\\")
+    return text
+
+
 def _render_config_cfg(
     *,
     cluster: dict[str, Any],
@@ -1670,7 +1696,7 @@ def _render_config_cfg(
     source = source or inferred.get("source", "")
     mounting = mounting or inferred.get("mounting_position", "")
     lines = [
-        "simulation = " + _quote_cfg(simulation_script),
+        "simulation = " + _quote_cfg(_worker_path(simulation_script)),
         'simulation_description = "radar-sim batch";',
         f"simulation_type = {int(cluster.get('simulation_type', 0))};",
         f"simulation_prio = {int(cluster.get('simulation_prio', 4))};",
@@ -1678,7 +1704,7 @@ def _render_config_cfg(
         "group = " + _quote_cfg(cluster.get("group", "Radar")),
         "subgroup = " + _quote_cfg(cluster.get("subgroup", "PSS2")),
         f"timeout = {int(cluster.get('timeout_min', 120))};",
-        "datafile_path = " + _quote_cfg(datafile_path),
+        "datafile_path = " + _quote_cfg(_worker_path(datafile_path)),
         "extension = " + _quote_cfg(cluster.get("extension", "*.MF4,*MF4.zip")),
         "skip_dir = " + _quote_cfg(cluster.get("skip_dir", "")),
         "skip_filename = " + _quote_cfg(cluster.get("skip_filename", "")),
@@ -1686,11 +1712,11 @@ def _render_config_cfg(
         f"finalstep = {int(cluster.get('finalstep', 0))};",
         f"send_email = {int(cluster.get('send_email', 0))};",
         f"send_netsend = {int(cluster.get('send_netsend', 0))};",
-        "selenaPathExe = " + _quote_cfg(selena_exe),
-        "runTimeConfigFile = " + _quote_cfg(runtime_xml),
-        "matfilefilter = " + _quote_cfg(matfilefilter),
-        "adapterFile = " + _quote_cfg(adapter_file),
-        "paramconfigTemplate = " + _quote_cfg(config_template),
+        "selenaPathExe = " + _quote_cfg(_worker_path(selena_exe)),
+        "runTimeConfigFile = " + _quote_cfg(_worker_path(runtime_xml)),
+        "matfilefilter = " + _quote_cfg(_worker_path(matfilefilter)),
+        "adapterFile = " + _quote_cfg(_worker_path(adapter_file)),
+        "paramconfigTemplate = " + _quote_cfg(_worker_path(config_template)),
         "radar = " + _quote_cfg(source),
         "mountingPosition = " + _quote_cfg(mounting),
         "additionalCommand = " + _quote_cfg(" ".join(sim.get("extra_args", []) or [])),

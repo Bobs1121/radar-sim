@@ -923,3 +923,36 @@ def test_prepare_local_data_with_copy_stages_it(tmp_path):
     staged = Path(package.job_dir) / "data" / "staged_input.MF4"
     assert staged.exists()
     assert package.datafile_path == str(staged)
+
+
+def test_config_cfg_uses_windows_unc_for_worker_paths():
+    """Config.cfg is consumed by Windows Cluster workers, not by Linux.
+
+    Public config normalizes to ``//host/share``.  Emitting that form made
+    Selena start with Returncode -1 even though the share was readable, so
+    every worker-consumed path must be rendered back to UNC.
+    """
+    from core.cluster import _render_config_cfg
+
+    text = _render_config_cfg(
+        cluster={"group": "Radar", "subgroup": "PSS2"},
+        sim={"extra_args": []},
+        simulation_script="//host/share/job/SIM.py",
+        datafile_path="//host/share/job/data",
+        selena_exe="//host/share/selena/selena.exe",
+        runtime_xml="//host/share/assets/runtime.xml",
+        matfilefilter="//host/share/assets/matfilter.txt",
+        adapter_file="",
+        config_template="",
+    )
+
+    for key in (
+        "simulation",
+        "datafile_path",
+        "selenaPathExe",
+        "runTimeConfigFile",
+        "matfilefilter",
+    ):
+        line = next(item for item in text.splitlines() if item.startswith(key + " ="))
+        assert "//host" not in line, (key, line)
+        assert r"\\host\share" in line, (key, line)

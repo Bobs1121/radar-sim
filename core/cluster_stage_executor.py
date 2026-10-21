@@ -399,6 +399,26 @@ class ClusterStageExecutor:
         self.control.update_resolved_spec(str(job.get("job_id") or ""), resolved)
 
 
+def _linux_probe_path(path: str, config: dict[str, Any]) -> str:
+    """Map a Cluster UNC path onto the Linux mount the executor can actually read.
+
+    Users submit UNC paths because Cluster workers consume them, but the Linux
+    executor only sees them through ``linux_mount_map``.  Probing the UNC path
+    directly always fails on Linux and reported a healthy shared dataset as
+    unavailable.  Non-UNC paths are returned unchanged.
+    """
+    text = str(path or "")
+    if not (text.startswith("\\\\") or text.startswith("//")):
+        return text
+    cluster = dict((config or {}).get("cluster") or {})
+    for unc_prefix, mount in dict(cluster.get("linux_mount_map") or {}).items():
+        prefix = str(unc_prefix or "").rstrip("\\/")
+        if prefix and text.casefold().startswith(prefix.casefold()):
+            suffix = text[len(prefix):].replace("\\", "/")
+            return str(mount or "").rstrip("/") + suffix
+    return text
+
+
 def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> dict[str, Any]:
     """Resolve a dataset URI/shared path centrally; local drives require upload."""
     owner = _owner(job)
@@ -419,13 +439,14 @@ def resolve_cluster_data(context: ClusterStageContext, job: dict[str, Any]) -> d
         }
     project = _data_project(context, job)
     if classify_data_path(data_path) == "central":
+        probe_path = _linux_probe_path(data_path, context.config_loader(project))
         try:
-            files = discover_dataset_metadata(Path(data_path))
+            files = discover_dataset_metadata(Path(probe_path))
             dataset = context.dataset_catalog.register_shared(
                 project=project,
                 owner=owner,
                 source_path=data_path,
-                probe_path=data_path,
+                probe_path=probe_path,
                 files=files,
             )
         except (DatasetError, OSError) as exc:

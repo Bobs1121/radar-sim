@@ -1109,6 +1109,78 @@ def test_shared_data_unavailable_has_stable_retryable_infrastructure_error(monke
     assert "//shared" not in str(caught.value)
 
 
+def test_central_data_is_probed_through_the_linux_mount_map(monkeypatch):
+    """A Cluster-visible UNC path must be read via its Linux mount, not directly.
+
+    Workers consume UNC paths, so users submit them; the Linux executor can only
+    read the corresponding CIFS mount.  Probing the raw UNC path on Linux always
+    fails and used to report a healthy shared dataset as unavailable.
+    """
+    from core.cluster_stage_executor import _linux_probe_path
+
+    config = {
+        "cluster": {
+            "linux_mount_map": {
+                "\\\\abtvdfs2.de.bosch.com\\ismdfs": "/mnt/cluster",
+            }
+        }
+    }
+
+    assert (
+        _linux_probe_path(
+            "\\\\abtvdfs2.de.bosch.com\\ismdfs\\loc\\szh\\Cluster\\radar-sim\\data", config
+        )
+        == "/mnt/cluster/loc/szh/Cluster/radar-sim/data"
+    )
+    assert _linux_probe_path("/mnt/cluster/already/local", config) == "/mnt/cluster/already/local"
+
+
+def test_validate_submit_package_maps_forward_slash_unc_on_linux(tmp_path, monkeypatch):
+    """The Linux executor must resolve ``//host/share`` through linux_mount_map.
+
+    Normalized config uses forward slashes; the mount map uses backslashes.
+    A literal prefix comparison left every asset "not found" on Linux, so the
+    Cluster submission was rejected while the workers could read the share.
+    """
+    import core.cluster as cluster_module
+
+    share = tmp_path / "share"
+    (share / "selena").mkdir(parents=True)
+    (share / "selena" / "selena.exe").write_bytes(b"binary")
+    (share / "runtime.xml").write_text("<runtime/>", encoding="utf-8")
+    (share / "data").mkdir()
+
+    monkeypatch.setattr(cluster_module.sys, "platform", "linux")
+
+    unc = "//fileserver/share"
+    config_path = tmp_path / "Config.cfg"
+    config_path.write_text(
+        "\n".join([
+            "simulation_prio=4",
+            "python_version=*",
+            f"datafile_path={unc}/data",
+            "extension=*.MF4",
+            "skip_dir=Failed",
+            "skip_filename=",
+            "finalstep=1",
+            "send_email=0",
+            "send_netsend=0",
+            "group=Radar",
+            "subgroup=PSS2",
+            f"selenaPathExe={unc}/selena/selena.exe",
+            f"runTimeConfigFile={unc}/runtime.xml",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    errors = cluster_module._validate_submit_package(
+        config_path, {"\\\\fileserver\\share": str(share)}
+    )
+
+    missing = [item for item in errors if "not found" in item]
+    assert not missing, missing
+
+
 @pytest.mark.parametrize("identity", ["workspace-anonymous123", "ovrs25", "xpeng-od25"])
 def test_cluster_environment_never_requires_project_adapter(identity, monkeypatch):
     loaded = []
